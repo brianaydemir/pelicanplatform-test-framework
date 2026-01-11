@@ -1,0 +1,7 @@
+---
+Cache:
+  StorageLocation: /data
+
+XRootD:
+  # Do not wait for ongoing transfers during local development and testing.
+  ShutdownTimeout: 0s

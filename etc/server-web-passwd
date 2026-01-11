@@ -1,0 +1,2 @@
+# Generated using `htpasswd -nbB -C 10 admin asdf`.
+admin:$2y$10$ONeUS/VGwL9CoAD6pyZ2kusUjX8z0Sxuf8kz2g4PGbFb1GKUQ9J3C

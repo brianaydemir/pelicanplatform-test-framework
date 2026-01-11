@@ -1,0 +1,23 @@
+---
+Origin:
+  StorageType: posix
+  EnablePublicReads: true
+  Exports:
+    # NOTE: We need to explicitly set issuer URLs because only `origin-0`
+    # might be running an issuer.
+
+    # NOTE: Yes, both namespaces export the same set of objects. I'm lazy.
+
+    - FederationPrefix: /public
+      Capabilities: ["PublicReads", "Listings", "DirectReads"]
+      IssuerUrls: ["https://origin-0:8444"]
+      StoragePrefix: /data
+
+    - FederationPrefix: /private
+      Capabilities: ["Reads", "Writes", "Listings", "DirectReads"]
+      IssuerUrls: ["https://origin-0:8444"]
+      StoragePrefix: /data
+
+XRootD:
+  # Do not wait for ongoing transfers during local development and testing.
+  ShutdownTimeout: 0s

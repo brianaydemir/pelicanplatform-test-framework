@@ -1,0 +1,8 @@
+# Temporary files created by vim.
+*.swp
+
+# Test data.
+/data/
+
+# Grafana's database and plugins.
+/grafana/

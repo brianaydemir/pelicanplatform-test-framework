@@ -1,0 +1,22 @@
+---
+ConfigLocations:
+  - /etc/pelican/config.d
+
+Federation:
+  DirectorUrl: https://director:8444
+  DiscoveryUrl: https://director:8444
+  RegistryUrl: https://registry:8444
+
+Server:
+  WebPort: 8444
+  TLSCACertificateFile: /certs/ca.crt
+  TLSKey: /certs/tls.key
+  TLSCertificateChain: /certs/tls.crt
+
+  # Make Go profiling information available for debugging.
+  EnablePprof: true
+
+Monitoring:
+  # Do not require authorization during local development and testing.
+  MetricAuthorization: false
+  PromQLAuthorization: false

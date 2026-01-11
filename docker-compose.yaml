@@ -1,0 +1,307 @@
+---
+name: pelican
+
+volumes:
+  # Keep build caches on separate volumes from the host.
+  go_build:
+  go_pkg:
+  pre_commit:
+  web_next:
+  web_node:
+  web_npm:
+  web_output:
+
+  # Keep other directories around for convenience.
+  root_homedir:
+
+secrets:
+  ca-crt:
+    file: ${PWD}/certs/ca.crt
+  tls-crt:
+    file: ${PWD}/certs/tls.crt
+  tls-key:
+    file: ${PWD}/certs/tls.key
+  oidc-client-id:
+    file: ${PWD}/etc/oidc-client-id
+  oidc-client-secret:
+    file: ${PWD}/etc/oidc-client-secret
+  server-web-passwd:
+    file: ${PWD}/etc/server-web-passwd
+
+x-common-secrets: &common-secrets
+  secrets:
+    - source: ca-crt
+      target: /certs/ca.crt
+    - source: tls-crt
+      target: /certs/tls.crt
+    - source: tls-key
+      target: /certs/tls.key
+    - source: oidc-client-id
+      target: /etc/pelican/oidc-client-id
+    - source: oidc-client-secret
+      target: /etc/pelican/oidc-client-secret
+    - source: server-web-passwd
+      target: /etc/pelican/server-web-passwd
+
+x-common-origin: &common-origin
+  image: ${ORIGIN_CONTAINER}
+  depends_on:
+    director: { condition: service_healthy }
+    registry: { condition: service_healthy }
+  deploy:
+    resources:
+      limits: { memory: 256M }
+  <<: *common-secrets
+
+x-common-cache: &common-cache
+  image: ${CACHE_CONTAINER}
+  depends_on:
+    director: { condition: service_healthy }
+    registry: { condition: service_healthy }
+    origin-0: { condition: service_healthy }  # wait for this origin to advertise auth info
+  deploy:
+    resources:
+      limits: { memory: 256M }
+  <<: *common-secrets
+
+#---------------------------------------------------------------------------
+
+services:
+
+  dev:
+    hostname: dev
+    image: ${DEV_CONTAINER}
+    command: ["tini", "--", "/bin/sleep", "infinity"]
+    ports:
+      - "9002:8444"
+    volumes:
+      - ${PELICAN_SRC_DIR}:/app
+      - ${PWD}:/scratch
+      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+      - ${PWD}/config.d/50-dev-container.yaml:/etc/pelican/config.d/50-dev-container.yaml:ro
+      - ${HOME}/.gitconfig:/root/.gitconfig:ro
+
+      # Keep build caches on separate volumes from the host.
+      - go_build:/root/.cache/go-build
+      - go_pkg:/root/go
+      - pre_commit:/root/.cache/pre-commit
+      - web_next:/app/web_ui/frontend/.next
+      - web_node:/app/web_ui/frontend/node_modules
+      - web_npm:/root/.npm
+      - web_output:/app/web_ui/frontend/public/data
+
+      # Keep other directories around for convenience.
+      - root_homedir:/root
+
+    <<: *common-secrets  # for certificates and related configuration
+
+  grafana:
+    hostname: grafana
+    image: grafana/grafana:12.3.1
+    deploy:
+      resources:
+        limits: { memory: 256M }
+    environment:
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    ports:
+      - "9003:3000"
+    volumes:
+      - ${PWD}/grafana:/var/lib/grafana
+
+  #-------------------------------------------------------------------------
+
+  director:
+    hostname: director
+    image: ${DIRECTOR_CONTAINER}
+    healthcheck:
+      test: ["CMD", "curl", "-sk", "https://director:8444/api/v1.0/health"]
+      start_period: 30s
+      start_interval: 1s
+    deploy:
+      resources:
+        limits: { memory: 256M }
+    ports:
+      - "9000:8444"
+    volumes:
+      - ${PWD}/issuer-keys/director.pem:/etc/pelican/issuer-keys/director.pem:ro
+      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+      - ${PWD}/config.d/50-director.yaml:/etc/pelican/config.d/50-director.yaml:ro
+    <<: *common-secrets
+
+  registry:
+    hostname: registry
+    image: ${REGISTRY_CONTAINER}
+    depends_on:
+      director: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-sk", "https://registry:8444/api/v1.0/health"]
+      start_period: 30s
+      start_interval: 1s
+    deploy:
+      resources:
+        limits: { memory: 128M }
+    ports:
+      - "9001:8444"
+    volumes:
+      - ${PWD}/issuer-keys/registry.pem:/etc/pelican/issuer-keys/registry.pem:ro
+      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+      - ${PWD}/config.d/50-registry.yaml:/etc/pelican/config.d/50-registry.yaml:ro
+    <<: *common-secrets
+
+  #-------------------------------------------------------------------------
+
+  # FIXME: K8s StatefulSet-style templating would be helpful here.
+
+  origin-0:
+    hostname: origin-0
+    volumes:
+      - ${PWD}/data/origin/0:/data
+      - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
+      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+      - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
+      - ${PWD}/config.d/90-origin-0.yaml:/etc/pelican/config.d/90-origin-0.yaml:ro
+    healthcheck:
+      # Try to give this origin enough time to advertise auth info for its
+      # namespaces.
+      test: ["CMD", "curl", "-sk", "https://origin-0:8444/api/v1.0/health"]
+      start_period: 30s
+      start_interval: 10s
+    deploy:
+      resources:
+        limits: { memory: 1536M }  # the built-in issuer needs 1024M of memory, at least
+    ports:
+      - "8444:8444"
+    <<: *common-origin
+
+  # origin-1:
+  #   hostname: origin-1
+  #   volumes:
+  #     - ${PWD}/data/origin/1:/data
+  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
+  #   <<: *common-origin
+
+  # origin-2:
+  #   hostname: origin-2
+  #   volumes:
+  #     - ${PWD}/data/origin/2:/data
+  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
+  #   <<: *common-origin
+
+  # origin-3:
+  #   hostname: origin-3
+  #   volumes:
+  #     - ${PWD}/data/origin/3:/data
+  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
+  #   <<: *common-origin
+
+  # origin-4:
+  #   hostname: origin-4
+  #   volumes:
+  #     - ${PWD}/data/origin/4:/data
+  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
+  #   <<: *common-origin
+
+  # origin-5:
+  #   hostname: origin-5
+  #   volumes:
+  #     - ${PWD}/data/origin/5:/data
+  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
+  #   <<: *common-origin
+
+  # origin-6:
+  #   hostname: origin-6
+  #   volumes:
+  #     - ${PWD}/data/origin/6:/data
+  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
+  #   <<: *common-origin
+
+  # origin-7:
+  #   hostname: origin-7
+  #   volumes:
+  #     - ${PWD}/data/origin/7:/data
+  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
+  #   <<: *common-origin
+
+  #-------------------------------------------------------------------------
+
+  # FIXME: K8s StatefulSet-style templating would be helpful here.
+
+  cache-0:
+    hostname: cache-0
+    volumes:
+      - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
+      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+      - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
+    ports:
+      - "8445:8444"
+    <<: *common-cache
+
+  # cache-1:
+  #   hostname: cache-1
+  #   volumes:
+  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
+  #   <<: *common-cache
+
+  # cache-2:
+  #   hostname: cache-2
+  #   volumes:
+  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
+  #   <<: *common-cache
+
+  # cache-3:
+  #   hostname: cache-3
+  #   volumes:
+  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
+  #   <<: *common-cache
+
+  # cache-4:
+  #   hostname: cache-4
+  #   volumes:
+  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
+  #   <<: *common-cache
+
+  # cache-5:
+  #   hostname: cache-5
+  #   volumes:
+  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
+  #   <<: *common-cache
+
+  # cache-6:
+  #   hostname: cache-6
+  #   volumes:
+  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
+  #   <<: *common-cache
+
+  # cache-7:
+  #   hostname: cache-7
+  #   volumes:
+  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
+  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
+  #   <<: *common-cache

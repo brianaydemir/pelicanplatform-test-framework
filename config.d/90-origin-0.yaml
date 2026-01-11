@@ -1,0 +1,12 @@
+---
+Origin:
+  EnableOIDC: true
+  EnableIssuer: true  # the built-in issuer needs 1024M of memory, at least
+
+OIDC:
+  ClientRedirectHostname: localhost:8444
+
+Issuer:
+  AuthorizationTemplates:
+    - prefix: /data
+      actions: [read, create, modify]
