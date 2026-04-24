@@ -1,8 +1,11 @@
-# Temporary files created by vim.
-*.swp
+# Secrets
+/.condor_creds/
 
-# Test data.
+# Test data
 /data/
 
-# Grafana's database and plugins.
+# Grafana's database
 /grafana/
+
+# Temporary files
+*.swp
