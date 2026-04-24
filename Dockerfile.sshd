@@ -1,0 +1,28 @@
+FROM almalinux:10
+
+RUN <<ENDRUN
+  # Install dependencies and other tools
+  dnf install -y epel-release
+  dnf install -y openssh-server supervisor tini
+
+  # Create users and set default passwords
+  for name in alice bob carol dave; do
+    useradd -m -s /bin/bash -c "Someone who would like to test Pelican" ${name}
+    echo "${name}:password" | chpasswd
+  done
+
+  # Remove caches
+  dnf clean all
+  rm -rf /var/cache/dnf
+ENDRUN
+
+# Configure SSHD
+RUN ssh-keygen -A && mkdir -p /var/run/sshd
+COPY etc/supervisord.conf /etc/supervisord.conf
+EXPOSE 22
+
+# Use tini as init system
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Run supervisord
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]

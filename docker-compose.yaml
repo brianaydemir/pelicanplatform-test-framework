@@ -112,6 +112,14 @@ services:
     volumes:
       - ${PWD}/grafana:/var/lib/grafana
 
+  lab-server:
+    hostname: lab-server
+    image: sshd:pelicanplatform-test-framework
+    build:
+      dockerfile: Dockerfile.sshd
+    volumes:
+      - ${PWD}/data/lab-server:/data
+
   #-------------------------------------------------------------------------
 
   director:
