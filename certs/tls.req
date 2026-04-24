@@ -1,3 +1,5 @@
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
 subjectAltName = @subject_alternative_names
 
 [subject_alternative_names]
@@ -8,18 +10,6 @@ DNS.4  = registry
 
 DNS.10 = cache-0
 DNS.11 = cache-1
-DNS.12 = cache-2
-DNS.13 = cache-3
-DNS.14 = cache-4
-DNS.15 = cache-5
-DNS.16 = cache-6
-DNS.17 = cache-7
 
 DNS.20 = origin-0
 DNS.21 = origin-1
-DNS.22 = origin-2
-DNS.23 = origin-3
-DNS.24 = origin-4
-DNS.25 = origin-5
-DNS.26 = origin-6
-DNS.27 = origin-7

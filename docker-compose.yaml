@@ -2,7 +2,7 @@
 name: pelican
 
 volumes:
-  # Keep build caches on separate volumes from the host.
+  # Keep build caches on separate volumes from the host
   go_build:
   go_pkg:
   pre_commit:
@@ -11,7 +11,7 @@ volumes:
   web_npm:
   web_output:
 
-  # Keep other directories around for convenience.
+  # Keep other directories around for convenience
   root_homedir:
 
 secrets:
@@ -85,7 +85,7 @@ services:
       - ${PWD}/config.d/50-dev-container.yaml:/etc/pelican/config.d/50-dev-container.yaml:ro
       - ${HOME}/.gitconfig:/root/.gitconfig:ro
 
-      # Keep build caches on separate volumes from the host.
+      # Keep build caches on separate volumes from the host
       - go_build:/root/.cache/go-build
       - go_pkg:/root/go
       - pre_commit:/root/.cache/pre-commit
@@ -94,14 +94,14 @@ services:
       - web_npm:/root/.npm
       - web_output:/app/web_ui/frontend/public/data
 
-      # Keep other directories around for convenience.
+      # Keep other directories around for convenience
       - root_homedir:/root
 
     <<: *common-secrets  # for certificates and related configuration
 
   grafana:
     hostname: grafana
-    image: grafana/grafana:12.3.1
+    image: grafana/grafana:latest
     deploy:
       resources:
         limits: { memory: 256M }
@@ -181,68 +181,14 @@ services:
       - "8444:8444"
     <<: *common-origin
 
-  # origin-1:
-  #   hostname: origin-1
-  #   volumes:
-  #     - ${PWD}/data/origin/1:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-2:
-  #   hostname: origin-2
-  #   volumes:
-  #     - ${PWD}/data/origin/2:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-3:
-  #   hostname: origin-3
-  #   volumes:
-  #     - ${PWD}/data/origin/3:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-4:
-  #   hostname: origin-4
-  #   volumes:
-  #     - ${PWD}/data/origin/4:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-5:
-  #   hostname: origin-5
-  #   volumes:
-  #     - ${PWD}/data/origin/5:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-6:
-  #   hostname: origin-6
-  #   volumes:
-  #     - ${PWD}/data/origin/6:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-7:
-  #   hostname: origin-7
-  #   volumes:
-  #     - ${PWD}/data/origin/7:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
+  origin-1:
+    hostname: origin-1
+    volumes:
+      - ${PWD}/data/origin/1:/data
+      - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
+      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+      - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
+    <<: *common-origin
 
   #-------------------------------------------------------------------------
 
@@ -258,58 +204,10 @@ services:
       - "8445:8444"
     <<: *common-cache
 
-  # cache-1:
-  #   hostname: cache-1
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-2:
-  #   hostname: cache-2
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-3:
-  #   hostname: cache-3
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-4:
-  #   hostname: cache-4
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-5:
-  #   hostname: cache-5
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-6:
-  #   hostname: cache-6
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-7:
-  #   hostname: cache-7
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
+  cache-1:
+    hostname: cache-1
+    volumes:
+      - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
+      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+      - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
+    <<: *common-cache
