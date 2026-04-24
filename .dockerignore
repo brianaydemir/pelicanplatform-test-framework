@@ -1,0 +1,13 @@
+# Secrets
+/.condor_creds/
+/certs/
+/issuer-keys/
+
+# Test data
+/data/
+
+# Grafana's database
+/grafana/
+
+# Temporary files
+*.swp
