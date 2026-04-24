@@ -6,8 +6,7 @@ cmd="${1:-}"
 
 rm -rf \
     .condor_creds \
-    data/origin \
-    data/ads/input
+    data
 rm -f \
     bin/pelican \
     bin/stash_plugin \
