@@ -1,0 +1,4 @@
+---
+# Role layer for services that are neither origins nor caches. Empty,
+# but the directory must exist: Pelican refuses to start when a
+# ConfigLocations directory is missing.

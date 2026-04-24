@@ -1,0 +1,5 @@
+---
+# The XRootD cache. XRootD tuning is in config.d/base/60-xrootd.yaml.
+
+Cache:
+  EnableV2: false

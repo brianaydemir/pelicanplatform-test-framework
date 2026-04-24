@@ -1,0 +1,13 @@
+# Dockerfile.sshd needs nothing from the checkout; keep the build context
+# small.
+/.git/
+/bin/
+/.condor_creds/
+/certs/
+/etc/
+/generated/
+/issuer-keys/
+/data/
+/state/
+/grafana/
+*.swp

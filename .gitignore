@@ -1,8 +1,12 @@
-# Temporary files created by vim.
-*.swp
+# Local overrides for environment.cfg
+/environment.local.cfg
 
-# Test data.
+# Created by fed.sh, init-data.sh, and run.sh
+/.condor_creds/
 /data/
-
-# Grafana's database and plugins.
+/generated/
 /grafana/
+/state/
+
+# Temporary files
+*.swp

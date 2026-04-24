@@ -1,3 +1,5 @@
-/*.key
-/*.csr
-/*.crt
+# Created by init.sh
+*.crt
+*.csr
+*.key
+*.srl

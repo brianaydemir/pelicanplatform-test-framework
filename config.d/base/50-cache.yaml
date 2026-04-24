@@ -1,0 +1,6 @@
+---
+# Shared by both cache variants (and ignored by other services).
+
+Cache:
+  # ./data/cache/<N> on the host.
+  StorageLocation: /data

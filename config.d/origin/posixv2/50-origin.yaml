@@ -1,0 +1,5 @@
+---
+# The native Go POSIX origin (no XRootD).
+
+Origin:
+  StorageType: posixv2

@@ -1,0 +1,5 @@
+---
+# The native Go cache (no XRootD).
+
+Cache:
+  EnableV2: true

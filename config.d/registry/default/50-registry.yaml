@@ -1,0 +1,3 @@
+---
+# Role layer for the registry. Empty, but the directory must exist:
+# Pelican refuses to start when a ConfigLocations directory is missing.

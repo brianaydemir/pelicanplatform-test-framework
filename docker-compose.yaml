@@ -1,8 +1,12 @@
 ---
+# The full topology. Run it through ./fed.sh: every variable below comes
+# from presets/default.sh and has no fallback here on purpose.
+
 name: pelican
 
+# Only the dev container's build caches live in volumes. Service state
+# and data are bind-mounted from ./state and ./data.
 volumes:
-  # Keep build caches on separate volumes from the host.
   go_build:
   go_pkg:
   pre_commit:
@@ -10,24 +14,29 @@ volumes:
   web_node:
   web_npm:
   web_output:
-
-  # Keep other directories around for convenience.
   root_homedir:
 
 secrets:
   ca-crt:
-    file: ${PWD}/certs/ca.crt
+    file: ./certs/ca.crt
   tls-crt:
-    file: ${PWD}/certs/tls.crt
+    file: ./certs/tls.crt
   tls-key:
-    file: ${PWD}/certs/tls.key
+    file: ./certs/tls.key
   oidc-client-id:
-    file: ${PWD}/etc/oidc-client-id
+    file: ./etc/oidc-client-id
   oidc-client-secret:
-    file: ${PWD}/etc/oidc-client-secret
+    file: ./etc/oidc-client-secret
   server-web-passwd:
-    file: ${PWD}/etc/server-web-passwd
+    file: ./etc/server-web-passwd
 
+#===========================================================================
+# Shared fragments
+#===========================================================================
+
+# /certs/*.crt is added to the trust store by each image's entrypoint.
+# /etc/pelican is ConfigBase for root, so the other three need no
+# configuration.
 x-common-secrets: &common-secrets
   secrets:
     - source: ca-crt
@@ -43,45 +52,290 @@ x-common-secrets: &common-secrets
     - source: server-web-passwd
       target: /etc/pelican/server-web-passwd
 
-x-common-origin: &common-origin
-  image: ${ORIGIN_CONTAINER}
-  depends_on:
-    director: { condition: service_healthy }
-    registry: { condition: service_healthy }
-  deploy:
-    resources:
-      limits: { memory: 256M }
-  <<: *common-secrets
+# Mounts common to every Pelican service. Each service also mounts its
+# own /fed/conf.role, /fed/conf.instance, /fed/issuer-keys, and
+# /var/lib/pelican. See etc/pelican.yaml for the configuration layers.
+x-vol-health: &vol-health "./bin/service-health.sh:/fed/bin/service-health.sh:ro"
+x-vol-generated: &vol-generated "./generated:/fed/generated:ro"
+x-vol-conf-root: &vol-conf-root "./etc/pelican.yaml:/etc/pelican/pelican.yaml:ro"
+x-vol-conf-base: &vol-conf-base "./config.d/base:/fed/conf.base:ro"
 
-x-common-cache: &common-cache
-  image: ${CACHE_CONTAINER}
-  depends_on:
-    director: { condition: service_healthy }
-    registry: { condition: service_healthy }
-    origin-0: { condition: service_healthy }  # wait for this origin to advertise auth info
-  deploy:
-    resources:
-      limits: { memory: 256M }
-  <<: *common-secrets
+x-pelican-env: &pelican-env
+  TZ: "${TZ_SERVICES:?run through ./fed.sh}"
+  PELICAN_LOGGING_LEVEL: "${PELICAN_LOG_LEVEL:?run through ./fed.sh}"
 
-#---------------------------------------------------------------------------
+# Environment beats every configuration file, so presets can toggle these.
+x-origin-env: &origin-env
+  PELICAN_ORIGIN_ENABLEISSUER: "${ORIGIN_ENABLE_ISSUER:?run through ./fed.sh}"
+  PELICAN_ORIGIN_ENABLEOIDC: "${ORIGIN_ENABLE_OIDC:?run through ./fed.sh}"
+
+x-pelican-health: &pelican-health
+  test: ["CMD", "/fed/bin/service-health.sh"]
+  start_period: 90s
+  start_interval: 2s
+  interval: 30s
+  timeout: 10s
+  retries: 3
+
+x-needs-federation: &needs-federation
+  discovery: { condition: service_healthy }
+  director-0: { condition: service_healthy }
+  registry: { condition: service_healthy }
+
+# Narrows, but does not close, the window in which a new cache serves
+# 403s. run.sh waits out the rest.
+x-needs-origin: &needs-origin
+  origin-0: { condition: service_healthy }
+
+# Only matters under `-p ssh`; `required: false` makes it a no-op when
+# the lab server is not started.
+x-needs-lab: &needs-lab
+  lab-server: { condition: service_healthy, required: false }
+
+#===========================================================================
+# Services
+#
+# `hostname` matters: it determines Server.ExternalWebUrl, and so each
+# origin's issuer URL, which fed.sh must reproduce exactly.
+#===========================================================================
 
 services:
 
+  # Hosts the federation metadata outside any director, as the OSDF does,
+  # so that the directors are interchangeable.
+  discovery:
+    hostname: discovery
+    image: nginx:alpine
+    # 127.0.0.1, not localhost: BusyBox wget tries only the first address,
+    # which may be ::1, and nginx listens on IPv4 only.
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null",
+             "http://127.0.0.1/.well-known/pelican-configuration"]
+      start_period: 10s
+      start_interval: 1s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 32M }
+    ports:
+      - "9005:8444"
+    volumes:
+      - ./etc/nginx-discovery.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./generated/discovery.json:/etc/nginx/html/discovery.json:ro
+      - ./generated/openid-configuration.json:/etc/nginx/html/openid-configuration.json:ro
+    secrets:
+      - source: tls-crt
+        target: /certs/tls.crt
+      - source: tls-key
+        target: /certs/tls.key
+
+  director-0:
+    hostname: director-0
+    image: "${IMAGE_DIRECTOR:?run through ./fed.sh}"
+    healthcheck: *pelican-health
+    depends_on:
+      discovery: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { memory: "${DIRECTOR_MEM:?run through ./fed.sh}" }
+    environment: *pelican-env
+    ports:
+      - "9000:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - ./config.d/director/default:/fed/conf.role:ro
+      - ./config.d/instance/director-0:/fed/conf.instance:ro
+      - ./issuer-keys/director-0:/fed/issuer-keys
+      - ./state/director-0:/var/lib/pelican
+    <<: *common-secrets
+
+  director-1:
+    hostname: director-1
+    image: "${IMAGE_DIRECTOR:?run through ./fed.sh}"
+    profiles: ["ha"]
+    healthcheck: *pelican-health
+    depends_on:
+      discovery: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { memory: "${DIRECTOR_MEM:?run through ./fed.sh}" }
+    environment: *pelican-env
+    ports:
+      - "9004:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - ./config.d/director/default:/fed/conf.role:ro
+      - ./config.d/instance/director-1:/fed/conf.instance:ro
+      # Must hold director-0's key: the discovery document publishes only
+      # director-0's JWKS. `./fed.sh keys` keeps the two in step.
+      - ./issuer-keys/director-1:/fed/issuer-keys
+      - ./state/director-1:/var/lib/pelican
+    <<: *common-secrets
+
+  registry:
+    hostname: registry
+    image: "${IMAGE_REGISTRY:?run through ./fed.sh}"
+    healthcheck: *pelican-health
+    depends_on:
+      discovery: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { memory: "${REGISTRY_MEM:?run through ./fed.sh}" }
+    environment: *pelican-env
+    ports:
+      - "9001:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - ./config.d/registry/default:/fed/conf.role:ro
+      - ./config.d/instance/registry:/fed/conf.instance:ro
+      - ./issuer-keys/registry:/fed/issuer-keys
+      - ./state/registry:/var/lib/pelican
+    <<: *common-secrets
+
+  origin-0:
+    hostname: origin-0
+    image: "${IMAGE_ORIGIN:?run through ./fed.sh}"
+    healthcheck: *pelican-health
+    depends_on:
+      <<: [*needs-federation, *needs-lab]
+    deploy:
+      resources:
+        limits: { memory: "${ORIGIN_MEM:?run through ./fed.sh}" }
+    # TZ is named explicitly: a merge key loses to an explicit key.
+    environment:
+      <<: [*pelican-env, *origin-env]
+      TZ: "${TZ_STORAGE:?run through ./fed.sh}"
+    ports:
+      - "8444:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - "./config.d/origin/${ORIGIN_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
+      - ./config.d/instance/origin-0:/fed/conf.instance:ro
+      - ./issuer-keys/origin-0:/fed/issuer-keys
+      - ./data/origin/0:/data
+      - ./state/origin-0:/var/lib/pelican
+    <<: *common-secrets
+
+  origin-1:
+    hostname: origin-1
+    image: "${IMAGE_ORIGIN:?run through ./fed.sh}"
+    profiles: ["multi"]
+    healthcheck: *pelican-health
+    depends_on:
+      <<: [*needs-federation, *needs-lab]
+    deploy:
+      resources:
+        limits: { memory: "${ORIGIN_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: [*pelican-env, *origin-env]
+      TZ: "${TZ_STORAGE:?run through ./fed.sh}"
+    ports:
+      - "8446:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - "./config.d/origin/${ORIGIN_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
+      - ./config.d/instance/origin-1:/fed/conf.instance:ro
+      # Must hold origin-0's key: both export the same prefixes, and the
+      # registry binds one keyset per prefix. `./fed.sh keys` keeps the
+      # two in step.
+      - ./issuer-keys/origin-1:/fed/issuer-keys
+      - ./data/origin/1:/data
+      - ./state/origin-1:/var/lib/pelican
+    <<: *common-secrets
+
+  cache-0:
+    hostname: cache-0
+    image: "${IMAGE_CACHE:?run through ./fed.sh}"
+    healthcheck: *pelican-health
+    depends_on:
+      <<: [*needs-federation, *needs-origin]
+    deploy:
+      resources:
+        limits: { memory: "${CACHE_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: *pelican-env
+      TZ: "${TZ_STORAGE:?run through ./fed.sh}"
+    ports:
+      - "8445:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - "./config.d/cache/${CACHE_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
+      - ./config.d/instance/cache-0:/fed/conf.instance:ro
+      - ./issuer-keys/cache-0:/fed/issuer-keys
+      - ./data/cache/0:/data
+      - ./state/cache-0:/var/lib/pelican
+    <<: *common-secrets
+
+  cache-1:
+    hostname: cache-1
+    image: "${IMAGE_CACHE:?run through ./fed.sh}"
+    profiles: ["multi"]
+    healthcheck: *pelican-health
+    depends_on:
+      <<: [*needs-federation, *needs-origin]
+    deploy:
+      resources:
+        limits: { memory: "${CACHE_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: *pelican-env
+      TZ: "${TZ_STORAGE:?run through ./fed.sh}"
+    ports:
+      - "8447:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - "./config.d/cache/${CACHE_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
+      - ./config.d/instance/cache-1:/fed/conf.instance:ro
+      - ./issuer-keys/cache-1:/fed/issuer-keys
+      - ./data/cache/1:/data
+      - ./state/cache-1:/var/lib/pelican
+    <<: *common-secrets
+
+  # Build environment and test client. The image ships no Pelican binary;
+  # run.sh uses bin/linux via the checkout mounted at /scratch.
   dev:
     hostname: dev
-    image: ${DEV_CONTAINER}
+    image: "${IMAGE_DEV:?run through ./fed.sh}"
     command: ["tini", "--", "/bin/sleep", "infinity"]
+    deploy:
+      resources:
+        limits: { memory: "${DEV_MEM:?run through ./fed.sh}" }
+    environment: *pelican-env
     ports:
       - "9002:8444"
     volumes:
-      - ${PELICAN_SRC_DIR}:/app
-      - ${PWD}:/scratch
-      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-      - ${PWD}/config.d/50-dev-container.yaml:/etc/pelican/config.d/50-dev-container.yaml:ro
-      - ${HOME}/.gitconfig:/root/.gitconfig:ro
-
-      # Keep build caches on separate volumes from the host.
+      - "${PELICAN_SRC_DIR:?run through ./fed.sh}:/app"
+      - .:/scratch
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - ./config.d/none:/fed/conf.role:ro
+      - ./config.d/instance/dev:/fed/conf.instance:ro
+      # fed.sh creates this file if missing; otherwise Docker would create
+      # a directory in its place.
+      - "${HOME}/.gitconfig:/root/.gitconfig:ro"
       - go_build:/root/.cache/go-build
       - go_pkg:/root/go
       - pre_commit:/root/.cache/pre-commit
@@ -89,15 +343,39 @@ services:
       - web_node:/app/web_ui/frontend/node_modules
       - web_npm:/root/.npm
       - web_output:/app/web_ui/frontend/public/data
-
-      # Keep other directories around for convenience.
       - root_homedir:/root
+    <<: *common-secrets
 
-    <<: *common-secrets  # for certificates and related configuration
+  lab-server:
+    hostname: lab-server
+    image: pelican-lab-server:local
+    profiles: ["lab"]
+    # Rebuild on every `up` (cached), so Dockerfile changes take effect.
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/22"]
+      start_period: 30s
+      start_interval: 1s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 128M }
+    volumes:
+      - ./data/lab-server:/data
+      - ./generated/ssh/authorized_keys:/home/alice/.ssh/authorized_keys:ro
 
   grafana:
     hostname: grafana
-    image: grafana/grafana:12.3.1
+    # Pinned: Grafana migrates ./grafana forward with no way back.
+    image: grafana/grafana:13.1
+    profiles: ["monitoring"]
+    # So that it can write ./grafana on a Linux host.
+    user: root
     deploy:
       resources:
         limits: { memory: 256M }
@@ -106,202 +384,4 @@ services:
     ports:
       - "9003:3000"
     volumes:
-      - ${PWD}/grafana:/var/lib/grafana
-
-  #-------------------------------------------------------------------------
-
-  director:
-    hostname: director
-    image: ${DIRECTOR_CONTAINER}
-    healthcheck:
-      test: ["CMD", "curl", "-sk", "https://director:8444/api/v1.0/health"]
-      start_period: 30s
-      start_interval: 1s
-    deploy:
-      resources:
-        limits: { memory: 256M }
-    ports:
-      - "9000:8444"
-    volumes:
-      - ${PWD}/issuer-keys/director.pem:/etc/pelican/issuer-keys/director.pem:ro
-      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-      - ${PWD}/config.d/50-director.yaml:/etc/pelican/config.d/50-director.yaml:ro
-    <<: *common-secrets
-
-  registry:
-    hostname: registry
-    image: ${REGISTRY_CONTAINER}
-    depends_on:
-      director: { condition: service_healthy }
-    healthcheck:
-      test: ["CMD", "curl", "-sk", "https://registry:8444/api/v1.0/health"]
-      start_period: 30s
-      start_interval: 1s
-    deploy:
-      resources:
-        limits: { memory: 128M }
-    ports:
-      - "9001:8444"
-    volumes:
-      - ${PWD}/issuer-keys/registry.pem:/etc/pelican/issuer-keys/registry.pem:ro
-      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-      - ${PWD}/config.d/50-registry.yaml:/etc/pelican/config.d/50-registry.yaml:ro
-    <<: *common-secrets
-
-  #-------------------------------------------------------------------------
-
-  # FIXME: K8s StatefulSet-style templating would be helpful here.
-
-  origin-0:
-    hostname: origin-0
-    volumes:
-      - ${PWD}/data/origin/0:/data
-      - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-      - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-      - ${PWD}/config.d/90-origin-0.yaml:/etc/pelican/config.d/90-origin-0.yaml:ro
-    healthcheck:
-      # Try to give this origin enough time to advertise auth info for its
-      # namespaces.
-      test: ["CMD", "curl", "-sk", "https://origin-0:8444/api/v1.0/health"]
-      start_period: 30s
-      start_interval: 10s
-    deploy:
-      resources:
-        limits: { memory: 1536M }  # the built-in issuer needs 1024M of memory, at least
-    ports:
-      - "8444:8444"
-    <<: *common-origin
-
-  # origin-1:
-  #   hostname: origin-1
-  #   volumes:
-  #     - ${PWD}/data/origin/1:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-2:
-  #   hostname: origin-2
-  #   volumes:
-  #     - ${PWD}/data/origin/2:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-3:
-  #   hostname: origin-3
-  #   volumes:
-  #     - ${PWD}/data/origin/3:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-4:
-  #   hostname: origin-4
-  #   volumes:
-  #     - ${PWD}/data/origin/4:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-5:
-  #   hostname: origin-5
-  #   volumes:
-  #     - ${PWD}/data/origin/5:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-6:
-  #   hostname: origin-6
-  #   volumes:
-  #     - ${PWD}/data/origin/6:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  # origin-7:
-  #   hostname: origin-7
-  #   volumes:
-  #     - ${PWD}/data/origin/7:/data
-  #     - ${PWD}/issuer-keys/origin.pem:/etc/pelican/issuer-keys/origin.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-origin.yaml:/etc/pelican/config.d/50-origin.yaml:ro
-  #   <<: *common-origin
-
-  #-------------------------------------------------------------------------
-
-  # FIXME: K8s StatefulSet-style templating would be helpful here.
-
-  cache-0:
-    hostname: cache-0
-    volumes:
-      - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-      - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-    ports:
-      - "8445:8444"
-    <<: *common-cache
-
-  # cache-1:
-  #   hostname: cache-1
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-2:
-  #   hostname: cache-2
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-3:
-  #   hostname: cache-3
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-4:
-  #   hostname: cache-4
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-5:
-  #   hostname: cache-5
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-6:
-  #   hostname: cache-6
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
-
-  # cache-7:
-  #   hostname: cache-7
-  #   volumes:
-  #     - ${PWD}/issuer-keys/cache.pem:/etc/pelican/issuer-keys/cache.pem:ro
-  #     - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-  #     - ${PWD}/config.d/50-cache.yaml:/etc/pelican/config.d/50-cache.yaml:ro
-  #   <<: *common-cache
+      - ./grafana:/var/lib/grafana

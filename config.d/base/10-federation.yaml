@@ -1,0 +1,7 @@
+---
+# Federation.DirectorUrl depends on the topology; fed.sh writes it to
+# generated/conf/50-topology.yaml.
+
+Federation:
+  DiscoveryUrl: https://discovery:8444
+  RegistryUrl: https://registry:8444

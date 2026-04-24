@@ -1,0 +1,38 @@
+# The lab server: a host that shares /data over SSH without running
+# Pelican. AlmaLinux 9 to match the Pelican images, since the origin
+# copies its own binary here and runs it.
+FROM almalinux:9
+
+RUN <<ENDRUN
+  set -eux
+
+  dnf install -y epel-release
+  # openssh-clients provides scp, which the origin runs here (`scp -t`)
+  # to copy its binary over.
+  dnf install -y openssh-clients openssh-server tini
+
+  # No password; the only way in is the key pair from `./fed.sh init`.
+  useradd -m -s /bin/bash -c "Someone who would like to test Pelican" alice
+  install -d -m 0700 -o alice -g alice /home/alice/.ssh
+
+  # Mount point for ./data/lab-server.
+  install -d -m 0755 -o alice -g alice /data
+
+  ssh-keygen -A
+
+  # authorized_keys is bind-mounted with the host user's uid, which
+  # StrictModes would reject unless it happens to match alice's.
+  sed -i -e '/^[[:space:]]*#\{0,1\}[[:space:]]*StrictModes[[:space:]]/d' \
+      /etc/ssh/sshd_config
+  printf '\nStrictModes no\n' >>/etc/ssh/sshd_config
+  # A drop-in in sshd_config.d could override the line above.
+  /usr/sbin/sshd -T | grep -qx 'strictmodes no'
+
+  dnf clean all
+  rm -rf /var/cache/dnf
+ENDRUN
+
+EXPOSE 22
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/sbin/sshd", "-D", "-e"]

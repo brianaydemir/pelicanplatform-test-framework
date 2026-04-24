@@ -1,22 +1,19 @@
 ---
+# Root configuration for every Pelican service. Later directories win.
+# Within a directory, files merge in lexicographic order (hence NN-).
+# Every directory must exist, or Pelican refuses to start.
+#
+#   /usr/share/pelican/config.d   shipped in the image
+#   /etc/pelican/config.d         shipped in the image
+#   /fed/conf.base                config.d/base
+#   /fed/conf.role                config.d/<role>/<variant>
+#   /fed/generated/conf           written by fed.sh
+#   /fed/conf.instance            config.d/instance/<service>
+
 ConfigLocations:
+  - /usr/share/pelican/config.d
   - /etc/pelican/config.d
-
-Federation:
-  DirectorUrl: https://director:8444
-  DiscoveryUrl: https://director:8444
-  RegistryUrl: https://registry:8444
-
-Server:
-  WebPort: 8444
-  TLSCACertificateFile: /certs/ca.crt
-  TLSKey: /certs/tls.key
-  TLSCertificateChain: /certs/tls.crt
-
-  # Make Go profiling information available for debugging.
-  EnablePprof: true
-
-Monitoring:
-  # Do not require authorization during local development and testing.
-  MetricAuthorization: false
-  PromQLAuthorization: false
+  - /fed/conf.base
+  - /fed/conf.role
+  - /fed/generated/conf
+  - /fed/conf.instance
