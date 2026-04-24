@@ -1,10 +1,2 @@
 ---
 Director:
-  # The adaptive algorithm is the only one that currently uses stat info.
-  CacheSortMethod: adaptive
-
-  # Waiting for only one stat response feels like too few.
-  MaxStatResponse: 3
-
-  # Test scripts might depend on the stat cache's capacity.
-  CachePresenceCapacity: 2000
