@@ -51,6 +51,8 @@ x-common-origin: &common-origin
   deploy:
     resources:
       limits: { memory: 256M }
+  environment:
+    TZ: America/Chicago  # for testing display of timestamps
   <<: *common-secrets
 
 x-common-cache: &common-cache
@@ -62,6 +64,8 @@ x-common-cache: &common-cache
   deploy:
     resources:
       limits: { memory: 256M }
+  environment:
+    TZ: America/Chicago  # for testing display of timestamps
   <<: *common-secrets
 
 #---------------------------------------------------------------------------
@@ -120,6 +124,8 @@ services:
     deploy:
       resources:
         limits: { memory: 256M }
+    environment:
+      TZ: UTC  # for testing display of timestamps
     ports:
       - "9000:8444"
     volumes:
@@ -140,6 +146,8 @@ services:
     deploy:
       resources:
         limits: { memory: 128M }
+    environment:
+      TZ: UTC  # for testing display of timestamps
     ports:
       - "9001:8444"
     volumes:
