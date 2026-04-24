@@ -3,5 +3,5 @@ Cache:
   StorageLocation: /data
 
 XRootD:
-  # Do not wait for ongoing transfers during local development and testing.
-  ShutdownTimeout: 0s
+  # Ensure that auth policies are up-to-date soon after start up
+  AuthRefreshInterval: 1m
