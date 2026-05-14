@@ -1,0 +1,11 @@
+{
+  "discovery_endpoint": "https://discovery:8444",
+  "director_endpoint": "https://director:8444",
+  "director_advertise_endpoints": [
+    "https://director:8444",
+    "https://director-ha-0:8444"
+  ],
+  "namespace_registration_endpoint": "https://registry:8444",
+  "jwks_uri": "https://director:8444/.well-known/issuer.jwks",
+  "broker_endpoint": ""
+}

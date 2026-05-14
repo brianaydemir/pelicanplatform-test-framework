@@ -11,7 +11,7 @@ mkdir -p data/ads/output ./.condor_creds
 # We need to give caches time to obtain the correct auth config.
 
 while true; do
-  if ./bin/pelican object get pelican://director:8444/public/data/0.0 /dev/null
+  if ./bin/pelican object get pelican://discovery:8444/public/data/0.0 /dev/null
   then break
   else sleep 15; fi
 done
@@ -20,7 +20,7 @@ done
 #---------------------------------------------------------------------------
 # Create tokens.
 
-./bin/pelican token create pelican://director:8444/private/ \
+./bin/pelican token create pelican://discovery:8444/private/ \
     --read --scope-path "/" \
     --issuer https://origin-0:8444 --lifetime 1200 --private-key issuer-keys/origin.pem \
     > .condor_creds/run.use

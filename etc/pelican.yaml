@@ -3,8 +3,8 @@ ConfigLocations:
   - /etc/pelican/config.d
 
 Federation:
+  DiscoveryUrl: https://discovery:8444
   DirectorUrl: https://director:8444
-  DiscoveryUrl: https://director:8444
   RegistryUrl: https://registry:8444
 
 Server:

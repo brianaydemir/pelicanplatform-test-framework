@@ -5,11 +5,11 @@ subjectAltName = @subject_alternative_names
 [subject_alternative_names]
 DNS.1  = localhost
 DNS.2  = localhost.localdomain
-DNS.3  = director
-DNS.4  = registry
-
-DNS.10 = cache-0
-DNS.11 = cache-1
-
-DNS.20 = origin-0
-DNS.21 = origin-1
+DNS.10 = discovery
+DNS.20 = director
+DNS.21 = director-ha-0
+DNS.30 = registry
+DNS.40 = cache-0
+DNS.41 = cache-1
+DNS.50 = origin-0
+DNS.51 = origin-1

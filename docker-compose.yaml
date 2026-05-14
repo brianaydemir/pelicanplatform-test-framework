@@ -46,7 +46,9 @@ x-common-secrets: &common-secrets
 x-common-origin: &common-origin
   image: ${ORIGIN_CONTAINER}
   depends_on:
+    discovery: { condition: service_healthy }
     director: { condition: service_healthy }
+    director-ha-0: { condition: service_healthy }
     registry: { condition: service_healthy }
   deploy:
     resources:
@@ -58,7 +60,9 @@ x-common-origin: &common-origin
 x-common-cache: &common-cache
   image: ${CACHE_CONTAINER}
   depends_on:
+    discovery: { condition: service_healthy }
     director: { condition: service_healthy }
+    director-ha-0: { condition: service_healthy }
     registry: { condition: service_healthy }
     origin-0: { condition: service_healthy }  # wait for this origin to advertise auth info
   deploy:
@@ -112,6 +116,25 @@ services:
     volumes:
       - ${PWD}/grafana:/var/lib/grafana
 
+  discovery:
+    hostname: discovery
+    image: nginx:alpine
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost/"]
+      start_period: 10s
+      start_interval: 1s
+    deploy:
+      resources:
+        limits: { memory: 32M }
+    secrets:
+      - source: tls-crt
+        target: /certs/tls.crt
+      - source: tls-key
+        target: /certs/tls.key
+    volumes:
+      - ${PWD}/etc/nginx-discovery.conf:/etc/nginx/conf.d/discovery.conf:ro
+      - ${PWD}/etc/discovery.json:/etc/nginx/html/discovery.json:ro
+
   lab-server:
     hostname: lab-server
     image: sshd:pelicanplatform-test-framework
@@ -129,6 +152,8 @@ services:
       test: ["CMD", "curl", "-sk", "https://director:8444/api/v1.0/health"]
       start_period: 30s
       start_interval: 1s
+    depends_on:
+      discovery: { condition: service_healthy }
     deploy:
       resources:
         limits: { memory: 256M }
@@ -142,11 +167,35 @@ services:
       - ${PWD}/config.d/50-director.yaml:/etc/pelican/config.d/50-director.yaml:ro
     <<: *common-secrets
 
+  director-ha-0:
+    hostname: director-ha-0
+    image: ${DIRECTOR_CONTAINER}
+    healthcheck:
+      test: ["CMD", "curl", "-sk", "https://director-ha-0:8444/api/v1.0/health"]
+      start_period: 30s
+      start_interval: 1s
+    depends_on:
+      discovery: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { memory: 256M }
+    environment:
+      TZ: UTC
+    ports:
+      - "9004:8444"
+    volumes:
+      - ${PWD}/issuer-keys/director.pem:/etc/pelican/issuer-keys/director.pem:ro
+      - ${PWD}/etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
+      - ${PWD}/config.d/50-director.yaml:/etc/pelican/config.d/50-director.yaml:ro
+    <<: *common-secrets
+
   registry:
     hostname: registry
     image: ${REGISTRY_CONTAINER}
     depends_on:
       director: { condition: service_healthy }
+      director-ha-0: { condition: service_healthy }
+      discovery: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "curl", "-sk", "https://registry:8444/api/v1.0/health"]
       start_period: 30s
