@@ -5,3 +5,6 @@ Cache:
 XRootD:
   # Ensure that auth policies are up-to-date soon after start up
   AuthRefreshInterval: 1m
+
+  # Do not wait for in-flight transfers to complete
+  ShutdownTimeout: 2s

@@ -13,10 +13,13 @@ Server:
   TLSKey: /certs/tls.key
   TLSCertificateChain: /certs/tls.crt
 
-  # Make Go profiling information available for debugging.
+  # Reduce ad lifetimes to speed up testing
+  AdLifetime: 90s
+
+  # Make Go profiling information available for debugging
   EnablePprof: true
 
 Monitoring:
-  # Do not require authorization during local development and testing.
+  # Do not require authorization during local development and testing
   MetricAuthorization: false
   PromQLAuthorization: false

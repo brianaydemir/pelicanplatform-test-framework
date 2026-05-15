@@ -215,8 +215,6 @@ services:
 
   #-------------------------------------------------------------------------
 
-  # FIXME: K8s StatefulSet-style templating would be helpful here.
-
   origin-0:
     hostname: origin-0
     volumes:
@@ -248,8 +246,6 @@ services:
     <<: *common-origin
 
   #-------------------------------------------------------------------------
-
-  # FIXME: K8s StatefulSet-style templating would be helpful here.
 
   cache-0:
     hostname: cache-0

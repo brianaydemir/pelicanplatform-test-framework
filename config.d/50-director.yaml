@@ -1,7 +1,4 @@
 ---
 Director:
-  # Expire ads more quickly than the default to speed up testing.
-  AdvertisementTTL: 90s
-
-  # Assume that some other service hosts the metadata discovery document.
+  # Assume that some other service hosts the metadata discovery document
   EnableFederationMetadataHosting: false
