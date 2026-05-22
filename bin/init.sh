@@ -3,7 +3,7 @@
 set -eux
 
 tarball="pelican_Linux_$(uname -m).tar.gz"
-version="7.24.2"
+version="7.25.0"
 
 rm -f pelican stash_plugin
 
