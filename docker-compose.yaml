@@ -13,6 +13,7 @@ volumes:
 
   # Keep other directories around for convenience
   root_homedir:
+  alice_homedir:
 
 secrets:
   ca-crt:
@@ -80,6 +81,7 @@ services:
     hostname: dev
     image: ${DEV_CONTAINER}
     command: ["tini", "--", "/bin/sleep", "infinity"]
+    user: alice
     ports:
       - "9002:8444"
     volumes:
@@ -100,6 +102,7 @@ services:
 
       # Keep other directories around for convenience
       - root_homedir:/root
+      - alice_homedir:/home/alice
 
     <<: *common-secrets  # for certificates and related configuration
 
