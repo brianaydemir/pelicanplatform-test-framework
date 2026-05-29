@@ -17,7 +17,7 @@ case "${cmd}" in
     ;;
 
   dev)
-    exec docker exec -it pelican-dev-1 bash -il
+    "$0" up dev && exec "$0" exec -it dev bash -il
     ;;
 
 esac
