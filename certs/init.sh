@@ -20,7 +20,7 @@ openssl req -new -sha256 -key tls.key -out tls.csr -subj "/CN=pelican-test-frame
 
 
 # Sign the server certificate.
-openssl x509 -req -sha256 -days 365 -CA ca.crt -CAkey ca.key -in tls.csr -out tls.crt -extfile tls.req
+openssl x509 -req -sha256 -days 365 -CA ca.crt -CAkey ca.key -in tls.csr -CAcreateserial -out tls.crt -extfile tls.req
 chmod a-w tls.key tls.csr tls.crt
 
 

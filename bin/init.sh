@@ -2,10 +2,10 @@
 
 set -eux
 
-tarball="pelican_Linux_$(uname -m).tar.gz"
-version="7.25.0"
+tarball="pelican-server_Darwin_$(uname -m).tar.gz"
+version="7.26.0"
 
-rm -f pelican stash_plugin
+rm -f pelican-server stash_plugin
 
 
 # Download and extract the tarball.
@@ -14,8 +14,8 @@ tar xzvf "${tarball}"
 
 
 # Install the client binaries.
-mv "pelican-${version}"/pelican . ; ln -s pelican stash_plugin
+mv "pelican-server-${version}"/pelican-server . ; ln -s pelican-server stash_plugin
 
 
 # Clean up.
-rm -rf "${tarball}" "pelican-${version}"
+rm -rf "${tarball}" "pelican-server-${version}"
