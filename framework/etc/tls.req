@@ -1,0 +1,31 @@
+basicConstraints = critical, CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @subject_alternative_names
+
+# Every hostname the framework can use, plus spares, so that adding a
+# service does not mean regenerating the certificate.
+
+[subject_alternative_names]
+DNS.1  = localhost
+DNS.2  = localhost.localdomain
+DNS.10 = discovery
+DNS.20 = director-0
+DNS.21 = director-1
+DNS.22 = director-2
+DNS.30 = registry
+DNS.40 = cache-0
+DNS.41 = cache-1
+DNS.42 = cache-2
+DNS.43 = cache-3
+DNS.50 = origin-0
+DNS.51 = origin-1
+DNS.52 = origin-2
+DNS.53 = origin-3
+DNS.60 = lab-server
+DNS.61 = s3
+DNS.62 = webdav
+DNS.70 = fed
+DNS.80 = dev
+IP.1   = 127.0.0.1
+IP.2   = ::1

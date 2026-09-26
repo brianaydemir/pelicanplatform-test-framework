@@ -1,8 +1,0 @@
----
-Director:
-  # The `discovery` service hosts the federation metadata, which is what
-  # makes the directors interchangeable.
-  EnableFederationMetadataHosting: false
-
-  # Pelican's default, stated because short test runs depend on it.
-  OriginCacheHealthTestInterval: 15s

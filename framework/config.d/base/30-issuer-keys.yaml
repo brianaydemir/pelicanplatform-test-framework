@@ -1,0 +1,6 @@
+---
+# framework/var/issuer-keys/<service> on the host. Pelican signs
+# with the .pem that sorts first and publishes them all. Manage keys
+# with `./fed.sh keys`.
+
+IssuerKeysDirectory: /fed/issuer-keys

@@ -1,0 +1,33 @@
+---
+# Settings shared by every service. Some restate Pelican's defaults
+# because the framework's mounts and ports depend on them.
+#
+# Server.DropPrivileges is set through an environment variable from
+# presets/default.sh, which beats any file. Logging.Level and every
+# server's EnableOIDC are in framework/var/generated/conf/50-knobs.yaml,
+# which beats this directory. Setting any of them here has no effect;
+# override the last two in local/config.d/ instead.
+
+Server:
+  WebPort: 8444
+
+  # Also added to the trust pool for outbound requests.
+  TLSCACertificateFile: /certs/ca.crt
+  TLSKey: /certs/tls.key
+  TLSCertificateChain: /certs/tls.crt
+
+  # Short ad lifetimes for faster tests. AdvertisementInterval must be at
+  # most a third of AdLifetime, or Pelican lowers it and warns.
+  AdLifetime: 90s
+  AdvertisementInterval: 30s
+
+  EnablePprof: true
+
+  # framework/var/state/<service> on the host.
+  DbLocation: /var/lib/pelican/pelican.sqlite
+  DatabaseBackup:
+    Location: /var/lib/pelican/backups
+
+Monitoring:
+  MetricAuthorization: false
+  PromQLAuthorization: false

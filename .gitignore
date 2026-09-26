@@ -1,12 +1,10 @@
-# Local overrides for environment.cfg
-/environment.local.cfg
-
-# Created by fed.sh, init-data.sh, and run.sh
-/.condor_creds/
-/data/
-/generated/
-/grafana/
-/state/
+# Everything the framework creates. local/ is deliberately not ignored,
+# so that `git status` shows your customizations.
+/framework/var/
+/smoke-logs/
 
 # Temporary files
 *.swp
+
+# Python
+__pycache__/

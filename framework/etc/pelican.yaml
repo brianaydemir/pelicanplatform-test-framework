@@ -1,0 +1,25 @@
+---
+# Root configuration for every Pelican service. Later directories win.
+# Within a directory, files merge in lexicographic order (hence NN-).
+# Every directory must exist, or Pelican refuses to start.
+#
+#   /usr/share/pelican/config.d   shipped in the image
+#   /etc/pelican/config.d         shipped in the image
+#   /fed/conf.base                config.d/base
+#   /fed/conf.role                config.d/<role>/<variant>
+#   /fed/generated/conf           written by fed.sh
+#   /fed/generated.instance       written by fed.sh for <service> alone
+#   /fed/conf.instance            config.d/instance/<service>
+#   /fed/local.base               local/config.d/base, copied by fed.sh
+#   /fed/local.instance           local/config.d/instance/<service>, ditto
+
+ConfigLocations:
+  - /usr/share/pelican/config.d
+  - /etc/pelican/config.d
+  - /fed/conf.base
+  - /fed/conf.role
+  - /fed/generated/conf
+  - /fed/generated.instance
+  - /fed/conf.instance
+  - /fed/local.base
+  - /fed/local.instance

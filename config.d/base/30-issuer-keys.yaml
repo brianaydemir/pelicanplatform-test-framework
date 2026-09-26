@@ -1,6 +1,0 @@
----
-# ./issuer-keys/<service> on the host, mounted read-write. Pelican signs
-# with the .pem that sorts first and publishes the rest. Manage keys
-# with `./fed.sh keys`.
-
-IssuerKeysDirectory: /fed/issuer-keys

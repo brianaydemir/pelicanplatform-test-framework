@@ -1,0 +1,8 @@
+---
+Xrootd:
+  # Pick up auth policies soon after startup. XRootD-based servers only.
+  # Pelican treats anything under 1m as 5m.
+  AuthRefreshInterval: 1m
+
+  # Don't wait for in-flight transfers on shutdown. Every origin and cache.
+  ShutdownTimeout: 2s
