@@ -1,0 +1,11 @@
+---
+# Settings for `cache-0` only. This layer wins over every other
+# tracked layer.
+#
+# For local changes, add a file to local/config.d/instance/cache-0/
+# rather than editing this one.
+
+# Where the browser returns after an OIDC login: this service's port on
+# the host (see docker-compose.yaml), not its container hostname.
+OIDC:
+  ClientRedirectHostname: localhost:8445

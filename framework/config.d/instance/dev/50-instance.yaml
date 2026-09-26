@@ -1,0 +1,10 @@
+---
+# Settings for `dev` only. This layer wins over every other
+# tracked layer.
+#
+# For local changes, add a file to local/config.d/instance/dev/
+# rather than editing this one.
+
+# dev has no /fed/issuer-keys mount. Point the client somewhere writable
+# in case it decides it needs a key of its own.
+IssuerKeysDirectory: /etc/pelican/issuer-keys

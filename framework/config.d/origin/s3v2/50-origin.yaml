@@ -1,0 +1,17 @@
+---
+# The native origin in front of an S3 server: the `s3` service, rclone
+# serving framework/var/data/origin/<N> as bucket origin-<N>. fed.sh sets
+# each origin's Origin.S3Bucket (in framework/var/generated/instance/).
+# The credentials are framework/etc/s3-{access,secret}-key, or yours in
+# local/etc/.
+#
+# The AWS SDK trusts the system's CAs, not Server.TLSCACertificateFile;
+# the images' entrypoint adds /certs/ca.crt to them.
+
+Origin:
+  StorageType: s3v2
+  S3ServiceUrl: https://s3:8444
+  S3Region: us-east-1
+  S3UrlStyle: path
+  S3AccessKeyfile: /fed/generated/s3-access-key
+  S3SecretKeyfile: /fed/generated/s3-secret-key

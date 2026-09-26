@@ -1,0 +1,16 @@
+---
+# Settings for `origin-2` only (`topo-multi-owner`). This layer wins over
+# every other tracked layer.
+#
+# For local changes, add a file to local/config.d/instance/origin-2/
+# rather than editing this one.
+#
+# origin-2 is another owner, so unlike origin-0 and origin-1 it adds no
+# test keys (Server.IssuerJwks) to its issuer: only its own key signs for
+# its exports, which fed.sh writes in
+# framework/var/generated/instance/origin-2/.
+
+# Where the browser returns after an OIDC login: this service's port on
+# the host (see docker-compose.yaml), not its container hostname.
+OIDC:
+  ClientRedirectHostname: localhost:8448

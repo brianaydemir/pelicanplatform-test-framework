@@ -1,0 +1,51 @@
+---
+# Shared by every origin variant (and ignored by other services).
+#
+# Origin.EnableIssuer, Origin.Posc.Enabled,
+# Origin.Metadata.{Enabled,TrackAccess,Mode}, Origin.CacheControl,
+# Origin.DisableDirectClients, and Origin.Multiuser are set through
+# environment variables from presets/default.sh, which beat any file.
+# Origin.EnableOIDC is generated (see 20-server.yaml). Setting any of
+# them here has no effect.
+#
+# Origin.Exports is written by fed.sh (fed_generate), in
+# framework/var/generated/conf/60-origin-exports.yaml, from the knobs
+# ORIGIN_NAMESPACES and ORIGIN_DISABLE_DIRECT_CLIENTS. By default,
+# /public, /protected-a, and /protected-b export the same objects, so
+# that the authenticated and unauthenticated paths are comparable. Only
+# the protected namespaces take writes, so only they have issuers of
+# their own.
+
+Origin:
+  # The origin's own PublicReads capability, which under XRootD also lets
+  # clients connect without credentials. Each export's is in its
+  # Capabilities.
+  EnablePublicReads: true
+
+  # Read only when metadata publishing is on
+  # (presets/origin-metadata.sh). The endpoint is the recorder in front of
+  # the verifier.
+  Metadata:
+    Endpoint: http://metadata:9999/events
+    # Retry a failed delivery sooner than the 30s default.
+    MinBackoff: 5s
+    # Every upload waits for its event's first delivery attempt, and the
+    # default of 10 per second would throttle the transfers suite's puts.
+    RatePerSecond: 1000
+
+# In a third-party copy (`pelican object copy` between federation URLs),
+# the destination origin fetches the source itself, and by default refuses
+# private addresses, which every service here has: allow the private
+# ranges that Docker gives its networks.
+Server:
+  SSRFProtection:
+    AllowedCIDRs: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
+# What the embedded issuer grants a user who logs in through the web UI.
+# The tests do not use it. /public has no issuer.
+Issuer:
+  AuthorizationTemplates:
+    - prefix: /protected-a
+      actions: [read, create, modify]
+    - prefix: /protected-b
+      actions: [read, create, modify]

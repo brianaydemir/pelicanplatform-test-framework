@@ -3,10 +3,11 @@
 # Return the checkout to a fresh state. Needs a running Docker daemon.
 #
 #   ./reset.sh          stop everything; discard state, data, keys,
-#                       binaries, and certificates
-#   ./reset.sh init     ... then `./fed.sh init` with the same presets
+#                       binaries, certificates, and remembered presets
 #
-# grafana/ and your local config files are left alone.
+# Everything discarded is in framework/var/. local/ and
+# framework/var/grafana/ are left alone. Afterward, set up again with
+# `./fed.sh init`.
 
 set -eu
 
@@ -19,27 +20,31 @@ usage() {
   sed -e '1d' -e '/^$/,$d' -e 's/^# \{0,1\}//' "./${progname}"
 }
 
-cmd="${1:-}"
-case "${cmd}" in
+case "${1:-}" in
   -h|--help) usage; exit 0 ;;
-  ""|init) ;;
-  *) die_usage "takes only init" ;;
+  "") ;;
+  *) die_usage "takes no arguments" ;;
 esac
 
-# Read before generated/ goes away.
+# Read before framework/var/generated/ goes away.
 presets=""
-if [ -f generated/presets ]; then
-  presets=$(cat generated/presets)
+if [ -f framework/var/generated/presets ]; then
+  presets=$(cat framework/var/generated/presets)
 fi
 
-# The full topology's file declares the dev container's volumes.
+# `-p default`: the full topology's file declares the dev container's
+# volumes, and a broken remembered preset can't stop the teardown.
 printf 'Stopping the federation ...\n'
-TOPOLOGY=full ./fed.sh down --volumes || true
+./fed.sh -p default down --volumes || true
 
-# Keys, state, and data go together: stores and backups are sealed to the
-# keys.
-set -- .condor_creds data generated issuer-keys/*/ state \
-    ./bin/*/ certs/*.crt certs/*.csr certs/*.key certs/*.srl
+# Everything in framework/var/ but Grafana's database. Keys, state, and
+# data go together: stores and backups are sealed to the keys.
+set --
+for path in framework/var/* framework/var/.[!.]*; do
+  [ -e "${path}" ] || continue
+  [ "${path}" != framework/var/grafana ] || continue
+  set -- "$@" "${path}"
+done
 
 all_gone() {
   for path in "$@"; do
@@ -49,7 +54,9 @@ all_gone() {
 }
 
 printf 'Discarding the data, state, keys, binaries, and certificates ...\n'
-rm -rf -- "$@" 2>/dev/null || true
+if [ $# -gt 0 ]; then
+  rm -rf -- "$@" 2>/dev/null || true
+fi
 
 # On a Linux host, containers leave root-owned files behind. Remove them
 # from a container.
@@ -60,6 +67,10 @@ if ! all_gone "$@"; then
       nginx:alpine -rf -- "$@" || true
 fi
 
+if [ -n "${presets}" ]; then
+  printf 'Discarded the remembered presets: %s\n' "${presets}"
+fi
+
 if ! all_gone "$@"; then
   {
     printf '%s: some files could not be removed.\n' "${progname}"
@@ -68,21 +79,6 @@ if ! all_gone "$@"; then
       [ ! -e "${path}" ] || printf ' %s' "${path}"
     done
     printf '\n'
-    if [ "${cmd}" = init ]; then
-      flags=""
-      for preset in ${presets}; do
-        flags="${flags} -p ${preset}"
-      done
-      printf '  Then run: ./fed.sh%s init\n' "${flags}"
-    fi
   } >&2
   exit 1
-fi
-
-if [ "${cmd}" = init ]; then
-  set --
-  for preset in ${presets}; do
-    set -- "$@" -p "${preset}"
-  done
-  ./fed.sh "$@" init
 fi

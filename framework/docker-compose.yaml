@@ -1,0 +1,582 @@
+---
+# The full topology. Run it through ./fed.sh: every variable below comes
+# from fed.sh (framework/environment.cfg, presets/default.sh, and the
+# presets) and has no fallback here on purpose.
+
+name: pelican
+
+# Only the dev container's build caches live in volumes. Service state
+# and data are bind-mounted from ./var/state and ./var/data.
+volumes:
+  go_build:
+  go_pkg:
+  pre_commit:
+  web_next:
+  web_node:
+  web_npm:
+  web_output:
+  root_homedir:
+
+secrets:
+  ca-crt:
+    file: ./var/certs/ca.crt
+  tls-crt:
+    file: ./var/certs/tls.crt
+  tls-key:
+    file: ./var/certs/tls.key
+  oidc-client-id:
+    file: ./var/generated/oidc-client-id
+  oidc-client-secret:
+    file: ./var/generated/oidc-client-secret
+  server-web-passwd:
+    file: ./etc/server-web-passwd
+
+#===========================================================================
+# Shared fragments
+#===========================================================================
+
+# /certs/*.crt is added to the trust store by each image's entrypoint.
+# /etc/pelican is ConfigBase for root, so the other three need no
+# configuration.
+x-common-secrets: &common-secrets
+  secrets:
+    - source: ca-crt
+      target: /certs/ca.crt
+    - source: tls-crt
+      target: /certs/tls.crt
+    - source: tls-key
+      target: /certs/tls.key
+    - source: oidc-client-id
+      target: /etc/pelican/oidc-client-id
+    - source: oidc-client-secret
+      target: /etc/pelican/oidc-client-secret
+    - source: server-web-passwd
+      target: /etc/pelican/server-web-passwd
+
+# Mounts common to every Pelican service. Each service also mounts its
+# own /fed/conf.role, /fed/conf.instance, /fed/local.instance,
+# /fed/generated.instance, /fed/issuer-keys, and /var/lib/pelican. See
+# etc/pelican.yaml for the configuration layers. fed.sh copies
+# ../local/config.d into ./var/generated/local, so that the framework
+# never writes to local/.
+x-vol-health: &vol-health "./service-health.sh:/fed/bin/service-health.sh:ro"
+x-vol-generated: &vol-generated "./var/generated:/fed/generated:ro"
+x-vol-conf-root: &vol-conf-root "./etc/pelican.yaml:/etc/pelican/pelican.yaml:ro"
+x-vol-conf-base: &vol-conf-base "./config.d/base:/fed/conf.base:ro"
+x-vol-local-base: &vol-local-base "./var/generated/local/base:/fed/local.base:ro"
+
+x-pelican-env: &pelican-env
+  TZ: "${TZ_SERVICES:?run through ./fed.sh}"
+
+# Environment beats every configuration file, so a file cannot change
+# these: fed.sh and the tests depend on them. Presets toggle them.
+#
+# Every Pelican server, but not the client in dev.
+x-server-env: &server-env
+  PELICAN_SERVER_DROPPRIVILEGES: "${SERVER_DROP_PRIVILEGES:?run through ./fed.sh}"
+
+x-origin-env: &origin-env
+  PELICAN_ORIGIN_ENABLEISSUER: "${ORIGIN_ENABLE_ISSUER:?run through ./fed.sh}"
+  PELICAN_ORIGIN_POSC_ENABLED: "${ORIGIN_POSC:?run through ./fed.sh}"
+  # May be empty, hence ? rather than :?.
+  PELICAN_ORIGIN_CACHECONTROL: "${ORIGIN_CACHE_CONTROL?run through ./fed.sh}"
+  PELICAN_ORIGIN_METADATA_ENABLED: "${ORIGIN_METADATA:?run through ./fed.sh}"
+  PELICAN_ORIGIN_METADATA_TRACKACCESS: "${ORIGIN_METADATA:?run through ./fed.sh}"
+  PELICAN_ORIGIN_METADATA_MODE: "${ORIGIN_METADATA_MODE:?run through ./fed.sh}"
+  PELICAN_ORIGIN_DISABLEDIRECTCLIENTS: "${ORIGIN_DISABLE_DIRECT_CLIENTS:?run through ./fed.sh}"
+  PELICAN_ORIGIN_MULTIUSER: "${ORIGIN_MULTIUSER:?run through ./fed.sh}"
+
+x-pelican-health: &pelican-health
+  test: ["CMD", "/fed/bin/service-health.sh"]
+  start_period: 90s
+  start_interval: 2s
+  interval: 30s
+  timeout: 10s
+  retries: 3
+
+x-needs-federation: &needs-federation
+  discovery: { condition: service_healthy }
+  director-0: { condition: service_healthy }
+  registry: { condition: service_healthy }
+
+# A cache starts once origin-0 is up, so that it soon learns the
+# namespaces' issuers. The federation suite
+# (framework/suites/federation.py) waits until it has.
+x-needs-origin: &needs-origin
+  origin-0: { condition: service_healthy }
+
+# Only matters under `-p origin-ssh`; `required: false` makes it a no-op
+# when the lab server is not started.
+x-needs-lab: &needs-lab
+  lab-server: { condition: service_healthy, required: false }
+
+# Likewise for `-p origin-metadata`.
+x-needs-metadata: &needs-metadata
+  metadata: { condition: service_healthy, required: false }
+
+# Likewise for `-p origin-httpsv2` and `-p origin-s3v2`. An origin checks
+# its backend on every request, so this only spares the first ones a 503.
+x-needs-backends: &needs-backends
+  webdav: { condition: service_healthy, required: false }
+  s3: { condition: service_healthy, required: false }
+
+#===========================================================================
+# Services
+#
+# `hostname` matters: it determines Server.ExternalWebUrl, and so each
+# origin's issuer URL, which fed.sh must reproduce exactly. Each Pelican
+# server's host port is repeated in its config.d/instance/ file.
+#===========================================================================
+
+services:
+
+  # Hosts the federation metadata outside any director, as the OSDF does,
+  # where the directors are interchangeable.
+  discovery:
+    hostname: discovery
+    image: nginx:alpine
+    # 127.0.0.1, not localhost: BusyBox wget tries only the first address,
+    # which may be ::1, and nginx listens on IPv4 only.
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null",
+             "http://127.0.0.1/.well-known/pelican-configuration"]
+      start_period: 10s
+      start_interval: 1s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 32M }
+    ports:
+      - "9005:8444"
+    volumes:
+      - ./etc/nginx-discovery.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./var/generated/discovery.json:/etc/nginx/html/discovery.json:ro
+      - ./var/generated/openid-configuration.json:/etc/nginx/html/openid-configuration.json:ro
+      # A directory, so that fed.sh can add and remove the external
+      # issuer's documents (`auth-external-issuer`) while nginx runs.
+      - ./var/generated/issuer:/etc/nginx/html/issuer:ro
+    secrets:
+      - source: tls-crt
+        target: /certs/tls.crt
+      - source: tls-key
+        target: /certs/tls.key
+
+  director-0:
+    hostname: director-0
+    image: "${IMAGE_DIRECTOR:?run through ./fed.sh}"
+    healthcheck: *pelican-health
+    depends_on:
+      discovery: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { memory: "${DIRECTOR_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: [*pelican-env, *server-env]
+    ports:
+      - "9000:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - *vol-local-base
+      - ./config.d/director/default:/fed/conf.role:ro
+      - ./config.d/instance/director-0:/fed/conf.instance:ro
+      - ./var/generated/local/director-0:/fed/local.instance:ro
+      - ./var/generated/instance/director-0:/fed/generated.instance:ro
+      - ./var/issuer-keys/director-0:/fed/issuer-keys
+      - ./var/state/director-0:/var/lib/pelican
+    <<: *common-secrets
+
+  registry:
+    hostname: registry
+    image: "${IMAGE_REGISTRY:?run through ./fed.sh}"
+    healthcheck: *pelican-health
+    depends_on:
+      discovery: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { memory: "${REGISTRY_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: [*pelican-env, *server-env]
+    ports:
+      - "9001:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - *vol-local-base
+      - ./config.d/registry/default:/fed/conf.role:ro
+      - ./config.d/instance/registry:/fed/conf.instance:ro
+      - ./var/generated/local/registry:/fed/local.instance:ro
+      - ./var/generated/instance/registry:/fed/generated.instance:ro
+      - ./var/issuer-keys/registry:/fed/issuer-keys
+      - ./var/state/registry:/var/lib/pelican
+    <<: *common-secrets
+
+  origin-0:
+    hostname: origin-0
+    image: "${IMAGE_ORIGIN:?run through ./fed.sh}"
+    healthcheck: *pelican-health
+    depends_on:
+      <<: [*needs-federation, *needs-lab, *needs-metadata, *needs-backends]
+    deploy:
+      resources:
+        limits: { memory: "${ORIGIN_MEM:?run through ./fed.sh}" }
+    # TZ is named explicitly: a merge key loses to an explicit key.
+    environment:
+      <<: [*pelican-env, *server-env, *origin-env]
+      TZ: "${TZ_STORAGE:?run through ./fed.sh}"
+    ports:
+      - "8444:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - *vol-local-base
+      - "./config.d/origin/${ORIGIN_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
+      - ./config.d/instance/origin-0:/fed/conf.instance:ro
+      - ./var/generated/local/origin-0:/fed/local.instance:ro
+      - ./var/generated/instance/origin-0:/fed/generated.instance:ro
+      - ./var/issuer-keys/origin-0:/fed/issuer-keys
+      # Server.IssuerJwks (config.d/instance/origin-0/): public keys only.
+      - ./var/issuer-jwks:/fed/issuer-jwks:ro
+      - ./var/data/origin/0:/data
+      - ./var/state/origin-0:/var/lib/pelican
+    <<: *common-secrets
+
+  origin-1:
+    hostname: origin-1
+    image: "${IMAGE_ORIGIN:?run through ./fed.sh}"
+    profiles: ["multi-origin"]
+    healthcheck: *pelican-health
+    depends_on:
+      <<: [*needs-federation, *needs-lab, *needs-metadata, *needs-backends]
+    deploy:
+      resources:
+        limits: { memory: "${ORIGIN_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: [*pelican-env, *server-env, *origin-env]
+      TZ: "${TZ_STORAGE:?run through ./fed.sh}"
+    ports:
+      - "8446:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - *vol-local-base
+      - "./config.d/origin/${ORIGIN_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
+      - ./config.d/instance/origin-1:/fed/conf.instance:ro
+      - ./var/generated/local/origin-1:/fed/local.instance:ro
+      - ./var/generated/instance/origin-1:/fed/generated.instance:ro
+      # Must hold origin-0's key: both export the same prefixes, and the
+      # registry binds one keyset per prefix. `./fed.sh keys` keeps the
+      # two in step.
+      - ./var/issuer-keys/origin-1:/fed/issuer-keys
+      # Server.IssuerJwks (config.d/instance/origin-1/): public keys only.
+      - ./var/issuer-jwks:/fed/issuer-jwks:ro
+      - ./var/data/origin/1:/data
+      - ./var/state/origin-1:/var/lib/pelican
+    <<: *common-secrets
+
+  # Another owner (`-p topo-multi-owner`): prefixes and a key of its own,
+  # and always its own issuer, even when origin-0 and origin-1 trust an
+  # external one. fed.sh writes its exports in
+  # ./var/generated/instance/origin-2.
+  origin-2:
+    hostname: origin-2
+    image: "${IMAGE_ORIGIN:?run through ./fed.sh}"
+    profiles: ["multi-owner"]
+    healthcheck: *pelican-health
+    depends_on:
+      <<: [*needs-federation, *needs-metadata, *needs-backends]
+    deploy:
+      resources:
+        limits: { memory: "${ORIGIN_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: [*pelican-env, *server-env, *origin-env]
+      TZ: "${TZ_STORAGE:?run through ./fed.sh}"
+      PELICAN_ORIGIN_ENABLEISSUER: "true"
+    ports:
+      - "8448:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - *vol-local-base
+      - "./config.d/origin/${ORIGIN_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
+      - ./config.d/instance/origin-2:/fed/conf.instance:ro
+      - ./var/generated/local/origin-2:/fed/local.instance:ro
+      - ./var/generated/instance/origin-2:/fed/generated.instance:ro
+      - ./var/issuer-keys/origin-2:/fed/issuer-keys
+      - ./var/data/origin/2:/data
+      - ./var/state/origin-2:/var/lib/pelican
+    <<: *common-secrets
+
+  cache-0:
+    hostname: cache-0
+    image: "${IMAGE_CACHE:?run through ./fed.sh}"
+    healthcheck: *pelican-health
+    depends_on:
+      <<: [*needs-federation, *needs-origin]
+    deploy:
+      resources:
+        limits: { memory: "${CACHE_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: [*pelican-env, *server-env]
+      TZ: "${TZ_STORAGE:?run through ./fed.sh}"
+    ports:
+      - "8445:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - *vol-local-base
+      - "./config.d/cache/${CACHE_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
+      - ./config.d/instance/cache-0:/fed/conf.instance:ro
+      - ./var/generated/local/cache-0:/fed/local.instance:ro
+      - ./var/generated/instance/cache-0:/fed/generated.instance:ro
+      - ./var/issuer-keys/cache-0:/fed/issuer-keys
+      - ./var/data/cache/0:/data
+      - ./var/state/cache-0:/var/lib/pelican
+    <<: *common-secrets
+
+  cache-1:
+    hostname: cache-1
+    image: "${IMAGE_CACHE:?run through ./fed.sh}"
+    profiles: ["multi-cache"]
+    healthcheck: *pelican-health
+    depends_on:
+      <<: [*needs-federation, *needs-origin]
+    deploy:
+      resources:
+        limits: { memory: "${CACHE_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: [*pelican-env, *server-env]
+      TZ: "${TZ_STORAGE:?run through ./fed.sh}"
+    ports:
+      - "8447:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - *vol-local-base
+      - "./config.d/cache/${CACHE_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
+      - ./config.d/instance/cache-1:/fed/conf.instance:ro
+      - ./var/generated/local/cache-1:/fed/local.instance:ro
+      - ./var/generated/instance/cache-1:/fed/generated.instance:ro
+      - ./var/issuer-keys/cache-1:/fed/issuer-keys
+      - ./var/data/cache/1:/data
+      - ./var/state/cache-1:/var/lib/pelican
+    <<: *common-secrets
+
+  # Build environment and test client. The image ships no Pelican binary;
+  # the tests use framework/var/bin/linux via the checkout mounted
+  # at /scratch.
+  dev:
+    hostname: dev
+    image: "${IMAGE_DEV:?run through ./fed.sh}"
+    command: ["tini", "--", "/bin/sleep", "infinity"]
+    deploy:
+      resources:
+        limits: { memory: "${DEV_MEM:?run through ./fed.sh}" }
+    environment: *pelican-env
+    ports:
+      - "9002:8444"
+    volumes:
+      - "${PELICAN_SRC_DIR:?run through ./fed.sh}:/app"
+      - ..:/scratch
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - *vol-local-base
+      - ./config.d/none:/fed/conf.role:ro
+      - ./config.d/instance/dev:/fed/conf.instance:ro
+      - ./var/generated/local/dev:/fed/local.instance:ro
+      - ./var/generated/instance/dev:/fed/generated.instance:ro
+      # fed.sh creates this file if missing; otherwise Docker would create
+      # a directory in its place.
+      - "${HOME}/.gitconfig:/root/.gitconfig:ro"
+      - go_build:/root/.cache/go-build
+      - go_pkg:/root/go
+      - pre_commit:/root/.cache/pre-commit
+      - web_next:/app/web_ui/frontend/.next
+      - web_node:/app/web_ui/frontend/node_modules
+      - web_npm:/root/.npm
+      - web_output:/app/web_ui/frontend/public/data
+      - root_homedir:/root
+    <<: *common-secrets
+
+  lab-server:
+    hostname: lab-server
+    image: pelican-lab-server:local
+    profiles: ["lab"]
+    # Rebuild on every `up` (cached), so Dockerfile changes take effect.
+    pull_policy: build
+    build:
+      context: ./lab-server
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/22"]
+      start_period: 30s
+      start_interval: 1s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 128M }
+    volumes:
+      - ./var/data/lab-server:/data
+      - ./var/generated/ssh/authorized_keys:/home/alice/.ssh/authorized_keys:ro
+
+  # The httpsv2 origins' backend (-p origin-httpsv2): rclone serving each
+  # origin's store, ./var/data/origin/<N>, as /origin-<N>, over WebDAV
+  # (golang.org/x/net/webdav, as in Pelican's own tests). The tests read
+  # and write the stores directly too, so it caches no directory
+  # listings. It asks for no credentials.
+  webdav:
+    hostname: webdav
+    image: rclone/rclone:1.75.1
+    profiles: ["webdav"]
+    command:
+      - serve
+      - webdav
+      - /srv
+      - --addr=:8444
+      - --cert=/certs/tls.crt
+      - --key=/certs/tls.key
+      - --dir-cache-time=0s
+    healthcheck: &rclone-health
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8444"]
+      start_period: 10s
+      start_interval: 1s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 128M }
+    volumes:
+      - ./var/data/origin/0:/srv/origin-0
+      - ./var/data/origin/1:/srv/origin-1
+      - ./var/data/origin/2:/srv/origin-2
+    secrets: &rclone-secrets
+      - source: tls-crt
+        target: /certs/tls.crt
+      - source: tls-key
+        target: /certs/tls.key
+
+  # The s3v2 origins' backend (-p origin-s3v2): rclone serving each
+  # origin's store as bucket origin-<N>, over S3. The credentials are the
+  # origins', which fed.sh copies from framework/etc/ or local/etc/. It
+  # keeps the directories that init-data.py made, writable by any uid,
+  # even when their last object goes.
+  s3:
+    hostname: s3
+    image: rclone/rclone:1.75.1
+    profiles: ["s3"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        exec rclone serve s3 /srv --addr=:8444
+        --cert=/certs/tls.crt --key=/certs/tls.key
+        --auth-key="$$(cat /fed/s3-access-key),$$(cat /fed/s3-secret-key)"
+        --dir-cache-time=0s --no-cleanup
+    healthcheck: *rclone-health
+    deploy:
+      resources:
+        limits: { memory: 128M }
+    volumes:
+      - ./var/data/origin/0:/srv/origin-0
+      - ./var/data/origin/1:/srv/origin-1
+      - ./var/data/origin/2:/srv/origin-2
+      - ./var/generated/s3-access-key:/fed/s3-access-key:ro
+      - ./var/generated/s3-secret-key:/fed/s3-secret-key:ro
+    secrets: *rclone-secrets
+
+  # The origins' metadata receiver (-p origin-metadata). The recorder
+  # saves each request in ./var/data/metadata and passes it to the
+  # verifier, whose answer it returns. It can also fail on purpose; see
+  # metadata-server/recorder.py.
+  metadata:
+    hostname: metadata
+    image: python:3-alpine
+    profiles: ["metadata"]
+    command: ["python3", "-u", "/fed/bin/recorder.py"]
+    depends_on:
+      metadata-verifier: { condition: service_healthy }
+    environment:
+      RECORDER_UPSTREAM: http://metadata-verifier:9999/events
+      RECORDER_DIR: /captures
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9999/healthz"]
+      start_period: 10s
+      start_interval: 1s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 64M }
+    volumes:
+      - ./metadata-server/recorder.py:/fed/bin/recorder.py:ro
+      - ./var/data/metadata:/captures
+
+  # Pelican's reference receiver, which checks each event's token against
+  # the registry. The audience is the origins' Origin.Metadata.Endpoint
+  # (config.d/base/40-origin.yaml), which names the recorder.
+  metadata-verifier:
+    hostname: metadata-verifier
+    image: pelican-metadata-verifier:local
+    profiles: ["metadata"]
+    # Rebuild on every `up` (cached), so a new PELICAN_TAG takes effect.
+    pull_policy: build
+    build:
+      context: ./metadata-server
+      args:
+        PELICAN_TAG: "${PELICAN_TAG:?run through ./fed.sh}"
+    command:
+      - "-addr=:9999"
+      - "-path=/events"
+      - "-audience=http://metadata:9999/events"
+      - "-federation=https://discovery:8444"
+      - "-ca=/certs/ca.crt"
+      - "-require-namespace-scope"
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9999/healthz"]
+      start_period: 10s
+      start_interval: 1s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 64M }
+    secrets:
+      - source: ca-crt
+        target: /certs/ca.crt
+
+  grafana:
+    hostname: grafana
+    # Pinned: Grafana migrates ./var/grafana forward with no way back.
+    image: grafana/grafana:13.1
+    profiles: ["monitoring"]
+    # So that it can write ./var/grafana on a Linux host.
+    user: root
+    deploy:
+      resources:
+        limits: { memory: 256M }
+    environment:
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    ports:
+      - "9003:3000"
+    volumes:
+      - ./var/grafana:/var/lib/grafana

@@ -1,0 +1,13 @@
+---
+# The Pelican store. Each export's StoragePrefix is a path in the store's
+# catalog, not on disk: fed.sh gives each protected namespace its own,
+# and /public /protected-a's (see fed_storage_prefix in fed.sh).
+
+Origin:
+  StorageType: pstore
+  PStoreLocation: /data/pstore
+
+  # Shortened so that a test run exercises the verification passes, which
+  # first run one interval after startup.
+  PStoreIndexCheckInterval: 1m
+  PStoreDataScanInterval: 1m

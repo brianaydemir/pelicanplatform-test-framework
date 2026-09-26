@@ -1,0 +1,21 @@
+---
+# An origin whose storage is the `lab-server` container, over SSH. The
+# origin copies its own pelican-server binary there and runs it as
+# `ssh-helper`. fed.sh generates the exports (see
+# config.d/base/40-origin.yaml), and each StoragePrefix is a path on the
+# lab server.
+
+Origin:
+  StorageType: ssh
+
+  SSH:
+    Host: lab-server
+    Port: 22
+    User: alice
+    AuthMethods: ["publickey"]
+    PrivateKeyFile: /fed/generated/ssh/id_ed25519
+
+    # The lab server gets a new host key on every rebuild.
+    AutoAddHostKey: true
+
+    RemotePelicanBinaryDir: /home/alice/.pelican
