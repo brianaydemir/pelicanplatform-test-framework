@@ -37,6 +37,22 @@ fi
 printf 'Stopping the federation ...\n'
 ./fed.sh -p default down --volumes || true
 
+# A teardown that failed would leave containers that the next `up` keeps,
+# still bound to what is discarded below.
+left=$(docker ps --all --quiet --filter label=com.docker.compose.project=pelican) || {
+  printf '%s: cannot list the containers left behind\n' "${progname}" >&2
+  exit 1
+}
+if [ -n "${left}" ]; then
+  {
+    printf '%s: the federation did not stop; these containers remain:\n' "${progname}"
+    # shellcheck disable=SC2086  # one ID per word
+    docker inspect --format '  {{.Name}}' ${left} | sed 's|  /|  |'
+    printf '  Stop them with: docker rm -f %s\n' "$(printf '%s' "${left}" | tr '\n' ' ')"
+  } >&2
+  exit 1
+fi
+
 # Everything in framework/var/ but Grafana's database. Keys, state, and
 # data go together: stores and backups are sealed to the keys.
 set --

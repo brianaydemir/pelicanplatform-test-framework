@@ -14,7 +14,7 @@ The suites run in this order:
 
 | Suite        | Tests                                                                 |
 | ------------ | --------------------------------------------------------------------- |
-| `federation` | that the federation serves at all, and every director names every cache, and every origin that takes direct reads |
+| `federation` | that the federation serves at all, and every director names every cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients |
 | `commands`   | `ls`, `stat`, `delete`, `copy`, `sync`, and `du` ([client commands](#client-commands)) |
 | `listings`   | PROPFIND at each origin, director, and cache ([listings](#listings))  |
 | `blocks`     | objects and ranges at pstore's and the caches' [block boundaries](#block-boundaries), and overwritten objects |
@@ -27,14 +27,20 @@ The suites run in this order:
 
 A suite that doesn't apply to the shape is skipped, and says why.
 `federation`'s `ready` and `caches` checks run first, whatever else is
-asked for; if the federation never serves, nothing else runs. The
+asked for; `caches` tries each cache 20 times, 15 seconds apart, while
+it fails or doesn't answer. If the federation never serves, nothing
+else runs. The
 `expired` credential must be 70 seconds past its expiry before it is
 presented, so `auth` and `transfers` run last, by which time it usually
 is.
 
 These are basic checks, not stress tests: each moves only a few small
 objects. Each suite writes a row per test case to
-`framework/var/results/` ([Results](ci.md#results)).
+`framework/var/results/` ([Results](ci.md#results)). A scenario that
+raises an unexpected error fails, with the error as its note, and the
+suite goes on to the next. A client command still running after 600
+seconds is killed, and fails. Each suite removes what it wrote from
+every origin's store afterward, a `pstore` origin's included.
 
 
 ## Test data
@@ -48,8 +54,8 @@ eleven [credentials](#authorization) that applies to it:
 | Scenario          | Transfers                                                 |
 | ----------------- | --------------------------------------------------------- |
 | `exist`           | get `/public/data/0.<n>`, with no token                   |
-| `dne`             | get `/public/data/9.<n>` (never created): not found       |
-| `get-<ns>-<cred>` | get `/<ns>/data/0.<n>`, presenting `<cred>` (`get-public-none` is `exist`) |
+| `dne`             | get `/public/data/9.<n>` (never created): not found; where `/public` isn't exported, from the first exported protected namespace instead, with its `server` token |
+| `get-<ns>-<cred>` | get `/<ns>/data/0.<n>`, presenting `<cred>` (`get-public-none` is `exist`); `get-public-<cred>` checks that a configured, possibly bad, token doesn't break a public read, since the client sends none |
 | `put-<ns>-<cred>` | put `/<ns>/data/put/put-<ns>-<cred>/<x>.<z>`, presenting `<cred>` |
 
 These run through `pelican object get` and `put`. Each get also has a
@@ -65,7 +71,9 @@ What each scenario should do follows the
 [authorization](#authorization) rules: every get of `/public` should
 pass, and every put to it should be refused. A shape that exports one
 namespace (`origin-httpsv2`, `origin-no-direct`) has only that
-namespace's scenarios. `./fed.sh test -l transfers` lists the
+namespace's scenarios, and `dne`, which gets from that namespace
+instead. Without `DirectReads` (`origin-no-direct`), `direct-dne` must
+be refused. `./fed.sh test -l transfers` lists the
 scenarios, and the summary after a run shows what each was expected to
 do.
 
@@ -77,23 +85,28 @@ invocations, 16 at a time. Each batch picks distinct objects, uniformly
 at random. `framework/testlib/transfers.py` sets these numbers.
 
 The suite mints the tokens and writes new random bytes for each upload.
-Afterward, it judges each batch by the rules in
-`framework/testlib/transfers.py`. Every file downloaded must match the
-object in the origin's store, and every upload what the store received.
-Every batch that should be refused must fail by being refused, with
-nothing moved: no object's bytes in a file it downloaded, and no upload
-in any store. Every `dne` batch must fail with not found (error 5011).
-The summary counts each scenario's batches that passed, failed, and
-went unexpectedly, says why the failed ones failed, and names the batch
-sizes that had unexpected results. `verify/problems` lists each
-unexpected result.
+Before the run, it empties every put collection in every store, a `pstore`
+origin's included, and stops if it can't. Afterward, it judges each batch by
+the rules in `framework/testlib/transfers.py`. Every file downloaded must
+match the object in the origin's store, and every upload what the store
+received. Every batch that should be refused must fail by being refused,
+with nothing moved: no object's bytes in a file it downloaded, and no upload
+in any store. A failure that also shows a server error (HTTP 5xx), a
+timeout, a refused connection, not found (error 5011), or a transfer error
+(6xxx) is not a refusal, even beside a 401 or 403; nor is a local
+`permission denied`. A batch killed after 600 seconds fails as `other`.
+Every `dne` batch must fail with not found (error 5011). The summary counts
+each scenario's batches that passed, failed, and went unexpectedly, says why
+the failed ones failed, and names the batch sizes that had unexpected
+results. `verify/problems` lists each unexpected result.
 
-Last, it shows which servers served the successful downloads, by client
-and route. Outside `topo-tiny`, some cache must have served the downloads
-meant for one, since a director that routed around its caches would
-otherwise pass every scenario; and only an origin may serve a direct
-one. Where a namespace takes no direct clients (`origin-no-direct`),
-every direct read must be refused.
+Last, it shows which servers served the successful downloads, by client and
+route. In each namespace with downloads meant for a cache, a cache must have
+served some, since a director that routed around its caches would otherwise
+pass every scenario; and only an origin may serve a direct one. Under
+`topo-tiny`, whose cache and origin are one host, both checks are skipped.
+Where a namespace takes no direct clients (`origin-no-direct`), every direct
+read must be refused.
 
 A `pstore` origin's store is encrypted, and only the running origin can
 write it. So `init` writes a plain copy of the objects beside it, in
@@ -127,18 +140,20 @@ another namespace's. The "other namespace" of `/protected-a` is
 | `ns-cross`   | the other namespace's `ns-<ns>.pem` and issuer: a token only it accepts |
 | `expired`    | the origins' key, expired                                              |
 
-Otherwise each token has read, create, and modify on the whole namespace,
-is issued by that namespace's issuer, and lasts four hours, so that each
-tests one thing (`ns-cross` is `wrong-iss` signed with the other
-namespace's key). With `ORIGIN_ENABLE_ISSUER=false`, every namespace has
-one issuer and no keys of its own, so the tests skip `wrong-iss`,
-`ns-jwks`, `ns-other`, and `ns-cross`, as they do with
-`auth-external-issuer`, whose key then signs `server`, `wrong-op`,
-`wrong-path`, and `expired`. A shape that exports only `/protected-a`
-(`origin-httpsv2`, `origin-no-direct`) lists `/protected-b`'s key
-nowhere, so the tests skip `ns-other` and `ns-cross`, which would only
-repeat `unknown`. Where a token decides, only `server`, `jwks`, and
-`ns-jwks` should be allowed. A token doesn't always decide:
+Otherwise each token has read, create, and modify on the whole namespace, is
+issued by that namespace's issuer, and lasts four hours, so that each tests
+one thing (`ns-cross` is `wrong-iss` signed with the other namespace's key).
+With `ORIGIN_ENABLE_ISSUER=false`, every namespace has one issuer and no
+keys of its own, so the tests skip `wrong-iss`, `ns-jwks`, `ns-other`, and
+`ns-cross`, as they do with `auth-external-issuer`, whose key then signs
+`server`, `wrong-op`, `wrong-path`, and `expired`. Its JWKS holds only its
+own keys, so they skip `jwks` there too: a token that names it, signed with
+a key listed only in `Server.IssuerJwks`, would only repeat `unknown`. A
+shape that exports only `/protected-a` (`origin-httpsv2`,
+`origin-no-direct`) lists `/protected-b`'s key nowhere, so the tests skip
+`ns-other` and `ns-cross`, which would only repeat `unknown`. Where a token
+decides, only `server`, `jwks`, and `ns-jwks` should be allowed. A token
+doesn't always decide:
 
 - **Reads of `/public`** should be allowed whatever the token. The
   servers ignore it, and the clients don't even send one.
@@ -160,7 +175,8 @@ namespace.
   had no token to send), `director` (it rejects expired tokens),
   `unsupported` (the director found no origin that allows the operation
   in the namespace, e.g. a put to `/public`), or
-  `server` (an origin or cache answered 401 or 403). Any other failure
+  `server` (an origin or cache answered 401 or 403, with no server
+  error, timeout, or not found beside it). Any other failure
   is unexpected, since it doesn't show a refusal. A `pelican object get`
   whose token is refused is `server`, even when the token has expired:
   the client stats each object first, and asks the director without the
@@ -172,8 +188,8 @@ namespace.
   namespace. An allowed request must return or store the right bytes,
   or remove the object, which the test puts in place just before each
   DELETE (straight in the store, where the namespace takes no writes).
-  A refused one must get 401 or 403 and change nothing. A native origin
-  answers 401, and a native cache 403. The caches are tried only after
+  A refused one must get 401 or 403, from any kind of server, and change
+  nothing. The caches are tried only after
   `server` has stored the test object in them.
 - **At the issuer**, the `auth` suite's `keys` check comes first. For
   `/protected-a` and `/protected-b`, the discovery document's `jwks_uri`
@@ -230,8 +246,18 @@ scenarios.
   from by default, so `framework/config.d/base/40-origin.yaml` allows it.
 - `sync` compares sizes only and never deletes; the scenarios check what
   it uploads by its `--dry-run` output.
-- These commands exit 0, 1, or 11 whatever went wrong, so failures are
-  judged by what they print, as the `transfers` suite judges them.
+- These commands' exit status says little about what went wrong (most
+  exit 1 or 11, and `sync` the error's own code), so the tests require
+  only a non-zero one, and judge failures by what the commands print,
+  as the `transfers` suite judges them.
+- `ls -r` must list every object by its path in the tree, once.
+- `du --json` must give each collection's bytes, objects, and
+  collections, and `du --count`, whose counts only its text output
+  shows, must print the same.
+- `ls`, `delete`, and `du` of `/protected-a` with no token must be
+  refused by the client itself, for want of a token (error 4010),
+  before it asks any server; the `auth` and `listings` suites check the
+  servers.
 
 
 ## Block boundaries
@@ -255,9 +281,12 @@ pstore's inline, buffered, and streamed tiers, and the XRootD cache's
 - How a V2 cache first sees an object decides how it fills (one stream,
   or block by block), so each cache reads one set of objects whole first
   and another in ranges first.
-- `mixed-version` overwrites an object at the origins after a cache has
-  cached part of it; each later response must then succeed, and be
-  entirely one version, the same for a range as for the whole object.
+- `mixed-version` overwrites an object of three XRootD blocks at the
+  origins after a cache has cached its first 4,080-byte block; each
+  later response, to a range in the third XRootD block (which neither
+  kind of cache fetched for the first read) and to the whole object,
+  must then succeed, and be entirely one version, the same for the
+  range as for the whole object.
 - `cache-overlap` reads ranges from objects of each cache's own, each
   plan in turn, so that every read after the first covers both blocks
   the cache fetched for an earlier one and blocks it must fetch now, at
@@ -268,7 +297,11 @@ pstore's inline, buffered, and streamed tiers, and the XRootD cache's
   the first and all of it after the last: a V2 cache sends `Age` only
   once it holds every block, and an XRootD cache's `.cinfo` (read from
   `data/cache/<N>/`) records which blocks it holds. When a cache cannot
-  show the partial state, the row is inconclusive.
+  show the partial state (it sends `Age`, has no readable `.cinfo`, or
+  its `.cinfo` shows none or all of the blocks after the first range),
+  the row is inconclusive; but an XRootD cache whose `.cinfo` could be
+  read after the first range fails if, after the last, it has none, or
+  one that doesn't show every block.
 - `overwrite-cached` and `overwrite-range-first` overwrite objects at the
   origins once each cache holds them (read whole, or a range first), one
   keeping its size and one growing. Every response, whole or ranged, must
@@ -289,17 +322,22 @@ small tree that it uploads under `/<ns>/data/listings/<run>/`.
 
 - An origin must list the tree exactly. It may refuse Depth infinity
   with 403, as RFC 4918 allows, but must not answer it as Depth 1.
-- A director must redirect a PROPFIND to an origin, whose listing must
-  then be right.
+- A director must redirect a PROPFIND to an origin: Depth 0 (a stat)
+  for any namespace that can be read, and deeper only with `Listings`
+  (Pelican's `director/sort.go`). The origin's listing must then be
+  right; where the namespace takes no direct clients, the origin must
+  refuse it instead.
 - A cache must answer Depth 0 of anything it may read, and relay deeper
   listings through the director to an origin, listing what the origin
   does. `cache-body` sends the propfind body that `pelican object ls`
   sends, which the cache must pass on as it follows the director's
-  redirect.
-- Deeper than Depth 0, any server lists only a namespace with
-  `Listings`, and an origin answers only direct clients, which a
-  namespace without `DirectReads` has none of. A PROPFIND that may not be
-  answered must be refused with 401, 403, or 405.
+  redirect. A cache may refuse Depth infinity with 403 only if an origin
+  does; where no origin may be asked directly, a 403 is accepted, and
+  the row's note says so.
+- Deeper than Depth 0, any server, directors included, lists only a
+  namespace with `Listings`, and an origin answers only direct clients,
+  which a namespace without `DirectReads` has none of. A PROPFIND that may
+  not be answered must be refused with 401, 403, or 405.
 - Every object in a listing must have a `getcontentlength`, 0 included.
 - Listing `/protected-a` with no token, or one scoped elsewhere, must be
   refused everywhere; listing `/public` with none must work.
@@ -317,10 +355,16 @@ metadata` lists their scenarios.
 - **POSC** (`-p origin-posc`): the origin stages each upload in
   `<store>/.pelican-posc/` and renames it into place once it completes.
   The `posc` suite interrupts uploads in several ways and checks what the
-  origin answers and what the store shows.
+  origin answers and what the store shows. It judges an interruption
+  only once it has seen the upload under way, from a new staging file;
+  an upload refused, or unanswered, before then fails. `hidden` lists
+  the export while an upload is staged, so that `.pelican-posc` is there
+  to hide.
 - **pstore** (`-p origin-pstore`) commits a new version of an object only
   when its upload completes, so the `posc` suite runs there too: the same
-  interruptions, judged by what the origins serve. `stalled` and
+  interruptions, judged by what the origins serve, once
+  `pstore/objects` has grown to show the upload under way (`chunked`
+  sends just over pstore's 1 MiB spill threshold for this). `stalled` and
   `hidden`, which are about POSC's staging, skip.
 - **Metadata** (`-p origin-metadata`): the origins send an event for every
   object committed, overwritten, or deleted to the `metadata` recorder. It
@@ -329,11 +373,14 @@ metadata` lists their scenarios.
   `sample_metadata_server`, built from `PELICAN_TAG`'s source. The recorder
   answers 503 once for objects named `fail-once-*`, and 422 for `reject-*`.
   The `metadata` suite uploads with `--metadata-file` and
-  `--metadata-body`, and checks the events.
+  `--metadata-body`, and checks the events, including that
+  `object.updated` carries the new size and custom fields, compared
+  type for type.
 - **Transactional mode** (`-p origin-metadata-tx`): an upload should fail
   with a 5xx if its event can't be delivered, and its object should be
   removed, as Pelican's `docs/metadata-publish-design.md` says.
-  The `metadata` suite's `retry` and `reject` check both.
+  The `metadata` suite's `retry` and `reject` check both, and that the
+  recorder answered a delivery for the object with 503 or 422.
 
 
 ## Unix users
@@ -364,12 +411,16 @@ those). `fed.sh` describes it in `framework/var/generated/owners` and
 `owners` suite checks:
 
 - `ready`: origin-2's objects come back through the federation and from
-  each cache, with 20 tries, 15 seconds apart.
+  each cache, with 20 tries, 15 seconds apart. It runs first, whatever
+  else is asked for; if origin-2 never serves, the suite stops.
 - `keys`: origin-2's server-wide JWKS, and its issuer's for `/other`,
   hold its keys, and none of the origins' or the test keys; the origins'
   hold none of its.
-- `routing`: each director sends a direct read of origin-2's prefixes to
-  it alone, and of the origins' to them alone. Through each cache,
+- `routing`: each director sends a client's direct read (`?directread`)
+  of origin-2's prefixes to it alone, and of the origins' to them alone;
+  where an export takes no direct clients, the director must find no
+  origin (405) and name none, not even the origins', whose `/public`
+  encloses `/public/other`. Through each cache,
   `/public/other/...` must be origin-2's object, never a decoy that
   origin-0's `/public` holds at `other/...`, and
   `/public/others-<run>/...` origin-0's, since a prefix matches whole
@@ -402,8 +453,21 @@ those). `fed.sh` describes it in `framework/var/generated/owners` and
 
 ## Unit tests
 
-The scenario and credential tables, the rules that judge each batch,
-and the suites' tables have unit tests that need no federation:
+The framework's own unit tests cover only the bugs in it that would let
+a broken Pelican pass unnoticed. Most bugs in the framework would make a
+working Pelican fail instead, and running the tests finds those. So the
+unit tests check:
+
+- That the checks that judge an answer aren't too lenient, for example
+  by taking a timeout for a refusal, or a mix of two versions of an
+  object for one of them.
+- That nothing is quietly left untested: no suite or credential is
+  skipped in a shape where it applies, every scenario moves something,
+  and the smoke shapes cover every pair of choices.
+- That a suite that stops early, or a failed case, still counts as a
+  failure.
+
+They need no federation:
 
 ```sh
 python3 -B -m unittest discover -s framework -t framework

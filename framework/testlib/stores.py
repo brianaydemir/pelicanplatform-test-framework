@@ -12,7 +12,7 @@ import hashlib
 import os
 from typing import AbstractSet, Dict, Iterable, List, Mapping, Optional
 
-from . import common, credentials, web
+from . import common, credentials, web, webdav
 
 
 class Unreadable(Exception):
@@ -130,11 +130,14 @@ def make_dirs(origins: Iterable[common.Origin], namespace: str, rel: str,
     parts = rel.strip("/").split("/")
     for origin in unique(origins):
         if not origin.pstore:
-            for n in range(1, len(parts) + 1):
-                path = os.path.join(origin.store, *parts[:n])
-                if not os.path.isdir(path):
-                    os.mkdir(path)
-                    os.chmod(path, 0o777)
+            try:
+                for n in range(1, len(parts) + 1):
+                    path = os.path.join(origin.store, *parts[:n])
+                    if not os.path.isdir(path):
+                        os.mkdir(path)
+                        os.chmod(path, 0o777)
+            except OSError as e:
+                errors.append(f"making framework/var/{path}: {e.strerror}")
             continue
         for n in range(1, len(parts) + 1):
             url = f"{origin.url}/{namespace}/{'/'.join(parts[:n])}"
@@ -161,3 +164,63 @@ def delete(origin: common.Origin, namespace: str, rel: str, token: str) -> Optio
     url = f"{origin.url}/{namespace}/{rel}"
     answer = web.request("DELETE", url, token=token)
     return None if answer.ok or answer.status == 404 else f"DELETE {url}: {answer.describe()}"
+
+
+
+def empty_tree(origin: common.Origin, namespace: str, rel: str, token: str) -> List[str]:
+    """Remove everything in collection rel in namespace from origin's
+    store, but not rel itself, as common.empty_dir() does; what went
+    wrong. A disk store's are removed directly. A pstore origin is listed
+    a level at a time (Depth 1, which every origin answers) and sent
+    DELETE for each object, then each collection, deepest first."""
+    base = rel.strip("/")
+    if not origin.pstore:
+        path = os.path.join(origin.store, *base.split("/"))
+        try:
+            common.empty_dir(path)
+        except OSError as e:
+            return [f"emptying framework/var/{path}: {e.strerror}"]
+        return []
+    errors: List[str] = []
+    doomed: List[str] = []  # parents before children
+    pending = [base]
+    while pending:
+        here = pending.pop()
+        url = f"{origin.url}/{namespace}/{here}"
+        answer = webdav.propfind(url, "1", token)
+        if answer.status == 404:
+            continue
+        try:
+            if answer.status != 207:
+                raise ValueError(answer.describe())
+            entries = webdav.relative(webdav.parse(answer.body), f"/{namespace}/{here}")
+        except ValueError as e:
+            errors.append(f"PROPFIND {url}: {e}")
+            continue
+        for name, entry in entries.items():
+            if name:
+                doomed.append(f"{here}/{name}")
+                if entry.collection:
+                    pending.append(f"{here}/{name}")
+    for doomed_rel in reversed(doomed):
+        url = f"{origin.url}/{namespace}/{doomed_rel}"
+        answer = web.request("DELETE", url, token=token)
+        if not answer.ok and answer.status != 404:
+            errors.append(f"DELETE {url}: {answer.describe()}")
+    return errors
+
+
+def empty_tree_everywhere(origins: Iterable[common.Origin],
+                          exports: Mapping[str, AbstractSet[str]], rel: str,
+                          tokens: Mapping[str, str]) -> List[str]:
+    """empty_tree() at every origin's store: a disk store once, and a
+    pstore origin in each namespace with storage of its own there (see
+    upload_namespaces()); what went wrong."""
+    errors: List[str] = []
+    for origin in unique(origins):
+        if not origin.pstore:
+            errors += empty_tree(origin, "", rel, "")
+            continue
+        for namespace in upload_namespaces(origin, exports):
+            errors += empty_tree(origin, namespace, rel, tokens[namespace])
+    return errors

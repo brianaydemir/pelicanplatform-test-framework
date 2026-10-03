@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional, Tuple
 
 from testlib import blocks, common, stores, transfers, web
-from testlib.common import die, first
+from testlib.common import die, first, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -475,7 +475,11 @@ def cache_assemble(test: Test) -> Tuple[str, str]:
     overlap, and add up to the object. The cache must hold part of it
     after the first, and all of it after the last: a V2 cache sends Age
     only then, and an XRootD cache's .cinfo shows which blocks it holds.
-    Then the whole object must come back intact."""
+    Then the whole object must come back intact. Only a cache that cannot
+    show the partial state after the first (with Age, with no .cinfo, or
+    with a .cinfo showing none or all of the blocks) leaves the result
+    unsure; an XRootD cache whose .cinfo could be read then must still
+    have one, showing every block, after the last."""
     base = f"{test.base}/assemble"
     objects = {c.svc: os.urandom(blocks.ASSEMBLE_SIZE) for c in test.caches}
     errors = upload_each(test, base, objects)
@@ -487,6 +491,9 @@ def cache_assemble(test: Test) -> Tuple[str, str]:
     for cache in test.caches:
         rel, data = f"{base}/{cache.svc}", objects[cache.svc]
         ranges = [(r,) for r in blocks.ASSEMBLE]
+        # Whether an XRootD cache's .cinfo could be read after the first
+        # range.
+        seen = False
         why = test.get(cache.url, rel, data, ranges[0])
         if why:
             problems.append(f"{cache.svc}: the first range: {why}")
@@ -500,8 +507,9 @@ def cache_assemble(test: Test) -> Tuple[str, str]:
                 unsure.append(f"{cache.svc}: Age after the first range, so it cannot show completion")
         else:
             found, why = wait_cinfo(cache, rel, lambda c: 0 < c.count < c.blocks, 30)
+            seen = found is not None
             if not found:
-                unsure.append(f"{cache.svc}: {why}")
+                unsure.append(f"{cache.svc}: after the first range, {why}")
             elif not 0 < found.count < found.blocks:
                 unsure.append(f"{cache.svc}: {found.count} of {found.blocks} blocks after the"
                               " first range, not some")
@@ -516,8 +524,11 @@ def cache_assemble(test: Test) -> Tuple[str, str]:
                 notes.append(f"{cache.svc}: Age")
         else:
             found, why = wait_cinfo(cache, rel, lambda c: c.complete, 60)
-            if not found:
-                unsure.append(f"{cache.svc}: {why}")
+            if not found and seen:
+                problems.append(f"{cache.svc}: after every range, {why}, though it was"
+                                " readable after the first")
+            elif not found:
+                unsure.append(f"{cache.svc}: after every range, {why}")
             elif not found.complete:
                 problems.append(f"{cache.svc}: {found.count} of {found.blocks} blocks after every"
                                 " range")
@@ -561,12 +572,20 @@ def empty(test: Test) -> Tuple[str, str]:
     return PASS, ", ".join(notes)
 
 
+# mixed-version's object: three XRootD blocks, so that each kind of cache
+# fetches only part of it for the first read. The later range is one
+# BLOCK in the third XRootD block, and on a BLOCK edge, which neither
+# kind fetched for the first.
+MIXED_SIZE = 3 * blocks.XROOTD_BLOCK
+MIXED_LATER = -(-2 * blocks.XROOTD_BLOCK // blocks.BLOCK) * blocks.BLOCK
+
+
 def mixed_version(test: Test) -> Tuple[str, str]:
     """Each cache reads the first block of an object, and the origins then
     take another version of it. Every later response, to a range the
     cache has yet to fetch and to the whole object, must be entirely one
     version, and the same one."""
-    size = 20 * blocks.BLOCK
+    size = MIXED_SIZE
     rel = f"{test.base}/mixed"
     v1, v2 = os.urandom(size), os.urandom(size)
     errors = stores.make_dirs(test.origins, "protected-a", test.base, test.token)
@@ -587,15 +606,16 @@ def mixed_version(test: Test) -> Tuple[str, str]:
     errors = stores.seed_everywhere(test.origins, "protected-a", rel, v2, test.token, test.caps)
     if errors:
         return FAIL, "; ".join(errors)
+    start, end = MIXED_LATER, MIXED_LATER + block
+    later = f"bytes {start}-{end - 1}"
     notes = []
     for cache in test.caches:
-        start = 10 * block
-        answer = get(cache, f"bytes={start}-{start + block - 1}")
+        answer = get(cache, f"bytes={start}-{end - 1}")
         part = answer.body
         if answer.status != 206:
-            return FAIL, f"{cache.svc}: block 10 got {answer.describe()}, not 206"
-        if part not in (v1[start:start + block], v2[start:start + block]):
-            return FAIL, f"{cache.svc}: block 10 is neither version"
+            return FAIL, f"{cache.svc}: {later} got {answer.describe()}, not 206"
+        if part not in (v1[start:end], v2[start:end]):
+            return FAIL, f"{cache.svc}: {later} are neither version"
         answer = get(cache, None)
         if answer.status != 200:
             return FAIL, f"{cache.svc}: the whole object got {answer.describe()}, not 200"
@@ -608,9 +628,9 @@ def mixed_version(test: Test) -> Tuple[str, str]:
                             else "2" if answer.body[i:i + block] == v2[i:i + block] else "?"
                             for i in range(0, size, block))
             return FAIL, f"{cache.svc}: the whole object mixes versions, block by block: {which}"
-        block_version = "v1" if part == v1[start:start + block] else "v2"
-        if block_version != version:
-            return FAIL, (f"{cache.svc}: block 10 came back as {block_version},"
+        range_version = "v1" if part == v1[start:end] else "v2"
+        if range_version != version:
+            return FAIL, (f"{cache.svc}: {later} came back as {range_version},"
                           f" the whole object as {version}")
         notes.append(f"{cache.svc} served {version}")
     return PASS, ", ".join(notes)
@@ -764,13 +784,18 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 def run(session: Session, selected: List[str], results: common.Results) -> None:
     fed = session.fed
-    disk_stores = [o.store for o in stores.unique(fed.origins) if not o.pstore]
-    for store in disk_stores:
-        if not os.path.isdir(f"{store}/data/blocks"):
-            die(f"framework/var/{store}/data/blocks is missing; run ./fed.sh init")
-        # Earlier runs' objects come out first.
-        common.empty_dir(f"{store}/data/blocks")
+    for origin in stores.unique(fed.origins):
+        if not origin.pstore and not os.path.isdir(f"{origin.store}/data/blocks"):
+            die(f"framework/var/{origin.store}/data/blocks is missing; run ./fed.sh init")
+    tokens = session.tokens()
 
+    def clean(when: str) -> None:
+        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/blocks", tokens)
+        if errors:
+            warn(f"emptying data/blocks {when}: {first(errors)}")
+
+    # Earlier runs' objects come out first.
+    clean("before the run")
     test = Test(session)
     print(f"Block test against {fed.url}, objects under /protected-a/{test.base}/\n")
     try:
@@ -779,9 +804,10 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
                 status, note = RUN[name](test)
             except stores.Unreadable as e:
                 status, note = FAIL, f"could not read a store: {e}"
+            except Exception as e:
+                status, note = FAIL, f"{type(e).__name__}: {e}"
             results.add(name, status, note)
     finally:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach.
-        for store in disk_stores:
-            common.empty_dir(f"{store}/data/blocks")
+        clean("after the run")

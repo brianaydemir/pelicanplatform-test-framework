@@ -19,6 +19,7 @@ import sys
 sys.dont_write_bytecode = True
 
 import os  # noqa: E402
+import re  # noqa: E402
 import xml.etree.ElementTree as ET  # noqa: E402
 from collections import OrderedDict  # noqa: E402
 from typing import Dict, List, Sequence, Tuple  # noqa: E402
@@ -75,6 +76,16 @@ def seconds(row: Dict[str, str]) -> float:
         return 0.0
 
 
+# Characters that XML 1.0 forbids, which a note may hold (e.g. a
+# terminal escape from a command's output).
+_NOT_XML = re.compile("[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
+
+
+def xml_text(text: str) -> str:
+    """text, with each character that XML 1.0 forbids written as \\xNN."""
+    return _NOT_XML.sub(lambda m: f"\\x{ord(m.group(0)):02x}", text)
+
+
 def count(rows: Sequence[Dict[str, str]], status: str) -> int:
     return sum(1 for row in rows if row.get("status") == status)
 
@@ -89,13 +100,14 @@ def junit(rows: Sequence[Dict[str, str]]) -> str:
         failures = count(members, report.FAIL)
         skipped = count(members, report.SKIP) + count(members, report.INCONCLUSIVE)
         took = sum(seconds(r) for r in members)
-        element = ET.SubElement(top, "testsuite", name=name, tests=str(len(members)),
+        element = ET.SubElement(top, "testsuite", name=xml_text(name), tests=str(len(members)),
                                 failures=str(failures), errors="0", skipped=str(skipped),
                                 time=f"{took:.1f}")
         for row in members:
-            case = ET.SubElement(element, "testcase", name=row.get("case", ""),
-                                 classname=name.replace("/", "."), time=f"{seconds(row):.1f}")
-            status, note = row.get("status"), row.get("note", "")
+            case = ET.SubElement(element, "testcase", name=xml_text(row.get("case", "")),
+                                 classname=xml_text(name.replace("/", ".")),
+                                 time=f"{seconds(row):.1f}")
+            status, note = row.get("status"), xml_text(row.get("note", ""))
             if status == report.FAIL:
                 ET.SubElement(case, "failure", message=note)
             elif status == report.SKIP:

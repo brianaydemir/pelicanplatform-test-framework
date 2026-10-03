@@ -12,9 +12,9 @@ origin.
 Who may list depends on the namespace's capabilities (see may_list()):
 an origin serves only direct clients, which a namespace without
 DirectReads has none of (`-p origin-no-direct`); a cache answers Depth 0
-of anything it may read; and anything deeper, at any server, needs
-Listings. A PROPFIND that may not be answered must be refused, with 401,
-403, or 405.
+of anything it may read, and a director redirects it; and anything
+deeper, at any server, needs Listings. A PROPFIND that may not be
+answered must be refused, with 401, 403, or 405.
 """
 
 import json
@@ -23,7 +23,7 @@ from typing import AbstractSet, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 from testlib import common, credentials, stores, web, webdav
-from testlib.common import die, first
+from testlib.common import die, first, warn
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
 
@@ -31,7 +31,7 @@ SCENARIOS = {
     "origin-depth-0":       "each origin: Depth 0 of an object, and of a collection",
     "origin-depth-1":       "each origin: Depth 1 lists a collection's members",
     "origin-infinity":      "each origin: Depth infinity lists the whole tree, or is refused",
-    "director":             "each director redirects a PROPFIND to an origin, which lists",
+    "director":             "each director redirects a PROPFIND to an origin, which lists or refuses",
     "cache-depth-0":        "each cache: Depth 0 of an object it lacks, then of one it holds",
     "cache-depth-1":        "each cache: Depth 0 and 1 of a collection, as the origins list it",
     "cache-infinity":       "each cache: Depth infinity, as at the origins",
@@ -56,14 +56,16 @@ REFUSALS = (401, 403, 405)
 
 def may_list(caps: AbstractSet[str], depth: str, role: str) -> bool:
     """Whether a server in role (`origin`, `cache`, or `director`) should
-    answer a PROPFIND at depth in a namespace with caps: an origin only
-    direct clients, and only Depth 0 without Listings; a cache Depth 0 of
-    anything it may read; and a director, by redirecting, only with
-    Listings."""
+    answer a PROPFIND at depth in a namespace with caps. Depth 0 is a
+    stat, and anything deeper a listing, which needs Listings. An origin
+    answers only direct clients; a cache answers Depth 0 of anything it
+    may read; and a director answers by redirecting to an origin, Depth 0
+    where the namespace may be read at all (Reads or PublicReads), as for
+    a GET (director/sort.go)."""
     if role == "origin" and "DirectReads" not in caps:
         return False
-    if depth == "0" and role != "director":
-        return True
+    if depth == "0":
+        return role != "director" or bool({"Reads", "PublicReads"} & set(caps))
     return "Listings" in caps
 
 
@@ -213,12 +215,16 @@ def origin_depth_1(test: Test) -> Tuple[str, str]:
     return PASS, f"{len(test.origins)} origin(s)"
 
 
-def infinity(test: Test, url: str, path: str, token: Optional[str]) -> Tuple[Optional[str], str]:
+def infinity(test: Test, url: str, path: str, token: Optional[str],
+             refusable: bool = True) -> Tuple[Optional[str], str]:
     """Depth infinity of path's tree at url: what is wrong, or None, and
-    a note. RFC 4918 lets a server refuse it with 403."""
+    a note. RFC 4918 lets a server refuse it with 403, unless refusable
+    is False, as for a cache whose origins answer it."""
     answer, got, why = test.listing(url, "infinity", path, token)
     if answer.status == 403:
-        return None, "refused (403)"
+        if refusable:
+            return None, "refused (403)"
+        return "Depth infinity: refused (403), though no origin refuses it", ""
     if got is None:
         return why, ""
     if set(got) - {""} == set(CHILDREN):
@@ -248,8 +254,9 @@ def origin_infinity(test: Test) -> Tuple[str, str]:
 
 def director(test: Test) -> Tuple[str, str]:
     """A PROPFIND to a director comes back as a redirect to an origin,
-    whose listing must then be right; or, where the namespace has no
-    Listings, as a refusal."""
+    whose listing must then be right; or, where the director may not
+    answer it (see may_list()), as a refusal. Where the origin takes no
+    direct clients, it must refuse what the director sent there."""
     origins = {urlsplit(o.url).netloc for o in test.fed.origins}
     problems = []
     for director_url in test.fed.directors:
@@ -275,6 +282,10 @@ def director(test: Test) -> Tuple[str, str]:
                     continue
                 if not parts.path.rstrip("/").endswith(target.rstrip("/")):
                     problems.append(f"{where}: redirected to {parts.path}")
+                    continue
+                if not may_list(test.caps(ns), depth, "origin"):
+                    if (why := test.refusal(location, depth, test.tokens[ns])):
+                        problems.append(f"{where} -> {parts.netloc}: {why}")
                     continue
                 if want is None:
                     _, got, why = test.listing(location, depth, base, test.tokens[ns])
@@ -341,14 +352,34 @@ def cache_depth_1(test: Test) -> Tuple[str, str]:
     return PASS, f"{len(test.caches)} cache(s)"
 
 
+def origins_refuse_infinity(test: Test, ns: str) -> Optional[bool]:
+    """Whether an origin refuses Depth infinity of ns's tree with 403, as
+    a cache that relays it to one then may; None if no origin may be
+    asked, as where ns takes no direct clients."""
+    if not may_list(test.caps(ns), "infinity", "origin"):
+        return None
+    path = test.path(ns)
+    return any(webdav.propfind(origin_url(o, f"{path}/"), "infinity", test.tokens[ns]).status
+               == 403 for o in test.origins)
+
+
 def cache_infinity(test: Test) -> Tuple[str, str]:
+    """Each cache must list the whole tree at Depth infinity, as it relays
+    it to an origin. It may refuse with 403 only if an origin does; where
+    no origin may be asked, its 403 is taken on trust, as the note says."""
     problems, notes = [], []
     caps = test.caps("protected-a")
+    refused = None
+    if may_list(caps, "infinity", "cache"):
+        refused = origins_refuse_infinity(test, "protected-a")
     for cache in test.caches:
         path = test.path("protected-a")
         url = f"{cache.url}{path}/"
         if may_list(caps, "infinity", "cache"):
-            why, note = infinity(test, url, path, test.tokens["protected-a"])
+            why, note = infinity(test, url, path, test.tokens["protected-a"], refused is not False)
+            if note == "refused (403)":
+                note += (", as an origin does" if refused
+                         else ", which no origin could be asked to confirm")
         else:
             why, note = test.refusal(url, "infinity", test.tokens["protected-a"]), "refused"
         if why:
@@ -492,13 +523,18 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 def run(session: Session, selected: List[str], results: common.Results) -> None:
     fed = session.fed
-    disk_stores = [o.store for o in stores.unique(fed.origins) if not o.pstore]
-    for store in disk_stores:
-        if not os.path.isdir(f"{store}/data/listings"):
-            die(f"framework/var/{store}/data/listings is missing; run ./fed.sh init")
-        # Earlier runs' objects come out first.
-        common.empty_dir(f"{store}/data/listings")
+    for origin in stores.unique(fed.origins):
+        if not origin.pstore and not os.path.isdir(f"{origin.store}/data/listings"):
+            die(f"framework/var/{origin.store}/data/listings is missing; run ./fed.sh init")
+    tokens = session.tokens()
 
+    def clean(when: str) -> None:
+        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/listings", tokens)
+        if errors:
+            warn(f"emptying data/listings {when}: {first(errors)}")
+
+    # Earlier runs' objects come out first.
+    clean("before the run")
     test = Test(session)
     print(f"Listing test against {fed.url}, objects under /protected-a/{test.base}/\n")
     try:
@@ -513,9 +549,10 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
                 status, note = RUN[name](test)
             except stores.Unreadable as e:
                 status, note = FAIL, f"could not read a store: {e}"
+            except Exception as e:
+                status, note = FAIL, f"{type(e).__name__}: {e}"
             results.add(name, status, note)
     finally:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach.
-        for store in disk_stores:
-            common.empty_dir(f"{store}/data/listings")
+        clean("after the run")

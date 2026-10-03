@@ -47,12 +47,22 @@ def format_table(columns: Sequence[str], rows: Sequence[Dict[str, str]]) -> str:
 
 
 def parse_table(text: str) -> List[Dict[str, str]]:
-    """The rows of a table that format_table wrote, by column name."""
-    lines = [line for line in text.splitlines() if line]
+    """The rows of a table that format_table wrote, by column name.
+    format_table ends each row with a newline, and escapes any other, so
+    rows are split at newlines alone (not at the other line boundaries
+    that str.splitlines() knows). ValueError for a row whose number of
+    fields differs from the header's."""
+    lines = [line for line in text.split("\n") if line]
     if not lines:
         return []
     columns = lines[0].split("\t")
-    return [dict(zip(columns, (unescape(v) for v in line.split("\t")))) for line in lines[1:]]
+    rows = []
+    for n, line in enumerate(lines[1:], start=2):
+        values = line.split("\t")
+        if len(values) != len(columns):
+            raise ValueError(f"row {n} has {len(values)} fields, not {len(columns)}")
+        rows.append(dict(zip(columns, (unescape(v) for v in values))))
+    return rows
 
 
 def slug(name: str) -> str:

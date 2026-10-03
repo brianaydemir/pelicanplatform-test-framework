@@ -15,7 +15,8 @@ What a scenario should do depends on the namespace's capabilities in
 the shape (see outcome()). /public, which has no issuer, gets only the
 credentials that apply to it (see credentials.applies()). A shape that
 exports one namespace has batches only for its scenarios (see
-exported()).
+exported()), except `dne` and its twins, which move to a protected
+namespace where /public isn't exported (see placed()).
 """
 
 import dataclasses
@@ -25,7 +26,7 @@ from dataclasses import dataclass
 from typing import (AbstractSet, Callable, Dict, Iterable, List, Mapping, Optional, Sequence,
                     Set, Tuple)
 
-from . import credentials
+from . import credentials, report
 from .credentials import ALLOW, CREDENTIALS, NAMESPACES, Credential
 
 # Each namespace's capabilities, by name (see common.Federation.exports).
@@ -70,36 +71,48 @@ def exported(scenario: Scenario, exports: Exports) -> bool:
 
 def outcome(scenario: Scenario, exports: Exports) -> Outcome:
     """What scenario should do in a federation with these exports. A
-    namespace without DirectReads refuses every direct read, before
-    anything else."""
-    if scenario.direct and "DirectReads" not in exports[scenario.namespace]:
+    refusal comes before anything else, even a missing object's: e.g. a
+    namespace without DirectReads refuses every direct read. A scenario
+    with no token expects no refusal but that one."""
+    verdict = scenario.credential.verdict if scenario.credential else ALLOW
+    if credentials.decide(verdict, exports[scenario.namespace], scenario.op,
+                          scenario.direct) != ALLOW:
         return Outcome.REFUSED
     if scenario.missing:
         return Outcome.NOT_FOUND
-    if scenario.credential is None:
-        return Outcome.PASS
-    verdict = credentials.expected(scenario.credential, exports[scenario.namespace],
-                                   scenario.op)
-    return Outcome.PASS if verdict == ALLOW else Outcome.REFUSED
+    return Outcome.PASS
+
+
+def _how(route: str) -> str:
+    return "from an origin" if route == "direct" else "through a cache"
 
 
 def _gets(route: str) -> List[Scenario]:
     prefix = "direct-" if route == "direct" else ""
-    how = "from an origin" if route == "direct" else "through a cache"
+    how = _how(route)
     scenarios = [
         Scenario(f"{prefix}exist", "pelican", route, "get", "public", None, False,
                  "/public/data/", "0", f"get /public/data/0.<n> {how}, with no token"),
         Scenario(f"{prefix}dne", "pelican", route, "get", "public", None, True,
-                 "/public/data/", "9", f"get /public/data/9.<n> {how}, which never exists"),
+                 "/public/data/", "9",
+                 f"get /public/data/9.<n> {how}, which never exists (without /public, from"
+                 f" the first protected namespace, with the `server` token)"),
     ]
     for ns in NAMESPACES:
         for cred in CREDENTIALS:
             # A /public get with no token is `exist`.
             if not credentials.applies(cred, ns) or (ns == "public" and cred.key is None):
                 continue
+            description = f"get /{ns}/data/0.<n> {how}: {cred.description}"
+            if ns == "public":
+                # Reads of /public are allowed whatever the token, and the
+                # clients send none (see credentials.py).
+                description = (f"get /public/data/0.<n> {how}, with a token configured"
+                               f" ({cred.description}): the client sends none, so even a"
+                               f" bad one mustn't break the read")
             scenarios.append(Scenario(
                 f"{prefix}get-{ns}-{cred.name}", "pelican", route, "get", ns, cred, False,
-                f"/{ns}/data/", "0", f"get /{ns}/data/0.<n> {how}: {cred.description}"))
+                f"/{ns}/data/", "0", description))
     return scenarios
 
 
@@ -135,6 +148,25 @@ PELICAN_SCENARIOS = tuple(_gets("cache") + _gets("direct") + _puts())
 PLUGIN_SCENARIOS = tuple(plugin_twin(s) for s in PELICAN_SCENARIOS)
 SCENARIOS = PELICAN_SCENARIOS + PLUGIN_SCENARIOS
 BY_NAME = {s.name: s for s in SCENARIOS}
+
+
+def placed(scenario: Scenario, exports: Exports) -> Scenario:
+    """scenario as it runs in a federation with these exports. Where
+    /public isn't exported (e.g. `-p origin-httpsv2`), `dne` and its
+    twins get from the first protected namespace that is instead, with
+    its `server` token, which a refusal can't explain: the objects never
+    exist there either. The rest run as they are."""
+    if not scenario.missing or exported(scenario, exports):
+        return scenario
+    namespace = next((ns for ns in credentials.PROTECTED if ns in exports), None)
+    if namespace is None:
+        return scenario
+    collection = f"/{namespace}/data/"
+    return dataclasses.replace(
+        scenario, namespace=namespace, credential=credentials.BY_NAME["server"],
+        collection=collection,
+        description=(f"get {collection}{scenario.stem}.<n> {_how(scenario.route)}, which never"
+                     f" exists, with the `server` token"))
 
 
 #---------------------------------------------------------------------------
@@ -223,7 +255,7 @@ def batch_count(scenario: Scenario, exports: Exports, load: Load) -> int:
     """load.batches for `exist`, `dne`, and every scenario that a token
     should let through; load.refused_batches for the rest: refusals, and
     scenarios whose token can't matter (e.g. reads of /public)."""
-    if scenario.credential is None:
+    if scenario.credential is None or scenario.missing:
         return load.batches
     if (outcome(scenario, exports) is Outcome.PASS
             and credentials.token_decides(exports[scenario.namespace], scenario.op)):
@@ -236,9 +268,11 @@ def make_batches(federation: str, exports: Exports, load: Load,
     """Every exported scenario's batches. Batch <x> holds as many objects
     as the <x mod n>th of the n sizes. A get's are distinct, each picked
     by pick(load.objects); a put's are named <x>.<z>. A plugin twin
-    gets its scenario's objects, in its own collection."""
+    gets its scenario's objects, in its own collection. Each scenario is
+    as placed() puts it."""
     batches: Dict[str, List[Batch]] = {}
     for scenario in PELICAN_SCENARIOS:
+        scenario = placed(scenario, exports)
         if not exported(scenario, exports):
             continue
         picks: List[List[str]] = []
@@ -273,6 +307,23 @@ def make_batches(federation: str, exports: Exports, load: Load,
 # Transfers say "request failed (HTTP status 403)", "permission denied",
 # or "server returned 401 Unauthorized" (client/handle_http.go,
 # error_helpers.go).
+#
+# A 401 or 403 doesn't make a refusal of a line that also shows a failure
+# no refusal explains (NOT_REFUSAL): a server error, a timeout, a server
+# that couldn't be reached, no such object, or a broken transfer (error
+# 6xxx). Nor does "permission denied" from the local filesystem
+# (LOCAL_DENIAL), e.g. `open <path>: permission denied` (os.PathError in
+# Go), or the client's own wrapping of one (client/main.go,
+# handle_http.go), which classify() ignores.
+
+NOT_REFUSAL = (r"HTTP (status )?5\d\d\b|(server returned|status code) 5\d\d\b"
+               r"|: 5\d\d: "  # the director's, e.g. `director-0:8444: 500: ...`
+               r"|timed out|Timeout Error|deadline exceeded|connection refused"
+               r"|Error code (5011|6\d\d\d)\b|No sources reported possession of the object")
+LOCAL_DENIAL = re.compile(
+    r"\b(open|openat|mkdir|mkdirat|stat|lstat|fstatat|remove|unlinkat|rename|chmod|chown"
+    r"|truncate|readdirent) [^:]*: permission denied(?!:)"
+    r"|permission denied (when )?(opening|accessing) local")
 
 FAILURE_RULES = (
     # category      patterns                                    meaning
@@ -281,7 +332,8 @@ FAILURE_RULES = (
                                                                 "the director rejected the token"),
     ("unsupported", (r"405", r"none support the request|could not find an origin that supports"),
                                                                 "no origin allows it in the namespace"),
-    ("server",      (r"HTTP (status )?40[13]\b|server returned 40[13]\b|permission denied",),
+    ("server",      (rf"^(?!.*({NOT_REFUSAL}))",
+                     r"HTTP (status )?40[13]\b|server returned 40[13]\b|permission denied"),
                                                                 "an origin or cache answered 401 or 403"),
     # With several origins, the director checks that one has the object.
     ("not found",   (r"Error code 5011|No sources reported possession of the object",),
@@ -292,6 +344,7 @@ REFUSALS = {"client", "director", "unsupported", "server"}
 
 def classify(line: str) -> str:
     """The category of one failure, or `other`."""
+    line = LOCAL_DENIAL.sub("", line)
     for category, patterns, _ in FAILURE_RULES:
         if all(re.search(p, line) for p in patterns):
             return category
@@ -312,7 +365,10 @@ def combine(categories: Iterable[str]) -> str:
 
 def refused(text: str) -> Optional[str]:
     """Why the output of a client command (not only a transfer) shows it
-    was refused, or None if it doesn't."""
+    was refused, or None if it doesn't, or if any line shows a failure no
+    refusal explains (NOT_REFUSAL), whatever the rest say."""
+    if re.search(NOT_REFUSAL, text):
+        return None
     categories = {classify(line) for line in text.splitlines()}
     for category in ("client", "director", "unsupported", "server"):
         if category in categories:
@@ -421,3 +477,45 @@ def summarize_failures(failures: Sequence[str]) -> str:
     """e.g. `server 5, mixed 1`, in the order of FAILURE_RULES."""
     order = [rule[0] for rule in FAILURE_RULES] + ["mixed", "other"]
     return ", ".join(f"{kind} {failures.count(kind)}" for kind in order if kind in failures)
+
+
+#---------------------------------------------------------------------------
+# Which servers served the downloads.
+
+def describe_hosts(hosts: Mapping[str, int]) -> str:
+    """e.g. `cache-0 3, origin-0 1`."""
+    return ", ".join(f"{host} {count}" for host, count in sorted(hosts.items()))
+
+
+def check_served_by(route: str, served: Mapping[str, Mapping[str, int]],
+                    origin_hosts: AbstractSet[str], tiny: bool) -> Tuple[str, str]:
+    """The verdict on the hosts that served route's downloads: PASS,
+    FAIL, or SKIP (see report.py), and why. served is, for each namespace
+    with downloads that should succeed, how many objects each host
+    served in it; a namespace whose downloads all failed has none, and
+    its scenarios fail anyway.
+
+    A director that routes around its caches would pass every scenario,
+    so each namespace with a download through a cache must have had some
+    served by a cache (`cache-<N>`). A direct download must come from an
+    origin. In the tiny topology, one host is both, so neither says
+    anything."""
+    if tiny:
+        return report.SKIP, "the tiny topology's cache and origin are one host"
+    hosts: Dict[str, int] = {}
+    for counts in served.values():
+        for host, count in counts.items():
+            hosts[host] = hosts.get(host, 0) + count
+    if not hosts:
+        return report.FAIL, f"no server recorded for any {route} download"
+    if route == "cache":
+        lacking = [ns for ns, counts in sorted(served.items())
+                   if counts and not any(h.startswith("cache-") for h in counts)]
+        if lacking:
+            namespaces = ", ".join(f"/{ns}" for ns in lacking)
+            return report.FAIL, f"no download from {namespaces} went through a cache"
+    else:
+        others = sorted(h for h in hosts if h not in origin_hosts)
+        if others:
+            return report.FAIL, f"direct reads served by {', '.join(others)}"
+    return report.PASS, describe_hosts(hosts)

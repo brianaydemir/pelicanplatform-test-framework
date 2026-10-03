@@ -13,8 +13,10 @@
 # endpoint and retry settings are in config.d/base/40-origin.yaml.
 #
 # Only the `posixv2` origin publishes; fed.sh refuses other variants.
-# Mode is `eventual`; see origin-metadata-tx for `transactional`.
+# Mode is `eventual`; see origin-metadata-tx for `transactional`. Each
+# chooses the mode, so fed.sh refuses the two together.
 
 ORIGIN_METADATA=true
+ORIGIN_METADATA_MODE=eventual
 
 fed_enable_profile metadata

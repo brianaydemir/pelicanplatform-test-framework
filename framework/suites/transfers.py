@@ -3,8 +3,8 @@ each batch one `pelican object get` or `put`, run together. The plugin-*
 scenarios run the same batches through stash_plugin instead, and the
 direct-* scenarios get from an origin rather than a cache. Then compare
 every byte moved with the origins' stores; and outside the tiny
-topology, check that some cache served the downloads meant for one, and
-only an origin the direct ones.
+topology, check that in each namespace some cache served the downloads
+meant for one, and only an origin the direct ones.
 
 What each scenario expects, how many batches it runs, and how a batch
 is judged, is in framework/testlib/transfers.py. Results go to
@@ -30,7 +30,7 @@ from typing import Dict, List, Optional, Set
 from testlib import common, credentials, stores, transfers, web
 from testlib.common import die, warn
 from testlib.report import FAIL, PASS, SKIP
-from testlib.session import Session
+from testlib.session import CLIENT_TIMEOUT, TIMED_OUT, Session, timed_out
 from testlib.transfers import SCENARIOS as TABLE
 from testlib.transfers import Batch, Observation, Outcome, Scenario
 
@@ -69,11 +69,13 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 def run(session: Session, selected: List[str], results: common.Results) -> None:
     report = results.report
-    scenarios = [transfers.BY_NAME[n] for n in selected]
     pelican, plugin = session.pelican, session.plugin
     fed = session.fed
     origins = fed.origins
     exports = fed.exports
+    # Each as it runs in this shape: `dne` moves where /public isn't
+    # exported (see transfers.placed()).
+    scenarios = [transfers.placed(transfers.BY_NAME[n], exports) for n in selected]
 
     # Skip the scenarios that can test nothing in this shape: those in a
     # namespace it does not export, and those whose credential is moot.
@@ -181,12 +183,20 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
 
     #-----------------------------------------------------------------------
     # Prepare each batch's directory: empty for a get, new random bytes (1
-    # byte to 64 KiB) for a put. Old uploads come out of the stores first,
-    # so none can pass for a new one.
+    # byte to 64 KiB) for a put. Old uploads come out of every store first,
+    # a pstore origin's in each namespace with storage of its own there, so
+    # none can pass for a new one, or fail a put that should be refused.
 
-    for store in disk_stores:
-        for s in put_scenarios:
-            common.empty_dir(f"{store}/{s.store_dir}")
+    if put_scenarios:
+        print("Emptying the put collections ...")
+        with ThreadPoolExecutor(8) as pool:
+            errors = [e for found in pool.map(
+                lambda s: stores.empty_tree_everywhere(origins, exports, s.store_dir, tokens),
+                put_scenarios) for e in found]
+        for error in errors:
+            print(error, file=sys.stderr)
+        if errors:
+            die("could not empty the put collections; are the origins up (./fed.sh status)?")
 
     print(f"Preparing {total} transfer batches ...")
     size = 0
@@ -207,7 +217,8 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
     # scenarios and clients mix, then round <x>+1. Each runs in its batch's
     # directory, where its files are. Neither client may see a terminal:
     # with no token, `pelican object` would try to acquire one
-    # interactively.
+    # interactively. A batch that outlasts CLIENT_TIMEOUT is killed, and
+    # fails (see observe()).
 
     rounds: Dict[int, List[Batch]] = collections.defaultdict(list)
     for s in scenarios:
@@ -217,6 +228,8 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
     for x in sorted(rounds):
         random.shuffle(rounds[x])
         order.extend(rounds[x])
+
+    killed: Set[str] = set()
 
     def transfer(batch: Batch) -> int:
         s = batch.scenario
@@ -240,9 +253,15 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
             else:
                 command += [*batch.names, batch.destination]
         with open(f"{OUT}/log/{batch.id}", "wb") as log:
-            status = subprocess.run(command, cwd=f"{OUT}/files/{batch.id}", env=batch_env,
-                                    stdin=subprocess.DEVNULL, stdout=log,
-                                    stderr=subprocess.STDOUT).returncode
+            try:
+                status = subprocess.run(command, cwd=f"{OUT}/files/{batch.id}", env=batch_env,
+                                        stdin=subprocess.DEVNULL, stdout=log,
+                                        stderr=subprocess.STDOUT,
+                                        timeout=CLIENT_TIMEOUT).returncode
+            except subprocess.TimeoutExpired:
+                killed.add(batch.id)
+                status = TIMED_OUT
+                log.write(f"\n{timed_out(CLIENT_TIMEOUT)}\n".encode())
             log.write(f"\nexit status {status}\n".encode())
         return status
 
@@ -266,6 +285,8 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
     print("\nComparing bytes with the origins ...")
 
     def observe(batch: Batch) -> Observation:
+        """What batch did. One that was killed failed, however far it
+        got, and not by refusal: its log says it timed out."""
         s = batch.scenario
         if s.client == "plugin":
             try:
@@ -279,7 +300,9 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
                 said = f.read()
             passed = statuses[batch.id] == 0
         failure = None
-        if not passed:
+        if batch.id in killed:
+            passed, failure = False, "other"
+        elif not passed:
             failure = transfers.combine(
                 transfers.classify(line) for line in transfers.failure_lines(s.client, said))
         local = {}
@@ -377,12 +400,11 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
         print(f"\nProblems are listed in framework/var/{OUT}/verify/problems.")
 
     #-----------------------------------------------------------------------
-    # Which servers served the successful downloads, by client and route.
-    # A director that routes around its caches would pass every scenario,
-    # so outside `tiny`, fail unless a cache served some of those meant for
-    # one. A direct download must come from an origin. The highest-numbered
-    # attempt at each object served it. Uploads go straight to an origin,
-    # so they don't count.
+    # Which servers served the successful downloads, by client and route,
+    # judged by transfers.check_served_by(): outside `tiny`, a cache must
+    # have served some of those meant for one in each namespace, and an
+    # origin every direct one. The highest-numbered attempt at each object
+    # served it. Uploads go straight to an origin, so they don't count.
 
     origin_hosts = {o.svc for o in origins}
     header = False
@@ -397,10 +419,11 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
                            seconds=None)
             if not downloads:
                 continue
-            hosts: collections.Counter = collections.Counter()
+            served: Dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
             for s in downloads:
                 for batch in batches[s.name]:
-                    hosts.update(served_by(batch))
+                    served[s.namespace].update(served_by(batch))
+            hosts: collections.Counter = sum(served.values(), collections.Counter())
             if not header:
                 print("\nServed by (successful downloads):")
                 header = True
@@ -410,39 +433,17 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
             for host, count in sorted(hosts.items()):
                 print(f"  {label:<17} {count:>6} {host}")
 
-            if route == "cache":
-                if fed.tiny:
-                    report.add(case, SKIP, "the tiny topology's cache and origin are one host",
-                               seconds=None)
-                elif not any(h.startswith("cache-") for h in hosts):
-                    warn(f"no transfer went through a cache ({client})")
-                    report.add(case, FAIL, "no transfer went through a cache", seconds=None)
-                    status = 1
-                else:
-                    report.add(case, PASS, describe_hosts(hosts), seconds=None)
-            else:
-                others = sorted(h for h in hosts if h not in origin_hosts)
-                if others:
-                    warn(f"a direct read went through {', '.join(others)} ({client})")
-                    report.add(case, FAIL, f"direct reads served by {', '.join(others)}",
-                               seconds=None)
-                    status = 1
-                elif not hosts:
-                    report.add(case, FAIL, "no server recorded for any direct read",
-                               seconds=None)
-                    status = 1
-                else:
-                    report.add(case, PASS, describe_hosts(hosts), seconds=None)
+            verdict, note = transfers.check_served_by(route, served, origin_hosts, fed.tiny)
+            if verdict == FAIL:
+                warn(f"{note} ({client})")
+                status = 1
+            report.add(case, verdict, note, seconds=None)
 
     print(f"\nThe transfers took {elapsed:.0f}s.")
     if status == 0:
         print(f"OK. Results are in framework/var/{OUT}/.")
     else:
         print(f"\nUNEXPECTED RESULTS. See framework/var/{OUT}/.")
-
-
-def describe_hosts(hosts: collections.Counter) -> str:
-    return ", ".join(f"{host} {count}" for host, count in sorted(hosts.items()))
 
 
 def served_by(batch: Batch) -> List[str]:

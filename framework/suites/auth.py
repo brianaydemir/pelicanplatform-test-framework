@@ -228,7 +228,8 @@ def check_keys(fed: common.Federation, report: Report) -> None:
     """The server-wide JWKS, then each exported protected namespace's
     discovery document and JWKS. /public has no issuer."""
     if not credentials.namespace_issuers(fed):
-        why = "the origins' issuer is off, so no namespace has keys of its own"
+        why = ("every namespace trusts the external issuer" if fed.external_issuer
+               else "the origins' issuer is off") + ", so no namespace has keys of its own"
         warn(f"skipping {KEYS}: {why}")
         report.add(KEYS, SKIP, why, seconds=None)
         return

@@ -356,11 +356,13 @@ def _crc32c_table() -> List[int]:
 
 _CRC32C = _crc32c_table()
 
-# A .cinfo file (version 4, little-endian; Pelican's cache/cinfo.go,
-# after XRootD's XrdPfcInfo): the version; the store (BufferSize,
-# FileSize, CreationTime, NoCkSumTime, AccessCnt, Status, AStatSize) and
-# its CRC-32C; a bitmap of the blocks held, bit i of byte i/8 for block
-# i; AStatSize access records; and a CRC-32C of the bitmap and records.
+# A .cinfo file (version 4, little-endian; XRootD's XrdPfcInfo.cc,
+# Info::Write, and Pelican's cache/cinfo.go): the version; the store
+# (BufferSize, FileSize, CreationTime, NoCkSumTime, AccessCnt, Status,
+# AStatSize) and its CRC-32C; a bitmap of the blocks held, bit i of byte
+# i/8 for block i, and a bit for one block even for an empty object;
+# AStatSize access records, of CINFO_ASTAT bytes each; and a CRC-32C of
+# the bitmap and records.
 _CINFO_VERSION = struct.Struct("<i")
 _CINFO_STORE = struct.Struct("<qqqqQIi")
 _CINFO_CRC = struct.Struct("<I")
@@ -404,7 +406,7 @@ def parse_cinfo(data: bytes) -> Cinfo:
     if block_size <= 0 or file_size < 0 or astats < 0:
         raise ValueError(f"a .cinfo with block size {block_size}, file size {file_size}")
     blocks = -(-file_size // block_size)
-    size = -(-blocks // 8)
+    size = -(-max(blocks, 1) // 8)
     bitmap = data[head:head + size]
     if len(bitmap) < size:
         raise ValueError("the .cinfo's bitmap is cut short")

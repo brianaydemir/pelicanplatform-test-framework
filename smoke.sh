@@ -12,9 +12,10 @@
 #   ./smoke.sh --names      list only the shapes' names, one per line
 #   ./smoke.sh --table      list them for framework/matrix.py
 #
-# Together, the shapes make every pair of choices that the presets offer
-# (see framework/matrix.py, which checks that they do). Some shapes also
-# rotate every key, restart, and run the tests that use keys again.
+# Together, the shapes make every pair of choices that the presets offer,
+# but rotated keys with servers that drop privileges, whose keys the host
+# may not write (see framework/matrix.py, which checks that they do). Some
+# shapes also rotate every key, restart, and run every suite again.
 #
 # DESTRUCTIVE: runs ./reset.sh before each shape, keeping only
 # framework/var/bin/, and leaves the last shape's state and presets
@@ -43,7 +44,7 @@ all_shapes="default posixv2-xrootd-tx tiny-posixv2-posc ssh-xrootd s3v2-xrootd"
 all_shapes="${all_shapes} tiny-xrootd pstore-xrootd s3v2-v2 tiny-posixv2-tx"
 all_shapes="${all_shapes} posixv2-xrootd-multiuser httpsv2-xrootd tiny-pstore"
 all_shapes="${all_shapes} posixv2-no-direct posixv2-xrootd-posc ssh-v2 httpsv2-v2"
-all_shapes="${all_shapes} xrootd-xrootd"
+all_shapes="${all_shapes} xrootd-xrootd posixv2-xrootd-no-direct"
 
 # Each shape's presets, one per word.
 shape_presets() {
@@ -80,7 +81,8 @@ shape_presets() {
     tiny-pstore)
       echo "topo-tiny origin-pstore origin-max-age server-unprivileged" ;;
     posixv2-no-direct)
-      echo "topo-multi-origin topo-multi-cache origin-no-direct" ;;
+      echo "topo-multi-origin topo-multi-cache origin-no-direct origin-posc" \
+           "origin-metadata-tx origin-multiuser" ;;
     posixv2-xrootd-posc)
       echo "cache-xrootd topo-multi-origin topo-multi-cache topo-multi-owner" \
            "auth-external-issuer origin-posc origin-multiuser" ;;
@@ -93,13 +95,15 @@ shape_presets() {
     xrootd-xrootd)
       echo "origin-xrootd cache-xrootd topo-multi-origin topo-multi-cache" \
            "topo-multi-owner auth-external-issuer" ;;
+    posixv2-xrootd-no-direct)
+      echo "cache-xrootd origin-no-direct origin-metadata server-unprivileged" ;;
     *)
       return 1 ;;
   esac
 }
 
 # Whether the shape rotates every key after the tests, then restarts and
-# runs the tests that use keys again.
+# runs every suite again.
 shape_rotates() {
   case "$1" in
     default|ssh-xrootd|pstore-xrootd|s3v2-v2|tiny-posixv2-tx) return 0 ;;
@@ -110,12 +114,9 @@ shape_rotates() {
 
 shape_notes() {
   if shape_rotates "$1"; then
-    printf 'then rotates every key and reruns %s\n' "${rotated_suites}"
+    printf 'then rotates every key, restarts, and reruns every suite\n'
   fi
 }
-
-# The suites that use keys, which a shape that rotates them runs again.
-rotated_suites="owners auth transfers"
 
 log_dir=${SMOKE_LOG_DIR:-}
 while [ $# -gt 0 ]; do
@@ -167,6 +168,11 @@ docker info >/dev/null 2>&1 || die "cannot reach the Docker daemon"
 
 log_dir=${log_dir:-smoke-logs/$(date +%Y%m%d-%H%M%S)}
 mkdir -p "${log_dir}/results" || exit 1
+# Left by a run that was killed before it could put framework/var/bin/
+# back. Parking another there would test that run's client.
+[ ! -e "${log_dir}/.bin" ] \
+    || die "${log_dir}/.bin is framework/var/bin/ from a run that was killed;" \
+           "move it back to framework/var/bin/, or remove it"
 
 #---------------------------------------------------------------------------
 # Helpers
@@ -204,6 +210,10 @@ unpark() {
   fi
 }
 fresh_start() {
+  if [ -e "${parked}" ]; then
+    printf '%s is in the way of parking framework/var/bin/\n' "${parked}"
+    return 1
+  fi
   if [ -d framework/var/bin ]; then
     mv framework/var/bin "${parked}" || return 1
   fi
@@ -220,15 +230,22 @@ restart() { ./fed.sh restart --wait --wait-timeout 300; }
 
 # The tests, in the dev container (see test.py). A rerun's suites are
 # recorded as <suite>-<tag> (see RESULTS_TAG in
-# framework/testlib/report.py).
+# framework/testlib/report.py), beside the first run's.
 tests()         { ./fed.sh test; }
-# shellcheck disable=SC2086  # one suite per word
-tests_rotated() { RESULTS_TAG=rotated-keys ./fed.sh test ${rotated_suites}; }
+tests_rotated() { RESULTS_TAG=rotated-keys ./fed.sh test; }
 
-# Every Pelican server, and the discovery host, answers on its published
-# port over TLS with the framework's CA.
+# Every service is still running (none is meant to exit), and every
+# Pelican server, and the discovery host, answers on its published port
+# over TLS with the framework's CA.
 check_ports() {
-  services=$(./fed.sh ps --services) || return 1
+  states=$(./fed.sh ps --all --format '{{.Service}} {{.State}}') || return 1
+  printf '%s\n' "${states}"
+  stopped=$(printf '%s\n' "${states}" | awk 'NF && $2 != "running" { print $1 }')
+  if [ -n "${stopped}" ]; then
+    printf 'not running: %s\n' "$(printf '%s' "${stopped}" | tr '\n' ' ')"
+    return 1
+  fi
+  services=$(printf '%s\n' "${states}" | awk 'NF { print $1 }')
   checked=""
   for svc in ${services}; do
     case "${svc}" in
@@ -250,7 +267,7 @@ check_ports() {
 
 # What the shape runs after `up`: the tests run every suite that applies
 # to the shape. A shape that rotates every key then restarts, so that
-# every server rereads its keys, and runs the suites that use them again.
+# every server rereads its keys, and runs every suite again.
 shape_checks() {
   step "ports" check_ports || return 1
   step "tests" tests

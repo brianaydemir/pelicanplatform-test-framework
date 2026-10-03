@@ -271,6 +271,13 @@ class Federation:
         return self.issuers[namespace]
 
     @cached_property
+    def external_issuer(self) -> bool:
+        """EXTERNAL_ISSUER: whether the exports trust the federation's
+        external issuer instead of the origins' (see
+        presets/auth-external-issuer.sh)."""
+        return self._line("external-issuer") == "true"
+
+    @cached_property
     def origin_web_url(self) -> str:
         """The web URL of the origin whose issuer the namespaces name, which
         serves the server-wide JWKS."""

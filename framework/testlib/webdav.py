@@ -77,16 +77,29 @@ def relative(entries: List[Entry], base: str) -> Dict[str, Entry]:
     """entries by their paths below base (e.g. /protected-a/data/x), with
     base itself as "". A server may put its own prefix before base, as
     `tiny` does (/api/v1.0/origin/data); ValueError for any entry that is
-    not base or under it."""
-    base = base.rstrip("/")
-    found = {}
+    not base or under it, or that appears twice. The prefix is the one
+    before base's own entry, if the listing has one, and must be the same
+    for every entry."""
+    base = "/" + base.strip("/")
+    prefixes = [e.path[:-len(base)] for e in entries if e.path.endswith(base)]
+    if len(prefixes) > 1:
+        raise ValueError(f"{base} is listed {len(prefixes)} times")
+    found: Dict[str, Entry] = {}
     for entry in entries:
-        if entry.path.endswith(base):
-            found[""] = entry
-        elif f"{base}/" in entry.path:
-            found[entry.path.split(f"{base}/", 1)[1]] = entry
+        if prefixes:
+            prefix = prefixes[0]
+        else:
+            at = entry.path.find(f"{base}/")
+            prefix = entry.path[:at] if at >= 0 else None
+        if prefix is not None and entry.path == prefix + base:
+            name = ""
+        elif prefix is not None and entry.path.startswith(f"{prefix}{base}/"):
+            name = entry.path[len(prefix + base) + 1:]
         else:
             raise ValueError(f"{entry.path} is not under {base}")
+        if name in found:
+            raise ValueError(f"{entry.path} is listed twice")
+        found[name] = entry
     return found
 
 

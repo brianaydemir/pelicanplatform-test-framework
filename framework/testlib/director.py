@@ -52,9 +52,13 @@ class Answer:
         return f"HTTP {self.status} to {self.location or '(nowhere)'}, listing {self.listed}"
 
 
-def ask(director: str, route: str, path: str, token: Optional[str] = None) -> Answer:
+def ask(director: str, route: str, path: str, token: Optional[str] = None,
+        query: str = "") -> Answer:
     """Where director would send a GET of path: route `object` (a cache)
-    or `origin`."""
-    answer = web.request("GET", f"{director}/api/v1.0/director/{route}{path}", token=token)
+    or `origin`. query, if given, follows the path, e.g. `directread` for a
+    client's direct read, which only an origin with DirectReads may serve;
+    without it, the `origin` route serves caches too."""
+    url = f"{director}/api/v1.0/director/{route}{path}" + (f"?{query}" if query else "")
+    answer = web.request("GET", url, token=token)
     return Answer(answer.status, host(answer.header("Location")) if answer.header("Location")
                   else "", [host(u) for u in parse_link(answer.header("Link"))])

@@ -7,7 +7,10 @@ is skipped.
 
 Uploads go straight to the first origin in
 framework/var/generated/origins, under /protected-a/data/posc/. Only
-`client` goes through the director.
+`client` goes through the director. An interruption is judged only once
+the upload is seen under way: a new staging file under POSC, or growth in
+pstore/objects on pstore. Afterward, /protected-a/data/posc is emptied on
+every store.
 """
 
 import glob
@@ -19,13 +22,13 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlsplit
 
-from testlib import common, stores, web
+from testlib import blocks, common, stores, web
 from testlib.common import die, shown, wait_for
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
-from testlib.session import Session
+from testlib.session import Session, last_line
 
 SCENARIOS = {
     "commit":    "a complete upload lands, and leaves no staging file",
@@ -43,20 +46,28 @@ POSC_ONLY = ("stalled", "hidden")
 MiB = 1 << 20
 
 
+class CouldNotConnect(Exception):
+    """partial_put() could not connect, or finish the TLS handshake."""
+
+
 def partial_put(url: str, mode: str, total: int, send: int, hold: float, token: str,
-                sent: Optional[threading.Event] = None) -> Optional[str]:
+                sent: Optional[threading.Event] = None,
+                release: Optional[threading.Event] = None) -> Optional[str]:
     """An upload cut short: send the headers and `send` bytes, hold the
-    connection for `hold` seconds, then close its sending side as a dying
-    client would (no TLS close_notify). mode is `sized`, claiming a
-    Content-Length of total, or `chunked`. Sets sent once the bytes are
-    out. Returns the status that comes back, if any."""
+    connection for `hold` seconds or until release is set, then close its
+    sending side as a dying client would (no TLS close_notify). mode is
+    `sized`, claiming a Content-Length of total, or `chunked`. Sets sent
+    once the bytes are out. Returns the status that comes back, if any;
+    raises CouldNotConnect if it never got as far as sending."""
     u = urlsplit(url)
-    sock = socket.create_connection((u.hostname, u.port or 443), timeout=60)
+    try:
+        sock = socket.create_connection((u.hostname, u.port or 443), timeout=60)
+    except OSError as e:
+        raise CouldNotConnect(str(e)) from e
     try:
         # TLS over memory buffers, so that the socket can be half-closed
         # without TLS saying goodbye.
         tls_in, tls_out = ssl.MemoryBIO(), ssl.MemoryBIO()
-        tls = web.tls_context().wrap_bio(tls_in, tls_out, server_hostname=u.hostname)
 
         def flush() -> None:
             data = tls_out.read()
@@ -71,15 +82,19 @@ def partial_put(url: str, mode: str, total: int, send: int, hold: float, token: 
             tls_in.write(data)
             return True
 
-        while True:
-            try:
-                tls.do_handshake()
-                break
-            except ssl.SSLWantReadError:
-                flush()
-                if not pump():
-                    raise OSError("connection closed during the TLS handshake")
-        flush()
+        try:
+            tls = web.tls_context().wrap_bio(tls_in, tls_out, server_hostname=u.hostname)
+            while True:
+                try:
+                    tls.do_handshake()
+                    break
+                except ssl.SSLWantReadError:
+                    flush()
+                    if not pump():
+                        raise OSError("connection closed during the TLS handshake")
+            flush()
+        except OSError as e:  # including ssl.SSLError
+            raise CouldNotConnect(f"TLS handshake: {e}") from e
 
         target = u.path + (f"?{u.query}" if u.query else "")
         length = f"Content-Length: {total}" if mode == "sized" else "Transfer-Encoding: chunked"
@@ -91,7 +106,10 @@ def partial_put(url: str, mode: str, total: int, send: int, hold: float, token: 
         flush()
         if sent is not None:
             sent.set()
-        time.sleep(hold)
+        if release is not None:
+            release.wait(hold)
+        else:
+            time.sleep(hold)
 
         try:
             sock.shutdown(socket.SHUT_WR)
@@ -239,15 +257,68 @@ class Test:
         return web.request("PUT", f"{self.base_url}/{name}", token=self.token, upload=data)
 
     def partial_put(self, name: str, mode: str, total: int, send: int, hold: float,
-                    sent: Optional[threading.Event] = None) -> Optional[str]:
-        """partial_put() to object name. A connection that fails counts as
-        no response."""
+                    sent: Optional[threading.Event] = None,
+                    release: Optional[threading.Event] = None) -> Optional[str]:
+        """partial_put() to object name. A connection that fails once the
+        upload is sent counts as no response; one that never connects
+        raises CouldNotConnect."""
         try:
             return partial_put(f"{self.base_url}/{name}", mode, total, send, hold,
-                               self.token, sent)
+                               self.token, sent, release)
         except OSError as e:
             print(f"{common.PROG}: {name}: {e}", file=sys.stderr)
             return None
+
+
+class Upload:
+    """A Test.partial_put() in a thread of its own, so that the stores can
+    be watched while it is held open: until finish(), or for hold seconds
+    at most. Afterward, status is what came back, and error why it never
+    got under way, if it didn't."""
+
+    def __init__(self, test: Test, name: str, mode: str, total: int, send: int,
+                 hold: float = 60):
+        self.sent = threading.Event()
+        self.released = threading.Event()
+        self.status: Optional[str] = None
+        self.error: Optional[str] = None
+        self.thread = threading.Thread(target=self._put, args=(test, name, mode, total, send, hold),
+                                       daemon=True)
+        self.thread.start()
+
+    def _put(self, test: Test, name: str, mode: str, total: int, send: int, hold: float) -> None:
+        try:
+            self.status = test.partial_put(name, mode, total, send, hold, self.sent, self.released)
+        except CouldNotConnect as e:
+            self.error = f"could not connect: {e}"
+        except Exception as e:
+            self.error = f"{type(e).__name__}: {e}"
+
+    def started(self, seconds: float = 30) -> bool:
+        """Whether the bytes are out within seconds."""
+        wait_for(lambda: self.sent.is_set() or not self.thread.is_alive(), seconds, 0.1)
+        return self.sent.is_set()
+
+    def finish(self) -> None:
+        """Let the connection go, and wait for the answer."""
+        self.released.set()
+        self.thread.join()
+
+
+def watch(test: Test, upload: Upload) -> bool:
+    """Whether upload is seen under way (Test.under_way()) within 10
+    seconds of its bytes going out, while it is held open."""
+    return upload.started() and wait_for(test.under_way, 10)
+
+
+def unseen(test: Test, upload: Upload) -> str:
+    """Why an upload that was not seen under way fails, once finished: a
+    refusal (e.g. 400, 401, 403, or 411) or no answer leaves nothing to
+    judge the interruption by."""
+    if upload.error:
+        return upload.error
+    what = "pstore/objects did not grow" if test.pstore else "no staging file appeared"
+    return f"the upload never got under way: {what} ({http(upload.status)})"
 
 
 def holds(path: str, data: bytes) -> bool:
@@ -279,74 +350,72 @@ def commit(test: Test) -> Tuple[str, str]:
     return PASS, shown(path)
 
 
-def stalled_and_sized(test: Test, results: common.Results, stalled: bool,
+def stalled_check(test: Test, name: str) -> Tuple[str, str]:
+    """`stalled`, while object name's upload is held open and its staging
+    file exists."""
+    metrics = web.request("GET", f"{test.origin_web}/metrics").body.decode(errors="replace")
+    active = re.findall(r"^pelican_origin_posc_active_uploads (\S+)", metrics, re.M)
+    answer = web.request("HEAD", f"{test.base_url}/{name}", token=test.token)
+    path = test.object_file(name)
+    if path is not None:
+        return FAIL, f"{shown(path)} is visible before the upload finished"
+    if answer.status != 404:
+        return FAIL, f"HEAD got {answer.describe()}, not 404"
+    if not active or float(active[0]) < 1:
+        return FAIL, f"pelican_origin_posc_active_uploads is '{active[0] if active else ''}'"
+    return PASS, shown(test.new_staging())
+
+
+def cut_short(test: Test, name: str, upload: Upload) -> Tuple[str, str]:
+    """`sized` or `chunked`, once object name's upload, seen under way,
+    has been cut short: nothing is left of it, and the answer, if any,
+    is not a success."""
+    status = upload.status
+    if not wait_for(lambda: test.new_staging() is None, 10):
+        return FAIL, f"{http(status)}; staging file left: {shown(test.new_staging())}"
+    path = test.found(name)
+    if path is not None:
+        return FAIL, (f"{http(status)}, and {shown(path)} holds {test.size(path)} bytes of the"
+                      " partial upload")
+    wrong = wrong_answer(status)
+    if wrong:
+        return FAIL, wrong
+    return PASS, http(status)
+
+
+def stalled_and_sized(test: Test, add: Callable[[str, str, str], None], stalled: bool,
                       sized: bool) -> None:
-    """One upload that stalls, then is cut short: `stalled` looks while it
-    stalls, and `sized` after. It stalls for less when no one looks."""
+    """One upload, held open and then cut short: `stalled` looks while it
+    is held, and `sized` after. Each is added as it is decided."""
     name = f"{test.run}-stalled"
     test.mark()
-    sent = threading.Event()
-    outcome = {}
-
-    def upload() -> None:
-        outcome["status"] = test.partial_put(name, "sized", 2 * MiB, MiB, 15 if stalled else 2,
-                                             sent)
-
-    helper = threading.Thread(target=upload)
-    helper.start()
-
-    if not stalled:
-        pass
-    elif not sent.wait(30):
-        results.add("stalled", FAIL, "could not start the upload")
-    elif not wait_for(lambda: test.new_staging() is not None, 10):
-        results.add("stalled", FAIL, "no staging file appeared")
-    else:
-        metrics = web.request("GET", f"{test.origin_web}/metrics").body.decode(errors="replace")
-        active = re.findall(r"^pelican_origin_posc_active_uploads (\S+)", metrics, re.M)
-        answer = web.request("HEAD", f"{test.base_url}/{name}", token=test.token)
-        path = test.object_file(name)
-        if path is not None:
-            results.add("stalled", FAIL, f"{shown(path)} is visible before the upload finished")
-        elif answer.status != 404:
-            results.add("stalled", FAIL, f"HEAD got {answer.describe()}, not 404")
-        elif not active or float(active[0]) < 1:
-            results.add("stalled", FAIL,
-                        f"pelican_origin_posc_active_uploads is '{active[0] if active else ''}'")
-        else:
-            results.add("stalled", PASS, shown(test.new_staging()))
-
-    helper.join()
-    if not sized:
-        return
-    status = outcome.get("status")
-    path = test.found(name)
-    wrong = wrong_answer(status)
-    if path is not None:
-        results.add("sized", FAIL, f"{http(status)}, and {shown(path)} holds the partial upload")
-    elif not wait_for(lambda: test.new_staging() is None, 10):
-        results.add("sized", FAIL, f"{http(status)}; staging file left: {shown(test.new_staging())}")
-    elif wrong:
-        results.add("sized", FAIL, wrong)
-    else:
-        results.add("sized", PASS, http(status))
+    upload = Upload(test, name, "sized", 2 * MiB, MiB)
+    try:
+        seen = watch(test, upload)
+        if stalled and seen:
+            add("stalled", *stalled_check(test, name))
+    finally:
+        upload.finish()
+    if stalled and not seen:
+        add("stalled", FAIL, upload.error or ("no staging file appeared" if upload.sent.is_set()
+                                              else "could not start the upload"))
+    if sized:
+        add("sized", *(cut_short(test, name, upload) if seen else (FAIL, unseen(test, upload))))
 
 
 def chunked(test: Test) -> Tuple[str, str]:
     name = f"{test.run}-chunked"
     test.mark()
-    status = test.partial_put(name, "chunked", 0, MiB, 2)
-    time.sleep(2)
-    path = test.found(name)
-    if path is not None:
-        return FAIL, (f"{http(status)}, and {shown(path)} holds {test.size(path)} bytes of the"
-                      " partial upload")
-    if test.new_staging() is not None:
-        return FAIL, f"{http(status)}; staging file left: {shown(test.new_staging())}"
-    wrong = wrong_answer(status)
-    if wrong:
-        return FAIL, wrong
-    return PASS, http(status)
+    # A bit more than pstore buffers before spilling into pstore/objects,
+    # so that a pstore origin shows the upload under way too.
+    upload = Upload(test, name, "chunked", 0, blocks.SPILL + 64 * 1024)
+    try:
+        seen = watch(test, upload)
+    finally:
+        upload.finish()
+    if not seen:
+        return FAIL, unseen(test, upload)
+    return cut_short(test, name, upload)
 
 
 def overwrite(test: Test) -> Tuple[str, str]:
@@ -375,8 +444,9 @@ def client(test: Test) -> Tuple[str, str]:
     source = os.path.join(test.tmp, "client")
     with open(source, "wb") as f:
         f.truncate(total)
+    log_file = os.path.join(test.tmp, "client.log")
     test.mark()
-    with open(os.path.join(test.tmp, "client.log"), "wb") as log:
+    with open(log_file, "wb") as log:
         upload = subprocess.Popen(
             [test.pelican, "object", "put", "--token", test.token_file, source,
              f"{test.fed.url}/protected-a/data/posc/{name}"],
@@ -391,7 +461,7 @@ def client(test: Test) -> Tuple[str, str]:
             seen = True
             break
         time.sleep(0.1)
-    finished = upload.poll() is not None
+    code = upload.poll()
     upload.kill()
     upload.wait()
     os.remove(source)
@@ -399,10 +469,16 @@ def client(test: Test) -> Tuple[str, str]:
     path = test.found(name)
     try:
         if not seen:
-            return INCONCLUSIVE, ("the upload finished before it could be interrupted" if finished
-                                  else "could not see the upload begin")
+            if code is None:
+                return INCONCLUSIVE, "could not see the upload begin"
+            if code != 0:
+                with open(log_file, errors="replace") as f:
+                    return FAIL, f"`pelican object put` exited {code}: {last_line(f.read())}"
+            return INCONCLUSIVE, "the upload finished before it could be interrupted"
         if path is not None:
             return FAIL, f"{shown(path)} holds {test.size(path)} of {total} bytes"
+        if not wait_for(lambda: test.new_staging() is None, 10):
+            return FAIL, f"staging file left: {shown(test.new_staging())}"
         return PASS, ""
     finally:
         # Don't leave up to 1 GiB behind.
@@ -411,13 +487,33 @@ def client(test: Test) -> Tuple[str, str]:
 
 
 def hidden(test: Test) -> Tuple[str, str]:
-    answer = web.request("GET", f"{test.origin.url}/protected-a/", token=test.token,
-                         headers={"Accept": "text/html"})
+    """Lists the export while an upload is held open, so that
+    .pelican-posc is there to hide. Pelican's HTML listing has a row per
+    entry, `<a href="...">name</a>`, and the export holds data/."""
+    name = f"{test.run}-hidden"
+    posc_dir = f"{test.origin.store}/.pelican-posc"
+    url = f"{test.origin.url}/protected-a/"
+    test.mark()
+    upload = Upload(test, name, "sized", 2 * MiB, MiB)
+    answer: Optional[web.Response] = None
+    try:
+        staged = upload.started() and wait_for(lambda: test.new_staging() is not None, 10)
+        there = os.path.isdir(posc_dir)
+        if staged and there:
+            answer = web.request("GET", url, token=test.token, headers={"Accept": "text/html"})
+    finally:
+        upload.finish()
+    if answer is None:
+        if not staged:
+            return FAIL, upload.error or f"no staging file appeared ({http(upload.status)})"
+        return FAIL, f"{shown(posc_dir)} does not exist, although an upload is staged"
     if answer.status != 200:
         return FAIL, f"the listing got {answer.describe()}, not 200"
+    if b">data</a>" not in answer.body:
+        return FAIL, f"{url} does not list data/, so it is not the export's listing"
     if b".pelican-posc" in answer.body:
-        return FAIL, f"{test.origin.url}/protected-a/ lists .pelican-posc"
-    return PASS, ""
+        return FAIL, f"{url} lists .pelican-posc"
+    return PASS, f"{shown(posc_dir)} exists"
 
 
 RUN = {"commit": commit, "chunked": chunked, "overwrite": overwrite, "client": client,
@@ -437,12 +533,39 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
     kind = "pstore" if test.pstore else "POSC"
     print(f"{kind} test against {test.origin.svc} ({test.origin.url}),"
           f" objects {test.base_url}/{test.run}-*\n")
-    for name in selected:
-        if test.pstore and name in POSC_ONLY:
-            results.add(name, SKIP, "POSC staging only; pstore commits a version at close")
-        elif name not in ("stalled", "sized"):
-            results.add(name, *RUN[name](test))
-        # One upload serves both; run it for whichever comes first.
-        elif name == "stalled" or "stalled" not in selected or test.pstore:
-            stalled_and_sized(test, results, "stalled" in selected and not test.pstore,
-                              "sized" in selected)
+    added: Set[str] = set()
+
+    def add(scenario: str, status: str, note: str = "") -> None:
+        added.add(scenario)
+        results.add(scenario, status, note)
+
+    try:
+        for name in selected:
+            if test.pstore and name in POSC_ONLY:
+                add(name, SKIP, "POSC staging only; pstore commits a version at close")
+                continue
+            covers = [name]
+            if name in ("stalled", "sized"):
+                # One upload serves both; run it for whichever comes first.
+                stalled = "stalled" in selected and not test.pstore
+                if name == "sized" and stalled:
+                    continue
+                covers = [s for s, on in (("stalled", stalled), ("sized", "sized" in selected))
+                          if on]
+            try:
+                if name in ("stalled", "sized"):
+                    stalled_and_sized(test, add, "stalled" in covers, "sized" in covers)
+                else:
+                    add(name, *RUN[name](test))
+            except CouldNotConnect as e:
+                for scenario in (s for s in covers if s not in added):
+                    add(scenario, FAIL, f"could not connect: {e}")
+            except Exception as e:
+                for scenario in (s for s in covers if s not in added):
+                    add(scenario, FAIL, f"{type(e).__name__}: {e}")
+    finally:
+        # Every scenario's objects, and whatever an interrupted upload left.
+        errors = stores.empty_tree_everywhere(session.fed.origins, session.fed.exports,
+                                              "data/posc", session.tokens())
+        if errors:
+            common.warn(f"could not empty /protected-a/data/posc: {common.first(errors)}")

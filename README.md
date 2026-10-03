@@ -6,8 +6,9 @@ has two uses:
 
 - **Smoke tests.** `smoke.sh` runs the tests over a matrix of federation
   shapes, which together make every pair of choices that the presets
-  offer, from a clean start each time, and writes results that people
-  and CI can both read ([CI and results](docs/ci.md)).
+  offer ([with two exceptions](docs/configuration.md#presets)), from a
+  clean start each time, and writes results that people and CI can both
+  read ([CI and results](docs/ci.md)).
 - **Testing your changes.** Point it at your own images, client, or
   configuration, and run the tests, or anything else, against them
   ([Testing your changes](#testing-your-changes)).

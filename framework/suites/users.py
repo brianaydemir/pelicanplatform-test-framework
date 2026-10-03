@@ -79,6 +79,44 @@ def owned(origin: common.Origin, rel: str, token: str, uid: int) -> Tuple[str, s
     return PASS, f"{origin.svc}: uid {uid}"
 
 
+class Test:
+    """What both scenarios need: the origins, the run's collection, the
+    two tokens, and why the stores do not show who owns a file."""
+
+    def __init__(self, fed: common.Federation, origins: List[common.Origin], base: str,
+                 token: str, other_token: str, unshown: List[str]):
+        self.fed = fed
+        self.origins = origins
+        self.base = base
+        self.token = token
+        self.other_token = other_token
+        self.unshown = unshown
+
+
+def uploads_owned(test: Test, name: str, token: str, uid: int) -> Tuple[str, str]:
+    """owned() at every origin, of an object named for scenario name."""
+    if test.unshown:
+        return INCONCLUSIVE, common.first(test.unshown)
+    found = [owned(o, f"{test.base}/{name}-{o.svc}", token, uid) for o in test.origins]
+    failed = [note for status, note in found if status != PASS]
+    if failed:
+        return FAIL, common.first(failed)
+    return PASS, ", ".join(note for _, note in found)
+
+
+def owner(test: Test) -> Tuple[str, str]:
+    return uploads_owned(test, "owner", test.token, PELICAN_UID)
+
+
+def default_user(test: Test) -> Tuple[str, str]:
+    if not test.fed.multiuser:
+        return SKIP, "only under multiuser ('-p origin-multiuser')"
+    return uploads_owned(test, "default-user", test.other_token, XROOTD_UID)
+
+
+RUN = {"owner": owner, "default-user": default_user}
+
+
 def run(session: Session, selected: List[str], results: common.Results) -> None:
     fed = session.fed
     origins = stores.unique(fed.origins)
@@ -99,20 +137,9 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
             if errors:
                 die(f"could not make the test collection: {errors[0]}")
         unshown = [why for why in (shows_owners(o.store, base) for o in origins) if why]
+        test = Test(fed, origins, base, token, other_token, unshown)
         for name in selected:
-            if name == "default-user" and not fed.multiuser:
-                results.add(name, SKIP, "only under multiuser ('-p origin-multiuser')")
-                continue
-            if unshown:
-                results.add(name, INCONCLUSIVE, common.first(unshown))
-                continue
-            uid, used = (PELICAN_UID, token) if name == "owner" else (XROOTD_UID, other_token)
-            found = [owned(o, f"{base}/{name}-{o.svc}", used, uid) for o in origins]
-            failed = [note for status, note in found if status != PASS]
-            if failed:
-                results.add(name, FAIL, common.first(failed))
-            else:
-                results.add(name, PASS, ", ".join(note for _, note in found))
+            results.add(name, *RUN[name](test))
     finally:
         # The origins' files are theirs, and on a Linux host beyond
         # init-data.py's reach.

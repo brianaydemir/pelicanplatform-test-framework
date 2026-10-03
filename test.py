@@ -21,14 +21,14 @@ for, and if the federation never serves, nothing else runs. A suite
 that doesn't apply to the shape, such as posc without POSC or pstore, is
 skipped. Each suite writes a row per case to
 framework/var/results/<suite>.tsv; a run of everything first removes
-the results of earlier runs.
+the results of earlier runs with the same RESULTS_TAG.
 """
 
 import sys
 
 sys.dont_write_bytecode = True
 
-import glob  # noqa: E402
+import contextlib  # noqa: E402
 import os  # noqa: E402
 import tempfile  # noqa: E402
 import time  # noqa: E402
@@ -159,8 +159,11 @@ def main() -> int:
 
     common.enter_var()
     if not args:
-        for path in glob.glob(os.path.join(RESULTS, "*.tsv")):
-            os.remove(path)
+        # Only this run's: with RESULTS_TAG, another tag's are another run's
+        # (as smoke.sh's rerun after rotating the keys is).
+        for name in SUITES:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(Report(name, RESULTS).path)
     reports: List[Report] = []
     started = time.monotonic()
     with tempfile.TemporaryDirectory() as tmp:

@@ -24,8 +24,9 @@ or issuer, or another namespace's, are only for /protected-a and
 only one of them is exported, no export lists the other's own key, so
 `ns-other` and `ns-cross` are skipped. With the origins' issuer off,
 every namespace has one issuer URL, and no namespace has keys of its
-own, so `wrong-iss`, `ns-jwks`, `ns-other`, and `ns-cross` are skipped
-(see moot()).
+own, so `wrong-iss`, `ns-jwks`, `ns-other`, and `ns-cross` are skipped;
+so they are with the external issuer, whose JWKS also lacks `jwks`'s
+key, so `jwks` is skipped too (see moot()).
 """
 
 import json
@@ -173,15 +174,25 @@ def namespace_issuers(fed: common.Federation) -> bool:
 
 def moot(fed: common.Federation, cred: Credential) -> Optional[str]:
     """Why cred can test nothing in this federation, if it can't. With
-    the origins' issuer off, `wrong-iss` would claim the right issuer,
-    and no namespace has keys of its own. Where only one protected
-    namespace is exported (e.g. `-p origin-httpsv2`), no export lists the
-    other's own key, so a token signed with it (`ns-other`, `ns-cross`)
-    would only repeat `unknown`."""
+    the origins' issuer off, or the external issuer in its place,
+    `wrong-iss` would claim the right issuer, and no namespace has keys of
+    its own. The external issuer's JWKS holds only its own keys, so a
+    token that names it but is signed with a key listed only in
+    Server.IssuerJwks (`jwks`) would only repeat `unknown`. Where only one
+    protected namespace is exported (e.g. `-p origin-httpsv2`), no export
+    lists the other's own key, so a token signed with it (`ns-other`,
+    `ns-cross`) would only repeat `unknown`."""
+    if fed.external_issuer:
+        why = "every namespace trusts the external issuer"
+    else:
+        why = "the origins' issuer is off"
     if cred.issuer != "own" and not namespace_issuers(fed):
-        return "every namespace has one issuer (the origins' issuer is off), so none is wrong"
+        return f"every namespace has one issuer ({why}), so none is wrong"
     if cred.key in NAMESPACE_KEYS and not namespace_issuers(fed):
-        return "the origins' issuer is off, so no namespace has keys of its own"
+        return f"{why}, so no namespace has keys of its own"
+    if cred.key == "jwks" and fed.external_issuer:
+        return ("the external issuer's JWKS lacks Server.IssuerJwks's key, so the token"
+                " would only repeat `unknown`")
     if cred.key == "ns-other":
         for namespace in PROTECTED:
             if namespace not in fed.exports:

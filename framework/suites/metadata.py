@@ -15,7 +15,7 @@ import os
 import time
 from typing import List, Optional, Tuple
 
-from testlib import common, web
+from testlib import common, stores, web
 from testlib.common import die, shown
 from testlib.report import FAIL, PASS
 from testlib.session import Session, last_line
@@ -94,13 +94,10 @@ class Test:
             if accepted:
                 return True, accepted[-1]
             time.sleep(1)
-        last = [row[0] for row in index() if row[3:4] == [path]]
+        last = [row for row in index() if row[3:4] == [path]]
         if not last:
             return False, f"no {kind} event arrived"
-        with open(f"{CAPTURES}/{last[-1]}.json") as f:
-            capture = json.load(f)
-        return False, (f"last delivery got HTTP {capture.get('status')}:"
-                       f" {str(capture.get('response', '')).rstrip()}")
+        return False, last_delivery(last[-1])
 
     def direct_put(self, data: bytes, name: str, metadata: str) -> web.Response:
         """Upload data as object name straight to the first origin, with
@@ -135,6 +132,30 @@ def event(capture: str) -> dict:
         return json.load(f)
 
 
+def last_delivery(row: List[str]) -> str:
+    """How the delivery that index() row records went: the status and
+    answer in its <id>.json, or, if that can't be read, the row's."""
+    try:
+        with open(f"{CAPTURES}/{row[0]}.json") as f:
+            capture = json.load(f)
+        status, answer = capture.get("status"), str(capture.get("response", "")).rstrip()
+    except (OSError, ValueError, AttributeError):
+        status, answer = (row[1] if len(row) > 1 else "?"), "(no record of the answer)"
+    return f"last delivery got HTTP {status}: {answer}"
+
+
+def delivered(path: str, status: str) -> bool:
+    """Whether index() records a delivery for object path that the
+    recorder answered with status."""
+    return any(row[1:2] == [status] and row[3:4] == [path] for row in index())
+
+
+def same(got: object, want: object) -> bool:
+    """Whether a value from an event's JSON is want, type and all: 1 is
+    not True, nor 1.0."""
+    return json.dumps(got, sort_keys=True) == json.dumps(want, sort_keys=True)
+
+
 #---------------------------------------------------------------------------
 # The scenarios. Each returns its result and a note.
 
@@ -149,8 +170,10 @@ def fields(test: Test) -> Tuple[str, str]:
     if not arrived:
         return FAIL, capture
     got = event(capture).get("object", {})
-    if any(got.get(k) != v for k, v in test.fields.items()):
-        return FAIL, f"{shown(CAPTURES)}/{capture}.event.json lacks fields.json's fields"
+    wrong = [k for k, v in test.fields.items() if k not in got or not same(got[k], v)]
+    if wrong:
+        return FAIL, (f"{shown(CAPTURES)}/{capture}.event.json lacks fields.json's"
+                      f" {', '.join(wrong)}, or has them with other values or types")
     return test.check_stored(name, data, capture) or (PASS, f"{shown(CAPTURES)}/{capture}.event.json")
 
 
@@ -184,14 +207,25 @@ def update(test: Test) -> Tuple[str, str]:
     arrived, capture = test.await_event(f"{PREFIX}/{name}", "object.committed")
     if not arrived:
         return FAIL, f"creating it ({answer.describe()}): {capture}"
+    created = event(capture).get("object", {})
     data = os.urandom(8192)
     answer = test.direct_put(data, name, 'step="update"')
     arrived, capture = test.await_event(f"{PREFIX}/{name}", "object.updated")
     if not arrived:
         return FAIL, f"overwriting it ({answer.describe()}): {capture}"
+    where = f"{shown(CAPTURES)}/{capture}.event.json"
+    got = event(capture).get("object", {})
+    if not same(got.get("size"), len(data)):
+        return FAIL, f"{where} has size {got.get('size')!r}, not the new {len(data)}"
+    # The event's ETag is the backend's, which on POSIXv2 is not the one a
+    # PUT or GET answers with; so it is only checked to have changed.
+    if got.get("etag") and got.get("etag") == created.get("etag"):
+        return FAIL, f"{where} has the original's etag, {got.get('etag')}"
+    if not same(got.get("step"), "update"):
+        return FAIL, f"{where} has step {got.get('step')!r}, not 'update'"
     if not test.holds(name, data):
         return FAIL, "the store doesn't hold the new bytes"
-    return PASS, f"{shown(CAPTURES)}/{capture}.event.json"
+    return PASS, where
 
 
 def delete(test: Test) -> Tuple[str, str]:
@@ -229,13 +263,17 @@ def fault(test: Test, scenario: str, name: str, eventual_status: str) -> Tuple[s
     mode it must succeed, with X-Pelican-Metadata-Status eventual_status."""
     answer = test.direct_put(os.urandom(4096), name, f'step="{scenario}"')
     got = answer.header("X-Pelican-Metadata-Status")
-    left = test.object_file(name)
     if test.mode == "transactional":
+        refused = "503" if scenario == "retry" else "422"
         if answer.status is None or answer.status // 100 != 5:
             return FAIL, f"{answer.describe()}, not a 5xx, although the delivery failed"
-        if left is not None:
-            return FAIL, f"{answer.describe()}, but {shown(left)} was not rolled back"
-        return PASS, answer.describe()
+        if not common.wait_for(lambda: delivered(f"{PREFIX}/{name}", refused), 10):
+            return FAIL, f"{answer.describe()}, but the recorder answered no delivery with {refused}"
+        if not common.wait_for(lambda: test.object_file(name) is None, 10):
+            return FAIL, (f"{answer.describe()}, but {shown(test.object_file(name))} was not"
+                          " rolled back")
+        return PASS, f"{answer.describe()} after HTTP {refused} from the recorder"
+    left = test.object_file(name)
     if not answer.ok:
         return FAIL, answer.describe()
     if got != eventual_status:
@@ -255,6 +293,12 @@ def retry(test: Test) -> Tuple[str, str]:
 
 def reject(test: Test) -> Tuple[str, str]:
     return fault(test, "reject", f"reject-{test.run}", "rejected")
+
+
+def uploaded(run: str) -> List[str]:
+    """The names of the objects that the scenarios upload in run."""
+    return [f"{run}-{s}" for s in ("fields", "blob", "update", "delete", "status")] + [
+        f"fail-once-{run}", f"reject-{run}"]
 
 
 RUN = {"fields": fields, "blob": blob, "update": update, "delete": delete,
@@ -281,5 +325,20 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
     test = Test(session)
     print(f"Metadata test ({test.mode} mode) against {test.origin.svc},"
           f" objects {PREFIX}/{test.run}-*\n")
-    for name in selected:
-        results.add(name, *RUN[name](test))
+    try:
+        for name in selected:
+            try:
+                result, note = RUN[name](test)
+            except Exception as e:
+                result, note = FAIL, f"{type(e).__name__}: {e}"
+            results.add(name, result, note)
+    finally:
+        # What the scenarios uploaded, from every store.
+        errors = []
+        for name in uploaded(test.run):
+            for origin in stores.unique(session.fed.origins):
+                error = stores.delete(origin, "protected-a", f"data/metadata/{name}", test.token)
+                if error:
+                    errors.append(error)
+        if errors:
+            common.warn(f"could not remove the objects uploaded: {common.first(errors)}")

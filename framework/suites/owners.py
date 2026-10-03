@@ -8,10 +8,12 @@ exports those (see framework/testlib/owners.py).
               servers learn of it
   keys        origin-2 and its issuer publish its keys, and none of the
               origins' or the tests'; the origins publish none of its
-  routing     each director sends a direct read of origin-2's prefixes to
-              it alone, and of the origins' to them alone; and through
-              each cache, /public/other/... is origin-2's object, never
-              what origin-0's /public holds at other/..., while
+  routing     each director sends a client's direct read (?directread)
+              of origin-2's prefixes to it alone, and of the origins' to
+              them alone, or where the export takes no direct clients,
+              finds no origin (405) and names none; and through each
+              cache, /public/other/... is origin-2's object, never what
+              origin-0's /public holds at other/..., while
               /public/others-<run>/... is origin-0's
   <credential>
               each credential of the table in testlib/owners.py, on both
@@ -22,7 +24,11 @@ exports those (see framework/testlib/owners.py).
               its origin, an upload with origin-2's token, and each
               owner's token in the other's namespace
 
-Objects go under data/owners/<run>/ in each store. Responses go to
+`ready` runs first, whatever else is asked for, since nothing else can
+pass until origin-2 serves; the suite stops if it can't pass.
+
+Objects go under data/owners/<run>/ in each store, and are removed after
+the suite, from a pstore origin too. Responses go to
 framework/var/data/owners-test/.
 """
 
@@ -30,6 +36,7 @@ import json
 import os
 import shutil
 import time
+import traceback
 from typing import Dict, List, Optional, Tuple
 
 from suites.auth import label, record, save
@@ -76,6 +83,10 @@ class Test:
         self.fed = session.fed
         self.pairs = owners.pairs(self.fed)
         self.origins = stores.unique(self.fed.origins)
+        # Every store the suite writes: the other owners', then the
+        # origins'.
+        self.every = [o.store for o in [owner.origin for owner in self.fed.owners]
+                      + self.origins]
         self.base = f"data/owners/{session.run}"
         self._tokens: Dict[Tuple[str, str, str], Tuple[Optional[str], Optional[str]]] = {}
 
@@ -232,30 +243,37 @@ def keys(test: Test) -> Tuple[str, str]:
 # routing
 
 def routing(test: Test) -> Tuple[str, str]:
+    """A client's direct read (?directread) of each side of each pair must
+    go to the side's own origins alone; where the side's export takes no
+    direct clients, the director must find no origin (405), and name
+    none, not even the other side's, whose prefix may enclose it."""
     fed = test.fed
     problems: List[str] = []
     origin_hosts = [director.host(o.url) for o in fed.origins]
     notes = []
     for pair in test.pairs:
         owner_host = director.host(pair.owner.origin.url)
-        asks = []
-        if "DirectReads" in pair.export.caps:
-            asks.append((f"{pair.export.prefix}/{test.object_rel('owner')}", [owner_host],
-                         origin_hosts))
-        if "DirectReads" in fed.exports[pair.like]:
-            asks.append((f"/{pair.like}/{test.object_rel('origins')}", origin_hosts,
-                         [owner_host]))
+        # Each side: an object there, its origins, and whether its export
+        # takes direct reads.
+        sides = [(f"{pair.export.prefix}/{test.object_rel('owner')}", [owner_host],
+                  "DirectReads" in pair.export.caps),
+                 (f"/{pair.like}/{test.object_rel('origins')}", origin_hosts,
+                  "DirectReads" in fed.exports[pair.like])]
         for url in fed.directors:
-            for path, wanted, unwanted in asks:
-                answer = director.ask(url, "origin", path)
-                if not hosts_named(answer, wanted):
-                    problems.append(f"{director.host(url)} named none of {wanted} for {path}:"
-                                    f" {answer.describe()}")
-                if hosts_named(answer, unwanted):
-                    problems.append(f"{director.host(url)} named {hosts_named(answer, unwanted)}"
-                                    f" for {path}")
-        if asks:
-            notes.append(f"{len(asks) * len(fed.directors)} direct route(s) for {pair.export.prefix}")
+            for path, hosts, direct in sides:
+                answer = director.ask(url, "origin", path, query="directread")
+                wanted = hosts if direct else []
+                unwanted = hosts_named(answer, [h for h in origin_hosts + [owner_host]
+                                                if h not in wanted])
+                what = f"{director.host(url)}, for a direct read of {path},"
+                if wanted and not hosts_named(answer, wanted):
+                    problems.append(f"{what} named none of {wanted}: {answer.describe()}")
+                if unwanted:
+                    problems.append(f"{what} named {unwanted}")
+                if not direct and answer.status != 405:
+                    problems.append(f"{what} should find no origin (405): {answer.describe()}")
+        notes.append(f"{len(sides) * len(fed.directors)} direct read(s) of {pair.export.prefix}"
+                     f" and /{pair.like}")
     public = next((p for p in test.pairs if p.like == "public"), None)
     if public is None:
         notes.append("no /public/other")
@@ -501,37 +519,67 @@ def client(test: Test, name: str) -> Tuple[str, str]:
 CHECKS = {"ready": ready, "keys": keys, "routing": routing}
 
 
+def clean(test: Test) -> List[str]:
+    """Empty data/owners in every store (see run()); what went wrong. A
+    pstore origin's encrypted store, which only it can change, is emptied
+    through it, and its plain copy, which the suite writes too, directly."""
+    fed = test.fed
+    errors: List[str] = []
+    for store in test.every:
+        try:
+            common.empty_dir(f"{store}/data/owners")
+        except OSError as e:
+            errors.append(f"emptying framework/var/{store}/data/owners: {e.strerror}")
+    pstores = [o for o in test.origins if o.pstore]
+    if pstores:
+        errors += stores.empty_tree_everywhere(pstores, fed.exports, "data/owners",
+                                               test.session.tokens())
+    return errors
+
+
 def run(session: Session, selected: List[str], results: common.Results) -> None:
     fed = session.fed
     test = Test(session)
-    every = [o.store for o in [owner.origin for owner in fed.owners] + test.origins]
-    for store in every:
+    for store in test.every:
         if not os.path.isdir(f"{store}/data/owners"):
             die(f"framework/var/{store}/data/owners is missing; run ./fed.sh init")
-        common.empty_dir(f"{store}/data/owners")
+    # Earlier runs' objects come out first.
+    errors = clean(test)
+    if errors:
+        die(f"could not remove earlier runs' objects: {first(errors)}")
     shutil.rmtree(OUT, ignore_errors=True)
     os.makedirs(f"{OUT}/responses")
-    for store in every:
+    for store in test.every:
         os.makedirs(f"{store}/{test.base}")
         os.chmod(f"{store}/{test.base}", 0o777)
     print(f"Another owner: {', '.join(o.origin.svc for o in fed.owners)}; pairs:"
           f" {', '.join(f'{p.export.prefix} ~ /{p.like}' for p in test.pairs)}\n")
     header = False
     try:
+        # Nothing else can pass until origin-2 serves.
+        if selected and "ready" not in selected:
+            ready(test)
         for name in selected:
-            if name in CHECKS:
-                results.add(name, *CHECKS[name](test))
-            elif name in CLIENT:
-                results.add(name, *client(test, name))
-            else:
-                if not header:
-                    print(f"\n{'credential':<11} {'target':<10} {'ns':<12} {'op':<6}"
-                          f" {'code':>4}  result")
-                    header = True
-                check_credential(test, owners.BY_NAME[name], results.report)
+            try:
+                if name in CHECKS:
+                    results.add(name, *CHECKS[name](test))
+                elif name in CLIENT:
+                    results.add(name, *client(test, name))
+                else:
+                    if not header:
+                        print(f"\n{'credential':<11} {'target':<10} {'ns':<12} {'op':<6}"
+                              f" {'code':>4}  result")
+                        header = True
+                    check_credential(test, owners.BY_NAME[name], results.report)
+            except Exception as e:
+                # A bug, or a server answering what the suite can't read:
+                # the scenario fails, and the rest still run.
+                traceback.print_exc()
+                results.add(name, FAIL, f"{type(e).__name__}: {e}")
     finally:
         clean_nested(test)
         # The origins' files are theirs, and on a Linux host beyond
         # init-data.py's reach.
-        for store in every:
-            common.empty_dir(f"{store}/data/owners")
+        errors = clean(test)
+        if errors:
+            common.warn(f"could not remove the suite's objects: {first(errors)}")

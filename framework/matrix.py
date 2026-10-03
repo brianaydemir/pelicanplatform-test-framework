@@ -132,9 +132,6 @@ REFUSED: List[Rule] = [
 SMOKE_LIMITS: List[Rule] = [
     ("once the servers drop privileges, the host may not write their keys",
      lambda s: s["keys"] == "rotated" and s["privileges"] == "dropped"),
-    ("without writes, there is nothing for POSC, metadata, or multiuser to act on",
-     lambda s: s["direct"] == "no"
-     and (s["posc"] == "on" or s["metadata"] != "off" or s["multiuser"] == "on")),
 ]
 
 

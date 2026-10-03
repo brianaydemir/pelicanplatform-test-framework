@@ -160,10 +160,11 @@ fed_knobs="IMAGE_HUB PELICAN_TAG PELICAN_DEV_TAG PELICAN_SRC_DIR
 
 # Knobs that choose one of several things, which no two presets may both
 # choose: `-p origin-pstore -p origin-ssh` would otherwise quietly be
-# `origin-ssh`. So that choosing the default (`-p origin-posixv2`) counts
-# too, each of these knobs is `fed-unchosen` while a preset is sourced,
-# which is what a preset that reads one sees.
-fed_exclusive_knobs="TOPOLOGY ORIGIN_VARIANT CACHE_VARIANT"
+# `origin-ssh`, and `-p origin-metadata -p origin-metadata-tx` quietly
+# transactional. So that choosing the default (`-p origin-posixv2`)
+# counts too, each of these knobs is `fed-unchosen` while a preset is
+# sourced, which is what a preset that reads one sees.
+fed_exclusive_knobs="TOPOLOGY ORIGIN_VARIANT CACHE_VARIANT ORIGIN_METADATA_MODE"
 
 # One variable per knob, so that a path with spaces survives.
 for fed_knob in ${fed_knobs}; do
@@ -727,6 +728,7 @@ fed_generate() {
       framework/var/generated/origin-issuer-url-public
   printf '%s\n' "${fed_origin_url}" | fed_write framework/var/generated/origin-web-url
   printf '%s\n' "${fed_origin_key_dir}" | fed_write framework/var/generated/origin-key-dir
+  printf '%s\n' "${EXTERNAL_ISSUER}" | fed_write framework/var/generated/external-issuer
   printf '%s\n' "${fed_federation_url}" | fed_write framework/var/generated/federation-url
   printf '%s\n' "${ORIGIN_VARIANT}" | fed_write framework/var/generated/origin-variant
   printf '%s\n' "${ORIGIN_POSC}" | fed_write framework/var/generated/origin-posc

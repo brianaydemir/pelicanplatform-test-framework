@@ -13,10 +13,27 @@ present them.
 import os
 import subprocess
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 from . import common, credentials
 from .credentials import RWM, Credential
+
+
+# How long a client command may run before it is killed and fails, and
+# the exit status it then has (timeout(1)'s).
+CLIENT_TIMEOUT = 600.0
+TIMED_OUT = 124
+
+
+def timed_out(seconds: float) -> str:
+    """What a client run that was killed after seconds says."""
+    return f"timed out after {seconds:.0f}s, and was killed"
+
+
+def _text(output: Union[str, bytes, None]) -> str:
+    if output is None:
+        return ""
+    return output.decode(errors="replace") if isinstance(output, bytes) else output
 
 
 class Session:
@@ -98,13 +115,18 @@ class Session:
 
     def pelican_cmd(self, *args: str, env: Optional[Dict[str, str]] = None,
                     cwd: Optional[str] = None,
-                    timeout: Optional[float] = None) -> Tuple[int, str, str]:
+                    timeout: float = CLIENT_TIMEOUT) -> Tuple[int, str, str]:
         """Run `pelican <args>` with no terminal: its exit status, stdout,
         and stderr. With no token, `pelican object` would otherwise try to
-        acquire one interactively."""
-        done = subprocess.run([self.pelican, *args], env=env or self.env, cwd=cwd or self.tmp,
-                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, text=True, timeout=timeout)
+        acquire one interactively. A run that outlasts timeout is killed,
+        and fails with "timed out" in its stderr."""
+        try:
+            done = subprocess.run([self.pelican, *args], env=env or self.env,
+                                  cwd=cwd or self.tmp, stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                  timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            return TIMED_OUT, _text(e.stdout), _text(e.stderr) + f"\n{timed_out(timeout)}\n"
         return done.returncode, done.stdout, done.stderr
 
 

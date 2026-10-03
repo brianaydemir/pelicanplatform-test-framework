@@ -41,7 +41,11 @@ EOF
   `Origin.DisableDirectClients`, `Origin.Multiuser`, and
   `Server.DropPrivileges` are set by environment variables, which beat
   files, because `fed.sh` and the tests depend on them. To change one,
-  write a [preset](#presets) of your own.
+  write a [preset](#presets) of your own. Pelican ignores an empty
+  variable, though, so without `-p origin-max-age`, which leaves
+  `Origin.CacheControl` empty, a file of yours can still set it, and
+  the tests won't know: the `blocks` suite checks what the origins send
+  only when `ORIGIN_CACHE_CONTROL` is set.
 - `fed.sh` generates `Logging.Level` (from `PELICAN_LOG_LEVEL`) and every
   server's `EnableOIDC` (from `-p auth-oidc`) in `/fed/generated/conf`,
   so a file of yours can override them, e.g. for one service.
@@ -92,12 +96,18 @@ name. It can set any knob in `framework/presets/default.sh`, or call
 `fed_enable_profile` to start optional services.
 
 - **Coverage.** The shapes that `smoke.sh` runs (`./smoke.sh -l`) make,
-  together, every pair of choices that the presets offer, except
-  `auth-oidc` and `with-grafana`, which need an identity provider and a
-  data source that the framework lacks. `framework/matrix.py` lists the
-  choices, and which combinations `fed.sh` refuses; its unit tests check
-  that it agrees with `fed.sh`, and that the shapes cover every pair. A
-  preset of your own is in no shape.
+  together, every pair of choices that the presets offer, and rotating every
+  key, which some shapes do before running every suite again. The
+  exceptions: `auth-oidc` and `with-grafana`, which need an identity
+  provider and a data source that the framework lacks; and rotated keys with
+  `server-unprivileged`, whose servers' keys the host may not write. Under
+  `origin-no-direct`, `/protected-a` takes no writes, so the `posc`,
+  `metadata`, and `users` suites skip; its pairs with `origin-posc`,
+  `origin-metadata`, `origin-metadata-tx`, and `origin-multiuser` test reads
+  with those features on. `framework/matrix.py` lists the choices, and which
+  combinations `fed.sh` refuses; its unit tests check that it agrees with
+  `fed.sh`, and that the shapes cover every pair. A preset of your own is in
+  no shape.
 - **The connection broker** has no preset.
 
 
