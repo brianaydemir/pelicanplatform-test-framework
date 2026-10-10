@@ -288,6 +288,12 @@ fed_exports_namespace() {
   return 1
 }
 
+# The tests probe the federation through a namespace that takes a token
+# (framework/suites/federation.py), so one must be exported.
+fed_exports_namespace protected-a || fed_exports_namespace protected-b \
+    || die "ORIGIN_NAMESPACES ('${fed_namespaces}') has no protected namespace," \
+           "which the tests need; add 'protected-a' or 'protected-b'"
+
 # Set fed_caps to the capabilities the origins give namespace $1 (one of
 # those above). /public takes no writes, and so has no issuer. Without
 # direct clients, Pelican allows only reads.
@@ -688,7 +694,8 @@ fed_generate() {
     done
   } | fed_write framework/var/generated/conf/50-knobs.yaml
 
-  # The `discovery` service's documents (unused by `tiny`).
+  # The `discovery` service's documents. `tiny` runs no such service,
+  # but test.py reads discovery.json there too, for the directors.
   {
     printf '{\n'
     printf '  "discovery_endpoint": "%s",\n' "${fed_discovery_url}"
@@ -752,11 +759,10 @@ fed_generate() {
 
   # One line per running origin that exports these namespaces (so not
   # origin-2, another owner, which is in owners below): service, the URL
-  # under which it serves its
-  # exports, and the directory (under framework/var) that is its
-  # StoragePrefix. A pstore origin's store is encrypted, so the directory
-  # named is the plain copy that the transfers suite uploads to it (marked
-  # `pstore`).
+  # under which it serves its exports, and the directory (under
+  # framework/var) that is its StoragePrefix. A pstore origin's store is
+  # encrypted, so the directory named is the plain copy that the
+  # transfers suite uploads to it (marked `pstore`).
   {
     if [ "${fed_topology}" = tiny ]; then
       fed_origin_line fed 0
@@ -1634,10 +1640,10 @@ fed_remove_unselected() {
 
 # Compose recreates a container when its definition changes, not when a
 # mounted file does. After framework/var/generated/conf/ or instance/
-# changes (see fed_conf_sum), name
-# the Pelican services still running with the old configuration (same
-# container ID as before `up`). framework/var/generated/conf-changed
-# holds those IDs until none are left.
+# changes (see fed_conf_sum), name the Pelican services still running
+# with the old configuration (same container ID as before `up`).
+# framework/var/generated/conf-changed holds those IDs until none are
+# left.
 fed_up() {
   fed_remove_unselected
 

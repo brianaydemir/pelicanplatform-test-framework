@@ -413,22 +413,26 @@ def check_delete(test: Test, report: Report, cred: OwnerCredential, pair: Pair, 
 
 def client_get(test: Test, pair: Pair, side: str, cred: OwnerCredential, direct: bool,
                tag: str) -> Optional[str]:
-    """`pelican object get` of one of side's objects with cred's token;
-    what went wrong, or None."""
+    """`pelican object get` of one of side's objects with cred's token,
+    into a directory, so that the client stats the object first and a
+    refusal reads as the server's (see testlib/transfers.py); what went
+    wrong, or None."""
     fed = test.fed
     _, token_file = test.token(cred, pair, side)
     rel = test.object_rel(side, 1)
-    target = test.session.path(f"owners-{tag}")
-    stats = f"{target}.json"
-    for path in (target, stats):
-        if os.path.exists(path):
-            os.remove(path)
+    into = test.session.path(f"owners-{tag}")
+    shutil.rmtree(into, ignore_errors=True)
+    os.makedirs(into)
+    target = os.path.join(into, rel.rsplit("/", 1)[-1])
+    stats = f"{into}.json"
+    if os.path.exists(stats):
+        os.remove(stats)
     args = ["--token", token_file] if token_file else []
     if direct:
         args.append("--direct")
     ns = pair.namespace(side)
     code, out, err = test.session.pelican_cmd("object", "get", *args, "--transfer-stats", stats,
-                                              f"{fed.url}/{ns}/{rel}", target)
+                                              f"{fed.url}/{ns}/{rel}", into)
     what = f"{'direct ' if direct else ''}get of /{ns}/{rel} ({cred.name})"
     if owners.expected(fed, cred, pair, side, "get", direct) != ALLOW:
         if code == 0:

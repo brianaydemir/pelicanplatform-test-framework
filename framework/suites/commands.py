@@ -15,8 +15,9 @@ and change nothing.
 The *-no-token scenarios check that the client itself refuses, for want
 of a token (Error code 4010), before it asks any server.
 
-These commands exit 0, 1, or 11, whatever went wrong, so failures are
-judged by what they print (see testlib/transfers.py's FAILURE_RULES).
+These commands' exit status says little about what went wrong (mostly
+1 or 11), so failures are judged by what they print (see
+testlib/transfers.py's FAILURE_RULES).
 The run's objects are removed afterward, from a pstore origin too.
 """
 
@@ -285,7 +286,7 @@ def json_out(text: str, kind: type) -> Any:
     if not isinstance(value, kind):
         raise ValueError(f"the JSON is {JSON_TYPES.get(type(value), type(value).__name__)},"
                          f" not {JSON_TYPES[kind]}")
-    if kind is list and not all(isinstance(item, dict) for item in value):
+    if isinstance(value, list) and not all(isinstance(item, dict) for item in value):
         raise ValueError("the JSON array holds more than objects")
     return value
 

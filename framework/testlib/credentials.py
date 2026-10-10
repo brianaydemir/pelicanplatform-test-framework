@@ -36,7 +36,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import AbstractSet, Dict, FrozenSet, List, Optional, Tuple
+from typing import AbstractSet, Dict, FrozenSet, List, Mapping, Optional, Tuple
 
 from . import common
 
@@ -252,7 +252,7 @@ def key_ids(document: bytes) -> FrozenSet[str]:
 
 
 def server_jwks_problems(have: AbstractSet[str], jwks: AbstractSet[str],
-                         own: Dict[str, AbstractSet[str]]) -> List[str]:
+                         own: Mapping[str, AbstractSet[str]]) -> List[str]:
     """What is wrong with the server-wide JWKS, whose kids are have: it
     should hold Server.IssuerJwks's (jwks), and no namespace's own (own,
     by protected namespace)."""
@@ -267,7 +267,7 @@ def server_jwks_problems(have: AbstractSet[str], jwks: AbstractSet[str],
 
 def namespace_jwks_problems(namespace: str, have: AbstractSet[str],
                             server: Optional[AbstractSet[str]],
-                            own: Dict[str, AbstractSet[str]]) -> List[str]:
+                            own: Mapping[str, AbstractSet[str]]) -> List[str]:
     """What is wrong with protected namespace's JWKS, whose kids are
     have: it should hold the server-wide JWKS's (server; None if that was
     unreadable), its own (own, by protected namespace), and nothing
@@ -354,10 +354,11 @@ def wait_until_stale(expiry: Optional[float]) -> None:
 
 def client_env(overwrites: bool = True) -> Dict[str, str]:
     """The environment for a client that should present only the token
-    it is given. The client presents the first acceptable token it finds,
-    looking at --token, then these variables and token files, then
-    _CONDOR_CREDS (client/acquire_token.go in Pelican). Most credentials'
-    tokens are unacceptable on purpose, so any other token would win: drop
+    it is given. The client looks for tokens at --token, then in these
+    variables and token files, then in _CONDOR_CREDS, and presents the
+    first acceptable one, or the first it found if none is
+    (client/acquire_token.go in Pelican). Most credentials' tokens are
+    unacceptable on purpose, so any other token would win over them: drop
     the variables, and refuse to run with a token file. With no token,
     `pelican object` also looks in its credential store, which in the dev
     container outlives a run: give it an empty one. It then gives up

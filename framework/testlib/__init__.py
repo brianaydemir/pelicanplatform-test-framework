@@ -5,6 +5,8 @@ framework/init-data.py share.
   common       paths, messages, the command line, and generated/
   credentials  the credentials the tests present, and what each allows
   director     asking a director where it would send a request
+  owners       another owner's namespaces beside the origins', for the
+               owners suite
   report       one row per test case, in framework/var/results/
   session      what every suite shares in one run: tokens, the client
   stores       what the origins hold, and putting objects straight there

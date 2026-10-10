@@ -178,9 +178,10 @@ namespace.
   `server` (an origin or cache answered 401 or 403, with no server
   error, timeout, or not found beside it). Any other failure
   is unexpected, since it doesn't show a refusal. A `pelican object get`
-  whose token is refused is `server`, even when the token has expired:
-  the client stats each object first, and asks the director without the
-  token. With no token, `pelican object` tries to acquire one, which
+  into a directory, as the suite's batches are, stats each object
+  first, asking the director without the token, so one whose token is
+  refused is `server`, even when the token has expired. With no token,
+  `pelican object` tries to acquire one, which
   should fail at once with error 4010, since the test gives it no
   terminal and an empty credential store.
 - **At each server**, the `auth` suite sends GET, HEAD, PUT, and DELETE
@@ -246,10 +247,10 @@ scenarios.
   from by default, so `framework/config.d/base/40-origin.yaml` allows it.
 - `sync` compares sizes only and never deletes; the scenarios check what
   it uploads by its `--dry-run` output.
-- These commands' exit status says little about what went wrong (most
-  exit 1 or 11, and `sync` the error's own code), so the tests require
-  only a non-zero one, and judge failures by what the commands print,
-  as the `transfers` suite judges them.
+- These commands' exit status says little about what went wrong (mostly
+  1 or 11), so the tests require only a non-zero one, and judge
+  failures by what the commands print, as the `transfers` suite judges
+  them.
 - `ls -r` must list every object by its path in the tree, once.
 - `du --json` must give each collection's bytes, objects, and
   collections, and `du --count`, whose counts only its text output

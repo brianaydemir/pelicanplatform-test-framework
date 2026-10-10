@@ -32,7 +32,7 @@ A range is (start, end), inclusive; (None, n) is the last n bytes, and
 import re
 import struct
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 BLOCK = 4080
 TAG = 16
@@ -319,7 +319,7 @@ def concurrent_reads() -> List[Optional[Request]]:
 def covering(request: Request, size: int, unit: int) -> List[int]:
     """The blocks of unit bytes that request touches in an object of
     size."""
-    found = set()
+    found: Set[int] = set()
     for r in request:
         first, last = resolve(size, r)
         found.update(range(first // unit, last // unit + 1))

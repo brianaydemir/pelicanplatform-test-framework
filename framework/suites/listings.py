@@ -337,8 +337,8 @@ def cache_depth_1(test: Test) -> Tuple[str, str]:
             problems.append(f"{cache.svc}: Depth 0 of {path}/ is not one collection")
             continue
         if not may_list(caps, "1", "cache"):
-            if (why := test.refusal(url, "1", test.tokens["protected-a"])):
-                problems.append(f"{cache.svc}: {why}")
+            if (refusal := test.refusal(url, "1", test.tokens["protected-a"])):
+                problems.append(f"{cache.svc}: {refusal}")
             continue
         _, got, why = test.listing(url, "1", path, test.tokens["protected-a"])
         if got is None:

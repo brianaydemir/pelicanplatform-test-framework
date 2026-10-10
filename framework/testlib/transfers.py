@@ -9,7 +9,7 @@ and again through stash_plugin as plugin-<scenario>, with the same
 batches. Each get also has a direct-<scenario> twin, which asks the
 director for an origin instead of a cache. A batch is one client
 invocation, of as many objects as the next of LOAD's sizes (see
-batch_count()).
+make_batches() and batch_count()).
 
 What a scenario should do depends on the namespace's capabilities in
 the shape (see outcome()). /public, which has no issuer, gets only the
@@ -300,10 +300,13 @@ def make_batches(federation: str, exports: Exports, load: Load,
 # result ads. The first rule whose patterns all match wins.
 #
 # A server's refusal reads differently depending on where it came.
-# `pelican object get` stats each object before fetching it, asking the
-# director without a token (client/main.go in Pelican), so a refused get
-# fails at the stat, with "HTTP 403: the server refused the credential"
-# (client/acquire_token.go), and the director never sees its token.
+# `pelican object get` into a directory, as every batch here is, stats
+# each object before fetching it, asking the director without a token
+# (client/main.go in Pelican), so a refused get fails at the stat, with
+# "HTTP 403: the server refused the credential" (client/acquire_token.go),
+# and the director never sees its token. A get into a file path skips
+# the stat, and a refusal then reads only as a probe that no server
+# answered (error 2000), which no rule takes for one.
 # Transfers say "request failed (HTTP status 403)", "permission denied",
 # or "server returned 401 Unauthorized" (client/handle_http.go,
 # error_helpers.go).
@@ -381,9 +384,10 @@ def refused(text: str) -> Optional[str]:
 
 
 def failure_lines(client: str, text: str) -> List[str]:
-    """The pelican client logs `Failure getting|putting <src>: <error>`
-    for each object that failed, and stops at the first. The plugin writes
-    a result ad per object, one per line."""
+    """The pelican client stops at the first object that fails, and logs
+    one `Failure getting|putting <src>: <error>` line, for it. The plugin
+    writes a result ad per object, one per line, up to the first failed
+    download."""
     marker = "TransferSuccess = false" if client == "plugin" else r"Failure (getting|putting) "
     return [line for line in text.splitlines() if re.search(marker, line)]
 

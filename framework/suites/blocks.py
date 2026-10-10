@@ -22,6 +22,7 @@ themselves are skipped; where it takes no direct clients, the origins
 are read only through the caches, and a direct read must be refused.
 """
 
+import functools
 import os
 import re
 import threading
@@ -411,11 +412,11 @@ def cache_overlap(test: Test) -> Tuple[str, str]:
             if why:
                 problems.append(f"{cache.svc}: {plan}, the whole object afterward: {why}")
         name = f"{cache.svc}-concurrent"
-        found = at_once([lambda r=r: test.get(cache.url, f"{base}/{name}", objects[name], r)
+        found = at_once([functools.partial(test.get, cache.url, f"{base}/{name}", objects[name], r)
                          for r in reads])
-        for request, why in zip(reads, found):
+        for read, why in zip(reads, found):
             if why:
-                what = blocks.header(request) if request else "the whole object"
+                what = blocks.header(read) if read else "the whole object"
                 problems.append(f"{cache.svc}: at once, {what}: {why}")
         why = test.get(cache.url, f"{base}/{name}", objects[name], None)
         if why:

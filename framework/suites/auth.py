@@ -6,17 +6,18 @@ remove the object. Any other must get 401 or 403 and change nothing.
 First, the `keys` check fetches each namespace issuer's discovery
 document and JWKS, and the origins' server-wide JWKS, and checks which
 test keys each publishes. Last, the `narrow` check presents a token for
-the test object alone, at every server, for it and then for its
-sibling.
+the test object alone in /protected-a, at every server, for it and
+then for its sibling.
 
 What each namespace should allow comes from credentials.expected(): a
 read of /public is allowed whatever the token, a write to a namespace
 without Writes (/public) is refused whatever the token, and so is every
 request straight to an origin in a namespace without DirectReads
 (`-p origin-no-direct`). The test objects are put in place with
-stores.seed(), so the last needs no writes. The transfers suite presents the same credentials through the clients,
-which refuse some of them themselves. Responses go to
-framework/var/data/auth-test/, and a row per request to the results.
+stores.seed(), so the last needs no writes. The transfers suite
+presents the same credentials through the clients, which refuse some
+of them themselves. Responses go to framework/var/data/auth-test/, and
+a row per request to the results.
 """
 
 import json
@@ -330,6 +331,11 @@ def run(session: Session, selected: List[str], results: common.Results) -> None:
     ordered = [credentials.BY_NAME[n] for n in selected if n in credentials.BY_NAME]
     ordered.sort(key=lambda c: (c.name != "server", c.expired))
     narrow = NARROW in selected
+    if narrow and "protected-a" not in fed.exports:
+        reason = "this shape does not export /protected-a"
+        warn(f"skipping {NARROW}: {reason}")
+        report.add(NARROW, SKIP, reason, seconds=None)
+        narrow = False
 
     # Skip the credentials that can test nothing in this shape.
     for cred in list(ordered):

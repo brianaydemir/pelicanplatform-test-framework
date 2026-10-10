@@ -33,7 +33,8 @@ EXTERNAL_ISSUER=false
 # `protected-b` (see presets/origin-httpsv2.sh and
 # presets/origin-no-direct.sh). /public is read without a token, and
 # takes no writes, so it has no issuer. The others take a token for
-# either, and each has an issuer and keys of its own.
+# either, and each has an issuer and keys of its own; the tests need
+# at least one of them.
 ORIGIN_NAMESPACES="public protected-a protected-b"
 
 # Origin.DisableDirectClients, which also leaves the exports only reads

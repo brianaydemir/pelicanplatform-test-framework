@@ -61,9 +61,9 @@ tabs, carriage returns, and newlines are written as `\\`, `\t`, `\r`, and
 after it if `RESULTS_TAG` names a tag, as `smoke.sh` does to tell apart two
 runs of one suite. A suite that stops early records why, as a `FAIL` row
 named `setup` or `aborted`. A run of everything first removes earlier runs'
-results with the same tag. `transfers` has a row per scenario, and `auth`
-and `owners` one per request and per document their `keys` check fetches. To
-read one:
+results with the same tag. `transfers` has a row per scenario, and one per
+`served-by-*` check; `auth` and `owners` have one per request, and per
+document their `keys` check fetches. To read one:
 
 ```sh
 column -t -s "$(printf '\t')" framework/var/results/transfers.tsv

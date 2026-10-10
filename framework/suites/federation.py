@@ -144,12 +144,14 @@ def caches(probe: Probe) -> Tuple[str, str]:
 
 def directors(probe: Probe) -> Tuple[str, str]:
     """Where each director would send a GET of the object, for a cache
-    (`object`) and for an origin: both lists must name every one, since
-    the `origin` route serves caches too. Only with ?directread, a
-    client's direct read, does the director check DirectReads
-    (originSupportsQuery() in Pelican's director/sort.go): then it must
-    name every origin where the namespace takes direct clients, and
-    elsewhere find none (405), and name none."""
+    (`object`) and for an origin: both lists must name every one. The
+    `origin` route is also how caches reach origins, so without
+    ?directread it names origins whether or not they take direct
+    clients. Only with ?directread, a client's direct read, does the
+    director check DirectReads (originSupportsQuery() in Pelican's
+    director/sort.go): then it must name every origin where the
+    namespace takes direct clients, and elsewhere find none (405), and
+    name none."""
     fed = probe.fed
     if fed.tiny:
         return SKIP, "the tiny topology's director, cache, and origin are one server"

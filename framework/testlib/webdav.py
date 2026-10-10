@@ -86,6 +86,7 @@ def relative(entries: List[Entry], base: str) -> Dict[str, Entry]:
         raise ValueError(f"{base} is listed {len(prefixes)} times")
     found: Dict[str, Entry] = {}
     for entry in entries:
+        prefix: Optional[str]
         if prefixes:
             prefix = prefixes[0]
         else:
