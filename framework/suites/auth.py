@@ -10,10 +10,12 @@ server-wide JWKS, and checks which test keys each publishes. Last, the
 /protected-a, at every server, for it and then for its sibling; the
 `create-only` and `modify-only` checks present tokens of one storage
 scope each at every origin, which may create an object, replace one,
-and delete one, as the WLCG token profile says; and the `traversal`
+and delete one, as the WLCG token profile says; the `traversal`
 check sends paths that climb out of their namespace with `..`, which
 must reach neither another namespace's test object nor a file beyond
-an export's storage.
+an export's storage; and the `hints` check asks each V2 cache for the
+test object with no token, whose refusal must say which namespace it
+is and name its issuer, as the director's redirect does.
 
 Each namespace has storage of its own, and a test object of its own
 bytes (but on a pstore origin, /public reads /protected-a's), so a
@@ -36,7 +38,7 @@ import shutil
 from collections.abc import Set as AbstractSet
 from typing import Optional
 
-from testlib import common, credentials, stores, web
+from testlib import common, credentials, director, stores, web
 from testlib.common import die, warn
 from testlib.credentials import ALLOW, CREDENTIALS, PROTECTED, Credential
 from testlib.report import FAIL, PASS, SKIP, Report
@@ -80,6 +82,11 @@ SCENARIOS[TRAVERSAL] = (
 # Spellings of a step up a path: each server must keep a request within
 # the namespace that its path begins with, however it is spelled.
 STEPS = ("..", "%2e%2e", "%2E%2E", ".%2e", "%252e%252e")
+
+HINTS = "hints"
+SCENARIOS[HINTS] = (
+    "a V2 cache's refusal of a request with no token names the namespace and its issuer"
+)
 
 
 class Test:
@@ -637,6 +644,47 @@ def check_traversal(test: Test, fed: common.Federation) -> None:
             os.remove(path)
 
 
+# --------------------------------------------------------------------------
+# The hints check.
+
+
+def check_hints(test: Test, fed: common.Federation) -> None:
+    """GET the test object at each V2 cache, in each protected namespace,
+    with no token. The refusal must carry what the director's redirect
+    does: X-Pelican-Namespace, naming the namespace and that it takes a
+    token, and X-Pelican-Authorization, naming its issuer (see
+    director.hints()). A client that named the cache itself
+    (Client.PreferredCaches) has heard neither from a director, and has
+    nowhere else to learn where to get a token (Pelican's
+    local_cache/persistent_cache_api.go, on its main). An XRootD cache
+    sends none, and is passed over."""
+    for cache in fed.caches:
+        target = label(cache.svc, "cache")
+        for namespace in (ns for ns in PROTECTED if ns in fed.exports):
+            heading = f"{target:<10} {namespace:<11} {'get':<8} {HINTS:<11}"
+            case = f"{target} {namespace} get {HINTS}"
+            if cache.kind != "v2":
+                record_skip(test.report, heading, case, "an XRootD cache sends no hints")
+                continue
+            answer = web.request("GET", f"{cache.url}/{namespace}/{test.object}")
+            save(f"{OUT}/responses/{target}-{namespace}-get-{HINTS}", answer)
+            found = director.hints(answer)
+            issuer = fed.issuer_of(namespace)
+            problems: list[str] = []
+            if answer.status not in (401, 403):
+                problems.append("expected 401 or 403")
+            if found.namespace != f"/{namespace}" or found.require_token is not True:
+                sent = answer.header("X-Pelican-Namespace")
+                problems.append(
+                    f"X-Pelican-Namespace '{sent}' does not say that /{namespace} takes a token"
+                )
+            if found.issuers != (issuer,):
+                problems.append(
+                    f"X-Pelican-Authorization names {list(found.issuers)}, not {issuer}"
+                )
+            record(test.report, heading, case, answer, "; ".join(problems))
+
+
 def skip(_fed: common.Federation) -> Optional[str]:
     """Never: every shape exports a namespace that a token protects."""
     return None
@@ -741,8 +789,8 @@ def narrow_token(test: Test, fed: common.Federation) -> str:
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Check the keys, then present each credential, then `narrow`, then
-    each storage scope alone, then traversal."""
+    """Check the keys, then present each credential, then `hints`,
+    `narrow`, each storage scope alone, and traversal."""
     report = results.report
     fed = session.fed
     creds = runnable(fed, selected, report)
@@ -755,7 +803,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             report.add(name, SKIP, reason, seconds=None)
         narrow, scopes = False, []
     traversal = TRAVERSAL in selected
-    if creds or narrow or scopes or traversal:
+    hints = HINTS in selected
+    checks = bool(creds or narrow or scopes or traversal or hints)
+    if checks:
         for origin in fed.origins:
             for namespace in fed.exports:
                 directory = f"{origin.store_of(namespace)}/data/auth"
@@ -768,9 +818,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
 
     if KEYS in selected:
         check_keys(fed, report)
-        if creds or narrow or scopes or traversal:
+        if checks:
             print()
-    if not creds and not narrow and not scopes and not traversal:
+    if not checks:
         return
 
     test = Test(session, report)
@@ -784,6 +834,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         cache_sibling(test, fed)
     for cred in creds:
         check_credential(test, fed, cred)
+    if hints:
+        check_hints(test, fed)
     if narrow:
         check_narrow(test, fed, narrow_token(test, fed))
     for name in scopes:

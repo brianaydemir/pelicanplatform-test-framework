@@ -37,10 +37,12 @@ EOF
   whole list. In `local/config.d/base/`, that replaces origin-2's too
   (`-p topo-multi-owner`).
 - `Origin.EnableIssuer`, `Origin.Posc.Enabled`,
-  `Origin.Metadata.{Enabled,TrackAccess,Mode}`, `Origin.CacheControl`,
-  `Origin.DisableDirectClients`, `Origin.Multiuser`, and
-  `Server.DropPrivileges` are set by environment variables, which beat
-  files, because `fed.sh` and the tests depend on them. To change one,
+  `Origin.EnableAtomicUploads`, `Origin.Metadata.{Enabled,TrackAccess,Mode}`,
+  `Origin.CacheControl`, `Origin.DisableDirectClients`, `Origin.Multiuser`,
+  `Origin.EnableStandaloneMode`, `Origin.EnableTransferAPI`,
+  `Server.DropPrivileges`, and cache-2's `Cache.EnableSiteLocalMode` are
+  set by environment variables, which beat files, because `fed.sh` and
+  the tests depend on them. To change one,
   write a [preset](#presets) of your own. Pelican ignores an empty
   variable, though, so without `-p origin-max-age`, which leaves
   `Origin.CacheControl` empty, a file of yours can still set it, and
@@ -51,6 +53,11 @@ EOF
   so a file of yours can override them, e.g. for one service.
 - Under `-p topo-multi-origin`, an origin override usually belongs in
   both `origin-0/` and `origin-1/`.
+- `framework/config.d/base/40-origin.yaml` grants the embedded issuer's
+  `Issuer.AuthorizationTemplates` only to the built-in `admin`, and
+  names `test-curator` in `Server.CollectionAdminUsers`; the
+  `collections` suite depends on both
+  ([collections](tests.md#collections)).
 
 
 ## Knobs
@@ -103,9 +110,10 @@ name. It can set any knob in `framework/presets/default.sh`, or call
   `server-unprivileged`, whose servers' keys the host may not write. Under
   `origin-no-direct`, `/protected-a` takes no writes, so the `posc`,
   `metadata`, and `users` suites skip; its pairs with `origin-posc`,
-  `origin-metadata`, `origin-metadata-tx`, and `origin-multiuser` test reads
-  with those features on. `framework/matrix.py` lists the choices, and which
-  combinations `fed.sh` refuses, which must agree with `fed.sh`'s checks;
+  `origin-atomic-uploads`, `origin-metadata`, `origin-metadata-tx`, and
+  `origin-multiuser` test reads with those features on.
+  `framework/matrix.py` lists the choices, and which combinations
+  `fed.sh` refuses, which must agree with `fed.sh`'s checks;
   `framework/matrix.py check` checks that the shapes cover every pair. A
   preset of your own is in no shape.
 - **The connection broker** (`origin-broker`) is on, but the origin stays

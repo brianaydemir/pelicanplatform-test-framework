@@ -46,6 +46,7 @@ FACTORS: dict[str, tuple[str, ...]] = {
     "issuer": ("own", "external"),
     "direct": ("yes", "no"),
     "posc": ("off", "on"),
+    "atomic": ("off", "on"),
     "metadata": ("off", "eventual", "transactional"),
     "max_age": ("off", "on"),
     "multiuser": ("off", "on"),
@@ -79,6 +80,7 @@ PRESETS: dict[str, tuple[str, str]] = {
     "auth-external-issuer": ("issuer", "external"),
     "origin-no-direct": ("direct", "no"),
     "origin-posc": ("posc", "on"),
+    "origin-atomic-uploads": ("atomic", "on"),
     "origin-metadata": ("metadata", "eventual"),
     "origin-metadata-tx": ("metadata", "transactional"),
     "origin-max-age": ("max_age", "on"),
@@ -180,6 +182,10 @@ REFUSED: list[Rule] = [
         lambda s: (s["posc"] == "on" or s["metadata"] != "off") and s["origin"] != "posixv2",
     ),
     (
+        "XRootD's atomic uploads are its posix origin's",
+        lambda s: s["atomic"] == "on" and s["origin"] != "xrootd",
+    ),
+    (
         "a pstore origin is seeded through its writes, which no-direct takes away",
         lambda s: s["direct"] == "no" and s["origin"] == "pstore",
     ),
@@ -187,7 +193,10 @@ REFUSED: list[Rule] = [
         "a second owner has no store with an ssh or pstore origin",
         lambda s: s["multi_owner"] == "on" and s["origin"] in ("ssh", "pstore"),
     ),
-    ("multiuser is posixv2's", lambda s: s["multiuser"] == "on" and s["origin"] != "posixv2"),
+    (
+        "multiuser needs a POSIX origin",
+        lambda s: s["multiuser"] == "on" and s["origin"] not in ("posixv2", "xrootd"),
+    ),
     ("multiuser needs root", lambda s: s["multiuser"] == "on" and s["privileges"] == "dropped"),
     (
         "an ssh origin's key is unreadable once the servers drop privileges",

@@ -10,6 +10,8 @@ by path.
 import xml.etree.ElementTree as ET  # nosec B405
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from typing import Optional
 from urllib.parse import unquote, urlsplit
 
@@ -33,6 +35,7 @@ class Entry:
     path: str  # the href's path, decoded, without a trailing /
     collection: bool
     size: Optional[int]  # None if no getcontentlength came
+    modified: Optional[datetime] = None  # None if no getlastmodified came
 
 
 def propfind(
@@ -59,7 +62,7 @@ def parse(body: bytes) -> list[Entry]:
         href = response.findtext(f"{DAV}href", "").strip()
         if not href:
             raise ValueError("a response without an href")
-        collection, size = False, None
+        collection, size, modified = False, None, None
         for propstat in response.findall(f"{DAV}propstat"):
             status = propstat.findtext(f"{DAV}status", "").split()
             if len(status) < 2 or status[1] != "200":
@@ -74,8 +77,15 @@ def parse(body: bytes) -> list[Entry]:
                         size = int(length)
                     except ValueError:
                         raise ValueError(f"{href}: getcontentlength '{length}'") from None
+                date = prop.findtext(f"{DAV}getlastmodified")
+                if date is not None and date.strip():
+                    # An HTTP date (RFC 4918 says so; RFC 9110 names the form).
+                    try:
+                        modified = parsedate_to_datetime(date.strip())
+                    except (TypeError, ValueError):
+                        raise ValueError(f"{href}: getlastmodified '{date}'") from None
         path = unquote(urlsplit(href).path).rstrip("/")
-        entries.append(Entry(path, collection, size))
+        entries.append(Entry(path, collection, size, modified))
     return entries
 
 

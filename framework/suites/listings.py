@@ -11,7 +11,9 @@ The director redirects a PROPFIND to an origin. A cache answers Depth 0
 from what it holds, or asks an origin, and relays deeper listings to an
 origin.
 
-Who may list depends on the namespace's capabilities (see may_list()):
+An object's getlastmodified at an origin must be when its file was
+written. Who may list depends on the namespace's capabilities (see
+may_list()):
 an origin serves only direct clients, which a namespace without
 DirectReads has none of (`-p origin-no-direct`); a cache answers Depth 0
 of anything it may read, and a director redirects it; and anything
@@ -21,6 +23,7 @@ answered must be refused, with 401, 403, or 405.
 
 import json
 import os
+import time
 import traceback
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
@@ -60,6 +63,9 @@ OWN = 777
 PROBE = 2345
 # How a server refuses a PROPFIND.
 REFUSALS = (401, 403, 405)
+# How far an object's getlastmodified may be from its file's modification
+# time, in seconds. A time rendered in the wrong zone is hours off.
+MODIFIED_SLACK = 60
 
 
 def may_list(caps: AbstractSet[str], depth: str, role: str) -> bool:
@@ -231,8 +237,26 @@ def origin_url(origin: common.Origin, path: str) -> str:
 # The scenarios. Each returns its result and a note.
 
 
+def modified_problem(test: Test, origin: common.Origin, ns: str, entry: webdav.Entry) -> str:
+    """Why entry's getlastmodified is not when the object's file in
+    origin's store was written, if the store is on disk; "" if it is, or
+    the store cannot say. The origins and the tests keep different time
+    zones (TZ_STORAGE), so a time rendered in the wrong one shows."""
+    if entry.modified is None:
+        return "no getlastmodified"
+    if origin.pstore:
+        return ""
+    written = os.stat(f"{origin.store_of(ns)}/{test.base}/tree/b").st_mtime
+    off = entry.modified.timestamp() - written
+    if abs(off) > MODIFIED_SLACK:
+        when = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(written))
+        return f"getlastmodified is {off:+.0f}s from the file's modification time, {when}"
+    return ""
+
+
 def origin_depth_0(test: Test) -> tuple[str, str]:
-    """Each origin: Depth 0 of an object, and of a collection."""
+    """Each origin: Depth 0 of an object, whose getlastmodified must be
+    when its file was written, and of a collection."""
     problems: list[str] = []
     for origin in test.origins:
         for ns in test.namespaces:
@@ -260,6 +284,8 @@ def origin_depth_0(test: Test) -> tuple[str, str]:
                     problems.append(f"{origin.svc} {target}: not a collection")
                 elif want is not None and (entry.collection or entry.size != want):
                     problems.append(f"{origin.svc} {target}: {entry.size} bytes, not {want}")
+                elif want is not None and (why := modified_problem(test, origin, ns, entry)):
+                    problems.append(f"{origin.svc} {target}: {why}")
     if problems:
         return FAIL, first(problems)
     return PASS, f"{len(test.origins)} origin(s)"

@@ -25,6 +25,11 @@ The suite uploads an object straight to every origin, under
   broker     under `-p origin-broker`, each director names origin-0's
              connection broker, for an origin, and so does its list of
              servers, which names none for a cache; within 60 seconds
+  hints      each director's redirect, for a cache and for an origin, in
+             each namespace, tells the client the namespace, whether it
+             takes a token, and its issuer (the X-Pelican-Namespace,
+             X-Pelican-Authorization, and X-Pelican-Token-Generation
+             headers), by which the client picks a token
 
 Its data, under each origin's data/federation/, on a pstore origin too,
 is removed after the suite.
@@ -50,6 +55,7 @@ SCENARIOS = {
     ),
     "discovery": "a Pelican server's discovery document names the federation's servers",
     "broker": "the directors name origin-0's connection broker, and no cache's",
+    "hints": "each director's redirect names the namespace, whether it takes a token, and its issuer",
 }
 
 # The scenarios that run whatever test.py is asked for.
@@ -357,12 +363,63 @@ def broker(probe: Probe) -> tuple[str, str]:
     return PASS, f"{len(fed.directors)} director(s)"
 
 
+def hints(probe: Probe) -> tuple[str, str]:
+    """Each director's redirect of a GET of the object, for a cache
+    (`object`) and for an origin, in each exported namespace, must say
+    which namespace it is and whether it takes a token (X-Pelican-Namespace),
+    and name its issuer, where it has one, and no other
+    (X-Pelican-Authorization; X-Pelican-Token-Generation, if sent, names it
+    too): the client chooses its token by these (see director.hints())."""
+    fed = probe.fed
+    if fed.standalone:
+        return SKIP, "a standalone origin has no director"
+    problems: list[str] = []
+    for url in fed.directors:
+        for ns in probe.session.namespaces:
+            caps = fed.exports[ns]
+            issuer = fed.issuer_of(ns) if credentials.has_issuer(caps) else ""
+            for route in ("object", "origin"):
+                answer = web.request("GET", f"{url}/api/v1.0/director/{route}/{ns}/{probe.rel}")
+                what = f"{director.host(url)} ({route}, /{ns})"
+                if answer.status != 307:
+                    problems.append(f"{what}: {answer.describe()}, not 307")
+                    continue
+                found = director.hints(answer)
+                if found.namespace != f"/{ns}" or found.require_token is None:
+                    sent = answer.header("X-Pelican-Namespace")
+                    problems.append(f"{what}: X-Pelican-Namespace '{sent}' does not name /{ns}")
+                elif found.require_token != ("PublicReads" not in caps):
+                    problems.append(
+                        f"{what}: X-Pelican-Namespace says require-token={found.require_token}"
+                    )
+                if issuer and found.issuers != (issuer,):
+                    problems.append(
+                        f"{what}: X-Pelican-Authorization names {list(found.issuers)}, not {issuer}"
+                    )
+                elif not issuer and found.issuers:
+                    problems.append(
+                        f"{what}: X-Pelican-Authorization names {list(found.issuers)},"
+                        + f" though /{ns} has no issuer"
+                    )
+                if found.generation_issuer and found.generation_issuer != issuer:
+                    problems.append(
+                        f"{what}: X-Pelican-Token-Generation names {found.generation_issuer}"
+                    )
+    if problems:
+        return FAIL, common.first(problems)
+    return (
+        PASS,
+        f"{len(fed.directors)} director(s), {len(probe.session.namespaces)} namespace(s)",
+    )
+
+
 RUN = {
     "ready": ready,
     "caches": caches,
     "directors": directors,
     "discovery": discovery,
     "broker": broker,
+    "hints": hints,
 }
 
 

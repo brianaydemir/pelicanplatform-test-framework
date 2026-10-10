@@ -2,9 +2,10 @@
 encrypted store), the V2 cache, and the XRootD cache: write objects of
 sizes on either side of each boundary, then read them back, whole and in
 ranges, from each origin, through each cache, and through both clients;
-the digests that each server reports of them; and objects that caches
-read in overlapping pieces or give up on, that are overwritten once
-cached, or that are written through a cache.
+the digests that each server reports of them, and an upload the client
+must verify by one; and objects that caches read in overlapping pieces or
+give up on, that are overwritten once cached, that are corrupted in a
+cache's store, or that are written through a cache.
 
 The sizes, ranges, and the layout facts behind them are in
 framework/testlib/blocks.py. Objects go under
@@ -37,6 +38,7 @@ from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
+from urllib.parse import urlencode, urlsplit
 
 from testlib import blocks, common, credentials, digests, stores, transfers, web
 from testlib.common import die, first, warn
@@ -48,6 +50,7 @@ SCENARIOS = {
     "put-chunked": "upload every size in chunks, with no length, to every origin",
     "put-client": "`pelican object put` of every size",
     "put-plugin": "stash_plugin's upload of every size",
+    "put-checksum": "`pelican object put --require-checksum` succeeds only where the origin reports a digest",
     "origin-read": "each origin returns every object whole and every range",
     "client-get": "`pelican object get` of every size, through a cache and with --direct",
     "plugin-get": "stash_plugin's download of every size, through a cache and direct",
@@ -56,6 +59,7 @@ SCENARIOS = {
     "cache-overlap": "each cache: ranges that overlap what it holds, in turn and at once",
     "cache-assemble": "each cache: ranges that add up to an object leave it holding all",
     "cache-abandoned": "each cache: a cold read that its client gives up on spoils nothing",
+    "cache-corrupted": "each V2 cache: a block corrupted or cut from its store is never served",
     "digests": "every digest that a server reports (Want-Digest) is the object's",
     "digest-overwrite": "each origin's digests and ETag of an object follow its overwrites",
     "past-end": "a range that starts at or past an object's end: 416, not bytes",
@@ -74,6 +78,7 @@ CACHE_SCENARIOS = (
     "cache-overlap",
     "cache-assemble",
     "cache-abandoned",
+    "cache-corrupted",
     "mixed-version",
     "overwrite-cached",
     "overwrite-range-first",
@@ -112,6 +117,8 @@ class Test:
         self.data = {(s, size): os.urandom(size) for s in SETS for size in blocks.SIZES}
         # How each kind of upload went, by "declared" or "chunked".
         self.uploads: dict[str, tuple[str, str]] = {}
+        # The digests the origins' storage reports, and why not the rest.
+        self.digests, self.no_digests = stores.digests(session.fed)
 
     def rel(self, set_name: str, size: int) -> str:
         """Where a set's object of size is in /protected-a."""
@@ -460,6 +467,44 @@ def put_plugin(test: Test) -> tuple[str, str]:
     if why:
         return FAIL, why
     return PASS, "; ".join(n for n in (f"{len(urls)} objects", note) if n)
+
+
+def put_checksum(test: Test) -> tuple[str, str]:
+    """`pelican object put --require-checksum` of every size: the client
+    verifies each upload against a digest the origin reports (a HEAD with
+    Want-Digest after the PUT; client/handle_http.go in Pelican), so it
+    must succeed, and leave the objects intact, where the origins' storage
+    reports digests, and fail where it reports none, rather than report an
+    unverified upload as a success."""
+    if not test.writes:
+        return SKIP, NO_WRITES
+    collection = f"{test.base}/put-checksum"
+    errors = stores.make_dirs(test.origins, "protected-a", collection, test.token)
+    if errors:
+        return FAIL, "; ".join(errors)
+    directory, files = local_sizes(test, "put-checksum")
+    sources = [os.path.join(directory, str(size)) for size in files]
+    code, out, err = test.session.pelican_cmd(
+        "object",
+        "put",
+        "--require-checksum",
+        "--token",
+        test.token_file,
+        *sources,
+        f"{test.fed.url}/protected-a/{collection}/",
+    )
+    if test.digests:
+        if code != 0:
+            return FAIL, f"exit {code}: {last_line(err or out)}"
+        why = uploaded(test, files, collection)
+        if why:
+            return FAIL, why
+        return PASS, f"{len(sources)} objects, verified by {', '.join(test.digests)}"
+    if code == 0:
+        return FAIL, f"succeeded, though {test.no_digests}, so nothing was verified"
+    if not re.search(r"checksum", out + err, re.I):
+        return FAIL, f"failed, but not for want of a checksum: {last_line(err or out)}"
+    return PASS, f"refused, since {test.no_digests}"
 
 
 def origin_read(test: Test) -> tuple[str, str]:
@@ -844,6 +889,154 @@ def cache_abandoned(test: Test) -> tuple[str, str]:
     return PASS, f"{len(test.caches)} cache(s)"
 
 
+# A V2 cache's chaos API (Cache.EnableChaosAPI, which config.d/cache/v2
+# turns on): an admin may corrupt a block of an object in its store, or
+# cut bytes from the end of one of its chunk files
+# (local_cache/persistent_cache_api.go in Pelican).
+CHAOS_PATH = "/api/v1.0/cache/introspect/chaos"
+# How long a cache may take to serve a spoiled object again, in seconds.
+REPAIR_WAIT = 30
+
+
+class NoChaos(Exception):
+    """The cache has no chaos API."""
+
+
+def admin_token(test: Test, cache: common.Cache) -> str:
+    """A token that cache's web API takes as its admin's (see
+    credentials.mint_admin()), signed with the cache's own key."""
+    web_url = origin_root(cache.url)
+    issuer = credentials.local_issuer(test.fed, web_url)
+    key = common.signing_key(f"issuer-keys/{cache.svc}")
+    return credentials.mint_admin(
+        test.fed, test.session.path(f"tokens/admin.{cache.svc}"), issuer, key
+    )
+
+
+def spoil(
+    test: Test, cache: common.Cache, token: str, rel: str, op: str, **params: str
+) -> None:
+    """Have cache spoil its copy of rel in /protected-a: op `corrupt`
+    (a block, with `block` and `bytes`) or `truncate` (a chunk file, with
+    `chunk` and `drop-bytes`). The cache keys an object by its URL at the
+    director (normalizePath in local_cache/persistent_cache.go). Raises
+    NoChaos if the cache has no such API, and ValueError if it refused."""
+    director_host = urlsplit(str(test.fed.discovery["director_endpoint"])).netloc
+    query = {"op": op, "url": f"pelican://{director_host}/protected-a/{rel}", **params}
+    answer = web.request(
+        "POST", f"{origin_root(cache.url)}{CHAOS_PATH}?{urlencode(query)}", token=token
+    )
+    if answer.status == 404:
+        raise NoChaos(f"{cache.svc} has no chaos API ({answer.describe()})")
+    if answer.status in (401, 403):
+        raise ValueError(f"{cache.svc} refused the admin token: {answer.describe()}")
+    if answer.status != 200:
+        said = answer.body[:200].decode(errors="replace")
+        raise ValueError(f"{cache.svc} did not {op}: {answer.describe()}: {said}")
+
+
+def holds_all(test: Test, cache: common.Cache, rel: str) -> bool:
+    """Whether a V2 cache says, with Age, that it holds all of rel."""
+    return bool(has_age(test, cache, rel))
+
+
+def never_spoiled(
+    test: Test, cache: common.Cache, rel: str, data: bytes, request: blocks.Request
+) -> Optional[str]:
+    """Read request of rel in /protected-a through cache, then the whole
+    object: each must be the object's bytes, or fail, but never be other
+    bytes; and within REPAIR_WAIT seconds the whole object must come back
+    intact, the cache having fetched the spoiled blocks again (a V2 cache
+    repairs a block that fails its authentication tag;
+    local_cache/range_reader.go). What went wrong, or None."""
+    url = f"{cache.url}/protected-a/{rel}"
+    first_byte, last_byte = blocks.resolve(len(data), request[0])
+    for what, headers, want in (
+        (
+            blocks.header(request),
+            {"Range": blocks.header(request)},
+            data[first_byte : last_byte + 1],
+        ),
+        ("the whole object", {}, data),
+    ):
+        answer = web.request("GET", url, token=test.token, headers=headers, timeout=120)
+        if answer.status in (200, 206) and answer.body != want and answer.body != data:
+            return (
+                f"{what}, once spoiled: {answer.describe()} with {len(answer.body)} bytes"
+                + " that are not the object's"
+            )
+
+    def intact() -> bool:
+        answer = web.request("GET", url, token=test.token, timeout=120)
+        return answer.status == 200 and answer.body == data
+
+    if not common.wait_for(intact, REPAIR_WAIT, interval=2):
+        return f"the whole object is not served intact within {REPAIR_WAIT}s of being spoiled"
+    return None
+
+
+def cache_corrupted(test: Test) -> tuple[str, str]:
+    """Each V2 cache: once it holds an object whole, a block of it is
+    corrupted in the cache's store, and once it holds another, bytes are
+    cut from the end of its chunk file (see spoil()). A read of the
+    spoiled part, and of the whole object, must then never be other bytes
+    (see never_spoiled()). An XRootD cache has no such API, and is passed
+    over."""
+    caches = [c for c in test.caches if c.kind == "v2"]
+    if not caches:
+        return SKIP, "no V2 cache, whose chaos API alone can spoil a block"
+    base = f"{test.base}/corrupted"
+    # Each spoiling: its name, op and parameters, and the range it spoils.
+    size = blocks.OVERLAP_SIZE
+    trials: list[tuple[str, str, dict[str, str], blocks.Request]] = [
+        (
+            "corrupt",
+            "corrupt",
+            {"block": "1", "bytes": str(blocks.TAG)},
+            ((blocks.BLOCK, blocks.BLOCK + 99),),
+        ),
+        (
+            "truncate",
+            "truncate",
+            {"chunk": "-1", "drop-bytes": str(blocks.BLOCK)},
+            ((size - 100, size - 1),),
+        ),
+    ]
+    objects = {f"{c.svc}-{name}": os.urandom(size) for c in caches for name, _, _, _ in trials}
+    errors = upload_each(test, base, objects)
+    if errors:
+        return FAIL, errors[0]
+    problems: list[str] = []
+    for cache in caches:
+        token = admin_token(test, cache)
+        for name, op, params, request in trials:
+            rel, data = f"{base}/{cache.svc}-{name}", objects[f"{cache.svc}-{name}"]
+            why = test.get(cache.url, rel, data, None)
+            if why:
+                problems.append(f"{cache.svc}: {name}, before spoiling: {why}")
+                continue
+            if not common.wait_for(
+                functools.partial(holds_all, test, cache, rel), 10, interval=1
+            ):
+                problems.append(
+                    f"{cache.svc}: {name}: no Age after a whole read, so it does not hold it all"
+                )
+                continue
+            try:
+                spoil(test, cache, token, rel, op, **params)
+            except NoChaos as e:
+                return SKIP, f"{e}; Cache.EnableChaosAPI is in Pelican v26.0.0-rc.3 and later"
+            except ValueError as e:
+                problems.append(str(e))
+                continue
+            why = never_spoiled(test, cache, rel, data, request)
+            if why:
+                problems.append(f"{cache.svc}: {name}: {why}")
+    if problems:
+        return FAIL, first(problems)
+    return PASS, f"{len(caches)} V2 cache(s): {', '.join(name for name, _, _, _ in trials)}"
+
+
 # The sizes whose digests `digests` asks each server for: empty, within a
 # block, past each kind of block, past pstore's spill, and past a chunk.
 DIGEST_SIZES = (
@@ -854,8 +1047,6 @@ DIGEST_SIZES = (
     blocks.SPILL + 1,
     blocks.CHUNK_UNDECLARED + 1,
 )
-# What an origin must report, as `pelican object stat --checksums` asks.
-ORIGIN_DIGESTS: tuple[str, ...] = ("crc32c", "md5")
 
 
 def reported(
@@ -886,8 +1077,9 @@ def server_digests(test: Test, url: str, must: bool) -> tuple[list[str], set[str
     """What is wrong with the digests that url's server reports of the
     objects of DIGEST_SIZES in the `whole` and `ranged` sets: asked by
     HEAD for each of digests.ALGORITHMS in turn, and by GET for crc32c,
-    the client's default. If must, it must report ORIGIN_DIGESTS of each.
-    Also the algorithms it reports rightly."""
+    the client's default. If must, it must report each of those the
+    origins' storage can (test.digests). Also the algorithms it reports
+    rightly."""
     problems: list[str] = []
     given: set[str] = set()
     for set_name in ("whole", "ranged"):
@@ -896,7 +1088,7 @@ def server_digests(test: Test, url: str, must: bool) -> tuple[list[str], set[str
             wrong, right = reported(test, url, rel, data, digests.ALGORITHMS)
             problems += [f"{set_name}/{size}: {w}" for w in wrong]
             given |= right
-            lacking = sorted(set(ORIGIN_DIGESTS) - right)
+            lacking = sorted(set(test.digests) - right)
             if must and lacking:
                 problems.append(f"{set_name}/{size}: reports no {', '.join(lacking)}")
             answer = web.request(
@@ -920,13 +1112,13 @@ def server_digests(test: Test, url: str, must: bool) -> tuple[list[str], set[str
 def digests_scenario(test: Test) -> tuple[str, str]:
     """Each server's digests (see server_digests()): every one it reports
     must be the object's, as the client checks it. Each origin must report
-    ORIGIN_DIGESTS of each object, unless its storage cannot; a cache need
-    report none, and the note names those that report none. The origins
-    are asked only if they take direct clients."""
+    stores.ORIGIN_DIGESTS of each object, but for those its storage cannot
+    (stores.digests()); a cache need report none, and the note names those
+    that report none. The origins are asked only if they take direct
+    clients."""
     if why := test.not_uploaded(True, False):
         return FAIL, why
-    cannot = stores.cannot(test.fed, "checksum")
-    servers = [(o.svc, o.url, not cannot) for o in test.origins] if test.direct else []
+    servers = [(o.svc, o.url, bool(test.digests)) for o in test.origins] if test.direct else []
     servers += [(c.svc, c.url, False) for c in test.caches]
     problems: list[str] = []
     silent: list[str] = []
@@ -940,8 +1132,8 @@ def digests_scenario(test: Test) -> tuple[str, str]:
     notes = [f"{len(servers)} server(s)"]
     if silent:
         notes.append(f"no digest from {', '.join(silent)}")
-    if cannot:
-        notes.append(cannot)
+    if test.no_digests:
+        notes.append(test.no_digests)
     return PASS, "; ".join(notes)
 
 
@@ -961,9 +1153,9 @@ def write_version(
 
 def digests_after_writes(test: Test, origin: common.Origin, rel: str) -> tuple[list[str], int]:
     """Write versions of rel in /protected-a at origin, as digest_overwrite
-    says, and after each, check that origin serves it, and reports
-    ORIGIN_DIGESTS of it: what was wrong, and how many versions there
-    were."""
+    says, and after each, check that origin serves it, and reports each
+    digest its storage can (test.digests) of it: what was wrong, and how
+    many versions there were."""
     steps = [("the first version", "seed")]
     if test.writes:
         steps.append(("a PUT at once", "put"))
@@ -983,27 +1175,26 @@ def digests_after_writes(test: Test, origin: common.Origin, rel: str) -> tuple[l
         if etag and etag in etags:
             problems.append(f"after {what}, its ETag is still an earlier version's, {etag}")
         etags.append(etag)
-        wrong, right = reported(test, origin.url, rel, data, ORIGIN_DIGESTS)
+        wrong, right = reported(test, origin.url, rel, data, test.digests)
         problems += [f"after {what}: {w}" for w in wrong]
-        if right != set(ORIGIN_DIGESTS):
+        if right != set(test.digests):
             problems.append(f"after {what}, it reports only {sorted(right)}")
     return problems, len(steps)
 
 
 def digest_overwrite(test: Test) -> tuple[str, str]:
-    """Each origin, once it has reported ORIGIN_DIGESTS of an object of
-    its own: after a PUT of another version, at once, and in a store on
-    disk, after a write there a second later, which it must notice (a
-    native origin keeps digests by the file's modification time, to the
-    second; origin_serve/checksum.go). Each time, the digests it reports
-    must be those of the version it serves, and its ETag, if it sends
-    one, must differ from every earlier version's, since by it a cache
-    tells that an object has changed."""
+    """Each origin, once it has reported the digests of an object of its
+    own: after a PUT of another version, at once, and in a store on disk,
+    after a write there a second later, which it must notice (a native
+    origin keeps digests by the file's modification time, to the second;
+    origin_serve/checksum.go). Each time, the digests it reports must be
+    those of the version it serves, and its ETag, if it sends one, must
+    differ from every earlier version's, since by it a cache tells that an
+    object has changed."""
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
-    cannot = stores.cannot(test.fed, "checksum")
-    if cannot:
-        return SKIP, cannot
+    if not test.digests:
+        return SKIP, test.no_digests or "the origins report no digest"
     base = f"{test.base}/digest-overwrite"
     errors = stores.make_dirs(test.origins, "protected-a", base, test.token)
     if errors:
@@ -1212,17 +1403,25 @@ class Versions:
         self, cache: common.Cache, key: str, request: Optional[blocks.Request]
     ) -> tuple[Optional[str], str]:
         """Which version a read of object key (or a range of it) through
-        cache came back as (see blocks.which_version())."""
-        headers = {"Range": blocks.header(request)} if request else {}
+        cache came back as (see blocks.which_version()). A whole read asks
+        for a digest too (Want-Digest), which, if one comes, must be that
+        version's: a stale one would fail the client's check of bytes that
+        are right."""
+        headers = {"Range": blocks.header(request)} if request else {"Want-Digest": "crc32c"}
         url = f"{cache.url}/protected-a/{self.base}/{key}"
         answer = web.request("GET", url, token=self.test.token, headers=headers, timeout=120)
-        return blocks.which_version(
-            {"v1": self.v1[key], "v2": self.v2[key]},
-            request,
-            answer.status,
-            answer.headers,
-            answer.body,
+        versions = {"v1": self.v1[key], "v2": self.v2[key]}
+        version, why = blocks.which_version(
+            versions, request, answer.status, answer.headers, answer.body
         )
+        if version and request is None:
+            wrong, _ = digests.check(answer.header("Digest"), versions[version])
+            if wrong:
+                return (
+                    None,
+                    f"served {version}, but with a Digest that is not its ({first(wrong)})",
+                )
+        return version, why
 
     def now(self, cache: common.Cache) -> list[Optional[str]]:
         """Which version a whole read of each of cache's objects came back
@@ -1457,6 +1656,7 @@ RUN = {
     "put-chunked": put_chunked,
     "put-client": put_client,
     "put-plugin": put_plugin,
+    "put-checksum": put_checksum,
     "origin-read": origin_read,
     "client-get": client_get,
     "plugin-get": plugin_get,
@@ -1465,6 +1665,7 @@ RUN = {
     "cache-overlap": cache_overlap,
     "cache-assemble": cache_assemble,
     "cache-abandoned": cache_abandoned,
+    "cache-corrupted": cache_corrupted,
     "digests": digests_scenario,
     "digest-overwrite": digest_overwrite,
     "past-end": past_end,

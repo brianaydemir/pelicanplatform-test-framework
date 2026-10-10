@@ -1,6 +1,8 @@
 """Objects whose names a URL or a listing must encode: a space, `%`,
 `+`, `#`, `?`, `&`, `;`, quotes, angle brackets, brackets, `*`, and
-letters beyond ASCII. Each sits beside decoys, objects whose names a
+letters beyond ASCII; and two that need no encoding but are easily
+mishandled: a name that begins with a dot, and one of 200 characters.
+Each sits beside decoys, objects whose names a
 server or client that mishandles the encoding would take for its own:
 `x%41y` for `xAy`, `a+b` and `a%20b` for `a b`, `hash#tag` for `hash`,
 and `what?q=1` for `what`. Any bytes but the object's own fail, and
@@ -65,6 +67,8 @@ NAMES: tuple[str, ...] = (
     "star*",
     "café-日本",
     "~tilde",
+    ".hidden",
+    "long-" + "x" * 195,
 )
 
 

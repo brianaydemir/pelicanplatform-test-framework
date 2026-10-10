@@ -44,9 +44,9 @@ does. Presets change the shape.
 check that applies to the federation's shape. The checks are grouped in
 suites (`framework/suites/`): `federation`, `commands`, `transfer-api`,
 `listings`, `names`, `blocks`, `tiering`, `posc`, `metadata`, `users`,
-`owners`, `sitelocal`, `auth`, and `transfers`. A suite that doesn't
-apply to the shape is skipped, and says why. [What the tests check](docs/tests.md)
-describes each one.
+`owners`, `sitelocal`, `collections`, `auth`, and `transfers`. A suite
+that doesn't apply to the shape is skipped, and says why.
+[What the tests check](docs/tests.md) describes each one.
 
 ```sh
 ./fed.sh test -l                        # list the suites and their scenarios
@@ -235,16 +235,17 @@ objects:
 
 **Origin features**
 
-| Preset                | Effect                                                                                         |
-| --------------------- | ---------------------------------------------------------------------------------------------- |
-| `origin-posc`         | stages uploads until they complete (POSC); `posixv2` only                                      |
-| `origin-metadata`     | publishes object events to a recorder; `posixv2` only                                          |
-| `origin-metadata-tx`  | `origin-metadata`, in transactional mode                                                       |
-| `origin-max-age`      | origins send `max-age=30`, so V2 caches revalidate                                             |
-| `origin-no-direct`    | origins serve only caches (`Origin.DisableDirectClients`); `/protected-a` only, and only reads |
-| `origin-multiuser`    | the origin reads and writes as each token's user (`Origin.Multiuser`); `posixv2` only          |
-| `origin-broker`       | origin-0 uses director-0 as its connection broker; XRootD origins only, `/protected-a` only    |
-| `origin-transfer-api` | the origins run the transfer API (`Origin.EnableTransferAPI`); see `transfer-api`              |
+| Preset                  | Effect                                                                                                    |
+| ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| `origin-posc`           | stages uploads until they complete (POSC); `posixv2` only                                                 |
+| `origin-atomic-uploads` | XRootD's POSC (`Origin.EnableAtomicUploads`); `origin-xrootd` only; see `posc`                            |
+| `origin-metadata`       | publishes object events to a recorder; `posixv2` only                                                     |
+| `origin-metadata-tx`    | `origin-metadata`, in transactional mode                                                                  |
+| `origin-max-age`        | origins send `max-age=30`, so V2 caches revalidate                                                        |
+| `origin-no-direct`      | origins serve only caches (`Origin.DisableDirectClients`); `/protected-a` only, and only reads            |
+| `origin-multiuser`      | the origin reads and writes as each token's user (`Origin.Multiuser`); `posixv2` and `origin-xrootd` only |
+| `origin-broker`         | origin-0 uses director-0 as its connection broker; XRootD origins only, `/protected-a` only               |
+| `origin-transfer-api`   | the origins run the transfer API (`Origin.EnableTransferAPI`); see `transfer-api`                         |
 
 **Authorization**
 

@@ -1,6 +1,6 @@
 """Who owns what the origins write, under `-p origin-multiuser` or
-`-p server-unprivileged`: a PUT straight to each posixv2 origin, and the
-owner of the file it leaves in the store.
+`-p server-unprivileged`: a PUT straight to each POSIX origin (posixv2,
+or XRootD's posix), and the owner of the file it leaves in the store.
 
   owner         with the tests' token: the `pelican` user (uid 10941).
                 Under multiuser, fed.sh maps the tests' subject to it;
@@ -41,8 +41,8 @@ def skip(fed: common.Federation) -> Optional[str]:
             "the origins neither switch users nor drop privileges"
             " ('-p origin-multiuser' or '-p server-unprivileged')"
         )
-    if fed.origin_variant != "posixv2":
-        return f"only a posixv2 origin writes its store itself, not {fed.origin_variant}"
+    if fed.origin_variant not in ("posixv2", "posix"):
+        return f"only a POSIX origin writes its store as a user, not {fed.origin_variant}"
     if "Writes" not in fed.exports.get("protected-a", ()):
         return "/protected-a takes no writes"
     return None

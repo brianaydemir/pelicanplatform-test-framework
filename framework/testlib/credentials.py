@@ -394,6 +394,39 @@ def mint_credential(
     return time.time() + cred.lifetime
 
 
+# The scope of a server's web API, which every user's token carries.
+WEB_SCOPE = "web_ui.access"
+
+
+def local_issuer(fed: common.Federation, web_url: str) -> str:
+    """The issuer that the server at web_url names in the tokens it mints
+    for its own web API (GetLocalIssuerUrl in Pelican's config/config.go):
+    its web URL, or <web URL>/api/v1.0/origin where an origin and a
+    director share a process (`tiny`)."""
+    return f"{web_url}/api/v1.0/origin" if fed.tiny else web_url
+
+
+def mint_user(
+    fed: common.Federation, out: str, issuer: str, key: str, username: str, lifetime: int = 300
+) -> str:
+    """Write a token that a server's web API takes as username's, and
+    return it: scope WEB_SCOPE, from the server's local issuer (see
+    local_issuer()) and signed with its own key, as `pelican cache
+    introspect` mints the admin's (fetchOrGenerateWebAPIAdminToken in
+    Pelican's cmd/cmd_utils.go). The server resolves the subject to its
+    record of that user (extractUserFromBearerToken in
+    web_ui/authentication.go); the built-in `admin` always has one."""
+    mint(fed, out, "/", key, issuer, "/", lifetime, (), username, raw_scopes=(WEB_SCOPE,))
+    with open(out, encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def mint_admin(fed: common.Federation, out: str, issuer: str, key: str) -> str:
+    """Write the admin's token for a server (see mint_user()), and return
+    it."""
+    return mint_user(fed, out, issuer, key, "admin")
+
+
 def wait_until_stale(expiry: Optional[float]) -> None:
     """Sleep until 70s past expiry, if there is one. Native servers allow
     60s of clock skew, and remember a token they accepted, so no server

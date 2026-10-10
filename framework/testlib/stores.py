@@ -25,14 +25,26 @@ class Unreadable(Exception):
 
 # What an origin's storage cannot do, by ORIGIN_VARIANT, and why. XRootD's
 # S3 plugin implements no unlink, and neither it nor the HTTPS plugin can
-# give a checksum (Lfn2Pfn), as the xrootd-s3-http plugins stand.
+# give a checksum (Lfn2Pfn), as the xrootd-s3-http plugins stand. Of the
+# native backends, httpsv2 and ssh compute none, since their storage is
+# remote (origin_serve/backend_https.go, ssh_posixv2/origin_filesystem.go
+# in Pelican), and s3v2 reports only the MD5 that the S3 service holds
+# (backend_blob.go). `checksum` is for a storage that reports none, and an
+# algorithm's name for one it alone lacks.
 LIMITS: dict[str, dict[str, str]] = {
     "s3": {
         "delete": "XRootD's S3 plugin (libXrdS3) cannot delete",
         "checksum": "XRootD's S3 plugin (libXrdS3) computes no checksums",
     },
     "https": {"checksum": "XRootD's HTTPS plugin (libXrdHTTPServer) computes no checksums"},
+    "httpsv2": {"checksum": "the httpsv2 backend computes no checksums (remote storage)"},
+    "ssh": {"checksum": "the ssh backend computes no checksums (remote storage)"},
+    "s3v2": {"crc32c": "the s3v2 backend reports only the MD5 that the S3 service holds"},
 }
+
+# What an origin reports of an object, as `pelican object stat --checksums`
+# asks, where its storage can.
+ORIGIN_DIGESTS = ("crc32c", "md5")
 
 
 def url(origin: common.Origin, namespace: str, rel: str) -> str:
@@ -45,6 +57,16 @@ def cannot(fed: common.Federation, operation: str) -> Optional[str]:
     """Why the origins' storage cannot do operation (`delete` or
     `checksum`), if it can't."""
     return LIMITS.get(fed.origin_variant, {}).get(operation)
+
+
+def digests(fed: common.Federation) -> tuple[tuple[str, ...], Optional[str]]:
+    """The algorithms of ORIGIN_DIGESTS that the origins' storage reports,
+    and why not the rest, if it lacks any."""
+    limits = LIMITS.get(fed.origin_variant, {})
+    if "checksum" in limits:
+        return (), limits["checksum"]
+    lacking = [limits[a] for a in ORIGIN_DIGESTS if a in limits]
+    return tuple(a for a in ORIGIN_DIGESTS if a not in limits), lacking[0] if lacking else None
 
 
 def held(

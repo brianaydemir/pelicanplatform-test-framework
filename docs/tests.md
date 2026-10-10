@@ -14,19 +14,20 @@ The suites run in this order:
 
 | Suite        | Tests                                                                 |
 | ------------ | --------------------------------------------------------------------- |
-| `federation` | that the federation serves at all, and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients; a Pelican server's discovery document; and, under `-p origin-broker`, the connection broker |
+| `federation` | that the federation serves at all, and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients; what its redirects tell a client of a namespace; a Pelican server's discovery document; and, under `-p origin-broker`, the connection broker |
 | `commands`   | `ls`, `stat`, `delete`, `copy`, `sync`, and `du`, and what `get` and `put` do with what already exists ([client commands](#client-commands)) |
 | `transfer-api` | origin-0's transfer API, under `-p origin-transfer-api`: authentication, credentials, server-run copies, jobs, and confinement to the exports |
 | `listings`   | PROPFIND at each origin, director, and cache ([listings](#listings))  |
 | `names`      | objects whose [names](#names) a URL or a listing must encode, beside decoys |
-| `blocks`     | objects and ranges at pstore's and the caches' [block boundaries](#block-boundaries), through each server and both clients; digests; and objects overwritten, given up on, or written through a cache |
+| `blocks`     | objects and ranges at pstore's and the caches' [block boundaries](#block-boundaries), through each server and both clients; digests, and an upload the client must verify by one; and objects overwritten, given up on, corrupted in a cache's store, or written through a cache |
 | `tiering`    | V2 caches' tiering of large objects to object storage, under `-p cache-tiered`, including a copy replaced in the bucket |
-| `posc`       | interrupted and racing uploads, under `-p origin-posc` or `-p origin-pstore` ([POSC and metadata](#posc-and-metadata)) |
+| `posc`       | interrupted and racing uploads, under `-p origin-posc`, `-p origin-atomic-uploads`, or `-p origin-pstore` ([POSC and metadata](#posc-and-metadata)) |
 | `metadata`   | metadata events, under `-p origin-metadata` ([POSC and metadata](#posc-and-metadata)) |
 | `users`      | who owns what the origins write, under `-p origin-multiuser` or `-p server-unprivileged` ([Unix users](#unix-users)) |
 | `owners`     | origin-2, another owner, under `-p topo-multi-owner` ([another owner](#another-owner)) |
 | `sitelocal`  | cache-2, a site-local cache, under `-p topo-site-local-cache` |
-| `auth`       | each [credential](#authorization) at each server, in each namespace; each issuer's keys; tokens of one storage scope; and paths that climb out of a namespace |
+| `collections` | collections: prefixes with access control of their own, granted through the origins' embedded issuer ([collections](#collections)) |
+| `auth`       | each [credential](#authorization) at each server, in each namespace; each issuer's keys; tokens of one storage scope; paths that climb out of a namespace; and what a cache's refusal tells a client |
 | `transfers`  | gets and puts through `pelican object` and `stash_plugin`, through a cache and direct from an origin, byte-checked ([test data](#test-data)) |
 
 A suite that doesn't apply to the shape is skipped, and says why.
@@ -244,6 +245,18 @@ namespace.
   origin's signing key, in `/fed/issuer-keys`, beside its store. The
   last two stand for what a server would expose if it let a path out of
   an export's storage.
+- **What a refusal tells a client**, the `auth` suite's `hints` check:
+  a GET of the test object at each V2 cache with no token must be refused
+  with the headers a director's redirect carries, `X-Pelican-Namespace`,
+  naming the namespace and that it takes a token, and
+  `X-Pelican-Authorization`, naming its issuer, since a client that named
+  the cache itself (`Client.PreferredCaches`) heard them from no director.
+  Pelican's main sends them; its releases through v26.0.0-rc.3 do not, so
+  the rows fail there. An XRootD cache sends none, and is passed over. The
+  `federation` suite's `hints` check asks the same of each director's
+  redirects, for a cache and for an origin, in every namespace: the
+  issuer must be the namespace's, and `/public`, which has none, must
+  name none.
 
 Both suites wait until the `expired` token is 70 seconds past its expiry
 before presenting it, since native servers allow 60 seconds of clock
@@ -279,8 +292,10 @@ scenarios.
   so that they agree whichever origin the director picks: the same paths
   and sizes in each namespace, but bytes of its own. Listings, sizes,
   checksums (`crc32c` and `md5`, in hex, as `pelican object stat` prints
-  them), and `du`'s totals must match it, and a copy from `/public` must
-  hold `/public`'s bytes.
+  them, those the origins' storage reports; see
+  [block boundaries](#block-boundaries)), and `du`'s totals must match
+  it, `stat`'s modification time must be the file's, within a minute,
+  and a copy from `/public` must hold `/public`'s bytes.
 - `delete`, `copy`, and `sync` go through the director like any client.
   Under `topo-multi-origin` their effects land on one origin, so a success
   must show in some store, and a refusal in none. A copy between two
@@ -335,6 +350,11 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   stores instead, and the upload scenarios skip; where it takes no
   direct clients, the origins are read only through the caches, and
   the clients' direct reads must be refused.
+- `put-checksum` runs `pelican object put --require-checksum` of every
+  size. The client verifies each upload against a digest the origin
+  reports, so the command must succeed, and leave the objects intact,
+  where the origins' storage reports digests, and fail where it reports
+  none (below), rather than call an unverified upload a success.
 - How a V2 cache first sees an object decides how it fills (one stream,
   or block by block), so each cache reads one set of objects whole first,
   another in ranges first, and one each through `pelican object get`
@@ -342,16 +362,28 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
 - `cache-abandoned` starts a cold read of an object through each cache,
   and gives up after 50,000 bytes; those bytes, and the object's last
   block and the whole object afterward, must be the object's.
+- `cache-corrupted` has each V2 cache spoil its own copy of an object it
+  holds whole, through its chaos API (`Cache.EnableChaosAPI`, which the
+  framework turns on; Pelican v26.0.0-rc.3 and later, so the scenario
+  skips on an older cache): a block corrupted in its store, and bytes cut
+  from the end of another object's chunk file. A read of the spoiled part,
+  and of the whole object, must then come back as the object's bytes or
+  fail, never as other bytes, and within 30 seconds the whole object must
+  come back intact, fetched afresh. An XRootD cache has no such API, and
+  is passed over.
 - `digests` asks every server for each object's digest by each
   algorithm in turn (`Want-Digest`: `crc32c`, `crc32`, `adler32`, `md5`,
   `sha`, `sha-256`), by HEAD, and by GET for `crc32c`. Every digest a
   server reports must be the object's, read as the client reads it, since
   the client fails a download whose bytes don't match. Each origin must
-  report `crc32c` and `md5`, unless its storage cannot (XRootD's S3 and
-  HTTPS plugins); a cache need report none, and the row's note names
-  those that report none. `digest-overwrite` then overwrites an object at
-  each origin, by a PUT at once and by a write in the store a second
-  later: a native origin keeps digests by the file's modification time,
+  report `crc32c` and `md5`, but for what its storage cannot: XRootD's
+  S3 and HTTPS plugins and the `httpsv2` and `ssh` backends compute none,
+  and `s3v2` reports only the MD5 that the S3 service holds
+  (`framework/testlib/stores.py`); a cache need report none, and the
+  row's note names those that report none. `digest-overwrite` then
+  overwrites an object at each origin, by a PUT at once and by a write in
+  the store a second later: a native origin keeps digests by the file's
+  modification time,
   to the second, and must not report a stale one; and its `ETag`, by
   which a cache tells that an object has changed, must change too.
 - Ranges past an object's end: a suffix longer than the object is all
@@ -384,7 +416,9 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   origins once each cache holds them (read whole, or a range first): one
   keeping its size, one growing, and one shrinking. Every response, whole
   or ranged, must then be entirely one version, with that version's
-  size. Without
+  size, and a whole response's digest (`Want-Digest`), if one comes, that
+  version's: a stale one would fail the client's check of bytes that are
+  right. Without
   `Cache-Control`, a cache decides for itself how long its copy stays
   fresh. Under `-p origin-max-age`, every origin must send
   `Cache-Control: max-age=30`, and every cache must then serve the new
@@ -409,7 +443,11 @@ that a server that lists another namespace's lists the wrong tree.
 `./fed.sh test -l listings` lists the scenarios.
 
 - An origin must list the tree exactly. It may refuse Depth infinity
-  with 403, as RFC 4918 allows, but must not answer it as Depth 1.
+  with 403, as RFC 4918 allows, but must not answer it as Depth 1. An
+  object's `getlastmodified` must be when its file was written, within a
+  minute, where the store is on disk: the origins and the tests keep
+  different time zones (`TZ_STORAGE`), so a time rendered in the wrong
+  one is hours off.
 - A director must redirect a PROPFIND to an origin: Depth 0 (a stat)
   for any namespace that can be read, and deeper only with `Listings`
   (Pelican's `director/sort.go`). The origin's listing must then be
@@ -438,7 +476,9 @@ that a server that lists another namespace's lists the wrong tree.
 The `names` suite puts objects whose names a URL or a listing must
 encode under `/protected-a/data/names/<run>/`: a space, `%`, `+`, `#`,
 `?`, `&`, `;`, quotes, angle brackets, brackets, `*`, and letters beyond
-ASCII. Each sits beside decoys, whose names a server or client that
+ASCII; and two that need no encoding but are easily mishandled, a name
+that begins with a dot and one of 200 characters. Each sits beside
+decoys, whose names a server or client that
 mishandles the encoding would take for its own: `x%41y` beside `xAy`,
 `a+b` and `a%20b` beside `a b`, `hash#tag` beside `hash`, and
 `what?q=1` beside `what`. Every object is a different size. A URL
@@ -458,10 +498,11 @@ percent-encodes every character of a name but letters, digits, and
 
 ## POSC and metadata
 
-Both are features of the `posixv2` origin, which is the default. `fed.sh`
-refuses them with any other origin. The `posc` and `metadata` suites
-run only where they apply, and skip otherwise; `./fed.sh test -l posc
-metadata` lists their scenarios.
+POSC and metadata are features of the `posixv2` origin, which is the
+default, and XRootD's POSC of its `posix` origin; `fed.sh` refuses each
+with any other. The `posc` and `metadata` suites run only where they
+apply, and skip otherwise; `./fed.sh test -l posc metadata` lists their
+scenarios.
 
 - **POSC** (`-p origin-posc`): the origin stages each upload in
   `<store>/.pelican-posc/` and renames it into place once it completes.
@@ -473,6 +514,14 @@ metadata` lists their scenarios.
   and of two whole uploads of one object at once (`concurrent`), the
   object must end up all one of them. `hidden` lists the export while an
   upload is staged, so that `.pelican-posc` is there to hide.
+- **XRootD's POSC** (`-p origin-atomic-uploads`): `Origin.EnableAtomicUploads`
+  stages each upload in `Origin.UploadTempLocation`, which Pelican
+  requires on the exports' filesystem but in none of them, so `fed.sh`
+  puts it beside their storage in each origin's store,
+  `framework/var/data/origin/<N>/.in-progress/`. The `posc` suite runs
+  the same interruptions, judged by the staging files there and by the
+  store. `hidden` skips, since nothing is staged inside an export, and
+  `stalled` checks no metric, which only the native POSC has.
 - **pstore** (`-p origin-pstore`) commits a new version of an object only
   when its upload completes, so the `posc` suite runs there too: the same
   interruptions, judged by what the origins serve, once
@@ -498,11 +547,12 @@ metadata` lists their scenarios.
 
 ## Unix users
 
-Under `-p origin-multiuser`, a `posixv2` origin reads and writes each
-object as the Unix user that the request's token maps to; under
+Under `-p origin-multiuser`, a POSIX origin (`posixv2`, or XRootD's
+`posix` through its multiuser plugin) reads and writes each object as the
+Unix user that the request's token maps to; under
 `-p server-unprivileged`, every server drops to the `pelican` user. The
-`users` suite puts an object straight to each `posixv2` origin, and
-checks who owns the file it leaves:
+`users` suite puts an object straight to each origin, and checks who
+owns the file it leaves:
 
 - `owner`: with the tests' token, the `pelican` user (uid 10941), which
   `fed.sh` maps the tests' subject to under multiuser.
@@ -562,3 +612,95 @@ those). `fed.sh` describes it in `framework/var/generated/owners` and
   origin-2 (served by it), uploads with origin-2's token, and presents
   each owner's token in the other's namespace, which must be refused
   with nothing stored.
+
+
+## Collections
+
+A collection is a prefix of an exported namespace with access control
+of its own (Pelican's `docs/collections-design.md`): an owner, an admin
+group, groups and users that may read or write, and a visibility.
+Collections live in an origin's database, and the origin's embedded
+OAuth2 issuer turns them into storage scopes: a token it mints for a
+user carries `storage.read` (and, for a writer, `storage.modify` and
+`storage.create`) of each collection the user may use, and nothing for
+the rest of the namespace. The `collections` suite needs that issuer
+(`ORIGIN_ENABLE_ISSUER`, on by default) and a protected namespace, and
+skips with the external issuer (`-p auth-external-issuer`).
+
+The suite's users are records of the issuer origin (origin-0, or `fed`),
+which its admin creates once and later runs reuse: `test-curator`, whom
+`Server.CollectionAdminUsers` in `framework/config.d/base/40-origin.yaml`
+makes a collection administrator, and seven ordinary users, `test-owner`,
+`test-writer`, `test-reader`, `test-outsider`, `test-sharer`, `test-guest`,
+and `test-heir`. The suite acts as each through a bearer token that the
+origin's web API takes as theirs: signed with the origin's own key and
+naming its local issuer, as `pelican cache introspect` mints the admin's
+(`credentials.mint_user()`), so no login or identity provider is needed.
+For data, each user gets tokens from the namespace's issuer through its
+device flow (RFC 8628), which the suite approves at the issuer's
+verification page as the user, as Pelican's own tests do
+(`framework/testlib/issuer.py`). Since the issuer binds a client that
+registers itself to the first user who approves a flow for it, and
+allows an address five registrations, then one a minute, the suite
+registers none: the admin creates one client of each issuer through the
+issuer's admin API. The `client` and `cli` scenarios register two each,
+as the Pelican client and CLI do that themselves.
+
+The embedded issuer's `Issuer.AuthorizationTemplates`, which grant a
+user who logs in through the web UI, grant only the built-in `admin`
+(`40-origin.yaml`), so that the suite's users get only what collections
+grant them.
+
+Each run makes groups of its own, owned by `test-owner`
+(`test-readers-<run>`, `test-writers-<run>`, and `test-admins-<run>`, for
+`test-heir`), and collections under `/<namespace>/data/collections/<run>/`:
+`alpha`,
+private, `test-owner`'s, with the admins group as its admin group, the
+readers allowed to read and the writers to write, and sharing on; and
+`beta`, public, `test-owner`'s, which every authenticated user may read.
+Each gets an object (`alpha/shared/obj` too, for a share), and `decoy/obj`
+sits beside them in no collection. `./fed.sh test -l collections` lists
+the scenarios. In short:
+
+- `users`, `create`, `visibility`, `acl`, `manage`, and `ownership`
+  check the collections API, through the origin's web API: who may
+  create a collection (a collection administrator, with a namespace
+  within an export), see it (anyone, if public; otherwise its owner,
+  admin group, and grantees), change, rename, and describe it (owner,
+  admin group, and writers), grant and revoke access (owner and admin
+  group), delete it (the owner alone), and hand it on (the owner alone,
+  by setting its owner, or by an invite that one user redeems once).
+  A collection one may not see is "not found" (404), so its existence
+  is hidden. Where a scenario changes things, it makes a collection of
+  its own.
+- `tokens` checks what the issuer mints: the storage scopes of each
+  user's collections alone, within the namespace, and from the origin's
+  local issuer `collection.create` only for a collection administrator,
+  which the collections API honors.
+- `data` presents those tokens, straight to every origin (where the
+  namespace takes direct clients) and through the federation with
+  `pelican object`: reads and writes within a collection, and nothing
+  beside it. `client` has `pelican object get` acquire its own token
+  from the issuer, approved as the user; `test-outsider`'s gets nothing.
+- `shares`: `test-sharer`, who may read `alpha`, shares `alpha/shared`
+  with `test-guest`, whose token then carries `share.access:/<share>` and
+  the share's `storage.read`, and whose access is the lesser of the
+  share's and `test-sharer`'s own: write on the share grants nothing
+  until `test-sharer` may write `alpha`, and nothing at all once
+  `test-sharer` may not read it. A share of a share, and a share of a
+  collection with sharing off, are refused; a multiuser origin
+  (`-p origin-multiuser`) refuses every share (409), since its data path
+  cannot act as the share's owner.
+- `expiry` and `revoke`: a grant with an expiry grants nothing after it,
+  and a revoked grant is gone from the next token. The old token keeps
+  its access until it expires, by design: a token is not revoked with
+  the grant it came from.
+- `cli`: `pelican origin collection` creates, lists, changes, grants on,
+  and deletes a collection through the device flow, approved as
+  `test-curator`, and fails for `test-outsider`. The CLI manages the
+  first origin the director lists, so the scenario skips where that is
+  not the issuer origin; it and `client` skip for a standalone origin,
+  which has no director.
+
+The run's collections, groups, and objects are removed after the suite;
+the users stay.

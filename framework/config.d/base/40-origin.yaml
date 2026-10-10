@@ -1,12 +1,13 @@
 ---
 # Shared by every origin variant (and ignored by other services).
 #
-# Origin.EnableIssuer, Origin.Posc.Enabled,
+# Origin.EnableIssuer, Origin.Posc.Enabled, Origin.EnableAtomicUploads,
 # Origin.Metadata.{Enabled,TrackAccess,Mode}, Origin.CacheControl,
-# Origin.DisableDirectClients, and Origin.Multiuser are set through
-# environment variables from presets/default.sh, which beat any file.
-# Origin.EnableOIDC is generated (see 20-server.yaml). Setting any of
-# them here has no effect.
+# Origin.DisableDirectClients, Origin.Multiuser,
+# Origin.EnableStandaloneMode, and Origin.EnableTransferAPI are set
+# through environment variables from presets/default.sh, which beat any
+# file. Origin.EnableOIDC is generated (see 20-server.yaml). Setting any
+# of them here has no effect.
 #
 # Origin.Exports is written by fed.sh (fed_generate), in
 # framework/var/generated/conf/60-origin-exports.yaml, from the knobs
@@ -41,11 +42,18 @@ Server:
   SSRFProtection:
     AllowedCIDRs: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 
-# What the embedded issuer grants a user who logs in through the web UI.
-# The tests do not use it. /public has no issuer.
+  # The collections suite's collection administrator, a user it creates,
+  # who is not a server administrator (see docs/tests.md).
+  CollectionAdminUsers: [test-curator]
+
+# What the embedded issuer grants a user who logs in through the web UI:
+# only the built-in admin, so that the collections suite's users get
+# nothing but what collection ACLs grant them. /public has no issuer.
 Issuer:
   AuthorizationTemplates:
     - prefix: /protected-a
       actions: [read, create, modify]
+      users: [admin]
     - prefix: /protected-b
       actions: [read, create, modify]
+      users: [admin]

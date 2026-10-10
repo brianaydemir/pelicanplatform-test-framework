@@ -9,7 +9,8 @@ origins' stores, or the local files.
 The read-only commands run against a tree uploaded straight to every
 origin, /<namespace>/data/cmd/<run>/tree/, so that they agree whichever
 origin the director picks: in each namespace, the same paths and sizes,
-but bytes of its own. The rest go through the director like any
+but bytes of its own; `stat`'s modification time must be the file's.
+The rest go through the director like any
 client. Under `topo-multi-origin` their effects land on one origin, so
 a success must show in some store, and a refusal in none. /public takes
 no writes (see testlib/credentials.py), so writes to it must be refused.
@@ -31,9 +32,11 @@ import hashlib
 import json
 import os
 import re
+import time
 import traceback
 from collections import Counter
 from collections.abc import Callable, Iterable
+from datetime import datetime
 from typing import Any, Optional, cast
 from urllib.parse import urlsplit
 
@@ -48,7 +51,7 @@ SCENARIOS = {
     "ls-recursive": "`ls -r` lists every object in the tree, by its path in it",
     "ls-missing": "`ls` of a missing path: not found",
     "ls-no-token": "`ls` of /protected-a with no token: the client refuses (Error code 4010)",
-    "stat-protected-a": "`stat --json --checksums crc32c --checksums md5`: size and checksums",
+    "stat-protected-a": "`stat --json --checksums ...`: size, modification time, and checksums",
     "stat-public": "the same in /public, with no token",
     "stat-collection": "`stat` of a collection says so",
     "stat-missing": "`stat` of a missing object: not found",
@@ -166,6 +169,24 @@ def checksum_matches(kind: str, value: str, data: bytes) -> bool:
     if kind == "crc32c":
         return int.from_bytes(got, "big") == blocks.crc32c(data)
     return got == hashlib.md5(data, usedforsecurity=False).digest()
+
+
+# How far `stat`'s ModTime may be from the object's file's modification
+# time, in seconds. A time parsed in the wrong zone is hours off.
+MODIFIED_SLACK = 60
+
+
+def parse_rfc3339(value: str) -> Optional[datetime]:
+    """The time an RFC 3339 string (as Go writes a time.Time in JSON)
+    stands for; None if it is not one. Python 3.9 reads neither `Z` nor
+    more than six fractional digits."""
+    text = re.sub(r"(\.\d{6})\d+", r"\1", value.strip())
+    text = re.sub(r"[Zz]$", "+00:00", text)
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None else None
 
 
 # --------------------------------------------------------------------------
@@ -529,12 +550,31 @@ def ls_no_token(test: Test) -> tuple[str, str]:
 # stat
 
 
+def modified_problem(test: Test, namespace: str, info: dict[str, Any]) -> Optional[str]:
+    """Why `stat`'s ModTime is not when the object's file was written in
+    the stores, if they are on disk and it is not. The origins and the
+    tests keep different time zones (TZ_STORAGE), so a time parsed in the
+    wrong one shows."""
+    when = parse_rfc3339(str(info.get("ModTime", "")))
+    if when is None:
+        return f"ModTime {info.get('ModTime')!r} is not a time"
+    disk = [o for o in stores.unique(test.origins) if not o.pstore]
+    if not disk:
+        return None
+    rel = f"{test.base}/tree/b"
+    written = min(os.stat(f"{o.store_of(namespace)}/{rel}").st_mtime for o in disk)
+    off = when.timestamp() - written
+    if abs(off) > MODIFIED_SLACK:
+        shown = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(written))
+        return f"ModTime is {off:+.0f}s from the file's modification time, {shown}"
+    return None
+
+
 def stat_object(test: Test, namespace: str) -> tuple[str, str]:
-    """`stat` of an object: its size, and its checksums where the
-    origins' storage can compute them."""
+    """`stat` of an object: its size, when it was written, and its
+    checksums, those the origins' storage can report."""
     data = test.trees[namespace]["b"]
-    no_checksums = stores.cannot(test.fed, "checksum")
-    kinds = [] if no_checksums else ["crc32c", "md5"]
+    kinds, no_digests = stores.digests(test.fed)
     args = ["object", "stat", "--json"]
     for kind in kinds:
         args += ["--checksums", kind]
@@ -549,16 +589,20 @@ def stat_object(test: Test, namespace: str) -> tuple[str, str]:
         return FAIL, f"unreadable output ({e}): {last_line(out)}"
     if info.get("Size") != len(data) or info.get("IsCollection"):
         return FAIL, f"size {info.get('Size')}, collection {info.get('IsCollection')}"
+    if why := modified_problem(test, namespace, info):
+        return FAIL, why
     reported = common.as_object(info.get("checksums")) or {}
     sums = {k.lower(): str(v) for k, v in reported.items()}
-    notes: list[str] = []
+    notes = ["size and ModTime match"]
     for kind in kinds:
         if kind not in sums:
             return FAIL, f"no {kind} checksum reported"
         if not checksum_matches(kind, sums[kind], data):
             return FAIL, f"{kind} {sums[kind]} does not match the object"
         notes.append(f"{kind} matches")
-    return PASS, "; ".join(notes) or f"size matches; {no_checksums}"
+    if no_digests:
+        notes.append(no_digests)
+    return PASS, "; ".join(notes)
 
 
 def stat_protected_a(test: Test) -> tuple[str, str]:

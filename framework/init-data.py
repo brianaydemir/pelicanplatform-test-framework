@@ -45,6 +45,7 @@ SUITE_DIRS = (
     "metadata",
     "cmd",
     "blocks",
+    "collections",
     "federation",
     "listings",
     "names",

@@ -78,6 +78,7 @@ x-server-env: &server-env
 x-origin-env: &origin-env
   PELICAN_ORIGIN_ENABLEISSUER: "${ORIGIN_ENABLE_ISSUER:?run through ./fed.sh}"
   PELICAN_ORIGIN_POSC_ENABLED: "${ORIGIN_POSC:?run through ./fed.sh}"
+  PELICAN_ORIGIN_ENABLEATOMICUPLOADS: "${ORIGIN_ATOMIC_UPLOADS:?run through ./fed.sh}"
   # May be empty, hence ? rather than :?.
   PELICAN_ORIGIN_CACHECONTROL: "${ORIGIN_CACHE_CONTROL?run through ./fed.sh}"
   PELICAN_ORIGIN_METADATA_ENABLED: "${ORIGIN_METADATA:?run through ./fed.sh}"
@@ -203,8 +204,8 @@ services:
     <<: *common-secrets
 
   # Another director (`-p topo-multi-director`), which must hold
-  # director-1's key: both sign as the federation, whose JWKS is
-  # director-1's. `./fed.sh keys` keeps the two in step.
+  # director-0's key: both sign as the federation, whose JWKS is
+  # director-0's. `./fed.sh keys` keeps the two in step.
   director-1:
     hostname: director-1
     image: "${IMAGE_DIRECTOR:?run through ./fed.sh}"

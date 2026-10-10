@@ -63,6 +63,7 @@ services:
       TZ: "${TZ_SERVICES:?run through ./fed.sh}"
       PELICAN_ORIGIN_ENABLEISSUER: "${ORIGIN_ENABLE_ISSUER:?run through ./fed.sh}"
       PELICAN_ORIGIN_POSC_ENABLED: "${ORIGIN_POSC:?run through ./fed.sh}"
+      PELICAN_ORIGIN_ENABLEATOMICUPLOADS: "${ORIGIN_ATOMIC_UPLOADS:?run through ./fed.sh}"
       # May be empty, hence ? rather than :?.
       PELICAN_ORIGIN_CACHECONTROL: "${ORIGIN_CACHE_CONTROL?run through ./fed.sh}"
       PELICAN_ORIGIN_METADATA_ENABLED: "${ORIGIN_METADATA:?run through ./fed.sh}"

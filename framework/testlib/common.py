@@ -364,6 +364,13 @@ class Federation:
         return self._line("external-issuer") == "true"
 
     @cached_property
+    def embedded_issuer(self) -> bool:
+        """ORIGIN_ENABLE_ISSUER: whether the origins run Pelican's embedded
+        OAuth2 issuer, which gives each protected namespace an issuer of
+        its own (see presets/default.sh)."""
+        return self._line("origin-enable-issuer") == "true"
+
+    @cached_property
     def origin_web_url(self) -> str:
         """The web URL of the origin whose issuer the namespaces name, which
         serves the server-wide JWKS."""
@@ -421,6 +428,11 @@ class Federation:
     def posc(self) -> bool:
         """ORIGIN_POSC (see presets/origin-posc.sh)."""
         return self._line("origin-posc") == "true"
+
+    @cached_property
+    def atomic_uploads(self) -> bool:
+        """ORIGIN_ATOMIC_UPLOADS (see presets/origin-atomic-uploads.sh)."""
+        return self._line("origin-atomic-uploads") == "true"
 
     @cached_property
     def origin_cache_control(self) -> str:

@@ -1,14 +1,16 @@
 """POSC (persist on successful close; `-p origin-posc`): interrupt
 uploads to an origin, or race two, and check what its store shows, and
-what it serves meanwhile. On a pstore origin (`-p origin-pstore`), which
-commits a new version only when an upload completes, run the same
-uploads and check what the origins serve instead; the scenarios about
-POSC's staging files are skipped. Neither: the suite is skipped.
+what it serves meanwhile. The same for XRootD's atomic uploads
+(`-p origin-atomic-uploads`), which stage each upload beside the exports'
+storage rather than inside it, and for a pstore origin
+(`-p origin-pstore`), which commits a new version only when an upload
+completes, judged by what the origins serve. None of the three: the
+suite is skipped.
 
 Uploads go straight to the first origin in
 framework/var/generated/origins, under /protected-a/data/posc/. Only
 `client` goes through the director. An interruption is judged only once
-the upload is seen under way: a new staging file under POSC, or growth in
+the upload is seen under way: a new staging file, or growth in
 pstore/objects on pstore. Afterward, /protected-a/data/posc is emptied on
 every store.
 """
@@ -43,8 +45,22 @@ SCENARIOS = {
     "hidden": "an HTML listing of the export does not show .pelican-posc",
 }
 
-# The scenarios about POSC's staging, which a pstore origin has none of.
-POSC_ONLY = ("stalled", "hidden")
+# The scenarios that each kind of staging cannot have, and why. A pstore
+# origin has no staging file to watch, and XRootD stages uploads outside
+# the exports, where there is nothing to hide.
+SKIPS: dict[str, dict[str, str]] = {
+    "pstore": {
+        "stalled": "pstore commits a version at close, with no staging file",
+        "hidden": "pstore commits a version at close, with no staging file",
+    },
+    "atomic": {
+        "hidden": "XRootD stages uploads outside the exports, so there is nothing to hide"
+    },
+}
+
+# Where XRootD's atomic uploads are staged, in each origin's store:
+# Origin.UploadTempLocation, which fed.sh sets (fed_generate).
+ATOMIC_DIR = ".in-progress"
 
 MIB = 1 << 20
 
@@ -173,10 +189,17 @@ class Test:
         self.env = session.env
         self.origin = fed.origins[0]
         self.origin_web = re.sub(r"^(https://[^/]*).*", r"\1", self.origin.url)
-        self.pstore = not fed.posc
+        # How uploads are staged: `posc`, `atomic` (XRootD's), or `pstore`.
+        if fed.posc:
+            self.kind = "posc"
+        elif fed.atomic_uploads:
+            self.kind = "atomic"
+        else:
+            self.kind = "pstore"
+        self.pstore = self.kind == "pstore"
         self.origins = stores.unique(fed.origins)
         # /protected-a's storage in each store, and the stores themselves,
-        # where a pstore keeps its objects.
+        # where a pstore keeps its objects and XRootD its staging files.
         self.stores = sorted({o.store_of("protected-a") for o in fed.origins})
         self.roots = sorted({o.store for o in fed.origins})
         self.tmp = session.path("posc")
@@ -193,12 +216,20 @@ class Test:
                 die(f"could not make /protected-a/data/posc: {errors[0]}")
 
     def staging(self) -> set[str]:
-        """Staging files: <storage>/.pelican-posc/<user>/in_progress.*,
-        where the storage is /protected-a's, and the user the token's
-        subject."""
+        """Staging files. Under POSC,
+        <storage>/.pelican-posc/<user>/in_progress.*, where the storage is
+        /protected-a's, and the user the token's subject; under XRootD's
+        atomic uploads, whatever is under <store>/.in-progress/<user>/
+        (ATOMIC_DIR); on pstore, none."""
         found: set[str] = set()
-        for store in self.stores:
-            found.update(glob.glob(f"{store}/.pelican-posc/**/in_progress.*", recursive=True))
+        if self.kind == "posc":
+            for store in self.stores:
+                found.update(
+                    glob.glob(f"{store}/.pelican-posc/**/in_progress.*", recursive=True)
+                )
+        elif self.kind == "atomic":
+            for root in self.roots:
+                found.update(glob.glob(f"{root}/{ATOMIC_DIR}/**", recursive=True))
         return {f for f in found if os.path.isfile(f)}
 
     def pstore_sizes(self) -> dict[str, int]:
@@ -391,24 +422,28 @@ def commit(test: Test) -> tuple[str, str]:
 
 def held_open(test: Test, name: str) -> tuple[str, str]:
     """`stalled`'s verdict, while object name's upload is held open and its
-    staging file exists."""
-    metrics = web.request("GET", f"{test.origin_web}/metrics").body.decode(errors="replace")
-    active = re.findall(r"^pelican_origin_posc_active_uploads (\S+)", metrics, re.M)
+    staging file exists. Only POSC counts the upload in a metric."""
     answer = web.request("HEAD", f"{test.base_url}/{name}", token=test.token)
     path = test.object_file(name)
     if path is not None:
         return FAIL, f"{shown(path)} is visible before the upload finished"
     if answer.status != 404:
         return FAIL, f"HEAD got {answer.describe()}, not 404"
-    if not active or float(active[0]) < 1:
-        return FAIL, f"pelican_origin_posc_active_uploads is '{active[0] if active else ''}'"
+    if test.kind == "posc":
+        metrics = web.request("GET", f"{test.origin_web}/metrics").body.decode(errors="replace")
+        active = re.findall(r"^pelican_origin_posc_active_uploads (\S+)", metrics, re.M)
+        if not active or float(active[0]) < 1:
+            return (
+                FAIL,
+                f"pelican_origin_posc_active_uploads is '{active[0] if active else ''}'",
+            )
     return PASS, shown(test.new_staging())
 
 
 def stalled(test: Test) -> tuple[str, str]:
     """While an upload is held open, only its staging file exists: no
-    object, a HEAD answers 404, and the origin counts the upload as
-    active."""
+    object, a HEAD answers 404, and under POSC, the origin counts the
+    upload as active."""
     name = f"{test.run}-stalled"
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
@@ -631,26 +666,33 @@ RUN = {
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no POSC or pstore, or no writes."""
-    if not fed.posc and not fed.origins[0].pstore:
-        return "POSC is off and the origins are not pstore ('-p origin-posc' or '-p origin-pstore')"
+    """Why there is nothing to test: no staging of uploads, or no writes."""
+    if not fed.posc and not fed.atomic_uploads and not fed.origins[0].pstore:
+        return (
+            "the origins stage no uploads: POSC and XRootD's atomic uploads are off, and they"
+            " are not pstore ('-p origin-posc', '-p origin-atomic-uploads', or"
+            " '-p origin-pstore')"
+        )
     if "Writes" not in fed.exports.get("protected-a", ()):
         return "/protected-a takes no writes"
     return None
 
 
+KINDS = {"posc": "POSC", "atomic": "XRootD atomic upload", "pstore": "pstore"}
+
+
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, and remove the objects."""
     test = Test(session)
-    kind = "pstore" if test.pstore else "POSC"
     print(
-        f"{kind} test against {test.origin.svc} ({test.origin.url}),"
+        f"{KINDS[test.kind]} test against {test.origin.svc} ({test.origin.url}),"
         + f" objects {test.base_url}/{test.run}-*\n"
     )
+    skips = SKIPS.get(test.kind, {})
     try:
         for name in selected:
-            if test.pstore and name in POSC_ONLY:
-                results.add(name, SKIP, "POSC staging only; pstore commits a version at close")
+            if name in skips:
+                results.add(name, SKIP, skips[name])
                 continue
             try:
                 status, note = RUN[name](test)

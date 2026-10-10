@@ -46,7 +46,7 @@ all_shapes="${all_shapes} posixv2-xrootd-multiuser httpsv2-xrootd tiny-pstore"
 all_shapes="${all_shapes} posixv2-no-direct posixv2-xrootd-posc ssh-v2 httpsv2-v2"
 all_shapes="${all_shapes} xrootd-xrootd posixv2-xrootd-no-direct s3-xrootd-broker s3-v2"
 all_shapes="${all_shapes} https-v2-broker https-xrootd xrootd-v2-broker pstore-v2"
-all_shapes="${all_shapes} posixv2-v2-metadata standalone-posixv2 standalone-pstore"
+all_shapes="${all_shapes} posixv2-v2-metadata xrootd-v2 standalone-posixv2 standalone-pstore"
 all_shapes="${all_shapes} standalone-ssh standalone-httpsv2 standalone-s3v2"
 
 # Each shape's presets, one per word.
@@ -69,7 +69,7 @@ shape_presets() {
            "server-unprivileged topo-site-local-cache topo-multi-director" ;;
     tiny-xrootd)
       echo "topo-tiny origin-xrootd origin-no-direct origin-max-age" \
-           "server-unprivileged origin-transfer-api" ;;
+           "server-unprivileged origin-transfer-api origin-atomic-uploads" ;;
     pstore-xrootd)
       echo "origin-pstore cache-xrootd topo-multi-origin topo-multi-cache" \
            "auth-external-issuer topo-multi-director topo-site-local-cache" \
@@ -105,7 +105,7 @@ shape_presets() {
     xrootd-xrootd)
       echo "origin-xrootd cache-xrootd topo-multi-origin topo-multi-cache" \
            "topo-multi-owner auth-external-issuer topo-multi-director" \
-           "topo-site-local-cache" ;;
+           "topo-site-local-cache origin-atomic-uploads origin-multiuser" ;;
     posixv2-xrootd-no-direct)
       echo "cache-xrootd origin-no-direct origin-metadata server-unprivileged" ;;
     s3-xrootd-broker)
@@ -123,11 +123,14 @@ shape_presets() {
            "topo-multi-owner topo-multi-director auth-external-issuer" \
            "origin-no-direct origin-transfer-api server-unprivileged" ;;
     xrootd-v2-broker)
-      echo "origin-xrootd origin-broker cache-tiered" ;;
+      echo "origin-xrootd origin-broker cache-tiered origin-atomic-uploads" \
+           "origin-multiuser" ;;
     pstore-v2)
       echo "origin-pstore cache-tiered" ;;
     posixv2-v2-metadata)
       echo "origin-metadata cache-tiered topo-multi-director" ;;
+    xrootd-v2)
+      echo "origin-xrootd" ;;
     standalone-posixv2)
       echo "topo-standalone origin-posc origin-multiuser auth-external-issuer" \
            "origin-max-age origin-transfer-api" ;;

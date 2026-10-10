@@ -52,6 +52,10 @@ ORIGIN_POSC=false
 ORIGIN_METADATA=false
 ORIGIN_METADATA_MODE=eventual
 
+# Origin.EnableAtomicUploads, XRootD's POSC (see
+# presets/origin-atomic-uploads.sh).
+ORIGIN_ATOMIC_UPLOADS=false
+
 # Origin.CacheControl: what the origins send as Cache-Control. Empty
 # sends none, and a cache then decides for itself how long an object
 # stays fresh (see presets/origin-max-age.sh).

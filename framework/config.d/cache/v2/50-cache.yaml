@@ -3,3 +3,8 @@
 
 Cache:
   EnableV2: true
+
+  # The admin API by which the blocks suite's cache-corrupted scenario
+  # corrupts a block of a cached object, to check that the cache never
+  # serves it. Destructive, so meant for test federations like this one.
+  EnableChaosAPI: true
