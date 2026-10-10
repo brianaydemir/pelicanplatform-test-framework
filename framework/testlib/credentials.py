@@ -32,11 +32,13 @@ key, so `jwks` is skipped too (see moot()).
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404
 import sys
 import time
+from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from typing import AbstractSet, Dict, FrozenSet, List, Mapping, Optional, Tuple
+from typing import Optional
 
 from . import common
 
@@ -65,17 +67,20 @@ WRITES = ("put", "delete")
 
 @dataclass(frozen=True)
 class Credential:
+    """A credential that the tests present, and what it should get."""
+
     name: str
     key: Optional[str]  # which key signs it (see key_name()); None: no token
-    issuer: str         # the issuer it claims: the namespace's ("own"), or the other's
-    scope_path: str     # relative to the namespace
-    get_scopes: Tuple[str, ...]  # for a read
-    put_scopes: Tuple[str, ...]  # for a write
+    issuer: str  # the issuer it claims: the namespace's ("own"), or the other's
+    scope_path: str  # relative to the namespace
+    get_scopes: tuple[str, ...]  # for a read
+    put_scopes: tuple[str, ...]  # for a write
     lifetime: int
-    verdict: str        # what a server should do with it where the token decides
+    verdict: str  # what a server should do with it where the token decides
     description: str
 
-    def scopes(self, op: str) -> Tuple[str, ...]:
+    def scopes(self, op: str) -> tuple[str, ...]:
+        """Its scopes for op."""
         return self.put_scopes if op in WRITES else self.get_scopes
 
     @property
@@ -84,8 +89,10 @@ class Credential:
         return self.lifetime == EXPIRED
 
 
+# fmt: off
 CREDENTIALS = (
-    #          name          key         issuer   scope path     get  put  lifetime verdict
+    #          name          key         issuer   scope path     get  put
+    # lifetime verdict
     Credential("server",     "origin",   "own",   "/",           RWM, RWM, LONG,    ALLOW,
                "signed by the origins' issuer key"),
     Credential("jwks",       "jwks",     "own",   "/",           RWM, RWM, LONG,    ALLOW,
@@ -109,6 +116,7 @@ CREDENTIALS = (
     Credential("expired",    "origin",   "own",   "/",           RWM, RWM, EXPIRED, DENY,
                "the origins' key, expired"),
 )
+# fmt: on
 
 BY_NAME = {c.name: c for c in CREDENTIALS}
 
@@ -152,7 +160,7 @@ def has_issuer(caps: AbstractSet[str]) -> bool:
     return ("Reads" in caps and "PublicReads" not in caps) or "Writes" in caps
 
 
-def exported(fed: common.Federation) -> List[str]:
+def exported(fed: common.Federation) -> list[str]:
     """NAMESPACES that the federation exports: not every shape exports
     every one (ORIGIN_NAMESPACES in fed.sh)."""
     return [ns for ns in NAMESPACES if ns in fed.exports]
@@ -191,8 +199,10 @@ def moot(fed: common.Federation, cred: Credential) -> Optional[str]:
     if cred.key in NAMESPACE_KEYS and not namespace_issuers(fed):
         return f"{why}, so no namespace has keys of its own"
     if cred.key == "jwks" and fed.external_issuer:
-        return ("the external issuer's JWKS lacks Server.IssuerJwks's key, so the token"
-                " would only repeat `unknown`")
+        return (
+            "the external issuer's JWKS lacks Server.IssuerJwks's key, so the token"
+            " would only repeat `unknown`"
+        )
     if cred.key == "ns-other":
         for namespace in PROTECTED:
             if namespace not in fed.exports:
@@ -200,19 +210,22 @@ def moot(fed: common.Federation, cred: Credential) -> Optional[str]:
     return None
 
 
-def keys(fed: common.Federation) -> Dict[str, str]:
+def keys(fed: common.Federation) -> dict[str, str]:
     """Where each signing key is, under framework/var.
 
-      origin      the origins' issuer key
-      jwks        test-keys/jwks.pem, whose public key the origins list
-                  only in Server.IssuerJwks
-      unknown     test-keys/unknown.pem, which no server knows
-      ns-<ns>     test-keys/ns-<ns>.pem, whose public key the origins
-                  list only in the IssuerJwks of the /<ns> export (only
-                  for the protected namespaces)
+    origin      the origins' issuer key
+    jwks        test-keys/jwks.pem, whose public key the origins list
+                only in Server.IssuerJwks
+    unknown     test-keys/unknown.pem, which no server knows
+    ns-<ns>     test-keys/ns-<ns>.pem, whose public key the origins
+                list only in the IssuerJwks of the /<ns> export (only
+                for the protected namespaces)
     """
-    found = {"origin": fed.origin_key, "jwks": "test-keys/jwks.pem",
-             "unknown": "test-keys/unknown.pem"}
+    found = {
+        "origin": fed.origin_key,
+        "jwks": "test-keys/jwks.pem",
+        "unknown": "test-keys/unknown.pem",
+    }
     for namespace in PROTECTED:
         found[f"ns-{namespace}"] = f"test-keys/ns-{namespace}.pem"
     for name, path in found.items():
@@ -232,7 +245,7 @@ def key_name(key: str, namespace: str) -> str:
     return key
 
 
-#---------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 # The public keys that the origins publish beside their own (see keys()),
 # under framework/var, and what each JWKS they serve should hold.
 
@@ -240,23 +253,27 @@ SERVER_JWKS = "issuer-jwks/test.jwks"
 
 
 def namespace_jwks(namespace: str) -> str:
+    """Where namespace's own public keys are, under framework/var."""
     return f"issuer-jwks/ns-{namespace}.jwks"
 
 
-def key_ids(document: bytes) -> FrozenSet[str]:
+def key_ids(document: bytes) -> frozenset[str]:
     """The kids in a JWKS document. Raises ValueError if it isn't one."""
-    parsed = json.loads(document)
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("keys"), list):
+    parsed = common.as_object(json.loads(document)) or {}
+    listed = common.as_array(parsed.get("keys"))
+    if listed is None:
         raise ValueError("not a JWKS")
-    return frozenset(k.get("kid", "") for k in parsed["keys"] if isinstance(k, dict))
+    found = [common.as_object(k) for k in listed]
+    return frozenset(str(k.get("kid", "")) for k in found if k is not None)
 
 
-def server_jwks_problems(have: AbstractSet[str], jwks: AbstractSet[str],
-                         own: Mapping[str, AbstractSet[str]]) -> List[str]:
+def server_jwks_problems(
+    have: AbstractSet[str], jwks: AbstractSet[str], own: Mapping[str, AbstractSet[str]]
+) -> list[str]:
     """What is wrong with the server-wide JWKS, whose kids are have: it
     should hold Server.IssuerJwks's (jwks), and no namespace's own (own,
     by protected namespace)."""
-    problems = []
+    problems: list[str] = []
     if not jwks <= have:
         problems.append("lacks Server.IssuerJwks's key")
     for namespace in PROTECTED:
@@ -265,14 +282,17 @@ def server_jwks_problems(have: AbstractSet[str], jwks: AbstractSet[str],
     return problems
 
 
-def namespace_jwks_problems(namespace: str, have: AbstractSet[str],
-                            server: Optional[AbstractSet[str]],
-                            own: Mapping[str, AbstractSet[str]]) -> List[str]:
+def namespace_jwks_problems(
+    namespace: str,
+    have: AbstractSet[str],
+    server: Optional[AbstractSet[str]],
+    own: Mapping[str, AbstractSet[str]],
+) -> list[str]:
     """What is wrong with protected namespace's JWKS, whose kids are
     have: it should hold the server-wide JWKS's (server; None if that was
     unreadable), its own (own, by protected namespace), and nothing
     else."""
-    problems = []
+    problems: list[str] = []
     if not own[namespace] <= have:
         problems.append(f"lacks /{namespace}'s own key")
     if own[OTHER[namespace]] & have:
@@ -294,36 +314,62 @@ def namespace_jwks_problems(namespace: str, have: AbstractSet[str],
 SUBJECT = "pelican-test-framework"
 
 
-def mint(fed: common.Federation, out: str, prefix: str, key: str, issuer: str,
-         scope_path: str, lifetime: int, scopes: Tuple[str, ...],
-         subject: str = SUBJECT) -> None:
+def mint(
+    fed: common.Federation,
+    out: str,
+    prefix: str,
+    key: str,
+    issuer: str,
+    scope_path: str,
+    lifetime: int,
+    scopes: tuple[str, ...],
+    subject: str = SUBJECT,
+    raw_scopes: tuple[str, ...] = (),
+) -> None:
     """Write a token for namespace prefix (e.g. /protected-a/) to file
-    out."""
-    command = [common.binary("pelican"), "token", "create", fed.url + prefix,
-               *[f"--{scope}" for scope in scopes],
-               "--subject", subject, "--issuer", issuer,
-               "--scope-path", scope_path, "--lifetime", str(lifetime),
-               "--private-key", key]
-    with open(out, "w") as f:
-        done = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=f,
-                              stderr=subprocess.PIPE, text=True)
+    out, with scopes (`pelican token create` flags, e.g. read) and
+    raw_scopes (scopes as such, e.g. pelican.transfer)."""
+    command = [common.binary("pelican"), "token", "create", fed.url + prefix]
+    command += [f"--{scope}" for scope in scopes]
+    for scope in raw_scopes:
+        command += ["--raw-scope", scope]
+    command += ["--subject", subject, "--issuer", issuer, "--scope-path", scope_path]
+    command += ["--lifetime", str(lifetime), "--private-key", key]
+    with open(out, "w", encoding="utf-8") as f:
+        done = subprocess.run(  # nosec B603
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=f,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
     if done.returncode != 0:
         sys.stderr.write(done.stderr)
         common.die(f"could not create a token for {prefix} with framework/var/{key}")
 
 
-def mint_server(fed: common.Federation, out: str, namespace: str,
-                scopes: Tuple[str, ...] = RWM, lifetime: int = LONG) -> str:
+def mint_server(
+    fed: common.Federation,
+    out: str,
+    namespace: str,
+    scopes: tuple[str, ...] = RWM,
+    scope_path: str = "/",
+    subject: str = SUBJECT,
+) -> str:
     """Write a `server` token for namespace to file out, and return it:
-    what the tests use for their own setup and checks."""
-    mint(fed, out, f"/{namespace}/", fed.origin_key, fed.issuer_of(namespace), "/",
-         lifetime, scopes)
-    with open(out) as f:
+    what the tests use for their own setup and checks. A token for less
+    of the namespace (scope_path), or for another subject, is the
+    origins' too."""
+    issuer = fed.issuer_of(namespace)
+    mint(fed, out, f"/{namespace}/", fed.origin_key, issuer, scope_path, LONG, scopes, subject)
+    with open(out, encoding="utf-8") as f:
         return f.read().strip()
 
 
-def mint_credential(fed: common.Federation, cred: Credential, namespace: str, op: str,
-                    out: str) -> Optional[float]:
+def mint_credential(
+    fed: common.Federation, cred: Credential, namespace: str, op: str, out: str
+) -> Optional[float]:
     """Write cred's token for op in namespace to file out, and return when
     it expires (seconds since the epoch). `none` writes nothing and
     returns None.
@@ -334,8 +380,16 @@ def mint_credential(fed: common.Federation, cred: Credential, namespace: str, op
     if cred.key is None:
         return None
     issuer_ns = namespace if cred.issuer == "own" else OTHER[namespace]
-    mint(fed, out, f"/{namespace}/", keys(fed)[key_name(cred.key, namespace)],
-         fed.issuer_of(issuer_ns), cred.scope_path, cred.lifetime, cred.scopes(op))
+    mint(
+        fed,
+        out,
+        f"/{namespace}/",
+        keys(fed)[key_name(cred.key, namespace)],
+        fed.issuer_of(issuer_ns),
+        cred.scope_path,
+        cred.lifetime,
+        cred.scopes(op),
+    )
     # It expires within `lifetime` of `token create` returning.
     return time.time() + cred.lifetime
 
@@ -352,7 +406,7 @@ def wait_until_stale(expiry: Optional[float]) -> None:
         time.sleep(left)
 
 
-def client_env(overwrites: bool = True) -> Dict[str, str]:
+def client_env(overwrites: bool = True) -> dict[str, str]:
     """The environment for a client that should present only the token
     it is given. The client looks for tokens at --token, then in these
     variables and token files, then in _CONDOR_CREDS, and presents the
@@ -369,20 +423,30 @@ def client_env(overwrites: bool = True) -> Dict[str, str]:
     them off, since they turn off its skipping of uploads. Runs in
     framework/var."""
     env = dict(os.environ)
-    for name in ("BEARER_TOKEN", "BEARER_TOKEN_FILE", "TOKEN", "_CONDOR_CREDS",
-                 "PELICAN_CLIENT_PREFERREDCACHES", "NEAREST_CACHE", "_CONDOR_JOB_AD"):
+    for name in (
+        "BEARER_TOKEN",
+        "BEARER_TOKEN_FILE",
+        "TOKEN",
+        "_CONDOR_CREDS",
+        "PELICAN_CLIENT_PREFERREDCACHES",
+        "NEAREST_CACHE",
+        "_CONDOR_JOB_AD",
+    ):
         env.pop(name, None)
     for name in [n for n in env if n.endswith(("_SKIP_TERMINAL_CHECK", "_NEAREST_CACHE"))]:
         env.pop(name)
     uid = os.getuid()
     runtime = os.environ.get("XDG_RUNTIME_DIR", "/nonexistent")
-    for path in (f"{runtime}/bt_u{uid}", f"/tmp/bt_u{uid}"):
+    for path in (f"{runtime}/bt_u{uid}", f"/tmp/bt_u{uid}"):  # nosec B108
         if os.path.exists(path):
-            common.die(f"the client would present {path} instead of each scenario's token;"
-                       " remove it")
+            common.die(
+                f"the client would present {path} instead of each scenario's token;"
+                + " remove it"
+            )
     shutil.rmtree(".client-credentials", ignore_errors=True)
     env["PELICAN_CLIENT_CREDENTIALFILE"] = os.path.abspath(
-        ".client-credentials/client-credentials.pem")
+        ".client-credentials/client-credentials.pem"
+    )
     if overwrites:
         env["PELICAN_CLIENT_ENABLEOVERWRITES"] = "true"
     else:

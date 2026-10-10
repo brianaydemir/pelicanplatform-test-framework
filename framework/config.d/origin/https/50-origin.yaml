@@ -1,0 +1,9 @@
+---
+# XRootD in front of an HTTPS server: the `webdav` service, rclone
+# serving framework/var/data/origin/<N> as /origin-<N>, under which the
+# export's StoragePrefix is its directory. fed.sh sets each origin's
+# Origin.HttpServiceUrl (in framework/var/generated/instance/), and gives
+# it one export, since the https backend takes no more.
+
+Origin:
+  StorageType: https

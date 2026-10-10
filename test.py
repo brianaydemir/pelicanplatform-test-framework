@@ -14,8 +14,8 @@ Run it in the dev container, e.g. from the host:
   ./fed.sh test [ARG]...
 
 The suites are in framework/suites/, and run in this order: federation,
-commands, listings, blocks, posc, metadata, users, owners, auth, and
-transfers.
+commands, transfer-api, listings, names, blocks, tiering, posc,
+metadata, users, owners, sitelocal, auth, and transfers.
 `federation/ready` and `federation/caches` run first whatever is asked
 for, and if the federation never serves, nothing else runs. A suite
 that doesn't apply to the shape, such as posc without POSC or pstore, is
@@ -24,23 +24,26 @@ framework/var/results/<suite>.tsv; a run of everything first removes
 the results of earlier runs with the same RESULTS_TAG.
 """
 
+import contextlib
+import os
 import sys
+import tempfile
+import time
+import traceback
+from typing import Optional
 
+# No __pycache__ in the checkout, where the dev container would leave it
+# root's.
 sys.dont_write_bytecode = True
-
-import contextlib  # noqa: E402
-import os  # noqa: E402
-import tempfile  # noqa: E402
-import time  # noqa: E402
-import traceback  # noqa: E402
-from typing import Dict, List, Optional, Tuple  # noqa: E402
-
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "framework"))
 
-from suites import SUITES  # noqa: E402
-from testlib import common  # noqa: E402
-from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP, Report  # noqa: E402
-from testlib.session import Session  # noqa: E402
+# pylint: disable=wrong-import-position
+from suites import SUITES
+from testlib import common
+from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP, Report
+from testlib.session import Session
+
+# pylint: enable=wrong-import-position
 
 RESULTS = os.path.join(common.VAR, "results")
 
@@ -55,13 +58,15 @@ def current_shape() -> Optional[common.Federation]:
 
 
 def skip_reason(name: str, fed: common.Federation) -> Optional[str]:
+    """Why suite name skips in fed's shape, or None."""
     try:
         return SUITES[name].skip(fed)
     except common.Died:
         return None
 
 
-def list_suites(chosen: Dict[str, List[str]]) -> None:
+def list_suites(chosen: dict[str, list[str]]) -> None:
+    """Print the chosen suites and scenarios, and which skip."""
     fed = current_shape()
     for name, scenarios in chosen.items():
         module = SUITES[name]
@@ -77,9 +82,9 @@ def list_suites(chosen: Dict[str, List[str]]) -> None:
         print("Run ./fed.sh init to see which suites apply to the shape.")
 
 
-def with_required(chosen: Dict[str, List[str]]) -> Dict[str, List[str]]:
+def with_required(chosen: dict[str, list[str]]) -> dict[str, list[str]]:
     """chosen, and each suite's REQUIRED scenarios, in the suites' order."""
-    found = {}
+    found: dict[str, list[str]] = {}
     for name, module in SUITES.items():
         required = getattr(module, "REQUIRED", ())
         if name in chosen or required:
@@ -89,13 +94,19 @@ def with_required(chosen: Dict[str, List[str]]) -> Dict[str, List[str]]:
 
 
 def describe(fed: common.Federation) -> str:
-    kinds = ", ".join(sorted({c.kind for c in fed.caches}))
-    return (f"{len(fed.origins)} origin(s) ({fed.origin_variant}),"
-            f" {len(fed.caches)} cache(s) ({kinds}), {len(fed.directors)} director(s);"
-            f" exporting {', '.join('/' + ns for ns in fed.exports)}")
+    """fed's shape, briefly."""
+    caches = "no cache"
+    if fed.caches:
+        kinds = ", ".join(sorted({c.kind for c in fed.caches}))
+        caches = f"{len(fed.caches)} cache(s) ({kinds})"
+    return (
+        f"{fed.topology} topology: {len(fed.origins)} origin(s) ({fed.origin_variant}),"
+        f" {caches}, {len(fed.directors)} director(s);"
+        f" exporting {', '.join('/' + ns for ns in fed.exports)}"
+    )
 
 
-def run_suite(name: str, selected: List[str], session: Session) -> Tuple[Report, bool]:
+def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report, bool]:
     """Run one suite's selected scenarios, and write its results: its
     report, and whether it finished. If it didn't, its report says why."""
     module = SUITES[name]
@@ -116,7 +127,9 @@ def run_suite(name: str, selected: List[str], session: Session) -> Tuple[Report,
     except KeyboardInterrupt:
         report.write("interrupted")
         raise
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        # A bug, or a server answering what the suite can't read: the
+        # suite fails, and the rest still run.
         traceback.print_exc()
         error = f"{type(e).__name__}: {e}"
     results.print()
@@ -124,13 +137,18 @@ def run_suite(name: str, selected: List[str], session: Session) -> Tuple[Report,
     return report, error is None
 
 
-def summarize(reports: List[Report], seconds: float) -> None:
+def summarize(reports: list[Report], seconds: float) -> None:
+    """Print each suite's counts, then every failed or unsure case."""
     width = max(len("suite"), *(len(r.suite) for r in reports))
-    print(f"\n==> summary\n\n  {'suite':<{width}} {'pass':>5} {'fail':>5} {'skip':>5}"
-          f" {'inconclusive':>12}")
+    print(
+        f"\n==> summary\n\n  {'suite':<{width}} {'pass':>5} {'fail':>5} {'skip':>5}"
+        + f" {'inconclusive':>12}"
+    )
     for r in reports:
-        print(f"  {r.suite:<{width}} {r.count(PASS):>5} {r.failed:>5} {r.count(SKIP):>5}"
-              f" {r.count(INCONCLUSIVE):>12}")
+        print(
+            f"  {r.suite:<{width}} {r.count(PASS):>5} {r.failed:>5} {r.count(SKIP):>5}"
+            + f" {r.count(INCONCLUSIVE):>12}"
+        )
     for status in (FAIL, INCONCLUSIVE):
         rows = [(r.suite, row) for r in reports for row in r.rows if row.status == status]
         if rows:
@@ -141,6 +159,7 @@ def summarize(reports: List[Report], seconds: float) -> None:
 
 
 def main() -> int:
+    """Run the suites that the arguments ask for, or list them."""
     args = sys.argv[1:]
     if args[:1] in (["-h"], ["--help"]):
         print((__doc__ or "").strip("\n"))
@@ -164,7 +183,7 @@ def main() -> int:
         for name in SUITES:
             with contextlib.suppress(FileNotFoundError):
                 os.remove(Report(name, RESULTS).path)
-    reports: List[Report] = []
+    reports: list[Report] = []
     started = time.monotonic()
     with tempfile.TemporaryDirectory() as tmp:
         session = Session(tmp)
@@ -174,8 +193,10 @@ def main() -> int:
             reports.append(report)
             required = getattr(SUITES[name], "REQUIRED", ())
             if not finished and required:
-                print(f"\n{common.PROG}: stopping: {name} did not finish, so nothing else can pass",
-                      file=sys.stderr)
+                print(
+                    f"\n{common.PROG}: stopping: {name} did not finish, so nothing else can pass",
+                    file=sys.stderr,
+                )
                 break
     summarize(reports, time.monotonic() - started)
     return 1 if any(r.failed for r in reports) else 0

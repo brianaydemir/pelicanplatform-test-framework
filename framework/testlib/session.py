@@ -11,13 +11,12 @@ present them.
 """
 
 import os
-import subprocess
+import subprocess  # nosec B404
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Optional, Union
 
 from . import common, credentials
 from .credentials import RWM, Credential
-
 
 # How long a client command may run before it is killed and fails, and
 # the exit status it then has (timeout(1)'s).
@@ -37,6 +36,8 @@ def _text(output: Union[str, bytes, None]) -> str:
 
 
 class Session:
+    """What every suite shares in one run of test.py."""
+
     def __init__(self, tmp: str):
         self.fed = common.Federation()
         self.pelican = os.path.abspath(common.binary("pelican"))
@@ -48,9 +49,9 @@ class Session:
         # for `object sync`, which wants overwrites off.
         self.env = credentials.client_env()
         self.sync_env = credentials.client_env(overwrites=False)
-        self.namespaces: List[str] = credentials.exported(self.fed)
-        self._server: Dict[Tuple[str, Tuple[str, ...]], str] = {}
-        self._credential: Dict[Tuple[str, str, str], Optional[str]] = {}
+        self.namespaces: list[str] = credentials.exported(self.fed)
+        self._server: dict[tuple[str, tuple[str, ...]], str] = {}
+        self._credential: dict[tuple[str, str, str], Optional[str]] = {}
         # When the last expired token expired.
         self.stale_at: Optional[float] = None
         for cred in credentials.CREDENTIALS:
@@ -66,7 +67,7 @@ class Session:
 
     # The server's own tokens.
 
-    def token_file(self, namespace: str, scopes: Tuple[str, ...] = RWM) -> str:
+    def token_file(self, namespace: str, scopes: tuple[str, ...] = RWM) -> str:
         """A `server` token for namespace with scopes: its file."""
         key = (namespace, scopes)
         if key not in self._server:
@@ -75,12 +76,12 @@ class Session:
             self._server[key] = path
         return self._server[key]
 
-    def token(self, namespace: str, scopes: Tuple[str, ...] = RWM) -> str:
+    def token(self, namespace: str, scopes: tuple[str, ...] = RWM) -> str:
         """The same token itself."""
-        with open(self.token_file(namespace, scopes)) as f:
+        with open(self.token_file(namespace, scopes), encoding="utf-8") as f:
             return f.read().strip()
 
-    def tokens(self) -> Dict[str, str]:
+    def tokens(self) -> dict[str, str]:
         """A `server` token for each exported namespace, by namespace."""
         return {ns: self.token(ns) for ns in self.namespaces}
 
@@ -103,7 +104,7 @@ class Session:
         path = self.credential_file(cred, namespace, op)
         if path is None:
             return None
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return f.read().strip()
 
     def wait_until_stale(self) -> None:
@@ -113,18 +114,29 @@ class Session:
 
     # The client.
 
-    def pelican_cmd(self, *args: str, env: Optional[Dict[str, str]] = None,
-                    cwd: Optional[str] = None,
-                    timeout: float = CLIENT_TIMEOUT) -> Tuple[int, str, str]:
+    def pelican_cmd(
+        self,
+        *args: str,
+        env: Optional[dict[str, str]] = None,
+        cwd: Optional[str] = None,
+        timeout: float = CLIENT_TIMEOUT,
+    ) -> tuple[int, str, str]:
         """Run `pelican <args>` with no terminal: its exit status, stdout,
         and stderr. With no token, `pelican object` would otherwise try to
         acquire one interactively. A run that outlasts timeout is killed,
         and fails with "timed out" in its stderr."""
         try:
-            done = subprocess.run([self.pelican, *args], env=env or self.env,
-                                  cwd=cwd or self.tmp, stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                  timeout=timeout)
+            done = subprocess.run(  # nosec B603
+                [self.pelican, *args],
+                env=env or self.env,
+                cwd=cwd or self.tmp,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
         except subprocess.TimeoutExpired as e:
             return TIMED_OUT, _text(e.stdout), _text(e.stderr) + f"\n{timed_out(timeout)}\n"
         return done.returncode, done.stdout, done.stderr

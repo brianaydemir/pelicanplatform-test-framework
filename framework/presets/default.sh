@@ -13,8 +13,9 @@
 #---------------------------------------------------------------------------
 # The knobs that shape the federation, which only presets set.
 
-# `full` (docker-compose.yaml) or `tiny` (docker-compose.tiny.yaml).
-# presets/topo-basic.sh and presets/topo-tiny.sh set it.
+# `full` (docker-compose.yaml), `tiny` (docker-compose.tiny.yaml), or
+# `standalone` (origin-0 alone, from docker-compose.yaml).
+# presets/topo-basic.sh, topo-tiny.sh, and topo-standalone.sh set it.
 TOPOLOGY=full
 
 # Directory names under config.d/origin/ and config.d/cache/. Each
@@ -59,6 +60,16 @@ ORIGIN_CACHE_CONTROL=
 # Origin.Multiuser, with the tests' tokens mapped to a user (see
 # presets/origin-multiuser.sh).
 ORIGIN_MULTIUSER=false
+
+# Origin.EnableBroker, with director-0 as the connection broker (see
+# presets/origin-broker.sh).
+ORIGIN_BROKER=false
+
+# Origin.EnableTransferAPI (see presets/origin-transfer-api.sh).
+ORIGIN_TRANSFER_API=false
+
+# Cache.TieringTargets for every V2 cache (see presets/cache-tiered.sh).
+CACHE_TIERING=false
 
 # Server.DropPrivileges for every Pelican server (see
 # presets/server-unprivileged.sh).

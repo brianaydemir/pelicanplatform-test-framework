@@ -42,11 +42,11 @@ does. Presets change the shape.
 
 `./fed.sh test` runs `test.py` in the dev container, which runs every
 check that applies to the federation's shape. The checks are grouped in
-suites (`framework/suites/`): `federation`, `commands`, `listings`,
-`blocks`, `posc`, `metadata`, `users`, `owners`, `auth`, and
-`transfers`. A suite that doesn't apply to the shape is skipped, and
-says why.
-[What the tests check](docs/tests.md) describes each one.
+suites (`framework/suites/`): `federation`, `commands`, `transfer-api`,
+`listings`, `names`, `blocks`, `tiering`, `posc`, `metadata`, `users`,
+`owners`, `sitelocal`, `auth`, and `transfers`. A suite that doesn't
+apply to the shape is skipped, and says why. [What the tests check](docs/tests.md)
+describes each one.
 
 ```sh
 ./fed.sh test -l                        # list the suites and their scenarios
@@ -94,17 +94,17 @@ to `framework/var/results/` ([Results](docs/ci.md#results)), and
 Nothing needs to be released first. Your changes go in `local/`, or, for
 the client, in `framework/var/bin/`:
 
-| To test                           | Put it in                                  | Then                            |
-| --------------------------------- | ------------------------------------------ | ------------------------------- |
-| server images                     | `IMAGE_*` in `local/environment.cfg`       | `./fed.sh up`                   |
-| a client binary                   | `framework/var/bin/linux/pelican`          | run it                          |
-| another release                   | `PELICAN_TAG` in `local/environment.cfg`   | `./fed.sh init`, `up`           |
-| config for every service          | `local/config.d/base/*.yaml`               | `./fed.sh restart`              |
-| config for one service            | `local/config.d/instance/<service>/*.yaml` | `./fed.sh restart <service>`    |
-| a [knob](docs/configuration.md#knobs) | your environment, or a local preset        | `./fed.sh init`, `up`           |
-| a [shape of your own](docs/configuration.md#presets) | `local/presets/<name>.sh` | `./fed.sh -p <name> init`, `up` |
-| an OIDC client (`-p auth-oidc`)   | `local/etc/oidc-client-{id,secret}`        | `./fed.sh restart`              |
-| S3 credentials (`-p origin-s3v2`) | `local/etc/s3-{access,secret}-key`         | `./fed.sh restart`              |
+| To test                                              | Put it in                                  | Then                            |
+| ---------------------------------------------------- | ------------------------------------------ | ------------------------------- |
+| server images                                        | `IMAGE_*` in `local/environment.cfg`       | `./fed.sh up`                   |
+| a client binary                                      | `framework/var/bin/linux/pelican`          | run it                          |
+| another release                                      | `PELICAN_TAG` in `local/environment.cfg`   | `./fed.sh init`, `up`           |
+| config for every service                             | `local/config.d/base/*.yaml`               | `./fed.sh restart`              |
+| config for one service                               | `local/config.d/instance/<service>/*.yaml` | `./fed.sh restart <service>`    |
+| a [knob](docs/configuration.md#knobs)                | your environment, or a local preset        | `./fed.sh init`, `up`           |
+| a [shape of your own](docs/configuration.md#presets) | `local/presets/<name>.sh`                  | `./fed.sh -p <name> init`, `up` |
+| an OIDC client (`-p auth-oidc`)                      | `local/etc/oidc-client-{id,secret}`        | `./fed.sh restart`              |
+| S3 credentials (`-p origin-s3v2`)                    | `local/etc/s3-{access,secret}-key`         | `./fed.sh restart`              |
 
 Pelican reads its configuration only at startup. `restart` recreates the
 containers, so they read it again.
@@ -193,16 +193,19 @@ objects:
 - `/protected-a` and `/protected-b`: reading, listing, and writing each
   take a token. Each has an issuer and a test key of its own.
 
-**Topology** (`topo-basic` or `topo-tiny`; the `topo-multi-*` presets add
-to `topo-basic`)
+**Topology** (`topo-basic`, `topo-tiny`, or `topo-standalone`; the
+`topo-multi-*` and `topo-site-local-cache` presets add to `topo-basic`)
 
-| Preset              | Effect                                                                                                                                            |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `topo-basic`        | the default: each server in a container of its own                                                                                                |
-| `topo-tiny`         | the whole federation in one container; refuses `cache-xrootd`, `auth-external-issuer`, and every preset that adds a service but the metadata ones |
-| `topo-multi-origin` | adds origin-1, a replica: origin-0's prefixes and key                                                                                             |
-| `topo-multi-cache`  | adds cache-1                                                                                                                                      |
-| `topo-multi-owner`  | adds origin-2, another owner: `/other`, and `/public/other` inside origin-0's `/public`, with a key and an issuer of its own; see `owners`       |
+| Preset                  | Effect                                                                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `topo-basic`            | the default: each server in a container of its own                                                                                                |
+| `topo-tiny`             | the whole federation in one container; refuses `cache-xrootd`, `auth-external-issuer`, and every preset that adds a service but the metadata ones |
+| `topo-multi-origin`     | adds origin-1, a replica: origin-0's prefixes and key                                                                                             |
+| `topo-multi-cache`      | adds cache-1                                                                                                                                      |
+| `topo-multi-owner`      | adds origin-2, another owner: `/other`, and `/public/other` inside origin-0's `/public`, with a key and an issuer of its own; see `owners`        |
+| `topo-multi-director`   | adds director-1, which shares director-0's key                                                                                                    |
+| `topo-site-local-cache` | adds cache-2, a site-local cache that the director does not know of; see `sitelocal`                                                              |
+| `topo-standalone`       | origin-0 alone, as a standalone origin: no discovery host, director, registry, or cache; native origins only                                      |
 
 **Origin storage** (one of)
 
@@ -214,6 +217,8 @@ to `topo-basic`)
 | `origin-ssh`     | the `lab-server` container, over SSH                                             |
 | `origin-httpsv2` | native `httpsv2`, in front of the `webdav` service (rclone); `/protected-a` only |
 | `origin-s3v2`    | native `s3v2`, in front of the `s3` service (rclone)                             |
+| `origin-https`   | XRootD in front of the `webdav` service (rclone); `/protected-a` only            |
+| `origin-s3`      | XRootD in front of the `s3` service (rclone)                                     |
 
 **Caches** (one of)
 
@@ -222,16 +227,24 @@ to `topo-basic`)
 | `cache-v2`     | the default: V2 caches |
 | `cache-xrootd` | XRootD caches          |
 
+**Cache features**
+
+| Preset         | Effect                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------ |
+| `cache-tiered` | V2 caches tier objects of 16 MiB or more to the `s3` service; Pelican's main only; see `tiering` |
+
 **Origin features**
 
-| Preset               | Effect                                                                                         |
-| -------------------- | ---------------------------------------------------------------------------------------------- |
-| `origin-posc`        | stages uploads until they complete (POSC); `posixv2` only                                      |
-| `origin-metadata`    | publishes object events to a recorder; `posixv2` only                                          |
-| `origin-metadata-tx` | `origin-metadata`, in transactional mode                                                       |
-| `origin-max-age`     | origins send `max-age=30`, so V2 caches revalidate                                             |
-| `origin-no-direct`   | origins serve only caches (`Origin.DisableDirectClients`); `/protected-a` only, and only reads |
-| `origin-multiuser`   | the origin reads and writes as each token's user (`Origin.Multiuser`); `posixv2` only          |
+| Preset                | Effect                                                                                         |
+| --------------------- | ---------------------------------------------------------------------------------------------- |
+| `origin-posc`         | stages uploads until they complete (POSC); `posixv2` only                                      |
+| `origin-metadata`     | publishes object events to a recorder; `posixv2` only                                          |
+| `origin-metadata-tx`  | `origin-metadata`, in transactional mode                                                       |
+| `origin-max-age`      | origins send `max-age=30`, so V2 caches revalidate                                             |
+| `origin-no-direct`    | origins serve only caches (`Origin.DisableDirectClients`); `/protected-a` only, and only reads |
+| `origin-multiuser`    | the origin reads and writes as each token's user (`Origin.Multiuser`); `posixv2` only          |
+| `origin-broker`       | origin-0 uses director-0 as its connection broker; XRootD origins only, `/protected-a` only    |
+| `origin-transfer-api` | the origins run the transfer API (`Origin.EnableTransferAPI`); see `transfer-api`              |
 
 **Authorization**
 
@@ -260,20 +273,20 @@ details, including what it refuses. To write your own, see
 
 ## Commands
 
-| Command                             | Does                                               |
-| ----------------------------------- | -------------------------------------------------- |
-| `./fed.sh [-p PRESET]... init`      | create what's missing: certs, binaries, keys, data |
-| `./fed.sh up` / `down`              | start / stop everything                            |
-| `./fed.sh restart [SERVICE]...`     | recreate containers so they reread configuration   |
-| `./fed.sh test [ARG]...`            | the tests: `test.py` in the dev container          |
-| `./fed.sh dev [CMD]...`             | a shell (or `CMD`) in the dev container            |
-| `./fed.sh status`                   | containers, presets, and images                    |
-| `./fed.sh keys [...]`               | [issuer keys](docs/configuration.md#issuer-keys)   |
-| `./fed.sh <other>`                  | passed to `docker compose`, e.g. `logs -f cache-0` |
-| `./test.py [SUITE[/SCENARIO]]...`   | the tests (in the dev container); `-l` lists them  |
-| `./reset.sh`                        | discard everything generated                       |
-| `./smoke.sh [-o DIR] [SHAPE]...`    | the smoke tests, over every shape; destructive     |
-| `framework/report.py`               | merge [results](docs/ci.md#results); JUnit XML; Markdown |
+| Command                           | Does                                                     |
+| --------------------------------- | -------------------------------------------------------- |
+| `./fed.sh [-p PRESET]... init`    | create what's missing: certs, binaries, keys, data       |
+| `./fed.sh up` / `down`            | start / stop everything                                  |
+| `./fed.sh restart [SERVICE]...`   | recreate containers so they reread configuration         |
+| `./fed.sh test [ARG]...`          | the tests: `test.py` in the dev container                |
+| `./fed.sh dev [CMD]...`           | a shell (or `CMD`) in the dev container                  |
+| `./fed.sh status`                 | containers, presets, and images                          |
+| `./fed.sh keys [...]`             | [issuer keys](docs/configuration.md#issuer-keys)         |
+| `./fed.sh <other>`                | passed to `docker compose`, e.g. `logs -f cache-0`       |
+| `./test.py [SUITE[/SCENARIO]]...` | the tests (in the dev container); `-l` lists them        |
+| `./reset.sh`                      | discard everything generated                             |
+| `./smoke.sh [-o DIR] [SHAPE]...`  | the smoke tests, over every shape; destructive           |
+| `framework/report.py`             | merge [results](docs/ci.md#results); JUnit XML; Markdown |
 
 
 ## Where things live
@@ -293,24 +306,24 @@ Everything that the framework creates is under `framework/var/`. These
 are plain directories. Stop the federation before editing anything in
 them.
 
-| Path                 | Contents                                                    |
-| -------------------- | ----------------------------------------------------------- |
-| `state/<service>/`   | database and backups (`/var/lib/pelican`)                   |
-| `data/origin/<N>/`   | origin-N's storage (`/data`; `/srv/origin-<N>` on the `webdav` and `s3` backends) |
-| `data/cache/<N>/`    | cache-N's storage (`/data`)                                 |
-| `data/lab-server/`   | the lab server's shared directory                           |
-| `data/transfers/`    | the `transfers` suite's batches (`input/`) and results      |
-| `data/auth-test/`    | the responses the `auth` suite got                          |
-| `data/owners-test/`  | the responses the `owners` suite got                        |
-| `data/metadata/`     | every request the metadata recorder received                |
-| `results/`           | a row per test case, by suite ([Results](docs/ci.md#results)) |
-| `issuer-keys/<svc>/` | each service's issuer keys (`/fed/issuer-keys`), and `issuer/`, the external issuer's |
-| `test-keys/`         | private keys for the [authorization tests](docs/tests.md#authorization) |
-| `issuer-jwks/`       | the public keys the origins add with `Server.IssuerJwks` and each export's `IssuerJwks` |
+| Path                 | Contents                                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `state/<service>/`   | database and backups (`/var/lib/pelican`)                                                                       |
+| `data/origin/<N>/`   | origin-N's store (`/data`; `/srv/origin-<N>` on the `webdav` and `s3` backends), a directory per namespace      |
+| `data/cache/<N>/`    | cache-N's storage (`/data`)                                                                                     |
+| `data/lab-server/`   | the lab server's shared directory                                                                               |
+| `data/transfers/`    | the `transfers` suite's batches (`input/`) and results                                                          |
+| `data/auth-test/`    | the responses the `auth` suite got                                                                              |
+| `data/owners-test/`  | the responses the `owners` suite got                                                                            |
+| `data/metadata/`     | every request the metadata recorder received                                                                    |
+| `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                   |
+| `issuer-keys/<svc>/` | each service's issuer keys (`/fed/issuer-keys`), and `issuer/`, the external issuer's                           |
+| `test-keys/`         | private keys for the [authorization tests](docs/tests.md#authorization)                                         |
+| `issuer-jwks/`       | the public keys the origins add with `Server.IssuerJwks` and each export's `IssuerJwks`                         |
 | `generated/`         | files that `fed.sh` derives from the shape and `local/`, e.g. each service's own layer in `instance/<service>/` |
-| `bin/`               | binaries; the dev container uses `linux/`                   |
-| `certs/`             | the framework's CA and server certificate                   |
-| `grafana/`           | Grafana's database (`reset.sh` keeps it)                    |
+| `bin/`               | binaries; the dev container uses `linux/`                                                                       |
+| `certs/`             | the framework's CA and server certificate                                                                       |
+| `grafana/`           | Grafana's database (`reset.sh` keeps it)                                                                        |
 
 
 ## Ports
@@ -319,15 +332,15 @@ The web UIs log in as `admin` / `asdf`. `framework/var/certs/ca.crt` signs
 the certificates. Under `-p auth-oidc`, each server's OIDC redirect URI is
 `https://localhost:<port>/api/v1.0/auth/oauth/callback`.
 
-| URL                      | Service                                                      |
-| ------------------------ | ------------------------------------------------------------ |
-| <https://localhost:8444> | origin-0 (origin-1: 8446; origin-2: 8448)                    |
-| <https://localhost:8445> | cache-0 (cache-1: 8447)                                      |
-| <https://localhost:9000> | director-0 (`topo-tiny`: everything)                         |
-| <https://localhost:9001> | registry                                                     |
+| URL                      | Service                                                                               |
+| ------------------------ | ------------------------------------------------------------------------------------- |
+| <https://localhost:8444> | origin-0 (origin-1: 8446; origin-2: 8448)                                             |
+| <https://localhost:8445> | cache-0 (cache-1: 8447; cache-2: 8449)                                                |
+| <https://localhost:9000> | director-0 (`topo-tiny`: everything; director-1: 9004)                                |
+| <https://localhost:9001> | registry                                                                              |
 | <https://localhost:9005> | discovery (`/.well-known/pelican-configuration`), and the external issuer (`/issuer`) |
-| <http://localhost:9002>  | dev container (serve on `0.0.0.0:8444` inside)               |
-| <http://localhost:9003>  | Grafana (`admin` / `admin`; see `framework/presets/with-grafana.sh`) |
+| <http://localhost:9002>  | dev container (serve on `0.0.0.0:8444` inside)                                        |
+| <http://localhost:9003>  | Grafana (`admin` / `admin`; see `framework/presets/with-grafana.sh`)                  |
 
 
 ## Sharp edges
@@ -360,8 +373,8 @@ the certificates. Under `-p auth-oidc`, each server's OIDC redirect URI is
 
 ## More documentation
 
-- [What the tests check](docs/tests.md): each suite, the test data, the
-  credentials, and the unit tests.
+- [What the tests check](docs/tests.md): each suite, the test data, and
+  the credentials.
 - [Configuration](docs/configuration.md): configuration layering, knobs,
   writing presets, and issuer keys.
 - [CI and results](docs/ci.md): running the smoke tests in CI, and the

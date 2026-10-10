@@ -1,0 +1,16 @@
+---
+# XRootD in front of an S3 server: the `s3` service, rclone serving each
+# export's directory of framework/var/data/origin/<N> as a bucket of its
+# own, origin-<N>-<directory>. Each export's StoragePrefix goes unused:
+# its federation prefix maps to its bucket's root, which fed.sh names in
+# the exports in framework/var/generated/instance/origin-<N>/. The
+# credentials are as for s3v2. XRootD trusts the system's CAs, to which
+# the images' entrypoint adds /certs/ca.crt.
+
+Origin:
+  StorageType: s3
+  S3ServiceUrl: https://s3:8444
+  S3Region: us-east-1
+  S3UrlStyle: path
+  S3AccessKeyfile: /fed/generated/s3-access-key
+  S3SecretKeyfile: /fed/generated/s3-secret-key

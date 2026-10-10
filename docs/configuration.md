@@ -105,10 +105,12 @@ name. It can set any knob in `framework/presets/default.sh`, or call
   `metadata`, and `users` suites skip; its pairs with `origin-posc`,
   `origin-metadata`, `origin-metadata-tx`, and `origin-multiuser` test reads
   with those features on. `framework/matrix.py` lists the choices, and which
-  combinations `fed.sh` refuses; its unit tests check that it agrees with
-  `fed.sh`, and that the shapes cover every pair. A preset of your own is in
-  no shape.
-- **The connection broker** has no preset.
+  combinations `fed.sh` refuses, which must agree with `fed.sh`'s checks;
+  `framework/matrix.py check` checks that the shapes cover every pair. A
+  preset of your own is in no shape.
+- **The connection broker** (`origin-broker`) is on, but the origin stays
+  reachable, so only the director always goes through it: Pelican's
+  brokered path to an unreachable origin does not work end to end.
 
 
 ## Issuer keys

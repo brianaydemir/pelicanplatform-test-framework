@@ -9,14 +9,12 @@ framework/init-data.py share.
                owners suite
   report       one row per test case, in framework/var/results/
   session      what every suite shares in one run: tokens, the client
-  stores       what the origins hold, and putting objects straight there
+  stores       what the origins hold, putting objects straight there, and
+               what their storage cannot do
   transfers    the transfers suite's scenarios, batches, and verdicts
   web          HTTP(S) requests straight to a server
   webdav       PROPFIND, and reading the listings it gets
 
 Python 3.9 and its standard library only: that is what AlmaLinux 9 (the
-dev container) and macOS ship. The unit tests in tests/ need no
-federation:
-
-  python3 -B -m unittest discover -s framework -t framework
+dev container) and macOS ship.
 """

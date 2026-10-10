@@ -3,30 +3,31 @@
 Like curl without -L: a redirect is an answer, not something to follow.
 """
 
+import functools
 import http.client
 import ssl
-from dataclasses import dataclass, field
-from typing import Iterable, Iterator, List, Mapping, Optional, Tuple, Union
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
+from typing import Optional, Union
 from urllib.parse import urlsplit
 
 # The federation's CA, in the dev container.
 CA_FILE = "/certs/ca.crt"
 
-_context: Optional[ssl.SSLContext] = None
 
-
+@functools.lru_cache(maxsize=None)
 def tls_context() -> ssl.SSLContext:
-    global _context
-    if _context is None:
-        _context = ssl.create_default_context(cafile=CA_FILE)
-    return _context
+    """A TLS context that trusts the federation's CA, made once."""
+    return ssl.create_default_context(cafile=CA_FILE)
 
 
 @dataclass
 class Response:
+    """A server's answer, or the lack of one."""
+
     status: Optional[int]  # None if no response came
     body: bytes = b""
-    headers: List[Tuple[str, str]] = field(default_factory=list)
+    headers: tuple[tuple[str, str], ...] = ()
 
     def header(self, name: str) -> str:
         """The last value of header name, or ""."""
@@ -35,33 +36,47 @@ class Response:
 
     @property
     def ok(self) -> bool:
+        """Whether the status is a success (2xx)."""
         return self.status is not None and 200 <= self.status < 300
 
     def describe(self) -> str:
+        """The status, for a message."""
         return "no response" if self.status is None else f"HTTP {self.status}"
 
 
 def _pieces(data: bytes, size: int = 1 << 16) -> Iterator[bytes]:
+    """data, size bytes at a time."""
     for start in range(0, len(data), size):
-        yield data[start:start + size]
+        yield data[start : start + size]
 
 
-def request(method: str, url: str, token: Optional[str] = None,
-            upload: Union[bytes, str, None] = None,
-            headers: Optional[Mapping[str, str]] = None,
-            timeout: float = 60, chunked: bool = False) -> Response:
+def _connect(url: str, timeout: float) -> tuple[http.client.HTTPConnection, str]:
+    """A connection to url's server, and the target to ask it for."""
+    parts = urlsplit(url)
+    if parts.scheme == "https":
+        conn: http.client.HTTPConnection = http.client.HTTPSConnection(
+            parts.hostname or "", parts.port, timeout=timeout, context=tls_context()
+        )
+    else:
+        conn = http.client.HTTPConnection(parts.hostname or "", parts.port, timeout=timeout)
+    return conn, (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+
+
+def request(
+    method: str,
+    url: str,
+    token: Optional[str] = None,
+    upload: Union[bytes, str, None] = None,
+    headers: Optional[Mapping[str, str]] = None,
+    timeout: float = 60,
+    chunked: bool = False,
+) -> Response:
     """Send method to url, presenting bearer token (the token itself, not
     a file), with upload (bytes, or the path of a file) as the body. With
     chunked, the body goes in chunks with no Content-Length, as the
     Pelican client sends it. timeout is for each read or write of the
     socket, not the whole exchange."""
-    parts = urlsplit(url)
-    if parts.scheme == "https":
-        conn: http.client.HTTPConnection = http.client.HTTPSConnection(
-            parts.hostname or "", parts.port, timeout=timeout, context=tls_context())
-    else:
-        conn = http.client.HTTPConnection(parts.hostname or "", parts.port, timeout=timeout)
-    target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    conn, target = _connect(url, timeout)
     sent = dict(headers or {})
     if token is not None:
         sent["Authorization"] = f"Bearer {token}"
@@ -77,7 +92,22 @@ def request(method: str, url: str, token: Optional[str] = None,
     try:
         conn.request(method, target, body=body, headers=sent, encode_chunked=chunked)
         answer = conn.getresponse()
-        return Response(answer.status, answer.read(), answer.getheaders())
+        return Response(answer.status, answer.read(), tuple(answer.getheaders()))
+    except (OSError, http.client.HTTPException):
+        return Response(None)
+    finally:
+        conn.close()
+
+
+def read_part(url: str, token: Optional[str], size: int, timeout: float = 60) -> Response:
+    """GET url, and hang up once size bytes of the body have come, as a
+    client that gives up does: the response, with those bytes."""
+    conn, target = _connect(url, timeout)
+    sent = {} if token is None else {"Authorization": f"Bearer {token}"}
+    try:
+        conn.request("GET", target, headers=sent)
+        answer = conn.getresponse()
+        return Response(answer.status, answer.read(size), tuple(answer.getheaders()))
     except (OSError, http.client.HTTPException):
         return Response(None)
     finally:

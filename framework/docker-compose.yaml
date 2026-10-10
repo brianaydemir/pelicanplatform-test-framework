@@ -85,6 +85,8 @@ x-origin-env: &origin-env
   PELICAN_ORIGIN_METADATA_MODE: "${ORIGIN_METADATA_MODE:?run through ./fed.sh}"
   PELICAN_ORIGIN_DISABLEDIRECTCLIENTS: "${ORIGIN_DISABLE_DIRECT_CLIENTS:?run through ./fed.sh}"
   PELICAN_ORIGIN_MULTIUSER: "${ORIGIN_MULTIUSER:?run through ./fed.sh}"
+  PELICAN_ORIGIN_ENABLESTANDALONEMODE: "${ORIGIN_STANDALONE:?run through ./fed.sh}"
+  PELICAN_ORIGIN_ENABLETRANSFERAPI: "${ORIGIN_TRANSFER_API:?run through ./fed.sh}"
 
 x-pelican-health: &pelican-health
   test: ["CMD", "/fed/bin/service-health.sh"]
@@ -94,16 +96,21 @@ x-pelican-health: &pelican-health
   timeout: 10s
   retries: 3
 
+# `required: false`: a standalone origin (`-p topo-standalone`) runs
+# without them.
 x-needs-federation: &needs-federation
-  discovery: { condition: service_healthy }
-  director-0: { condition: service_healthy }
-  registry: { condition: service_healthy }
+  discovery: { condition: service_healthy, required: false }
+  director-0: { condition: service_healthy, required: false }
+  registry: { condition: service_healthy, required: false }
 
 # A cache starts once origin-0 is up, so that it soon learns the
 # namespaces' issuers. The federation suite
-# (framework/suites/federation.py) waits until it has.
+# (framework/suites/federation.py) waits until it has. Under
+# `-p cache-tiered`, it also needs the `s3` service, without which it
+# refuses to start.
 x-needs-origin: &needs-origin
   origin-0: { condition: service_healthy }
+  s3: { condition: service_healthy, required: false }
 
 # Only matters under `-p origin-ssh`; `required: false` makes it a no-op
 # when the lab server is not started.
@@ -114,8 +121,8 @@ x-needs-lab: &needs-lab
 x-needs-metadata: &needs-metadata
   metadata: { condition: service_healthy, required: false }
 
-# Likewise for `-p origin-httpsv2` and `-p origin-s3v2`. An origin checks
-# its backend on every request, so this only spares the first ones a 503.
+# Likewise for the origins' HTTPS and S3 backends. An origin checks its
+# backend on every request, so this only spares the first ones a 503.
 x-needs-backends: &needs-backends
   webdav: { condition: service_healthy, required: false }
   s3: { condition: service_healthy, required: false }
@@ -126,6 +133,9 @@ x-needs-backends: &needs-backends
 # `hostname` matters: it determines Server.ExternalWebUrl, and so each
 # origin's issuer URL, which fed.sh must reproduce exactly. Each Pelican
 # server's host port is repeated in its config.d/instance/ file.
+#
+# fed.sh enables the `federation` profile but for a standalone origin,
+# and `external-issuer` for `-p auth-external-issuer`.
 #===========================================================================
 
 services:
@@ -135,6 +145,7 @@ services:
   discovery:
     hostname: discovery
     image: nginx:alpine
+    profiles: ["federation", "external-issuer"]
     # 127.0.0.1, not localhost: BusyBox wget tries only the first address,
     # which may be ::1, and nginx listens on IPv4 only.
     healthcheck:
@@ -166,6 +177,7 @@ services:
   director-0:
     hostname: director-0
     image: "${IMAGE_DIRECTOR:?run through ./fed.sh}"
+    profiles: ["federation"]
     healthcheck: *pelican-health
     depends_on:
       discovery: { condition: service_healthy }
@@ -190,9 +202,41 @@ services:
       - ./var/state/director-0:/var/lib/pelican
     <<: *common-secrets
 
+  # Another director (`-p topo-multi-director`), which must hold
+  # director-1's key: both sign as the federation, whose JWKS is
+  # director-1's. `./fed.sh keys` keeps the two in step.
+  director-1:
+    hostname: director-1
+    image: "${IMAGE_DIRECTOR:?run through ./fed.sh}"
+    profiles: ["multi-director"]
+    healthcheck: *pelican-health
+    depends_on:
+      discovery: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { memory: "${DIRECTOR_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: [*pelican-env, *server-env]
+    ports:
+      - "9004:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - *vol-local-base
+      - ./config.d/director/default:/fed/conf.role:ro
+      - ./config.d/instance/director-1:/fed/conf.instance:ro
+      - ./var/generated/local/director-1:/fed/local.instance:ro
+      - ./var/generated/instance/director-1:/fed/generated.instance:ro
+      - ./var/issuer-keys/director-1:/fed/issuer-keys
+      - ./var/state/director-1:/var/lib/pelican
+    <<: *common-secrets
+
   registry:
     hostname: registry
     image: "${IMAGE_REGISTRY:?run through ./fed.sh}"
+    profiles: ["federation"]
     healthcheck: *pelican-health
     depends_on:
       discovery: { condition: service_healthy }
@@ -322,6 +366,7 @@ services:
   cache-0:
     hostname: cache-0
     image: "${IMAGE_CACHE:?run through ./fed.sh}"
+    profiles: ["federation"]
     healthcheck: *pelican-health
     depends_on:
       <<: [*needs-federation, *needs-origin]
@@ -376,6 +421,41 @@ services:
       - ./var/issuer-keys/cache-1:/fed/issuer-keys
       - ./var/data/cache/1:/data
       - ./var/state/cache-1:/var/lib/pelican
+    <<: *common-secrets
+
+  # A site-local cache (`-p topo-site-local-cache`), which the director
+  # does not know of.
+  cache-2:
+    hostname: cache-2
+    image: "${IMAGE_CACHE:?run through ./fed.sh}"
+    profiles: ["site-local-cache"]
+    healthcheck: *pelican-health
+    # It fetches objects through cache-0.
+    depends_on:
+      <<: [*needs-federation, *needs-origin]
+      cache-0: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { memory: "${CACHE_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: [*pelican-env, *server-env]
+      TZ: "${TZ_STORAGE:?run through ./fed.sh}"
+      PELICAN_CACHE_ENABLESITELOCALMODE: "true"
+    ports:
+      - "8449:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - *vol-local-base
+      - "./config.d/cache/${CACHE_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
+      - ./config.d/instance/cache-2:/fed/conf.instance:ro
+      - ./var/generated/local/cache-2:/fed/local.instance:ro
+      - ./var/generated/instance/cache-2:/fed/generated.instance:ro
+      - ./var/issuer-keys/cache-2:/fed/issuer-keys
+      - ./var/data/cache/2:/data
+      - ./var/state/cache-2:/var/lib/pelican
     <<: *common-secrets
 
   # Build environment and test client. The image ships no Pelican binary;
@@ -437,8 +517,9 @@ services:
       - ./var/data/lab-server:/data
       - ./var/generated/ssh/authorized_keys:/home/alice/.ssh/authorized_keys:ro
 
-  # The httpsv2 origins' backend (-p origin-httpsv2): rclone serving each
-  # origin's store, ./var/data/origin/<N>, as /origin-<N>, over WebDAV
+  # The backend of https and httpsv2 origins (-p origin-https,
+  # -p origin-httpsv2): rclone serving each origin's store,
+  # ./var/data/origin/<N>, as /origin-<N>, over WebDAV
   # (golang.org/x/net/webdav, as in Pelican's own tests). The tests read
   # and write the stores directly too, so it caches no directory
   # listings. It asks for no credentials.
@@ -474,11 +555,15 @@ services:
       - source: tls-key
         target: /certs/tls.key
 
-  # The s3v2 origins' backend (-p origin-s3v2): rclone serving each
-  # origin's store as bucket origin-<N>, over S3. The credentials are the
-  # origins', which fed.sh copies from framework/etc/ or local/etc/. It
-  # keeps the directories that init-data.py made, writable by any uid,
-  # even when their last object goes.
+  # The backend of s3 and s3v2 origins (-p origin-s3, -p origin-s3v2):
+  # rclone serving each origin's store as bucket origin-<N>, over S3; each
+  # export's directory in it as bucket origin-<N>-<directory>, for an s3
+  # origin, which takes a bucket per export (fed_s3_bucket in fed.sh); and
+  # ./var/data/tier as bucket `tier` (-p cache-tiered). The credentials
+  # are the origins', which fed.sh copies from framework/etc/ or
+  # local/etc/. It keeps the directories that init-data.py made, writable
+  # by any uid, even when their last object goes. Multipart uploads, as
+  # the caches' are, take memory to buffer.
   s3:
     hostname: s3
     image: rclone/rclone:1.75.1
@@ -493,11 +578,21 @@ services:
     healthcheck: *rclone-health
     deploy:
       resources:
-        limits: { memory: 128M }
+        limits: { memory: 512M }
     volumes:
       - ./var/data/origin/0:/srv/origin-0
       - ./var/data/origin/1:/srv/origin-1
       - ./var/data/origin/2:/srv/origin-2
+      - ./var/data/origin/0/public:/srv/origin-0-public
+      - ./var/data/origin/0/protected-a:/srv/origin-0-protected-a
+      - ./var/data/origin/0/protected-b:/srv/origin-0-protected-b
+      - ./var/data/origin/1/public:/srv/origin-1-public
+      - ./var/data/origin/1/protected-a:/srv/origin-1-protected-a
+      - ./var/data/origin/1/protected-b:/srv/origin-1-protected-b
+      - ./var/data/origin/2/other:/srv/origin-2-other
+      - ./var/data/origin/2/public-other:/srv/origin-2-public-other
+      # Bucket `tier`, which the caches tier to (-p cache-tiered).
+      - ./var/data/tier:/srv/tier
       - ./var/generated/s3-access-key:/fed/s3-access-key:ro
       - ./var/generated/s3-secret-key:/fed/s3-secret-key:ro
     secrets: *rclone-secrets

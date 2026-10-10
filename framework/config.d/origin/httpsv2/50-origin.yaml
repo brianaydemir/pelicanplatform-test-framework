@@ -1,9 +1,10 @@
 ---
 # The native origin in front of an HTTPS server: the `webdav` service,
-# rclone serving framework/var/data/origin/<N> as /origin-<N>. fed.sh sets
-# each origin's Origin.HttpServiceUrl (in
-# framework/var/generated/instance/), and gives it one export, since the
-# httpsv2 backend takes no more (server_utils/origin_https.go in Pelican).
+# rclone serving framework/var/data/origin/<N> as /origin-<N>, under which
+# the export's StoragePrefix is its directory. fed.sh sets each origin's
+# Origin.HttpServiceUrl (in framework/var/generated/instance/), and gives
+# it one export, since the httpsv2 backend takes no more
+# (server_utils/origin_https.go in Pelican).
 #
 # The backend asks for no credentials: rclone has no bearer tokens, so
 # Origin.HttpAuthTokenFile would go unchecked.

@@ -14,15 +14,19 @@ The suites run in this order:
 
 | Suite        | Tests                                                                 |
 | ------------ | --------------------------------------------------------------------- |
-| `federation` | that the federation serves at all, and every director names every cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients |
-| `commands`   | `ls`, `stat`, `delete`, `copy`, `sync`, and `du` ([client commands](#client-commands)) |
+| `federation` | that the federation serves at all, and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients; a Pelican server's discovery document; and, under `-p origin-broker`, the connection broker |
+| `commands`   | `ls`, `stat`, `delete`, `copy`, `sync`, and `du`, and what `get` and `put` do with what already exists ([client commands](#client-commands)) |
+| `transfer-api` | origin-0's transfer API, under `-p origin-transfer-api`: authentication, credentials, server-run copies, jobs, and confinement to the exports |
 | `listings`   | PROPFIND at each origin, director, and cache ([listings](#listings))  |
-| `blocks`     | objects and ranges at pstore's and the caches' [block boundaries](#block-boundaries), and overwritten objects |
-| `posc`       | interrupted uploads, under `-p origin-posc` or `-p origin-pstore` ([POSC and metadata](#posc-and-metadata)) |
+| `names`      | objects whose [names](#names) a URL or a listing must encode, beside decoys |
+| `blocks`     | objects and ranges at pstore's and the caches' [block boundaries](#block-boundaries), through each server and both clients; digests; and objects overwritten, given up on, or written through a cache |
+| `tiering`    | V2 caches' tiering of large objects to object storage, under `-p cache-tiered`, including a copy replaced in the bucket |
+| `posc`       | interrupted and racing uploads, under `-p origin-posc` or `-p origin-pstore` ([POSC and metadata](#posc-and-metadata)) |
 | `metadata`   | metadata events, under `-p origin-metadata` ([POSC and metadata](#posc-and-metadata)) |
 | `users`      | who owns what the origins write, under `-p origin-multiuser` or `-p server-unprivileged` ([Unix users](#unix-users)) |
 | `owners`     | origin-2, another owner, under `-p topo-multi-owner` ([another owner](#another-owner)) |
-| `auth`       | each [credential](#authorization) at each server, in each namespace, and each issuer's keys |
+| `sitelocal`  | cache-2, a site-local cache, under `-p topo-site-local-cache` |
+| `auth`       | each [credential](#authorization) at each server, in each namespace; each issuer's keys; tokens of one storage scope; and paths that climb out of a namespace |
 | `transfers`  | gets and puts through `pelican object` and `stash_plugin`, through a cache and direct from an origin, byte-checked ([test data](#test-data)) |
 
 A suite that doesn't apply to the shape is skipped, and says why.
@@ -34,8 +38,9 @@ else runs. The
 presented, so `auth` and `transfers` run last, by which time it usually
 is.
 
-These are basic checks, not stress tests: each moves only a few small
-objects. Each suite writes a row per test case to
+These are functional checks, not stress tests: each moves a few
+objects, the largest about 16 MiB. Each suite writes a row per test case
+to
 `framework/var/results/` ([Results](ci.md#results)). A scenario that
 raises an unexpected error fails, with the error as its note, and the
 suite goes on to the next. A client command still running after 600
@@ -45,7 +50,16 @@ every origin's store afterward, a `pstore` origin's included.
 
 ## Test data
 
-`init` writes 16 objects named `<origin>.<n>` to the origins' storage.
+Each namespace has storage of its own: a directory of each origin's
+store, `framework/var/data/origin/<N>/<namespace>/`, which its export's
+`StoragePrefix` leads to (`/data/<namespace>` in the origin, or a path
+or a bucket of the `webdav` or `s3` backend). `init` writes 16 objects
+named `<origin>.<n>` to each namespace's `data/`. An object's bytes are
+its path in the federation, e.g. `/protected-a/data/0.3`, so no two are
+alike, and a server that answers from another namespace's storage is
+caught. The suites likewise give each namespace's objects bytes of their
+own.
+
 The `transfers` suite makes its batches each time it runs, in
 `framework/var/data/transfers/input/<scenario>/<index>`. A batch is one
 client invocation. `<ns>` is each namespace, and `<cred>` each of the
@@ -91,7 +105,11 @@ the rules in `framework/testlib/transfers.py`. Every file downloaded must
 match the object in the origin's store, and every upload what the store
 received. Every batch that should be refused must fail by being refused,
 with nothing moved: no object's bytes in a file it downloaded, and no upload
-in any store. A failure that also shows a server error (HTTP 5xx), a
+in any store. The client downloads into a temporary file beside the
+object's, and renames it only once the object is complete, so no batch
+may leave anything else in its directory, and a get that fails must
+leave no file of the object's name. A failure that also shows a server
+error (HTTP 5xx), a
 timeout, a refused connection, not found (error 5011), or a transfer error
 (6xxx) is not a refusal, even beside a 401 or 403; nor is a local
 `permission denied`. A batch killed after 600 seconds fails as `other`.
@@ -110,11 +128,12 @@ read must be refused.
 
 A `pstore` origin's store is encrypted, and only the running origin can
 write it. So `init` writes a plain copy of the objects beside it, in
-`data/origin/<N>/data/`, and the `transfers` suite uploads whatever the
-store lacks, to `/protected-a` and `/protected-b`, before its gets. Each
-has storage of its own in the store, and `/public`, which takes no
-writes, reads `/protected-a`'s. Uploads to it are read back from the
-origin instead of from disk.
+`data/origin/<N>/<namespace>/data/`, and the `transfers` suite uploads
+whatever the store lacks, to `/protected-a` and `/protected-b`, before
+its gets. Each has storage of its own in the store, and `/public`, which
+takes no writes, reads `/protected-a`'s: the one place two namespaces
+share storage. Uploads to it are read back from the origin instead of
+from disk.
 
 
 ## Authorization
@@ -186,11 +205,13 @@ namespace.
   terminal and an empty credential store.
 - **At each server**, the `auth` suite sends GET, HEAD, PUT, and DELETE
   to every origin, and GET and HEAD to every cache, over HTTPS, in every
-  namespace. An allowed request must return or store the right bytes,
-  or remove the object, which the test puts in place just before each
-  DELETE (straight in the store, where the namespace takes no writes).
-  A refused one must get 401 or 403, from any kind of server, and change
-  nothing. The caches are tried only after
+  namespace. An allowed request must return or store the right bytes (a
+  HEAD, with the object's `Content-Length`), or remove the object, which
+  the test puts in place just before each DELETE (straight in the store,
+  where the namespace takes no writes). A refused one must get 401 or
+  403, from any kind of server, and change nothing. Each namespace has
+  a test object of its own bytes, so a response with another
+  namespace's fails, allowed or refused. The caches are tried only after
   `server` has stored the test object in them.
 - **At the issuer**, the `auth` suite's `keys` check comes first. For
   `/protected-a` and `/protected-b`, the discovery document's `jwks_uri`
@@ -206,6 +227,23 @@ namespace.
   then one of its sibling, whose name begins with the object's, must be
   refused. Each cache must first serve the sibling with the `server`
   token, so that the refusal is of an object it holds.
+- **One storage scope at a time**, the `auth` suite's `create-only` and
+  `modify-only` checks present tokens with only `storage.create` or only
+  `storage.modify` in `/protected-a`, straight to every origin. As the
+  WLCG token profile says, `storage.create` may create an object, but
+  neither replace nor delete one; `storage.modify` may do all three. Each
+  write is of an object of its own, put in place first where it must
+  exist. A refused write must leave the object as it was.
+- **Out of a namespace**, the `auth` suite's `traversal` check sends
+  every origin and cache paths that begin in one exported namespace and
+  climb out of it with `..`, spelled as is, as `%2e%2e`, `%2E%2E`,
+  `.%2e`, and `%252e%252e`, and with an encoded slash (`..%2f`), each
+  with the start's `server` token (none for `/public`). No answer may
+  hold what it climbs toward: another protected namespace's test object;
+  a file in each origin's store beside the namespaces' storage; or the
+  origin's signing key, in `/fed/issuer-keys`, beside its store. The
+  last two stand for what a server would expose if it let a path out of
+  an export's storage.
 
 Both suites wait until the `expired` token is 70 seconds past its expiry
 before presenting it, since native servers allow 60 seconds of clock
@@ -225,20 +263,24 @@ advertise origin-0's issuer.
 
 ## Client commands
 
-The `commands` suite tests the client's commands other than `get` and
-`put`: `ls`, `stat`, `delete`, `copy`, `sync`, and `du`, in `/public`
-and `/protected-a` where they apply. Writes to `/public` must be
-refused, and so must any command that needs a capability its namespace
-lacks (`Listings` for `ls`, `du`, and `sync`; `Writes` for `delete`,
+The `commands` suite tests the client's commands beyond the `transfers`
+suite's: `ls`, `stat`, `delete`, `copy`, `sync`, and `du`, in `/public`
+and `/protected-a` where they apply; and `get` and `put` where Pelican's
+`docs/object-transfer-semantics.md` says what each must do with what
+already exists. Writes to `/public` must be refused, and so must any
+command that needs a capability its namespace lacks (`Listings` for
+`ls`, `du`, `sync`, and recursive `get`; `Writes` for `delete`, `put`,
 `copy` to the federation, and `sync` to it; `DirectReads` for `copy
 --direct`), with nothing changed. `./fed.sh test -l commands` lists the
 scenarios.
 
 - The read-only commands work on a small tree that the test puts
   straight in every origin's store, under `/<ns>/data/cmd/<run>/tree/`,
-  so that they agree whichever origin the director picks. Listings,
-  sizes, checksums (`crc32c` and `md5`, in hex, as `pelican object stat`
-  prints them), and `du`'s totals must match it.
+  so that they agree whichever origin the director picks: the same paths
+  and sizes in each namespace, but bytes of its own. Listings, sizes,
+  checksums (`crc32c` and `md5`, in hex, as `pelican object stat` prints
+  them), and `du`'s totals must match it, and a copy from `/public` must
+  hold `/public`'s bytes.
 - `delete`, `copy`, and `sync` go through the director like any client.
   Under `topo-multi-origin` their effects land on one origin, so a success
   must show in some store, and a refusal in none. A copy between two
@@ -259,29 +301,64 @@ scenarios.
   refused by the client itself, for want of a token (error 4010),
   before it asks any server; the `auth` and `listings` suites check the
   servers.
+- `get` onto a local file larger than the object must leave the object
+  alone in it (row G1 of that document), and a failed `get` onto it must
+  leave it as it was. A `get` of a collection without `-r` must be
+  refused, rather than write the listing into a file (G4); `get -r` lays
+  the collection out flat, in an existing directory or a new one (G5,
+  G6).
+- With overwrites off, as by default, `put` to an existing object must be
+  refused, and change nothing (P2); with them on, a smaller file put
+  over an object must replace it whole. `put` of a file to a collection
+  lands in it by the file's name (P3); of a directory without `-r`, it
+  must be refused, and upload nothing (P4); and `put -r` of a tree, with
+  an empty file in it, lays it out flat, under a new collection or an
+  existing one (P5, P6).
 
 
 ## Block boundaries
 
 The `blocks` suite writes objects of sizes on either side of the block
 boundaries of pstore (an origin's encrypted store), the V2 cache, and
-the XRootD cache, then reads them back from each origin, through each
-cache, and through the client, whole and in byte ranges that straddle
-the boundaries. `framework/testlib/blocks.py` lists the sizes and ranges,
-and the facts about Pelican's stores behind them: 4,080-byte blocks,
-pstore's inline, buffered, and streamed tiers, and the XRootD cache's
-128 KiB blocks.
+the XRootD cache, from 0 bytes to just over 8 MiB, then reads them back
+from each origin, through each cache, and through both clients, whole
+and in byte ranges that straddle the boundaries.
+`framework/testlib/blocks.py` lists the sizes and ranges, and the facts
+about Pelican's stores behind them: 4,080-byte blocks, pstore's inline,
+buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
 
 - Each object goes straight to every origin, with a `Content-Length` or
-  in chunks with none, which is how the client uploads. On a `pstore`
-  origin, `/metrics` must show each upload in the tier its size predicts.
-  Where `/protected-a` takes no writes, the objects are put straight in
-  the stores instead, and the upload scenarios skip; where it takes no
+  in chunks with none, which is how the client uploads; `pelican object
+  put` and `stash_plugin` upload every size too. On a `pstore` origin,
+  `/metrics` must show each upload in the tier its size predicts. Where
+  `/protected-a` takes no writes, the objects are put straight in the
+  stores instead, and the upload scenarios skip; where it takes no
   direct clients, the origins are read only through the caches, and
-  `client-get`'s direct read must be refused.
+  the clients' direct reads must be refused.
 - How a V2 cache first sees an object decides how it fills (one stream,
-  or block by block), so each cache reads one set of objects whole first
-  and another in ranges first.
+  or block by block), so each cache reads one set of objects whole first,
+  another in ranges first, and one each through `pelican object get`
+  and `stash_plugin` first.
+- `cache-abandoned` starts a cold read of an object through each cache,
+  and gives up after 50,000 bytes; those bytes, and the object's last
+  block and the whole object afterward, must be the object's.
+- `digests` asks every server for each object's digest by each
+  algorithm in turn (`Want-Digest`: `crc32c`, `crc32`, `adler32`, `md5`,
+  `sha`, `sha-256`), by HEAD, and by GET for `crc32c`. Every digest a
+  server reports must be the object's, read as the client reads it, since
+  the client fails a download whose bytes don't match. Each origin must
+  report `crc32c` and `md5`, unless its storage cannot (XRootD's S3 and
+  HTTPS plugins); a cache need report none, and the row's note names
+  those that report none. `digest-overwrite` then overwrites an object at
+  each origin, by a PUT at once and by a write in the store a second
+  later: a native origin keeps digests by the file's modification time,
+  to the second, and must not report a stale one; and its `ETag`, by
+  which a cache tells that an object has changed, must change too.
+- Ranges past an object's end: a suffix longer than the object is all
+  of it, and a range that runs past the end stops at its last byte; one
+  that starts at or past the end (`past-end`) must get 416, or, from a
+  server that ignores `Range`, the whole object. In a set of ranges, one
+  past the end is passed over, as RFC 9110 says.
 - `mixed-version` overwrites an object of three XRootD blocks at the
   origins after a cache has cached its first 4,080-byte block; each
   later response, to a range in the third XRootD block (which neither
@@ -304,21 +381,31 @@ pstore's inline, buffered, and streamed tiers, and the XRootD cache's
   read after the first range fails if, after the last, it has none, or
   one that doesn't show every block.
 - `overwrite-cached` and `overwrite-range-first` overwrite objects at the
-  origins once each cache holds them (read whole, or a range first), one
-  keeping its size and one growing. Every response, whole or ranged, must
-  then be entirely one version, with that version's size. Without
+  origins once each cache holds them (read whole, or a range first): one
+  keeping its size, one growing, and one shrinking. Every response, whole
+  or ranged, must then be entirely one version, with that version's
+  size. Without
   `Cache-Control`, a cache decides for itself how long its copy stays
   fresh. Under `-p origin-max-age`, every origin must send
   `Cache-Control: max-age=30`, and every cache must then serve the new
   version, and only it, once its copy is stale. The scenarios wait up to
   about 75 seconds for it.
+- `write-through`: a V2 cache relays a PUT or DELETE to an origin through
+  the director, and drops its own copy. Of an object each holds, a PUT
+  with a read-only token must be refused, with nothing changed; one with
+  the `server` token must reach an origin, and once every origin holds
+  what it wrote, the cache must serve that at once. Likewise a DELETE,
+  after which the cache must answer 404. Where `/protected-a` takes no
+  writes, the PUT must be refused. An XRootD cache takes no writes.
 
 
 ## Listings
 
 The `listings` suite sends PROPFIND straight to every origin, director,
 and cache, at depths 0, 1, and infinity, in every namespace, over a
-small tree that it uploads under `/<ns>/data/listings/<run>/`.
+small tree that it uploads under `/<ns>/data/listings/<run>/`. Each
+namespace's tree also holds an object only it holds, `only-<ns>`, so
+that a server that lists another namespace's lists the wrong tree.
 `./fed.sh test -l listings` lists the scenarios.
 
 - An origin must list the tree exactly. It may refuse Depth infinity
@@ -346,6 +433,29 @@ small tree that it uploads under `/<ns>/data/listings/<run>/`.
   with `pelican object ls`, and is gone once removed.
 
 
+## Names
+
+The `names` suite puts objects whose names a URL or a listing must
+encode under `/protected-a/data/names/<run>/`: a space, `%`, `+`, `#`,
+`?`, `&`, `;`, quotes, angle brackets, brackets, `*`, and letters beyond
+ASCII. Each sits beside decoys, whose names a server or client that
+mishandles the encoding would take for its own: `x%41y` beside `xAy`,
+`a+b` and `a%20b` beside `a b`, `hash#tag` beside `hash`, and
+`what?q=1` beside `what`. Every object is a different size. A URL
+percent-encodes every character of a name but letters, digits, and
+`-._~`, and so does what the client is given.
+
+- A PUT of each name must land in each store on disk as a file of exactly
+  that name.
+- Every origin and cache must serve each object by its name: any bytes
+  but its own fail, and a decoy's are named.
+- Every origin and federated cache must list each name once, decoded,
+  with its size, as must `pelican object ls`.
+- `pelican object get` of every object must write a file of each one's
+  name, with its bytes, and nothing else; `pelican object put` of a file
+  of each name must land as the object of that name.
+
+
 ## POSC and metadata
 
 Both are features of the `posixv2` origin, which is the default. `fed.sh`
@@ -358,9 +468,11 @@ metadata` lists their scenarios.
   The `posc` suite interrupts uploads in several ways and checks what the
   origin answers and what the store shows. It judges an interruption
   only once it has seen the upload under way, from a new staging file;
-  an upload refused, or unanswered, before then fails. `hidden` lists
-  the export while an upload is staged, so that `.pelican-posc` is there
-  to hide.
+  an upload refused, or unanswered, before then fails. While an
+  overwrite is under way, the origin must still serve the old object;
+  and of two whole uploads of one object at once (`concurrent`), the
+  object must end up all one of them. `hidden` lists the export while an
+  upload is staged, so that `.pelican-posc` is there to hide.
 - **pstore** (`-p origin-pstore`) commits a new version of an object only
   when its upload completes, so the `posc` suite runs there too: the same
   interruptions, judged by what the origins serve, once
@@ -450,26 +562,3 @@ those). `fed.sh` describes it in `framework/var/generated/owners` and
   origin-2 (served by it), uploads with origin-2's token, and presents
   each owner's token in the other's namespace, which must be refused
   with nothing stored.
-
-
-## Unit tests
-
-The framework's own unit tests cover only the bugs in it that would let
-a broken Pelican pass unnoticed. Most bugs in the framework would make a
-working Pelican fail instead, and running the tests finds those. So the
-unit tests check:
-
-- That the checks that judge an answer aren't too lenient, for example
-  by taking a timeout for a refusal, or a mix of two versions of an
-  object for one of them.
-- That nothing is quietly left untested: no suite or credential is
-  skipped in a shape where it applies, every scenario moves something,
-  and the smoke shapes cover every pair of choices.
-- That a suite that stops early, or a failed case, still counts as a
-  failure.
-
-They need no federation:
-
-```sh
-python3 -B -m unittest discover -s framework -t framework
-```

@@ -14,30 +14,35 @@ The TSV is meant for people as much as for programs:
   column -t -s "$(printf '\\t')" results.tsv
 """
 
+import os
+import re
 import sys
+import xml.etree.ElementTree as ET  # nosec B405
+from collections import OrderedDict
+from collections.abc import Sequence
 
+# No __pycache__ in the checkout, where the dev container would leave it
+# root's.
 sys.dont_write_bytecode = True
-
-import os  # noqa: E402
-import re  # noqa: E402
-import xml.etree.ElementTree as ET  # noqa: E402
-from collections import OrderedDict  # noqa: E402
-from typing import Dict, List, Sequence, Tuple  # noqa: E402
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from testlib import report  # noqa: E402
+# pylint: disable=wrong-import-position
+from testlib import report
+
+# pylint: enable=wrong-import-position
 
 MERGED = ("shape",) + report.COLUMNS
 
 
 def die_usage(message: str) -> None:
+    """Print message, and exit as for a usage error."""
     print(f"report.py: {message}", file=sys.stderr)
     sys.exit(2)
 
 
 def merge(args: Sequence[str]) -> str:
-    rows: List[Dict[str, str]] = []
+    """One table of every DIR's results, each row with its shape."""
+    rows: list[dict[str, str]] = []
     for arg in args:
         name, sep, directory = arg.partition("=")
         if not sep:
@@ -47,29 +52,33 @@ def merge(args: Sequence[str]) -> str:
         for entry in sorted(os.listdir(directory)):
             if not entry.endswith(".tsv"):
                 continue
-            with open(os.path.join(directory, entry)) as f:
+            with open(os.path.join(directory, entry), encoding="utf-8") as f:
                 for row in report.parse_table(f.read()):
                     rows.append({"shape": name, **row})
     return report.format_table(MERGED, rows)
 
 
-def load(path: str) -> List[Dict[str, str]]:
-    with open(path) as f:
+def load(path: str) -> list[dict[str, str]]:
+    """The rows of the table at path, each with a shape."""
+    with open(path, encoding="utf-8") as f:
         rows = report.parse_table(f.read())
     for row in rows:
         row.setdefault("shape", "")
     return rows
 
 
-def groups(rows: Sequence[Dict[str, str]]) -> "OrderedDict[Tuple[str, str], List[Dict[str, str]]]":
+def groups(
+    rows: Sequence[dict[str, str]],
+) -> "OrderedDict[tuple[str, str], list[dict[str, str]]]":
     """Rows by (shape, suite), in the order they first appear."""
-    found: "OrderedDict[Tuple[str, str], List[Dict[str, str]]]" = OrderedDict()
+    found: "OrderedDict[tuple[str, str], list[dict[str, str]]]" = OrderedDict()
     for row in rows:
         found.setdefault((row.get("shape", ""), row.get("suite", "")), []).append(row)
     return found
 
 
-def seconds(row: Dict[str, str]) -> float:
+def seconds(row: dict[str, str]) -> float:
+    """How long row's case took, or 0 if it does not say."""
     try:
         return float(row.get("seconds") or 0)
     except ValueError:
@@ -86,11 +95,12 @@ def xml_text(text: str) -> str:
     return _NOT_XML.sub(lambda m: f"\\x{ord(m.group(0)):02x}", text)
 
 
-def count(rows: Sequence[Dict[str, str]], status: str) -> int:
+def count(rows: Sequence[dict[str, str]], status: str) -> int:
+    """How many of rows have status."""
     return sum(1 for row in rows if row.get("status") == status)
 
 
-def junit(rows: Sequence[Dict[str, str]]) -> str:
+def junit(rows: Sequence[dict[str, str]]) -> str:
     """A <testsuite> per shape and suite. FAIL is a <failure>; SKIP and
     INCONCLUSIVE are <skipped>, the latter's message saying so."""
     top = ET.Element("testsuites", name="pelican-test-framework")
@@ -100,13 +110,24 @@ def junit(rows: Sequence[Dict[str, str]]) -> str:
         failures = count(members, report.FAIL)
         skipped = count(members, report.SKIP) + count(members, report.INCONCLUSIVE)
         took = sum(seconds(r) for r in members)
-        element = ET.SubElement(top, "testsuite", name=xml_text(name), tests=str(len(members)),
-                                failures=str(failures), errors="0", skipped=str(skipped),
-                                time=f"{took:.1f}")
+        element = ET.SubElement(
+            top,
+            "testsuite",
+            name=xml_text(name),
+            tests=str(len(members)),
+            failures=str(failures),
+            errors="0",
+            skipped=str(skipped),
+            time=f"{took:.1f}",
+        )
         for row in members:
-            case = ET.SubElement(element, "testcase", name=xml_text(row.get("case", "")),
-                                 classname=xml_text(name.replace("/", ".")),
-                                 time=f"{seconds(row):.1f}")
+            case = ET.SubElement(
+                element,
+                "testcase",
+                name=xml_text(row.get("case", "")),
+                classname=xml_text(name.replace("/", ".")),
+                time=f"{seconds(row):.1f}",
+            )
             status, note = row.get("status"), xml_text(row.get("note", ""))
             if status == report.FAIL:
                 ET.SubElement(case, "failure", message=note)
@@ -123,34 +144,45 @@ def junit(rows: Sequence[Dict[str, str]]) -> str:
     for key, value in totals.items():
         top.set(key, f"{value:.1f}" if key == "time" else str(value))
     ET.indent(top)
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(top, encoding="unicode") + "\n"
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(top, encoding="unicode") + "\n"
+    )
 
 
 def cell(text: str) -> str:
+    """text, safe in a Markdown table's cell."""
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def markdown(rows: Sequence[Dict[str, str]]) -> str:
+def markdown(rows: Sequence[dict[str, str]]) -> str:
     """A table of counts per shape and suite, then every failure."""
     lines = ["## Pelican smoke tests", ""]
     failed = count(rows, report.FAIL)
     lines.append(f"{len(rows)} cases: {len(rows) - failed} did not fail, {failed} failed.")
-    lines += ["", "| Shape | Suite | Pass | Fail | Skip | Inconclusive |",
-              "| --- | --- | ---: | ---: | ---: | ---: |"]
+    lines += [
+        "",
+        "| Shape | Suite | Pass | Fail | Skip | Inconclusive |",
+        "| --- | --- | ---: | ---: | ---: | ---: |",
+    ]
     for (shape, suite), members in groups(rows).items():
-        lines.append(f"| {cell(shape)} | {cell(suite)} | {count(members, report.PASS)}"
-                     f" | {count(members, report.FAIL)} | {count(members, report.SKIP)}"
-                     f" | {count(members, report.INCONCLUSIVE)} |")
+        lines.append(
+            f"| {cell(shape)} | {cell(suite)} | {count(members, report.PASS)}"
+            + f" | {count(members, report.FAIL)} | {count(members, report.SKIP)}"
+            + f" | {count(members, report.INCONCLUSIVE)} |"
+        )
     failures = [r for r in rows if r.get("status") == report.FAIL]
     if failures:
         lines += ["", "### Failures", ""]
         for row in failures:
-            where = " / ".join(x for x in (row.get("shape"), row.get("suite"), row.get("case")) if x)
+            where = " / ".join(
+                x for x in (row.get("shape"), row.get("suite"), row.get("case")) if x
+            )
             lines.append(f"- **{cell(where)}**: {cell(row.get('note', ''))}")
     return "\n".join(lines) + "\n"
 
 
 def main() -> None:
+    """Run the command that the arguments name."""
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help"):
         print((__doc__ or "").strip("\n"))

@@ -1,0 +1,12 @@
+---
+# Settings for `cache-2` only (`topo-site-local-cache`). This layer wins
+# over every other tracked layer. Cache.EnableSiteLocalMode is set through
+# an environment variable (see docker-compose.yaml), which beats any file.
+#
+# For local changes, add a file to local/config.d/instance/cache-2/
+# rather than editing this one.
+
+# Where the browser returns after an OIDC login: this service's port on
+# the host (see docker-compose.yaml), not its container hostname.
+OIDC:
+  ClientRedirectHostname: localhost:8449

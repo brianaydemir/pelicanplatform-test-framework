@@ -44,7 +44,10 @@ all_shapes="default posixv2-xrootd-tx tiny-posixv2-posc ssh-xrootd s3v2-xrootd"
 all_shapes="${all_shapes} tiny-xrootd pstore-xrootd s3v2-v2 tiny-posixv2-tx"
 all_shapes="${all_shapes} posixv2-xrootd-multiuser httpsv2-xrootd tiny-pstore"
 all_shapes="${all_shapes} posixv2-no-direct posixv2-xrootd-posc ssh-v2 httpsv2-v2"
-all_shapes="${all_shapes} xrootd-xrootd posixv2-xrootd-no-direct"
+all_shapes="${all_shapes} xrootd-xrootd posixv2-xrootd-no-direct s3-xrootd-broker s3-v2"
+all_shapes="${all_shapes} https-v2-broker https-xrootd xrootd-v2-broker pstore-v2"
+all_shapes="${all_shapes} posixv2-v2-metadata standalone-posixv2 standalone-pstore"
+all_shapes="${all_shapes} standalone-ssh standalone-httpsv2 standalone-s3v2"
 
 # Each shape's presets, one per word.
 shape_presets() {
@@ -53,50 +56,89 @@ shape_presets() {
       echo "topo-basic origin-posixv2 cache-v2" ;;
     posixv2-xrootd-tx)
       echo "cache-xrootd topo-multi-origin topo-multi-cache topo-multi-owner" \
-           "auth-external-issuer origin-metadata-tx server-unprivileged" ;;
+           "auth-external-issuer origin-metadata-tx server-unprivileged" \
+           "origin-transfer-api" ;;
     tiny-posixv2-posc)
-      echo "topo-tiny origin-posc origin-metadata server-unprivileged" ;;
+      echo "topo-tiny origin-posc origin-metadata server-unprivileged" \
+           "origin-transfer-api" ;;
     ssh-xrootd)
-      echo "origin-ssh cache-xrootd topo-multi-cache" ;;
+      echo "origin-ssh cache-xrootd topo-multi-cache topo-multi-director" \
+           "topo-site-local-cache origin-transfer-api" ;;
     s3v2-xrootd)
       echo "origin-s3v2 cache-xrootd topo-multi-owner origin-no-direct" \
-           "server-unprivileged" ;;
+           "server-unprivileged topo-site-local-cache topo-multi-director" ;;
     tiny-xrootd)
       echo "topo-tiny origin-xrootd origin-no-direct origin-max-age" \
-           "server-unprivileged" ;;
+           "server-unprivileged origin-transfer-api" ;;
     pstore-xrootd)
       echo "origin-pstore cache-xrootd topo-multi-origin topo-multi-cache" \
-           "auth-external-issuer" ;;
+           "auth-external-issuer topo-multi-director topo-site-local-cache" \
+           "origin-transfer-api" ;;
     s3v2-v2)
       echo "origin-s3v2 topo-multi-origin topo-multi-cache auth-external-issuer" \
-           "origin-max-age" ;;
+           "origin-max-age cache-tiered origin-transfer-api" ;;
     tiny-posixv2-tx)
       echo "topo-tiny origin-posc origin-metadata-tx origin-max-age" \
            "origin-multiuser" ;;
     posixv2-xrootd-multiuser)
       echo "cache-xrootd topo-multi-origin topo-multi-cache topo-multi-owner" \
-           "auth-external-issuer origin-metadata origin-max-age origin-multiuser" ;;
+           "auth-external-issuer origin-metadata origin-max-age origin-multiuser" \
+           "topo-site-local-cache" ;;
     httpsv2-xrootd)
-      echo "origin-httpsv2 cache-xrootd auth-external-issuer origin-no-direct" ;;
+      echo "origin-httpsv2 cache-xrootd auth-external-issuer origin-no-direct" \
+           "topo-multi-director topo-site-local-cache" ;;
     tiny-pstore)
       echo "topo-tiny origin-pstore origin-max-age server-unprivileged" ;;
     posixv2-no-direct)
       echo "topo-multi-origin topo-multi-cache origin-no-direct origin-posc" \
-           "origin-metadata-tx origin-multiuser" ;;
+           "origin-metadata-tx origin-multiuser topo-site-local-cache cache-tiered" \
+           "topo-multi-director" ;;
     posixv2-xrootd-posc)
       echo "cache-xrootd topo-multi-origin topo-multi-cache topo-multi-owner" \
            "auth-external-issuer origin-posc origin-multiuser" ;;
     ssh-v2)
       echo "origin-ssh topo-multi-origin auth-external-issuer origin-no-direct" \
-           "origin-max-age" ;;
+           "origin-max-age cache-tiered" ;;
     httpsv2-v2)
       echo "origin-httpsv2 topo-multi-origin topo-multi-cache topo-multi-owner" \
-           "origin-max-age server-unprivileged with-lab" ;;
+           "origin-max-age server-unprivileged with-lab cache-tiered" ;;
     xrootd-xrootd)
       echo "origin-xrootd cache-xrootd topo-multi-origin topo-multi-cache" \
-           "topo-multi-owner auth-external-issuer" ;;
+           "topo-multi-owner auth-external-issuer topo-multi-director" \
+           "topo-site-local-cache" ;;
     posixv2-xrootd-no-direct)
       echo "cache-xrootd origin-no-direct origin-metadata server-unprivileged" ;;
+    s3-xrootd-broker)
+      echo "origin-s3 cache-xrootd origin-broker topo-multi-cache" \
+           "topo-multi-director topo-site-local-cache auth-external-issuer" \
+           "origin-no-direct origin-max-age origin-transfer-api" \
+           "server-unprivileged" ;;
+    s3-v2)
+      echo "origin-s3 topo-multi-origin topo-multi-owner cache-tiered" ;;
+    https-v2-broker)
+      echo "origin-https origin-broker topo-site-local-cache origin-max-age" \
+           "cache-tiered" ;;
+    https-xrootd)
+      echo "origin-https cache-xrootd topo-multi-origin topo-multi-cache" \
+           "topo-multi-owner topo-multi-director auth-external-issuer" \
+           "origin-no-direct origin-transfer-api server-unprivileged" ;;
+    xrootd-v2-broker)
+      echo "origin-xrootd origin-broker cache-tiered" ;;
+    pstore-v2)
+      echo "origin-pstore cache-tiered" ;;
+    posixv2-v2-metadata)
+      echo "origin-metadata cache-tiered topo-multi-director" ;;
+    standalone-posixv2)
+      echo "topo-standalone origin-posc origin-multiuser auth-external-issuer" \
+           "origin-max-age origin-transfer-api" ;;
+    standalone-pstore)
+      echo "topo-standalone origin-pstore server-unprivileged" ;;
+    standalone-ssh)
+      echo "topo-standalone origin-ssh" ;;
+    standalone-httpsv2)
+      echo "topo-standalone origin-httpsv2 origin-transfer-api server-unprivileged" ;;
+    standalone-s3v2)
+      echo "topo-standalone origin-s3v2 auth-external-issuer origin-max-age" ;;
     *)
       return 1 ;;
   esac
@@ -108,6 +150,7 @@ shape_rotates() {
   case "$1" in
     default|ssh-xrootd|pstore-xrootd|s3v2-v2|tiny-posixv2-tx) return 0 ;;
     posixv2-xrootd-multiuser|httpsv2-xrootd|xrootd-xrootd)    return 0 ;;
+    s3-v2|https-v2-broker|standalone-posixv2|standalone-ssh)  return 0 ;;
   esac
   return 1
 }

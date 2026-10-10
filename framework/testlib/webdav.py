@@ -7,9 +7,10 @@ whether an href is a path or a URL, so both are read by namespace and
 by path.
 """
 
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosec B405
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Optional
+from typing import Optional
 from urllib.parse import unquote, urlsplit
 
 from . import web
@@ -17,21 +18,26 @@ from . import web
 DAV = "{DAV:}"
 
 # What `pelican object ls` asks for (gowebdav's default).
-PROPFIND_BODY = (b'<?xml version="1.0" encoding="utf-8" ?>'
-                 b'<d:propfind xmlns:d="DAV:"><d:prop>'
-                 b"<d:resourcetype/><d:getcontentlength/><d:getlastmodified/>"
-                 b"</d:prop></d:propfind>")
+PROPFIND_BODY = (
+    b'<?xml version="1.0" encoding="utf-8" ?>'
+    b'<d:propfind xmlns:d="DAV:"><d:prop>'
+    b"<d:resourcetype/><d:getcontentlength/><d:getlastmodified/>"
+    b"</d:prop></d:propfind>"
+)
 
 
 @dataclass(frozen=True)
 class Entry:
-    path: str                # the href's path, decoded, without a trailing /
+    """A resource in a listing."""
+
+    path: str  # the href's path, decoded, without a trailing /
     collection: bool
-    size: Optional[int]      # None if no getcontentlength came
+    size: Optional[int]  # None if no getcontentlength came
 
 
-def propfind(url: str, depth: str, token: Optional[str] = None,
-             body: Optional[bytes] = None) -> web.Response:
+def propfind(
+    url: str, depth: str, token: Optional[str] = None, body: Optional[bytes] = None
+) -> web.Response:
     """PROPFIND url with Depth depth (`0`, `1`, or `infinity`), and body
     if given."""
     headers = {"Depth": depth}
@@ -40,15 +46,15 @@ def propfind(url: str, depth: str, token: Optional[str] = None,
     return web.request("PROPFIND", url, token=token, headers=headers, upload=body, timeout=120)
 
 
-def parse(body: bytes) -> List[Entry]:
+def parse(body: bytes) -> list[Entry]:
     """The entries of a multistatus; ValueError if body is not one."""
     try:
-        root = ET.fromstring(body)
+        root = ET.fromstring(body)  # nosec B314
     except ET.ParseError as e:
         raise ValueError(f"not XML: {e}") from None
     if root.tag != f"{DAV}multistatus":
         raise ValueError(f"a <{root.tag}>, not a DAV: multistatus")
-    entries = []
+    entries: list[Entry] = []
     for response in root.findall(f"{DAV}response"):
         href = response.findtext(f"{DAV}href", "").strip()
         if not href:
@@ -73,7 +79,7 @@ def parse(body: bytes) -> List[Entry]:
     return entries
 
 
-def relative(entries: List[Entry], base: str) -> Dict[str, Entry]:
+def relative(entries: list[Entry], base: str) -> dict[str, Entry]:
     """entries by their paths below base (e.g. /protected-a/data/x), with
     base itself as "". A server may put its own prefix before base, as
     `tiny` does (/api/v1.0/origin/data); ValueError for any entry that is
@@ -81,10 +87,10 @@ def relative(entries: List[Entry], base: str) -> Dict[str, Entry]:
     before base's own entry, if the listing has one, and must be the same
     for every entry."""
     base = "/" + base.strip("/")
-    prefixes = [e.path[:-len(base)] for e in entries if e.path.endswith(base)]
+    prefixes = [e.path[: -len(base)] for e in entries if e.path.endswith(base)]
     if len(prefixes) > 1:
         raise ValueError(f"{base} is listed {len(prefixes)} times")
-    found: Dict[str, Entry] = {}
+    found: dict[str, Entry] = {}
     for entry in entries:
         prefix: Optional[str]
         if prefixes:
@@ -95,7 +101,7 @@ def relative(entries: List[Entry], base: str) -> Dict[str, Entry]:
         if prefix is not None and entry.path == prefix + base:
             name = ""
         elif prefix is not None and entry.path.startswith(f"{prefix}{base}/"):
-            name = entry.path[len(prefix + base) + 1:]
+            name = entry.path[len(prefix + base) + 1 :]
         else:
             raise ValueError(f"{entry.path} is not under {base}")
         if name in found:
@@ -104,12 +110,12 @@ def relative(entries: List[Entry], base: str) -> Dict[str, Entry]:
     return found
 
 
-def problems(want: Mapping[str, Optional[int]], got: Mapping[str, Entry]) -> List[str]:
+def problems(want: Mapping[str, Optional[int]], got: Mapping[str, Entry]) -> list[str]:
     """How a listing got differs from want: each name's size, or None
     for a collection. The listing's own entry ("") is ignored. Every
     object must have a getcontentlength, 0 included."""
     found = {name: entry for name, entry in got.items() if name}
-    wrong = []
+    wrong: list[str] = []
     missing = sorted(set(want) - set(found))
     extra = sorted(set(found) - set(want))
     if missing:
