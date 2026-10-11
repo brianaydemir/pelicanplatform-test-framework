@@ -42,7 +42,7 @@ from collections.abc import Callable
 from typing import Optional
 from urllib.parse import urlsplit
 
-from testlib import blocks, common, digests, stores, web
+from testlib import blocks, common, digests, metrics, stores, web
 from testlib.common import die, first
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -85,25 +85,22 @@ def skip(fed: common.Federation) -> Optional[str]:
     return None
 
 
-def metrics(cache: common.Cache) -> str:
+def snapshot(cache: common.Cache) -> metrics.Snapshot:
     """The cache's /metrics."""
     root = urlsplit(cache.url)
-    return web.request("GET", f"{root.scheme}://{root.netloc}/metrics").body.decode(
-        errors="replace"
-    )
+    return metrics.fetch(f"{root.scheme}://{root.netloc}") or metrics.EMPTY
 
 
-def counted(cache: common.Cache, name: str, label: str) -> float:
-    """The sum of the cache's series of metric name with label, e.g.
-    `result="success"`."""
-    found = common.metric_series(metrics(cache), name)
-    return sum(value for labels, value in found.items() if label in labels)
+def counted(cache: common.Cache, name: str, **labels: str) -> float:
+    """The sum of the cache's series of metric name with labels, e.g.
+    result="success"."""
+    return snapshot(cache).value(name, **labels)
 
 
 def tiers(cache: common.Cache, target: common.TierTarget) -> bool:
     """Whether the cache tiers at all: it reports tiering metrics, or has
     claimed its prefix in the bucket."""
-    reported = "pelican_cache_tiering_" in metrics(cache)
+    reported = snapshot(cache).has_prefix("pelican_cache_tiering_")
     return reported or os.path.exists(f"{target.directory}/.pelican-cache-id")
 
 
@@ -241,11 +238,11 @@ def tiered(test: Test) -> tuple[str, str]:
 
     def check(cache: common.Cache) -> Optional[str]:
         name = "uploads_total"
-        before = counted(cache, f"pelican_cache_tiering_{name}", 'result="success"')
+        before = counted(cache, f"pelican_cache_tiering_{name}", result="success")
         why = test.tier(cache, "tiered", test.target(cache).threshold + OVER)
         if why:
             return why
-        after = counted(cache, f"pelican_cache_tiering_{name}", 'result="success"')
+        after = counted(cache, f"pelican_cache_tiering_{name}", result="success")
         if after <= before:
             return f"in the bucket, but pelican_cache_tiering_{name} stayed at {before:g}"
         return None

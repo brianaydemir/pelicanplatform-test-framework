@@ -44,7 +44,7 @@ from email.utils import formatdate
 from typing import Optional
 from urllib.parse import urlencode, urlsplit
 
-from testlib import blocks, common, credentials, digests, stores, transfers, web
+from testlib import blocks, common, credentials, digests, metrics, stores, transfers, web
 from testlib.common import die, first, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import CLIENT_TIMEOUT, Session, last_line
@@ -96,8 +96,10 @@ CACHE_SCENARIOS = (
 # How each set is uploaded: with a declared length, or in chunks.
 SETS = {"whole": True, "ranged": False, "client": True, "plugin": True}
 
-# pstore's write tiers (see blocks.tier).
+# pstore's write tiers (see blocks.tier), and the metric that counts the
+# writes in each.
 TIERS = ("inline", "buffered", "streamed")
+PSTORE_WRITES = "pelican_pstore_writes_total"
 
 
 def origin_root(url: str) -> str:
@@ -132,19 +134,13 @@ class Test:
         """Where a set's object of size is in /protected-a."""
         return f"{self.base}/{set_name}/{size}"
 
-    def metrics(self, origin: common.Origin) -> str:
-        """origin's /metrics."""
-        return web.request("GET", f"{origin_root(origin.url)}/metrics").body.decode(
-            errors="replace"
-        )
-
     def tiers(self, origin: common.Origin) -> Optional[dict[str, float]]:
         """pstore's writes by tier, or None if /metrics has none, as before
         an origin's first write."""
-        found = common.metric_series(self.metrics(origin), "pelican_pstore_writes_total")
-        if not found:
+        found = metrics.fetch(origin_root(origin.url)) or metrics.EMPTY
+        if not found.has(PSTORE_WRITES):
             return None
-        return {t: found.get(f'tier="{t}"', 0.0) for t in TIERS}
+        return {t: found.value(PSTORE_WRITES, tier=t) for t in TIERS}
 
     def upload(self, declared: bool) -> tuple[str, str]:
         """Upload every set uploaded this way to every origin, one object at

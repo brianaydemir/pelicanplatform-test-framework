@@ -13,7 +13,8 @@ Each is a module with:
 
 A suite may also name REQUIRED scenarios, which run whatever test.py is
 asked for. Only `federation` does: it comes first, since nothing else
-can pass without it. `transfer-api`, `tiering`, `posc`, `metadata`,
+can pass without it. `selftest` comes next, since it checks the helpers
+that other suites rely on. `transfer-api`, `tiering`, `posc`, `metadata`,
 `users`, `owners`, `sitelocal`, `collections`, and `issuer` test
 features that not every shape has, and skip where a shape lacks them.
 `auth` and `transfers` come last, since their `expired` tokens must be
@@ -33,6 +34,7 @@ from . import (
     names,
     owners,
     posc,
+    selftest,
     sitelocal,
     tiering,
     transfer_api,
@@ -42,6 +44,7 @@ from . import (
 
 SUITES = {
     "federation": federation,
+    "selftest": selftest,
     "commands": commands,
     "transfer-api": transfer_api,
     "listings": listings,

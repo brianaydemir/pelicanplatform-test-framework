@@ -5,6 +5,8 @@ framework/init-data.py share.
   common       paths, messages, the command line, and generated/
   credentials  the credentials the tests present, and what each allows
   director     asking a director where it would send a request
+  jwt          tokens of any header and claims, signed any way
+  metrics      a server's /metrics, and how a counter moved
   owners       another owner's namespaces beside the origins', for the
                owners suite
   report       one row per test case, in framework/var/results/

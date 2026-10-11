@@ -15,6 +15,7 @@ The suites run in this order:
 | Suite        | Tests                                                                 |
 | ------------ | --------------------------------------------------------------------- |
 | `federation` | that the federation serves at all, and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients; what its redirects tell a client of a namespace, and where they lead a plain HTTP client, bare paths included ([redirects](#redirects)); a Pelican server's discovery document; under `-p origin-broker`, the connection broker; with several origins, that an object one of them alone holds is routed there, and comes back; under `-p registry-approval`, that nothing is routed to before its registration is approved; and that a server its admin declares down is routed to by no director until the downtime ends ([downtime](#downtime)) |
+| `selftest`   | the tests' own helpers ([self-tests](#self-tests)): reading a V2 cache's `X-Transfer-Status` trailer, signing tokens of any claims, and reading `/metrics` |
 | `commands`   | `ls`, `stat`, `delete`, `copy`, `sync`, and `du`, and what `get` and `put` do with what already exists ([client commands](#client-commands)) |
 | `transfer-api` | origin-0's transfer API, under `-p origin-transfer-api`: authentication, credentials, server-run copies, jobs, and confinement to the exports (`local-get` and `local-put`, which Pelican's main does not confine, so they fail there) |
 | `listings`   | PROPFIND at each origin, director, and cache, and a GET of a collection ([listings](#listings)) |
@@ -105,6 +106,41 @@ raises an unexpected error fails, with the error as its note, and the
 suite goes on to the next. A client command still running after 600
 seconds is killed, and fails. Each suite removes what it wrote from
 every origin's store afterward, a `pstore` origin's included.
+
+
+## Self-tests
+
+The `selftest` suite checks the helpers in `framework/testlib/` that
+other suites build checks on, against the running federation, so that a
+failure there shows as the helper's, not as the checks'. It puts an
+object of its own in `/protected-a/data/selftest/<run>/` at every
+origin, reads it, and removes it.
+
+- `trailers`: a V2 cache that a client asks for the transfer's status
+  (`X-Transfer-Status: true` and `TE: trailers`) sends its body in
+  chunks, announces `Trailer: X-Transfer-Status`, and ends with that
+  trailer, `200: OK` for a transfer that went well
+  (`local_cache/persistent_cache_api.go`); it is how a cache reports a
+  failure once it has sent its headers. `framework/testlib/web.py`
+  keeps the trailers that Python's `http.client` throws away. A GET of
+  the object at each federated V2 cache, so asked, must get them; one
+  not so asked must get none. XRootD caches are passed over.
+- `jwt`: `framework/testlib/jwt.py` makes tokens that `pelican token
+  create` cannot: any claim present or absent and of any JSON type, any
+  `kid` or none, and signatures by ES256 or RS256 (with the `openssl`
+  command), HS256 (with any bytes as the secret), or `none`. Its token
+  with the claims and header of the `server` token, signed with the
+  origins' key, must read the object at every origin, and the same
+  token, expired ten minutes before, be refused. The claims' names, and
+  the values that are the same from token to token, and the header,
+  must first match the `server` token that `pelican token create`
+  minted. It skips where the origins take no direct clients.
+- `metrics`: a GET of the object straight to each native origin must
+  raise its `pelican_http_requests_total` with `server_type="origin"`,
+  `method="GET"`, and `code="200"` by at least one
+  (`metrics/http_metrics.go`). Other requests may raise it too, so no
+  check of a counter here is exact. It skips for an XRootD origin, which
+  keeps no such counter, and where the origins take no direct clients.
 
 
 ## Test data

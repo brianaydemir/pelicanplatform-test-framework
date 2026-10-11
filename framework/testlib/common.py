@@ -12,7 +12,6 @@ import io
 import json
 import os
 import platform
-import re
 import shutil
 import sys
 import time
@@ -109,15 +108,6 @@ def as_array(value: Any) -> Optional[list[Any]]:
     # redundant.
     items: list[Any] = value  # pyright: ignore[reportUnknownVariableType]
     return items
-
-
-def metric_series(text: str, name: str) -> dict[str, float]:
-    """Every series of metric name in text, a Prometheus exposition, by
-    its labels, e.g. `tier="inline"`."""
-    return {
-        m.group(1): float(m.group(2))
-        for m in re.finditer(rf"^{re.escape(name)}\{{([^}}]*)\}} (\S+)$", text, re.M)
-    }
 
 
 def enter_var() -> None:

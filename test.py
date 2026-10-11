@@ -14,8 +14,8 @@ Run it in the dev container, e.g. from the host:
   ./fed.sh test [ARG]...
 
 The suites are in framework/suites/, and run in this order: federation,
-commands, transfer-api, listings, names, blocks, tiering, posc,
-metadata, users, owners, sitelocal, collections, issuer, auth, and
+selftest, commands, transfer-api, listings, names, blocks, tiering,
+posc, metadata, users, owners, sitelocal, collections, issuer, auth, and
 transfers.
 `federation/ready` and `federation/caches` run first whatever is asked
 for, and if the federation never serves, nothing else runs. A suite

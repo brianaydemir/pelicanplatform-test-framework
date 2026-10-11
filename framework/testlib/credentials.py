@@ -35,12 +35,13 @@ import shutil
 import subprocess  # nosec B404
 import sys
 import time
+import uuid
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
-from . import common
+from . import common, jwt
 
 ALLOW = "allow"
 DENY = "deny"
@@ -59,6 +60,8 @@ EXPIRED = 1
 RWM = ("read", "write", "modify")
 WM = ("write", "modify")
 R = ("read",)
+# The WLCG scope that each flag grants.
+WLCG_SCOPES = {"read": "storage.read", "write": "storage.create", "modify": "storage.modify"}
 
 # The operations the tests perform, and which of them write.
 READS = ("get", "head")
@@ -381,6 +384,33 @@ def mint_server(
     )
     with open(out, encoding="utf-8") as f:
         return f.read().strip()
+
+
+def server_claims(
+    fed: common.Federation,
+    namespace: str,
+    scopes: tuple[str, ...] = RWM,
+    scope_path: str = "/",
+    lifetime: int = LONG,
+    subject: str = SUBJECT,
+    audience: str = jwt.ANY_AUDIENCE,
+) -> dict[str, Any]:
+    """The claims of a `server` token for namespace (see mint_server()),
+    as `pelican token create` writes them, for jwt.encode() to sign
+    with the origins' key (fed.origin_key), after changing them as a
+    test needs: issued now, and lasting lifetime seconds."""
+    now = int(time.time())
+    return {
+        "aud": [audience],
+        "exp": now + lifetime,
+        "iat": now,
+        "iss": fed.issuer_of(namespace),
+        "jti": str(uuid.uuid4()),
+        "nbf": now,
+        "scope": " ".join(f"{WLCG_SCOPES[s]}:{scope_path}" for s in scopes),
+        "sub": subject,
+        "wlcg.ver": "1.0",
+    }
 
 
 def mint_credential(

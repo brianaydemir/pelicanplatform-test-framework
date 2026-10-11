@@ -1,6 +1,9 @@
 """HTTP(S) requests straight to a server, bypassing the Pelican client.
 
 Like curl without -L: a redirect is an answer, not something to follow.
+Unlike http.client, it keeps a chunked body's trailers, such as the
+X-Transfer-Status that a V2 cache sends, when asked (`X-Transfer-Status:
+true` and `TE: trailers`), to report a failure after its headers.
 """
 
 import functools
@@ -28,11 +31,15 @@ class Response:
     status: Optional[int]  # None if no response came
     body: bytes = b""
     headers: tuple[tuple[str, str], ...] = ()
+    trailers: tuple[tuple[str, str], ...] = ()  # those after a chunked body
 
     def header(self, name: str) -> str:
         """The last value of header name, or ""."""
-        values = [v for k, v in self.headers if k.lower() == name.lower()]
-        return values[-1] if values else ""
+        return _last(self.headers, name)
+
+    def trailer(self, name: str) -> str:
+        """The last value of trailer name, or ""."""
+        return _last(self.trailers, name)
 
     def cookie(self, name: str) -> str:
         """The value of cookie name that the answer set, or ""."""
@@ -51,6 +58,39 @@ class Response:
         return "no response" if self.status is None else f"HTTP {self.status}"
 
 
+def _last(fields: tuple[tuple[str, str], ...], name: str) -> str:
+    """The last value of field name in fields, or ""."""
+    values = [v for k, v in fields if k.lower() == name.lower()]
+    return values[-1] if values else ""
+
+
+class _Answer(http.client.HTTPResponse):
+    """An HTTPResponse that keeps the trailers after a chunked body, which
+    HTTPResponse reads and throws away, in _read_and_discard_trailer() (so
+    named in Python 3.9 through 3.14, at least). Reading the body to its
+    end, with read(), reads them."""
+
+    trailers: tuple[tuple[str, str], ...] = ()
+
+    def _read_and_discard_trailer(self) -> None:
+        found: list[tuple[str, str]] = []
+        while True:
+            line = self.fp.readline(1 << 16)
+            if line in (b"\r\n", b"\n", b""):
+                break
+            name, _, value = line.decode("latin-1").partition(":")
+            found.append((name.strip(), value.strip()))
+        self.trailers = tuple(found)
+
+
+class _HTTPConnection(http.client.HTTPConnection):
+    response_class = _Answer
+
+
+class _HTTPSConnection(http.client.HTTPSConnection):
+    response_class = _Answer
+
+
 def _pieces(data: bytes, size: int = 1 << 16) -> Iterator[bytes]:
     """data, size bytes at a time."""
     for start in range(0, len(data), size):
@@ -61,11 +101,11 @@ def _connect(url: str, timeout: float) -> tuple[http.client.HTTPConnection, str]
     """A connection to url's server, and the target to ask it for."""
     parts = urlsplit(url)
     if parts.scheme == "https":
-        conn: http.client.HTTPConnection = http.client.HTTPSConnection(
+        conn: http.client.HTTPConnection = _HTTPSConnection(
             parts.hostname or "", parts.port, timeout=timeout, context=tls_context()
         )
     else:
-        conn = http.client.HTTPConnection(parts.hostname or "", parts.port, timeout=timeout)
+        conn = _HTTPConnection(parts.hostname or "", parts.port, timeout=timeout)
     return conn, (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
 
 
@@ -82,7 +122,8 @@ def request(
     a file), with upload (bytes, or the path of a file) as the body. With
     chunked, the body goes in chunks with no Content-Length, as the
     Pelican client sends it. timeout is for each read or write of the
-    socket, not the whole exchange."""
+    socket, not the whole exchange. A chunked answer's trailers are in
+    the response's trailers."""
     conn, target = _connect(url, timeout)
     sent = dict(headers or {})
     if token is not None:
@@ -99,7 +140,9 @@ def request(
     try:
         conn.request(method, target, body=body, headers=sent, encode_chunked=chunked)
         answer = conn.getresponse()
-        return Response(answer.status, answer.read(), tuple(answer.getheaders()))
+        body = answer.read()
+        trailers = answer.trailers if isinstance(answer, _Answer) else ()
+        return Response(answer.status, body, tuple(answer.getheaders()), trailers)
     except (OSError, http.client.HTTPException):
         return Response(None)
     finally:

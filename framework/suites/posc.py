@@ -30,7 +30,7 @@ from html.parser import HTMLParser
 from typing import Optional
 from urllib.parse import unquote, urlsplit
 
-from testlib import blocks, common, stores, web, webdav
+from testlib import blocks, common, metrics, stores, web, webdav
 from testlib.common import die, shown, wait_for
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -62,6 +62,9 @@ SKIPS: dict[str, dict[str, str]] = {
 # Where XRootD's atomic uploads are staged, in each origin's store:
 # Origin.UploadTempLocation, which fed.sh sets (fed_generate).
 ATOMIC_DIR = ".in-progress"
+
+# The gauge of uploads that POSC is staging.
+POSC_ACTIVE = "pelican_origin_posc_active_uploads"
 
 MIB = 1 << 20
 
@@ -431,13 +434,11 @@ def held_open(test: Test, name: str) -> tuple[str, str]:
     if answer.status != 404:
         return FAIL, f"HEAD got {answer.describe()}, not 404"
     if test.kind == "posc":
-        metrics = web.request("GET", f"{test.origin_web}/metrics").body.decode(errors="replace")
-        active = re.findall(r"^pelican_origin_posc_active_uploads (\S+)", metrics, re.M)
-        if not active or float(active[0]) < 1:
-            return (
-                FAIL,
-                f"pelican_origin_posc_active_uploads is '{active[0] if active else ''}'",
-            )
+        found = metrics.fetch(test.origin_web) or metrics.EMPTY
+        if not found.has(POSC_ACTIVE):
+            return FAIL, f"/metrics has no {POSC_ACTIVE}"
+        if found.value(POSC_ACTIVE) < 1:
+            return FAIL, f"{POSC_ACTIVE} is {found.value(POSC_ACTIVE):g}"
     return PASS, shown(test.new_staging())
 
 

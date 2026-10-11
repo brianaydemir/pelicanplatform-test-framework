@@ -43,6 +43,7 @@ SUITE_DIRS = (
     "auth",
     "posc",
     "metadata",
+    "selftest",
     "cmd",
     "blocks",
     "collections",
