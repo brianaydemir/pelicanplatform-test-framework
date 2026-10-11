@@ -45,7 +45,7 @@ check that applies to the federation's shape. The checks are grouped in
 suites (`framework/suites/`): `federation`, `selftest`, `commands`,
 `transfer-api`, `listings`, `names`, `blocks`, `tiering`, `posc`,
 `metadata`, `users`, `owners`, `sitelocal`, `collections`, `issuer`,
-`webdav`, `auth`, and `transfers`.
+`advertise`, `webdav`, `auth`, and `transfers`.
 A suite that doesn't apply to the shape is skipped, and says why.
 [What the tests check](docs/tests.md) describes each one.
 

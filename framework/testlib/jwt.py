@@ -5,7 +5,8 @@ one with any `kid`, or none; and one signed with HS256 or `none`, as an
 attacker might send.
 
 encode() signs ES256 and RS256 with the openssl CLI, since the standard
-library cannot, and HS256 with hmac. The keys that the federation's
+library cannot, and HS256 with hmac; verify() checks an ES256 token's
+signature against a JWKS, with the openssl CLI too. The keys that the federation's
 servers and the tests sign with are EC P-256 PEM files (ES256).
 """
 
@@ -13,8 +14,10 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import shutil
 import subprocess  # nosec B404
+import tempfile
 from collections.abc import Mapping
 from typing import Any, Optional
 
@@ -198,3 +201,67 @@ def decode(token: str) -> tuple[dict[str, Any], dict[str, Any]]:
     if head is None or claims is None:
         raise ValueError("not a compact JWT")
     return head, claims
+
+
+# The DER of an EC P-256 SubjectPublicKeyInfo up to its point, which is
+# 0x04, then x and y, 32 bytes each.
+_P256_SPKI = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200")
+
+
+def _der_integer(value: bytes) -> bytes:
+    """A DER INTEGER of the unsigned big-endian value."""
+    value = value.lstrip(b"\0") or b"\0"
+    if value[0] & 0x80:
+        value = b"\0" + value
+    return bytes([0x02, len(value)]) + value
+
+
+def verify(token: str, jwks: bytes) -> Optional[str]:
+    """The kid of the key in JWKS document jwks that signed token, a
+    compact JWT signed by ES256, as its header names it; None if its alg is
+    not ES256, or none of the keys with its kid (or, without one, none of
+    the EC P-256 keys) signed it. The openssl command checks each
+    signature."""
+    head, _ = decode(token)
+    if head.get("alg") != ES256:
+        return None
+    signing_input, _, signature = token.strip().rpartition(".")
+    raw = unb64(signature)
+    if len(raw) != 64:
+        return None
+    body = _der_integer(raw[:32]) + _der_integer(raw[32:])
+    der_signature = bytes([0x30, len(body)]) + body
+    parsed = common.as_object(json.loads(jwks)) or {}
+    for listed in common.as_array(parsed.get("keys")) or []:
+        jwk = common.as_object(listed) or {}
+        if jwk.get("kty") != "EC" or jwk.get("crv") != "P-256":
+            continue
+        if "kid" in head and jwk.get("kid") != head["kid"]:
+            continue
+        point = unb64(str(jwk.get("x", ""))) + unb64(str(jwk.get("y", "")))
+        if len(point) != 64:
+            continue
+        spki = base64.encodebytes(_P256_SPKI + b"\x04" + point).decode("ascii")
+        pem = f"-----BEGIN PUBLIC KEY-----\n{spki}-----END PUBLIC KEY-----\n"
+        if _openssl_verifies(pem, der_signature, signing_input.encode()):
+            return str(jwk.get("kid", ""))
+    return None
+
+
+def _openssl_verifies(pem: str, signature: bytes, data: bytes) -> bool:
+    """Whether DER signature is of data's SHA-256 by public key pem."""
+    if shutil.which("openssl") is None:
+        common.die("the openssl command is missing, which checks ES256 signatures")
+    with tempfile.TemporaryDirectory() as tmp:
+        key, sig = os.path.join(tmp, "key.pem"), os.path.join(tmp, "sig.der")
+        with open(key, "w", encoding="ascii") as f:
+            f.write(pem)
+        with open(sig, "wb") as f:
+            f.write(signature)
+        done = subprocess.run(  # nosec B603 B607
+            ["openssl", "dgst", "-sha256", "-verify", key, "-signature", sig],
+            input=data,
+            capture_output=True,
+            check=False,
+        )
+    return done.returncode == 0
