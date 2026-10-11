@@ -55,10 +55,10 @@ x-common-secrets: &common-secrets
 
 # Mounts common to every Pelican service. Each service also mounts its
 # own /fed/conf.role, /fed/conf.instance, /fed/local.instance,
-# /fed/generated.instance, /fed/issuer-keys, and /var/lib/pelican. See
-# etc/pelican.yaml for the configuration layers. fed.sh copies
-# ../local/config.d into ./var/generated/local, so that the framework
-# never writes to local/.
+# /fed/control.instance, /fed/generated.instance, /fed/issuer-keys, and
+# /var/lib/pelican. See etc/pelican.yaml for the configuration layers.
+# fed.sh copies ../local/config.d into ./var/generated/local, so that the
+# framework never writes to local/.
 x-vol-health: &vol-health "./service-health.sh:/fed/bin/service-health.sh:ro"
 x-vol-generated: &vol-generated "./var/generated:/fed/generated:ro"
 x-vol-conf-root: &vol-conf-root "./etc/pelican.yaml:/etc/pelican/pelican.yaml:ro"
@@ -198,6 +198,7 @@ services:
       - ./config.d/director/default:/fed/conf.role:ro
       - ./config.d/instance/director-0:/fed/conf.instance:ro
       - ./var/generated/local/director-0:/fed/local.instance:ro
+      - ./var/control/config/director-0:/fed/control.instance:ro
       - ./var/generated/instance/director-0:/fed/generated.instance:ro
       - ./var/issuer-keys/director-0:/fed/issuer-keys
       - ./var/state/director-0:/var/lib/pelican
@@ -229,6 +230,7 @@ services:
       - ./config.d/director/default:/fed/conf.role:ro
       - ./config.d/instance/director-1:/fed/conf.instance:ro
       - ./var/generated/local/director-1:/fed/local.instance:ro
+      - ./var/control/config/director-1:/fed/control.instance:ro
       - ./var/generated/instance/director-1:/fed/generated.instance:ro
       - ./var/issuer-keys/director-1:/fed/issuer-keys
       - ./var/state/director-1:/var/lib/pelican
@@ -257,6 +259,7 @@ services:
       - ./config.d/registry/default:/fed/conf.role:ro
       - ./config.d/instance/registry:/fed/conf.instance:ro
       - ./var/generated/local/registry:/fed/local.instance:ro
+      - ./var/control/config/registry:/fed/control.instance:ro
       - ./var/generated/instance/registry:/fed/generated.instance:ro
       - ./var/issuer-keys/registry:/fed/issuer-keys
       - ./var/state/registry:/var/lib/pelican
@@ -286,6 +289,7 @@ services:
       - "./config.d/origin/${ORIGIN_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
       - ./config.d/instance/origin-0:/fed/conf.instance:ro
       - ./var/generated/local/origin-0:/fed/local.instance:ro
+      - ./var/control/config/origin-0:/fed/control.instance:ro
       - ./var/generated/instance/origin-0:/fed/generated.instance:ro
       - ./var/issuer-keys/origin-0:/fed/issuer-keys
       # Server.IssuerJwks (config.d/instance/origin-0/): public keys only.
@@ -318,6 +322,7 @@ services:
       - "./config.d/origin/${ORIGIN_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
       - ./config.d/instance/origin-1:/fed/conf.instance:ro
       - ./var/generated/local/origin-1:/fed/local.instance:ro
+      - ./var/control/config/origin-1:/fed/control.instance:ro
       - ./var/generated/instance/origin-1:/fed/generated.instance:ro
       # Must hold origin-0's key: both export the same prefixes, and the
       # registry binds one keyset per prefix. `./fed.sh keys` keeps the
@@ -358,6 +363,7 @@ services:
       - "./config.d/origin/${ORIGIN_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
       - ./config.d/instance/origin-2:/fed/conf.instance:ro
       - ./var/generated/local/origin-2:/fed/local.instance:ro
+      - ./var/control/config/origin-2:/fed/control.instance:ro
       - ./var/generated/instance/origin-2:/fed/generated.instance:ro
       - ./var/issuer-keys/origin-2:/fed/issuer-keys
       - ./var/data/origin/2:/data
@@ -388,6 +394,7 @@ services:
       - "./config.d/cache/${CACHE_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
       - ./config.d/instance/cache-0:/fed/conf.instance:ro
       - ./var/generated/local/cache-0:/fed/local.instance:ro
+      - ./var/control/config/cache-0:/fed/control.instance:ro
       - ./var/generated/instance/cache-0:/fed/generated.instance:ro
       - ./var/issuer-keys/cache-0:/fed/issuer-keys
       - ./var/data/cache/0:/data
@@ -418,6 +425,7 @@ services:
       - "./config.d/cache/${CACHE_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
       - ./config.d/instance/cache-1:/fed/conf.instance:ro
       - ./var/generated/local/cache-1:/fed/local.instance:ro
+      - ./var/control/config/cache-1:/fed/control.instance:ro
       - ./var/generated/instance/cache-1:/fed/generated.instance:ro
       - ./var/issuer-keys/cache-1:/fed/issuer-keys
       - ./var/data/cache/1:/data
@@ -453,6 +461,7 @@ services:
       - "./config.d/cache/${CACHE_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
       - ./config.d/instance/cache-2:/fed/conf.instance:ro
       - ./var/generated/local/cache-2:/fed/local.instance:ro
+      - ./var/control/config/cache-2:/fed/control.instance:ro
       - ./var/generated/instance/cache-2:/fed/generated.instance:ro
       - ./var/issuer-keys/cache-2:/fed/issuer-keys
       - ./var/data/cache/2:/data
@@ -482,6 +491,7 @@ services:
       - ./config.d/none:/fed/conf.role:ro
       - ./config.d/instance/dev:/fed/conf.instance:ro
       - ./var/generated/local/dev:/fed/local.instance:ro
+      - ./var/control/config/dev:/fed/control.instance:ro
       - ./var/generated/instance/dev:/fed/generated.instance:ro
       # fed.sh creates this file if missing; otherwise Docker would create
       # a directory in its place.

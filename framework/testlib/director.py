@@ -11,6 +11,7 @@ server that refuses a request may send too (see hints()).
 """
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlsplit
@@ -114,3 +115,10 @@ def ask(
         [host(u) for u in parse_link(answer.header("Link"))],
         answer.header("X-Pelican-Broker"),
     )
+
+
+def naming(directors: Sequence[str], route: str, path: str, name: str) -> list[str]:
+    """The directors, of those at URLs directors, that would send a GET
+    of path, for route, to host name, or have the client try it: their
+    hosts."""
+    return [host(url) for url in directors if ask(url, route, path).names(name)]

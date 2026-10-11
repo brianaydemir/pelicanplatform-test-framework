@@ -3,6 +3,8 @@ framework/init-data.py share.
 
   blocks       the blocks suite's sizes and ranges, and checking a range
   common       paths, messages, the command line, and generated/
+  control      restarting, stopping, or reconfiguring a service mid-run,
+               through framework/control.py on the host
   credentials  the credentials the tests present, and what each allows
   director     asking a director where it would send a request
   jwt          tokens of any header and claims, signed any way

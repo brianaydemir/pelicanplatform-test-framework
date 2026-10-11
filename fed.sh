@@ -13,6 +13,7 @@
 #   ./fed.sh keys                 list issuer keys (also: init, add, rotate)
 #   ./fed.sh dev [CMD]...         run a shell (or CMD) in the dev container
 #   ./fed.sh test [ARG]...        run ./test.py in the dev container
+#   ./fed.sh control              let a test.py run by hand control services
 #   ./fed.sh status               show containers, presets, and images
 #   ./fed.sh check                exit 0 if fed.sh accepts the presets
 #   ./fed.sh logs -f origin-0     anything else goes to docker compose
@@ -1421,6 +1422,12 @@ fed_prepare_dirs() {
   for svc in ${fed_key_others}; do
     mkdir -p "framework/var/issuer-keys/${svc}"
   done
+  # Each service's last configuration layer, which the tests write (see
+  # framework/testlib/control.py).
+  for svc in ${fed_services} dev; do
+    mkdir -p "framework/var/control/config/${svc}"
+  done
+  mkdir -p framework/var/control/requests
   mkdir -p \
       framework/var/data/origin/0 framework/var/data/origin/1 \
       framework/var/data/origin/2 \
@@ -1975,6 +1982,23 @@ fed_dev_up() {
       docker compose -f framework/docker-compose.yaml up --detach dev
 }
 
+# Serve the tests' requests to control the services
+# (framework/control.py) in the background, for as long as they run.
+# A background job ignores SIGINT, so the helper outlives an interrupt
+# long enough to put back what the tests leave behind.
+fed_control_start() {
+  fed_require_python
+  python3 framework/control.py serve &
+  fed_control_pid=$!
+}
+
+fed_control_stop() {
+  [ -n "${fed_control_pid:-}" ] || return 0
+  kill "${fed_control_pid}" 2>/dev/null || true
+  wait "${fed_control_pid}" 2>/dev/null || true
+  fed_control_pid=""
+}
+
 # Warn (only) if the test data was built for a different shape.
 fed_check_data_shape() {
   want=$(./framework/init-data.py --print-shape)
@@ -2212,8 +2236,26 @@ case "${cmd}" in
     if [ -t 0 ] && [ -t 1 ]; then
       no_tty=""
     fi
-    exec docker compose -f framework/docker-compose.yaml \
-        exec ${no_tty:+"${no_tty}"} dev "$@"
+    if [ "${cmd}" = dev ]; then
+      exec docker compose -f framework/docker-compose.yaml \
+          exec ${no_tty:+"${no_tty}"} dev "$@"
+    fi
+    fed_control_start
+    trap 'fed_control_stop' EXIT
+    trap 'fed_control_stop; exit 130' INT
+    trap 'fed_control_stop; exit 143' TERM
+    status=0
+    docker compose -f framework/docker-compose.yaml \
+        exec ${no_tty:+"${no_tty}"} dev "$@" || status=$?
+    fed_control_stop
+    exit "${status}"
+    ;;
+
+  # In the foreground, for a test.py run by hand in the dev container.
+  control)
+    [ $# -eq 0 ] || die_usage "control takes no arguments"
+    fed_require_python
+    exec python3 framework/control.py serve
     ;;
 
   status)

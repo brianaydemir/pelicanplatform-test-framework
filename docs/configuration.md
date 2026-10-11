@@ -20,6 +20,7 @@ directory, files merge in lexicographic order.
 | `/fed/conf.instance`      | `framework/config.d/instance/<service>/`              |
 | `/fed/local.base`         | `local/config.d/base/`                                |
 | `/fed/local.instance`     | `local/config.d/instance/<service>/`                  |
+| `/fed/control.instance`   | `framework/var/control/config/<service>/` (tests)     |
 
 For example:
 
@@ -32,6 +33,10 @@ EOF
 ./fed.sh restart director-0
 ```
 
+- `/fed/control.instance` is the tests' own, and empty but while a
+  test restarts a service with configuration of its own
+  ([service control](../README.md#service-control)), so it wins over
+  yours then.
 - A later layer replaces a list instead of merging it. `fed.sh`
   generates `Origin.Exports` from the knobs; to change it, restate the
   whole list. In `local/config.d/base/`, that replaces origin-2's too

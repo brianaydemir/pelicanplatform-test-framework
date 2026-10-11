@@ -780,11 +780,7 @@ def presence(probe: Probe) -> tuple[str, str]:
 
 def routed_to(fed: common.Federation, route: str, path: str, host: str) -> list[str]:
     """The directors that would send a GET of path, for route, to host."""
-    return [
-        director.host(url)
-        for url in fed.directors
-        if director.ask(url, route, path).names(host)
-    ]
+    return director.naming(fed.directors, route, path, host)
 
 
 def down(probe: Probe, svc: str, web_url: str, route: str) -> Optional[str]:

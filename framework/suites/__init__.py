@@ -17,6 +17,8 @@ can pass without it. `selftest` comes next, since it checks the helpers
 that other suites rely on. `transfer-api`, `tiering`, `posc`, `metadata`,
 `users`, `owners`, `sitelocal`, `collections`, and `issuer` test
 features that not every shape has, and skip where a shape lacks them.
+`webdav` comes after them, just before the end: one of its requests,
+if an origin honored it, would remove /protected-a's storage.
 `auth` and `transfers` come last, since their `expired` tokens must be
 70 seconds past their expiry before they are presented; the session
 mints them as it starts.
@@ -40,6 +42,7 @@ from . import (
     transfer_api,
     transfers,
     users,
+    webdav,
 )
 
 SUITES = {
@@ -58,6 +61,7 @@ SUITES = {
     "sitelocal": sitelocal,
     "collections": collections,
     "issuer": issuer,
+    "webdav": webdav,
     "auth": auth,
     "transfers": transfers,
 }

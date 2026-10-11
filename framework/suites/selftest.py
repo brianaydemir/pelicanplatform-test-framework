@@ -9,6 +9,10 @@ does what the suites that use it rely on.
             them, is taken by every origin, and refused once expired
   metrics   testlib.metrics reads /metrics: a GET straight to a native
             origin raises its pelican_http_requests_total
+  restart-cache
+            testlib.control restarts a service mid-run: cache-0, once it
+            holds the object whole, comes back, every director names it
+            again, and it serves the object, a V2 cache from its store
 
 Each reads an object of its own under /protected-a/data/selftest/<run>/,
 which the suite puts in place and removes.
@@ -20,7 +24,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Optional
 
-from testlib import common, credentials, jwt, metrics, stores, web
+from testlib import common, control, credentials, director, jwt, metrics, stores, web
 from testlib.common import die, first, warn
 from testlib.credentials import R
 from testlib.report import FAIL, PASS, SKIP
@@ -30,19 +34,33 @@ SCENARIOS = {
     "trailers": "a V2 cache's X-Transfer-Status trailer comes back when asked for, and only then",
     "jwt": "a token jwt.encode() signs with the origins' key is taken, and refused once expired",
     "metrics": "a GET straight to a native origin raises its pelican_http_requests_total",
+    "restart-cache": (
+        "cache-0, restarted mid-run, is named by every director again, and serves what"
+        " it held from its store"
+    ),
 }
 
 NAMESPACE = "protected-a"
-
-# The origins that XRootD serves (ORIGIN_VARIANT); the rest are Pelican's
-# native origins (origin_serve/ in Pelican).
-XROOTD_ORIGINS = ("posix", "https", "s3")
 
 # What a V2 cache sends in the trailer of a transfer that went well
 # (local_cache/persistent_cache_api.go in Pelican).
 TRANSFER_OK = "200: OK"
 
 REQUESTS = "pelican_http_requests_total"
+
+# The cache that `restart-cache` restarts.
+RESTARTED = "cache-0"
+# How long it waits for a V2 cache to say, with Age, that it holds the
+# object whole, and for every director to name the cache, in seconds.
+# A server advertises as it starts, then every minute
+# (Server.AdvertisementInterval); the directors drop a cache that says,
+# as it stops, that it is shutting down, until it advertises again
+# (director/director.go in Pelican).
+HELD_WAIT, NAMED_WAIT = 30, 150
+# How long it waits for the cache to serve the object again: a cache
+# just started refuses a namespace's tokens until it has learned the
+# namespace's issuers, as the federation suite's `caches` waits.
+SERVED_WAIT = 300
 
 
 def skip(fed: common.Federation) -> Optional[str]:
@@ -168,7 +186,7 @@ def http_requests(test: Test) -> tuple[str, str]:
     code="200"} by at least 1 (metrics/http_metrics.go in Pelican);
     other requests may raise it too."""
     fed = test.fed
-    if fed.origin_variant in XROOTD_ORIGINS:
+    if not fed.native_origins:
         return SKIP, f"XRootD serves the origins ({fed.origin_variant}), not Pelican"
     if not test.direct:
         return SKIP, f"/{NAMESPACE} takes no direct clients"
@@ -191,7 +209,96 @@ def http_requests(test: Test) -> tuple[str, str]:
     return PASS, ", ".join(notes)
 
 
-RUN = {"trailers": trailers, "jwt": jwt_tokens, "metrics": http_requests}
+def age(answer: web.Response) -> Optional[int]:
+    """answer's Age, in seconds, or None if it has none."""
+    value = answer.header("Age")
+    return int(value) if value.isdigit() else None
+
+
+def restart_cache(test: Test) -> tuple[str, str]:
+    """Read the object through cache-0 until it holds it whole (a V2
+    cache sends Age then, and only then), and see every director name
+    it; restart it (testlib.control). Within NAMED_WAIT seconds every
+    director must name it again, and within SERVED_WAIT it must serve
+    the object; a V2 cache from its store, with an Age at least the
+    seconds since it first said it held it all, which only the record
+    it kept across the restart can give."""
+    fed = test.fed
+    if fed.standalone:
+        return SKIP, "a standalone origin has no cache"
+    if fed.tiny:
+        return SKIP, "the tiny topology's cache is the whole federation's process"
+    cache = next((c for c in fed.federated_caches if c.svc == RESTARTED), None)
+    if cache is None:
+        return SKIP, f"this shape has no federated {RESTARTED}"
+    why = control.unavailable()
+    if why:
+        return SKIP, why
+    url = test.url(cache.url)
+    path = f"/{NAMESPACE}/{test.rel}"
+    host = director.host(cache.url)
+    v2 = cache.kind == "v2"
+
+    why = test.served(web.request("GET", url, token=test.token))
+    if why:
+        return FAIL, f"before the restart, GET got {why}"
+    held = 0.0
+    if v2:
+
+        def says_held() -> bool:
+            return age(web.request("HEAD", url, token=test.token)) is not None
+
+        if not common.wait_for(says_held, HELD_WAIT, interval=1):
+            return FAIL, f"before the restart, no Age within {HELD_WAIT}s of a whole read"
+        held = time.time()
+    named = director.naming(fed.directors, "object", path, host)
+    if len(named) != len(fed.directors):
+        return FAIL, f"before the restart, only {named} named {host}"
+
+    control.restart(cache.svc)
+    restarted = time.time()
+
+    def all_named() -> bool:
+        return len(director.naming(fed.directors, "object", path, host)) == len(fed.directors)
+
+    if not common.wait_for(all_named, NAMED_WAIT, interval=5):
+        named = director.naming(fed.directors, "object", path, host)
+        return FAIL, f"{NAMED_WAIT}s after the restart, only {named} named {host}"
+    took = time.time() - restarted
+
+    answer = web.Response(None)
+
+    def serves() -> bool:
+        nonlocal answer
+        answer = web.request("GET", url, token=test.token)
+        return answer.ok
+
+    common.wait_for(serves, SERVED_WAIT, interval=5)
+    why = test.served(answer)
+    if why:
+        return FAIL, f"after the restart, GET got {why} (waited up to {SERVED_WAIT}s)"
+    note = f"{cache.svc}: every director named it again {took:.0f}s after its restart"
+    if not v2:
+        return PASS, f"{note}, and it serves the object"
+    since = int(time.time() - held)
+    found = age(answer)
+    if found is None:
+        return FAIL, "after the restart, it served the object with no Age, as if it held none"
+    # Age is whole seconds, rounded down, and the clocks are one host's.
+    if found < since - 1:
+        return FAIL, (
+            f"after the restart, Age {found}, but it said it held the object {since}s"
+            " before, so it fetched it again"
+        )
+    return PASS, f"{note}, and serves the object from its store (Age {found})"
+
+
+RUN = {
+    "trailers": trailers,
+    "jwt": jwt_tokens,
+    "metrics": http_requests,
+    "restart-cache": restart_cache,
+}
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:

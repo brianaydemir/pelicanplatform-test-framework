@@ -45,7 +45,7 @@ check that applies to the federation's shape. The checks are grouped in
 suites (`framework/suites/`): `federation`, `selftest`, `commands`,
 `transfer-api`, `listings`, `names`, `blocks`, `tiering`, `posc`,
 `metadata`, `users`, `owners`, `sitelocal`, `collections`, `issuer`,
-`auth`, and `transfers`.
+`webdav`, `auth`, and `transfers`.
 A suite that doesn't apply to the shape is skipped, and says why.
 [What the tests check](docs/tests.md) describes each one.
 
@@ -299,6 +299,7 @@ details, including what it refuses. To write your own, see
 | `./fed.sh up` / `down`            | start / stop everything                                  |
 | `./fed.sh restart [SERVICE]...`   | recreate containers so they reread configuration         |
 | `./fed.sh test [ARG]...`          | the tests: `test.py` in the dev container                |
+| `./fed.sh control`                | [service control](#service-control) for a `test.py` run by hand |
 | `./fed.sh dev [CMD]...`           | a shell (or `CMD`) in the dev container                  |
 | `./fed.sh status`                 | containers, presets, and images                          |
 | `./fed.sh keys [...]`             | [issuer keys](docs/configuration.md#issuer-keys)         |
@@ -307,6 +308,39 @@ details, including what it refuses. To write your own, see
 | `./reset.sh`                      | discard everything generated                             |
 | `./smoke.sh [-o DIR] [SHAPE]...`  | the smoke tests, over every shape; destructive           |
 | `framework/report.py`             | merge [results](docs/ci.md#results); JUnit XML; Markdown |
+
+
+## Service control
+
+Some tests restart, stop, start, pause, unpause, or kill a service in
+the middle of a run, or restart one with configuration of their own.
+The dev container can't control Docker, so `./fed.sh test` runs a helper
+on the host beside the tests (`framework/control.py`), which does it for
+them, and stops it when they finish. They ask it through files in
+`framework/var/control/`, and it does only those actions, with `docker
+compose`, and only on the shape's services, never `dev`. `smoke.sh` runs
+the tests through `./fed.sh test`, so it has the helper too.
+
+To run `test.py` by hand in the dev container with the helper, run
+`./fed.sh control` on the host beside it, and stop it with Ctrl-C when
+you're done. Without a helper, the scenarios that need one are skipped,
+and say why.
+
+The tests write their configuration of a service in
+`framework/var/control/config/<service>/`, which is the last of its
+[configuration layers](docs/configuration.md#pelican-configuration), and
+remove it once they're done, restarting the service again. Whatever
+tests leave behind, the helper puts back when it stops, and again when
+the next one starts: it removes their configuration, restarting the
+services that had it, and starts or unpauses what they left stopped,
+killed, or paused.
+
+For test code, `framework/testlib/control.py` has a function for each
+action, each of which returns once the action is done, and for a
+restart, once the server answers again; `restart_with()`, which
+configures a service for the length of a `with` block; and
+`unavailable()`, which says why the tests can't control services here,
+if they can't.
 
 
 ## Where things live
@@ -337,6 +371,7 @@ them.
 | `data/owners-test/`  | the responses the `owners` suite got                                                                            |
 | `data/metadata/`     | every request the metadata recorder received                                                                    |
 | `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                   |
+| `control/`           | the tests' requests to [control services](#service-control), and their configuration of a service (`config/<svc>/`) |
 | `issuer-keys/<svc>/` | each service's issuer keys (`/fed/issuer-keys`), and `issuer/`, the external issuer's                           |
 | `test-keys/`         | private keys for the [authorization tests](docs/tests.md#authorization)                                         |
 | `issuer-jwks/`       | the public keys the origins add with `Server.IssuerJwks` and each export's `IssuerJwks`                         |

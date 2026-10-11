@@ -339,6 +339,11 @@ class IssuerLifetimes:
     grace: int  # Issuer.RefreshTokenGracePeriod: how long a used refresh token still works
 
 
+# The origins that XRootD serves (ORIGIN_VARIANT); the rest are Pelican's
+# native origins.
+XROOTD_ORIGINS = ("posix", "https", "s3")
+
+
 @dataclass(frozen=True)
 class TierTarget:
     """Where a V2 cache tiers objects (`-p cache-tiered`)."""
@@ -447,6 +452,12 @@ class Federation:
     def origin_variant(self) -> str:
         """ORIGIN_VARIANT: a directory under framework/config.d/origin/."""
         return self._line("origin-variant")
+
+    @property
+    def native_origins(self) -> bool:
+        """Whether Pelican serves the origins itself (origin_serve/ in
+        Pelican), rather than XRootD (see XROOTD_ORIGINS)."""
+        return self.origin_variant not in XROOTD_ORIGINS
 
     def storage_namespace(self, namespace: str) -> str:
         """The namespace whose storage namespace reads at the origins, all

@@ -12,6 +12,8 @@
 #   /fed/conf.instance            config.d/instance/<service>
 #   /fed/local.base               local/config.d/base, copied by fed.sh
 #   /fed/local.instance           local/config.d/instance/<service>, ditto
+#   /fed/control.instance         var/control/config/<service>, which the
+#                                 tests write (testlib/control.py)
 
 ConfigLocations:
   - /usr/share/pelican/config.d
@@ -23,3 +25,4 @@ ConfigLocations:
   - /fed/conf.instance
   - /fed/local.base
   - /fed/local.instance
+  - /fed/control.instance
