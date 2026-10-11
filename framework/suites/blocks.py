@@ -28,6 +28,7 @@ and a direct read must be refused.
 
 import functools
 import os
+import random
 import re
 import shutil
 import subprocess  # nosec B404
@@ -68,6 +69,7 @@ SCENARIOS = {
     "overwrite-cached": "each cache: an object it holds, overwritten, comes back as one version",
     "overwrite-range-first": "the same, for an object it first read through a range",
     "write-through": "each V2 cache relays a PUT and a DELETE, and serves the result at once",
+    "cache-evicted": "each bounded V2 cache: objects past its bound evict, and every one still comes back",
 }
 
 # The scenarios that read through each cache, and so have nothing to test
@@ -83,6 +85,7 @@ CACHE_SCENARIOS = (
     "overwrite-cached",
     "overwrite-range-first",
     "write-through",
+    "cache-evicted",
 )
 
 # How each set is uploaded: with a declared length, or in chunks.
@@ -472,10 +475,12 @@ def put_plugin(test: Test) -> tuple[str, str]:
 def put_checksum(test: Test) -> tuple[str, str]:
     """`pelican object put --require-checksum` of every size: the client
     verifies each upload against a digest the origin reports (a HEAD with
-    Want-Digest after the PUT; client/handle_http.go in Pelican), so it
-    must succeed, and leave the objects intact, where the origins' storage
-    reports digests, and fail where it reports none, rather than report an
-    unverified upload as a success."""
+    Want-Digest after the PUT; client/handle_http.go in Pelican), asking
+    for the first algorithm the origins' storage reports (it asks for
+    crc32c otherwise), so it must succeed, and leave the objects intact,
+    for the objects whose digests the storage reports
+    (stores.has_digests(); the client declares no length), and fail for
+    the rest, rather than report an unverified upload as a success."""
     if not test.writes:
         return SKIP, NO_WRITES
     collection = f"{test.base}/put-checksum"
@@ -483,28 +488,44 @@ def put_checksum(test: Test) -> tuple[str, str]:
     if errors:
         return FAIL, "; ".join(errors)
     directory, files = local_sizes(test, "put-checksum")
-    sources = [os.path.join(directory, str(size)) for size in files]
-    code, out, err = test.session.pelican_cmd(
-        "object",
-        "put",
-        "--require-checksum",
-        "--token",
-        test.token_file,
-        *sources,
-        f"{test.fed.url}/protected-a/{collection}/",
-    )
-    if test.digests:
-        if code != 0:
-            return FAIL, f"exit {code}: {last_line(err or out)}"
-        why = uploaded(test, files, collection)
-        if why:
-            return FAIL, why
-        return PASS, f"{len(sources)} objects, verified by {', '.join(test.digests)}"
-    if code == 0:
-        return FAIL, f"succeeded, though {test.no_digests}, so nothing was verified"
-    if not re.search(r"checksum", out + err, re.I):
-        return FAIL, f"failed, but not for want of a checksum: {last_line(err or out)}"
-    return PASS, f"refused, since {test.no_digests}"
+    verifiable = {
+        size: data
+        for size, data in files.items()
+        if stores.has_digests(test.fed, size, declared=False)
+    }
+    notes: list[str] = []
+    for sizes, verified in ((verifiable, True), (set(files) - set(verifiable), False)):
+        if not sizes:
+            continue
+        algorithm = ["--checksum-algorithm", test.digests[0]] if test.digests else []
+        code, out, err = test.session.pelican_cmd(
+            "object",
+            "put",
+            "--require-checksum",
+            *algorithm,
+            "--token",
+            test.token_file,
+            *(os.path.join(directory, str(size)) for size in sorted(sizes)),
+            f"{test.fed.url}/protected-a/{collection}/",
+        )
+        if verified:
+            if code != 0:
+                return FAIL, f"exit {code}: {last_line(err or out)}"
+            why = uploaded(test, verifiable, collection)
+            if why:
+                return FAIL, why
+            notes.append(f"{len(sizes)} objects verified by {test.digests[0]}")
+            continue
+        why = (
+            test.no_digests
+            or f"the storage holds no digest of an object over {stores.S3_PART} bytes"
+        )
+        if code == 0:
+            return FAIL, f"succeeded, though {why}, so nothing was verified"
+        if not re.search(r"checksum", out + err, re.I):
+            return FAIL, f"failed, but not for want of a checksum: {last_line(err or out)}"
+        notes.append(f"{len(sizes)} refused, since {why}")
+    return PASS, "; ".join(notes)
 
 
 def origin_read(test: Test) -> tuple[str, str]:
@@ -1025,7 +1046,7 @@ def cache_corrupted(test: Test) -> tuple[str, str]:
             try:
                 spoil(test, cache, token, rel, op, **params)
             except NoChaos as e:
-                return SKIP, f"{e}; Cache.EnableChaosAPI is in Pelican v26.0.0-rc.3 and later"
+                return SKIP, f"{e}; Cache.EnableChaosAPI is in Pelican v26.0.0-rc.0 and later"
             except ValueError as e:
                 problems.append(str(e))
                 continue
@@ -1073,13 +1094,14 @@ def reported(
     return problems, right
 
 
-def server_digests(test: Test, url: str, must: bool) -> tuple[list[str], set[str]]:
+def server_digests(test: Test, url: str, origin: bool) -> tuple[list[str], set[str]]:
     """What is wrong with the digests that url's server reports of the
     objects of DIGEST_SIZES in the `whole` and `ranged` sets: asked by
     HEAD for each of digests.ALGORITHMS in turn, and by GET for crc32c,
-    the client's default. If must, it must report each of those the
-    origins' storage can (test.digests). Also the algorithms it reports
-    rightly."""
+    the client's default. An origin must report each of those its
+    storage holds for the object (test.digests, where
+    stores.has_digests() says so for its size and how it was uploaded).
+    Also the algorithms it reports rightly."""
     problems: list[str] = []
     given: set[str] = set()
     for set_name in ("whole", "ranged"):
@@ -1089,6 +1111,7 @@ def server_digests(test: Test, url: str, must: bool) -> tuple[list[str], set[str
             problems += [f"{set_name}/{size}: {w}" for w in wrong]
             given |= right
             lacking = sorted(set(test.digests) - right)
+            must = origin and stores.has_digests(test.fed, size, SETS[set_name])
             if must and lacking:
                 problems.append(f"{set_name}/{size}: reports no {', '.join(lacking)}")
             answer = web.request(
@@ -1118,12 +1141,12 @@ def digests_scenario(test: Test) -> tuple[str, str]:
     clients."""
     if why := test.not_uploaded(True, False):
         return FAIL, why
-    servers = [(o.svc, o.url, bool(test.digests)) for o in test.origins] if test.direct else []
+    servers = [(o.svc, o.url, True) for o in test.origins] if test.direct else []
     servers += [(c.svc, c.url, False) for c in test.caches]
     problems: list[str] = []
     silent: list[str] = []
-    for svc, url, must in servers:
-        wrong, given = server_digests(test, url, must)
+    for svc, url, origin in servers:
+        wrong, given = server_digests(test, url, origin)
         problems += [f"{svc}: {w}" for w in wrong]
         if not given:
             silent.append(svc)
@@ -1651,6 +1674,124 @@ def write_through(test: Test) -> tuple[str, str]:
     return PASS, f"{len(caches)} V2 cache(s) relayed a PUT and a DELETE"
 
 
+# cache-evicted's objects: each this big, and enough of them to exceed a
+# cache's high water mark by half.
+EVICT_OBJECT = 8 << 20
+# How long a cache may take to evict down to its high water mark, in
+# seconds: its eviction runs every 10 seconds.
+EVICT_WAIT = 60
+# How far above the mark its object files may add up to: the cache counts
+# the objects' bytes, and each block's file holds 16 more (blocks.TAG).
+EVICT_SLACK = 1 << 20
+
+
+def evict_object(run_id: str, n: int) -> bytes:
+    """The bytes of cache-evicted's object n: made anew from the run and n
+    each time, since holding every object would take as much memory as
+    the caches' bound. Test data, so not a cryptographic generator."""
+    return random.Random(f"{run_id}/{n}").randbytes(EVICT_OBJECT)  # nosec B311
+
+
+def store_bytes(cache: common.Cache) -> Optional[int]:
+    """How many bytes a V2 cache's object files take, in the store it
+    mounts at /data (local_cache/storage.go in Pelican); None if it has
+    no such store."""
+    root = f"{cache_dir(cache)}/persistent-cache/objects"
+    if not os.path.isdir(root):
+        return None
+    return sum(
+        os.path.getsize(os.path.join(directory, name))
+        for directory, _, files in os.walk(root)
+        for name in files
+    )
+
+
+def evicted(test: Test, cache: common.Cache, base: str, count: int) -> Optional[str]:
+    """cache_evicted at one cache, whose store is bounded (test.fed.eviction):
+    what went wrong, or None."""
+    high, low = test.fed.eviction[cache.svc]
+    for n in range(count):
+        why = test.get(cache.url, f"{base}/{n}", evict_object(test.run, n), None)
+        if why:
+            return f"object {n}, cold: {why}"
+    if store_bytes(cache) is None:
+        return f"framework/var/{cache_dir(cache)} has no persistent-cache/objects to measure"
+
+    def under() -> bool:
+        return (store_bytes(cache) or 0) <= high + EVICT_SLACK
+
+    if not common.wait_for(under, EVICT_WAIT, interval=2):
+        return (
+            f"holds {store_bytes(cache)} bytes {EVICT_WAIT}s after reading {count * EVICT_OBJECT},"
+            f" above its high water mark of {high}"
+        )
+    held = store_bytes(cache) or 0
+    if held < low - EVICT_OBJECT:
+        return f"holds {held} bytes, below its low water mark of {low}, so it evicted too much"
+    for n in range(count):
+        data = evict_object(test.run, n)
+        for request in (None, ((blocks.XROOTD_BLOCK, blocks.XROOTD_BLOCK + blocks.BLOCK - 1),)):
+            why = test.get(cache.url, f"{base}/{n}", data, request)
+            if why:
+                what = blocks.header(request) if request else "whole"
+                return f"object {n}, {what}, after the evictions: {why}"
+    target = os.path.join(test.tmp, f"evicted-{cache.svc}")
+    code, out, err = test.session.pelican_cmd(
+        "object",
+        "get",
+        "--cache",
+        cache.url,
+        "--token",
+        test.token_file,
+        f"{test.fed.url}/protected-a/{base}/0",
+        target,
+    )
+    if code != 0:
+        return f"`pelican object get` of object 0 after the evictions: {last_line(err or out)}"
+    if common.sha256(target) != common.digest(evict_object(test.run, 0)):
+        return "`pelican object get` of object 0 after the evictions: not the object"
+    return None
+
+
+def cache_evicted(test: Test) -> tuple[str, str]:
+    """Each V2 cache whose store is bounded (`-p cache-small`): a cold whole
+    read of each of enough objects of EVICT_OBJECT bytes to exceed its
+    high water mark by half; then, within EVICT_WAIT seconds, its store
+    must have come back under the mark, and not below its low one by more
+    than an object; and every object must still come back whole and in a
+    range, as must the first by `pelican object get --cache`. The objects
+    are one set, read cold by each cache. An XRootD cache's usage is its
+    filesystem's, which the framework cannot bound, and is passed over."""
+    caches = [c for c in test.caches if c.kind == "v2" and c.svc in test.fed.eviction]
+    if not caches:
+        return SKIP, "no V2 cache has a bounded store ('-p cache-small')"
+    high = max(test.fed.eviction[c.svc][0] for c in caches)
+    count = -(-3 * high // (2 * EVICT_OBJECT))
+    base = f"{test.base}/evicted"
+    errors = stores.make_dirs(test.origins, "protected-a", base, test.token)
+    for n in range(count):
+        if errors:
+            break
+        errors += stores.seed_everywhere(
+            test.origins,
+            "protected-a",
+            f"{base}/{n}",
+            evict_object(test.run, n),
+            test.token,
+            test.caps,
+        )
+    if errors:
+        return FAIL, errors[0]
+    problems: list[str] = []
+    for cache in caches:
+        why = evicted(test, cache, base, count)
+        if why:
+            problems.append(f"{cache.svc}: {why}")
+    if problems:
+        return FAIL, first(problems)
+    return PASS, f"{len(caches)} cache(s): {count} objects of {EVICT_OBJECT} bytes, read twice"
+
+
 RUN = {
     "put-declared": put_declared,
     "put-chunked": put_chunked,
@@ -1674,6 +1815,7 @@ RUN = {
     "overwrite-cached": overwrite_cached,
     "overwrite-range-first": overwrite_range_first,
     "write-through": write_through,
+    "cache-evicted": cache_evicted,
 }
 
 

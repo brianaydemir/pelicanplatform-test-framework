@@ -60,7 +60,7 @@ shape_presets() {
            "origin-transfer-api" ;;
     tiny-posixv2-posc)
       echo "topo-tiny origin-posc origin-metadata server-unprivileged" \
-           "origin-transfer-api" ;;
+           "origin-transfer-api cache-memory cache-small" ;;
     ssh-xrootd)
       echo "origin-ssh cache-xrootd topo-multi-cache topo-multi-director" \
            "topo-site-local-cache origin-transfer-api" ;;
@@ -69,14 +69,14 @@ shape_presets() {
            "server-unprivileged topo-site-local-cache topo-multi-director" ;;
     tiny-xrootd)
       echo "topo-tiny origin-xrootd origin-no-direct origin-max-age" \
-           "server-unprivileged origin-transfer-api origin-atomic-uploads" ;;
+           "server-unprivileged origin-transfer-api origin-atomic-uploads cache-small" ;;
     pstore-xrootd)
       echo "origin-pstore cache-xrootd topo-multi-origin topo-multi-cache" \
            "auth-external-issuer topo-multi-director topo-site-local-cache" \
            "origin-transfer-api" ;;
     s3v2-v2)
       echo "origin-s3v2 topo-multi-origin topo-multi-cache auth-external-issuer" \
-           "origin-max-age cache-tiered origin-transfer-api" ;;
+           "origin-max-age cache-tiered origin-transfer-api cache-memory cache-small" ;;
     tiny-posixv2-tx)
       echo "topo-tiny origin-posc origin-metadata-tx origin-max-age" \
            "origin-multiuser" ;;
@@ -88,20 +88,20 @@ shape_presets() {
       echo "origin-httpsv2 cache-xrootd auth-external-issuer origin-no-direct" \
            "topo-multi-director topo-site-local-cache" ;;
     tiny-pstore)
-      echo "topo-tiny origin-pstore origin-max-age server-unprivileged" ;;
+      echo "topo-tiny origin-pstore origin-max-age server-unprivileged cache-memory cache-small" ;;
     posixv2-no-direct)
       echo "topo-multi-origin topo-multi-cache origin-no-direct origin-posc" \
            "origin-metadata-tx origin-multiuser topo-site-local-cache cache-tiered" \
-           "topo-multi-director" ;;
+           "topo-multi-director cache-memory cache-small" ;;
     posixv2-xrootd-posc)
       echo "cache-xrootd topo-multi-origin topo-multi-cache topo-multi-owner" \
            "auth-external-issuer origin-posc origin-multiuser" ;;
     ssh-v2)
       echo "origin-ssh topo-multi-origin auth-external-issuer origin-no-direct" \
-           "origin-max-age cache-tiered" ;;
+           "origin-max-age cache-tiered cache-memory cache-small" ;;
     httpsv2-v2)
       echo "origin-httpsv2 topo-multi-origin topo-multi-cache topo-multi-owner" \
-           "origin-max-age server-unprivileged with-lab cache-tiered" ;;
+           "origin-max-age server-unprivileged with-lab cache-tiered cache-memory cache-small" ;;
     xrootd-xrootd)
       echo "origin-xrootd cache-xrootd topo-multi-origin topo-multi-cache" \
            "topo-multi-owner auth-external-issuer topo-multi-director" \
@@ -114,17 +114,17 @@ shape_presets() {
            "origin-no-direct origin-max-age origin-transfer-api" \
            "server-unprivileged" ;;
     s3-v2)
-      echo "origin-s3 topo-multi-origin topo-multi-owner cache-tiered" ;;
+      echo "origin-s3 topo-multi-origin topo-multi-owner cache-tiered cache-memory cache-small" ;;
     https-v2-broker)
       echo "origin-https origin-broker topo-site-local-cache origin-max-age" \
-           "cache-tiered" ;;
+           "cache-tiered cache-memory cache-small" ;;
     https-xrootd)
       echo "origin-https cache-xrootd topo-multi-origin topo-multi-cache" \
            "topo-multi-owner topo-multi-director auth-external-issuer" \
            "origin-no-direct origin-transfer-api server-unprivileged" ;;
     xrootd-v2-broker)
       echo "origin-xrootd origin-broker cache-tiered origin-atomic-uploads" \
-           "origin-multiuser" ;;
+           "origin-multiuser cache-memory" ;;
     pstore-v2)
       echo "origin-pstore cache-tiered" ;;
     posixv2-v2-metadata)

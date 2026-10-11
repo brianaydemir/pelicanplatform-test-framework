@@ -13,9 +13,14 @@ scope each at every origin, which may create an object, replace one,
 and delete one, as the WLCG token profile says; the `traversal`
 check sends paths that climb out of their namespace with `..`, which
 must reach neither another namespace's test object nor a file beyond
-an export's storage; and the `hints` check asks each V2 cache for the
+an export's storage; the `hints` check asks each V2 cache for the
 test object with no token, whose refusal must say which namespace it
-is and name its issuer, as the director's redirect does.
+is and name its issuer, as the director's redirect does; the
+`audience` check presents the origins a token like `server`'s but for
+another audience, which they must refuse; and the `query-token` check
+presents the `server` and `unknown` tokens in the authz query
+parameter instead of the header, as XRootD caches forward them, which
+every server must take as it takes the header.
 
 Each namespace has storage of its own, and a test object of its own
 bytes (but on a pstore origin, /public reads /protected-a's), so a
@@ -37,6 +42,7 @@ import os
 import shutil
 from collections.abc import Set as AbstractSet
 from typing import Optional
+from urllib.parse import urlencode
 
 from testlib import common, credentials, director, stores, web
 from testlib.common import die, warn
@@ -86,6 +92,18 @@ STEPS = ("..", "%2e%2e", "%2E%2E", ".%2e", "%252e%252e")
 HINTS = "hints"
 SCENARIOS[HINTS] = (
     "a V2 cache's refusal of a request with no token names the namespace and its issuer"
+)
+
+AUDIENCE = "audience"
+SCENARIOS[AUDIENCE] = (
+    "a token for another audience: every origin refuses it, and stores nothing"
+)
+# An audience that no server here answers to.
+OTHER_AUDIENCE = "https://elsewhere.invalid"
+
+QUERY_TOKEN = "query-token"  # nosec B105
+SCENARIOS[QUERY_TOKEN] = (
+    "a token in the authz query parameter, bare or after `Bearer `, counts as the header's"
 )
 
 
@@ -685,6 +703,88 @@ def check_hints(test: Test, fed: common.Federation) -> None:
             record(test.report, heading, case, answer, "; ".join(problems))
 
 
+# --------------------------------------------------------------------------
+# The audience check: a resource server must check a token's audience
+# against its own (the WLCG token profile). Pelican's origins accept their
+# own URL and the profiles' wildcards, which every other token here names
+# (origin_serve/authz.go, and the audience in the scitokens configuration
+# of an XRootD origin). Only the origins are asked: a cache serves tokens
+# minted for any origin, so what it should make of an audience is not
+# settled.
+
+
+def check_audience(test: Test, fed: common.Federation) -> None:
+    """GET the test object, and PUT a new one, at every origin in
+    /protected-a with a token like `server`'s but for OTHER_AUDIENCE: each
+    must be refused, and the PUT store nothing. Where the origins take no
+    direct clients, they refuse everything direct anyway, so the rows are
+    skipped."""
+    caps = fed.exports["protected-a"]
+    token = credentials.mint_server(
+        fed, test.session.path("tokens/audience"), "protected-a", audience=OTHER_AUDIENCE
+    )
+    for origin in fed.origins:
+        target = label(origin.svc, "origin")
+        for op in ("get", "put"):
+            heading = f"{target:<10} {'protected-a':<11} {op:<8} {'wrong-aud':<11}"
+            case = f"{target} protected-a {op} wrong-aud"
+            if "DirectReads" not in caps:
+                record_skip(test.report, heading, case, "the origin takes no direct clients")
+                continue
+            if op == "get":
+                answer = web.request(
+                    "GET", stores.url(origin, "protected-a", test.object), token=token
+                )
+                why = ""
+                if answer.status not in (401, 403):
+                    why = "expected 401 or 403: the token is for another audience"
+                elif answer.body == test.object_bytes["protected-a"]:
+                    why = "refused, but the body is the object"
+            else:
+                rel = f"data/auth/{test.run}-{target}-wrong-aud"
+                answer, why = scope_write(test, origin, rel, "PUT", token, False, False)
+            test.row(target, "protected-a", op, "wrong-aud", answer, why)
+
+
+# --------------------------------------------------------------------------
+# The query-token check: XRootD caches forward a client's token to an
+# origin as ?authz=Bearer%20<token> (and older ones bare), and a director's
+# redirect carries it the same way, so every server must take a token in
+# the authz query parameter, with or without the `Bearer ` prefix, as it
+# takes one in the Authorization header (Pelican's origin_serve/handlers.go
+# and local_cache/persistent_cache_api.go; XRootD's XrdSciTokensAccess).
+
+QUERY_FORMS = {"bare": "{}", "bearer": "Bearer {}"}
+
+
+def check_query_token(test: Test, fed: common.Federation) -> None:
+    """GET the test object in /protected-a at every origin and cache with
+    the `server` token, then the `unknown` one, in the authz query
+    parameter, in each of QUERY_FORMS: the first must get the object,
+    and the second be refused. An origin that takes no direct clients
+    must refuse both."""
+    caps = fed.exports["protected-a"]
+    creds = {name: credentials.BY_NAME[name] for name in ("server", "unknown")}
+    for target, url, direct in targets(fed):
+        for form, pattern in QUERY_FORMS.items():
+            for name, cred in creds.items():
+                token = test.token(cred, "protected-a", "get") or ""
+                query = urlencode({"authz": pattern.format(token)})
+                answer = web.request("GET", f"{url}/protected-a/{test.object}?{query}")
+                save(f"{OUT}/responses/{target}-protected-a-get-authz-{form}-{name}", answer)
+                allowed = credentials.expected(cred, caps, "get", direct) == ALLOW
+                why = ""
+                if allowed and answer.status != 200:
+                    why = "expected 200: the token in the query is the server's"
+                elif allowed and answer.body != test.object_bytes["protected-a"]:
+                    why = "the body is not the object"
+                elif not allowed and answer.status not in (401, 403):
+                    why = "expected 401 or 403"
+                elif not allowed and answer.body == test.object_bytes["protected-a"]:
+                    why = "refused, but the body is the object"
+                test.row(target, "protected-a", "get", f"authz-{form}-{name}", answer, why)
+
+
 def skip(_fed: common.Federation) -> Optional[str]:
     """Never: every shape exports a namespace that a token protects."""
     return None
@@ -790,7 +890,8 @@ def narrow_token(test: Test, fed: common.Federation) -> str:
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Check the keys, then present each credential, then `hints`,
-    `narrow`, each storage scope alone, and traversal."""
+    `query-token`, `audience`, `narrow`, each storage scope alone, and
+    traversal."""
     report = results.report
     fed = session.fed
     creds = runnable(fed, selected, report)
@@ -804,7 +905,12 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         narrow, scopes = False, []
     traversal = TRAVERSAL in selected
     hints = HINTS in selected
-    checks = bool(creds or narrow or scopes or traversal or hints)
+    audience = AUDIENCE in selected and "protected-a" in fed.exports
+    query_token = QUERY_TOKEN in selected and "protected-a" in fed.exports
+    for name in (AUDIENCE, QUERY_TOKEN):
+        if name in selected and "protected-a" not in fed.exports:
+            report.add(name, SKIP, "this shape does not export /protected-a", seconds=None)
+    checks = bool(creds or narrow or scopes or traversal or hints or audience or query_token)
     if checks:
         for origin in fed.origins:
             for namespace in fed.exports:
@@ -836,6 +942,10 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         check_credential(test, fed, cred)
     if hints:
         check_hints(test, fed)
+    if query_token:
+        check_query_token(test, fed)
+    if audience:
+        check_audience(test, fed)
     if narrow:
         check_narrow(test, fed, narrow_token(test, fed))
     for name in scopes:

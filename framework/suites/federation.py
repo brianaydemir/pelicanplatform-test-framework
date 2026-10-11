@@ -30,6 +30,13 @@ The suite uploads an object straight to every origin, under
              takes a token, and its issuer (the X-Pelican-Namespace,
              X-Pelican-Authorization, and X-Pelican-Token-Generation
              headers), by which the client picks a token
+  presence   with several origins, an object that one of them alone
+             holds: each director must send an origin's read of it,
+             plain and for a client's direct read, to that origin alone,
+             by asking the origins which has it
+             (Director.CheckOriginPresence, on by default); and it must
+             come back through each cache, and by `pelican object get`,
+             through a cache and direct
 
 Its data, under each origin's data/federation/, on a pstore origin too,
 is removed after the suite.
@@ -56,6 +63,7 @@ SCENARIOS = {
     "discovery": "a Pelican server's discovery document names the federation's servers",
     "broker": "the directors name origin-0's connection broker, and no cache's",
     "hints": "each director's redirect names the namespace, whether it takes a token, and its issuer",
+    "presence": "an object that one origin alone holds: the directors send reads of it there",
 }
 
 # The scenarios that run whatever test.py is asked for.
@@ -413,6 +421,100 @@ def hints(probe: Probe) -> tuple[str, str]:
     )
 
 
+def presence_problems(
+    probe: Probe, holder: common.Origin, namespace: str, rel: str, data: bytes
+) -> list[str]:
+    """What is wrong with how the federation serves rel in namespace,
+    which holder alone holds: each director's answer for an origin's
+    read, plain and for a client's direct read (?directread), must name
+    holder and no other origin, or, where the namespace takes no direct
+    clients, find none (405) for the direct read; and each cache must
+    serve the object. The director asks the origins which has it only
+    when it has the namespace's token, so each ask presents it."""
+    fed = probe.fed
+    token = None if namespace == "public" else probe.session.token(namespace)
+    direct = "DirectReads" in fed.exports[namespace]
+    others = [director.host(o.url) for o in fed.origins if o.svc != holder.svc]
+    path = f"/{namespace}/{rel}"
+    problems: list[str] = []
+    for url in fed.directors:
+        for query in ("", "directread"):
+            answer = director.ask(url, "origin", path, token=token, query=query)
+            what = f"{director.host(url)} (origin{'?' + query if query else ''}, /{namespace})"
+            named = [h for h in others if answer.names(h)]
+            if query and not direct:
+                if answer.status != 405 or named or answer.names(director.host(holder.url)):
+                    problems.append(f"{what} should find no origin (405): {answer.describe()}")
+            elif not answer.names(director.host(holder.url)):
+                problems.append(f"{what} did not name {holder.svc}: {answer.describe()}")
+            elif named:
+                problems.append(f"{what} named {named}, which lack the object")
+    for cache in fed.caches:
+        reply = web.request("GET", f"{cache.url}{path}", token=token)
+        if reply.status != 200:
+            problems.append(f"{cache.svc}: GET {path}: {reply.describe()}")
+        elif reply.body != data:
+            problems.append(f"{cache.svc}: GET {path}: the body is not the object")
+    return problems
+
+
+def presence(probe: Probe) -> tuple[str, str]:
+    """An object put in one origin's store alone, in each exported
+    namespace: the directors route it there (see presence_problems()),
+    within DIRECTORS_WAIT seconds, and `pelican object get` fetches it
+    through a cache, and direct where the namespace allows it."""
+    fed = probe.fed
+    origins = stores.unique(fed.origins)
+    if len(origins) < 2:
+        return SKIP, "one origin, or origins sharing a store: no object is one origin's alone"
+    holder = origins[-1]
+    namespaces = [ns for ns in probe.session.namespaces if holder.storage_namespace(ns) == ns]
+    objects = {ns: os.urandom(8192) for ns in namespaces}
+    for ns, data in objects.items():
+        rel = f"{probe.base}/only-{holder.svc}"
+        token, caps = probe.session.token(ns), fed.exports[ns]
+        errors = stores.make_dirs([holder], ns, probe.base, token)
+        error = errors[0] if errors else stores.seed(holder, ns, rel, data, token, caps)
+        if error:
+            return FAIL, f"could not put the object at {holder.svc} alone: {error}"
+    rel = f"{probe.base}/only-{holder.svc}"
+    found: list[str] = []
+
+    def routed() -> bool:
+        found[:] = [
+            p
+            for ns, data in objects.items()
+            for p in presence_problems(probe, holder, ns, rel, data)
+        ]
+        return not found
+
+    if not common.wait_for(routed, DIRECTORS_WAIT, interval=5):
+        return FAIL, f"after {DIRECTORS_WAIT}s, {common.first(found)}"
+    for ns, data in objects.items():
+        token_args = [] if ns == "public" else ["--token", probe.session.token_file(ns)]
+        routes: list[tuple[str, list[str]]] = [("through a cache", [])]
+        if "DirectReads" in fed.exports[ns]:
+            routes.append(("direct", ["--direct"]))
+        for how, flags in routes:
+            target = probe.session.path(f"federation-presence-{ns}")
+            if os.path.exists(target):
+                os.remove(target)
+            code, out, err = probe.session.pelican_cmd(
+                "object", "get", *token_args, *flags, f"{fed.url}/{ns}/{rel}", target
+            )
+            if code != 0:
+                return (
+                    FAIL,
+                    f"`pelican object get` {how} of /{ns}/{rel}: {last_line(err or out)}",
+                )
+            if common.sha256(target) != common.digest(data):
+                return FAIL, f"`pelican object get` {how} of /{ns}/{rel}: not the object"
+    return PASS, (
+        f"{holder.svc}'s alone, in {', '.join('/' + ns for ns in namespaces)}:"
+        f" {len(fed.directors)} director(s), {len(fed.caches)} cache(s), both clients' routes"
+    )
+
+
 RUN = {
     "ready": ready,
     "caches": caches,
@@ -420,6 +522,7 @@ RUN = {
     "discovery": discovery,
     "broker": broker,
     "hints": hints,
+    "presence": presence,
 }
 
 

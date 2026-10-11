@@ -229,9 +229,11 @@ objects:
 
 **Cache features**
 
-| Preset         | Effect                                                                                           |
-| -------------- | ------------------------------------------------------------------------------------------------ |
-| `cache-tiered` | V2 caches tier objects of 16 MiB or more to the `s3` service; Pelican's main only; see `tiering` |
+| Preset         | Effect                                                                                                 |
+| -------------- | ------------------------------------------------------------------------------------------------------ |
+| `cache-tiered` | V2 caches tier objects of 16 MiB or more to the `s3` service; Pelican's main only; see `tiering`       |
+| `cache-memory` | V2 caches keep decrypted blocks in memory (`Cache.MemoryCacheSize`)                                    |
+| `cache-small`  | V2 caches evict once they hold 128 MiB, down to 96 MiB (`Cache.HighWaterMark`); see `blocks`'s `cache-evicted` |
 
 **Origin features**
 

@@ -53,6 +53,8 @@ FACTORS: dict[str, tuple[str, ...]] = {
     "broker": ("off", "on"),
     "transfer_api": ("off", "on"),
     "tiering": ("off", "on"),
+    "memory_cache": ("off", "on"),
+    "store": ("unbounded", "bounded"),
     "privileges": ("root", "dropped"),
     "keys": ("kept", "rotated"),
 }
@@ -88,6 +90,8 @@ PRESETS: dict[str, tuple[str, str]] = {
     "origin-broker": ("broker", "on"),
     "origin-transfer-api": ("transfer_api", "on"),
     "cache-tiered": ("tiering", "on"),
+    "cache-memory": ("memory_cache", "on"),
+    "cache-small": ("store", "bounded"),
     "server-unprivileged": ("privileges", "dropped"),
 }
 
@@ -214,6 +218,11 @@ REFUSED: list[Rule] = [
     (
         "cache tiering is the V2 cache's, in the full topology",
         lambda s: s["tiering"] == "on" and (s["cache"] != "v2" or s["topology"] != "full"),
+    ),
+    (
+        "the memory cache and a bounded store are the V2 cache's, which a standalone origin lacks",
+        lambda s: (s["memory_cache"] == "on" or s["store"] == "bounded")
+        and (s["cache"] != "v2" or s["topology"] == "standalone"),
     ),
 ]
 

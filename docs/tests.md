@@ -14,12 +14,12 @@ The suites run in this order:
 
 | Suite        | Tests                                                                 |
 | ------------ | --------------------------------------------------------------------- |
-| `federation` | that the federation serves at all, and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients; what its redirects tell a client of a namespace; a Pelican server's discovery document; and, under `-p origin-broker`, the connection broker |
+| `federation` | that the federation serves at all, and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients; what its redirects tell a client of a namespace; a Pelican server's discovery document; under `-p origin-broker`, the connection broker; and with several origins, that an object one of them alone holds is routed there, and comes back |
 | `commands`   | `ls`, `stat`, `delete`, `copy`, `sync`, and `du`, and what `get` and `put` do with what already exists ([client commands](#client-commands)) |
 | `transfer-api` | origin-0's transfer API, under `-p origin-transfer-api`: authentication, credentials, server-run copies, jobs, and confinement to the exports |
 | `listings`   | PROPFIND at each origin, director, and cache ([listings](#listings))  |
 | `names`      | objects whose [names](#names) a URL or a listing must encode, beside decoys |
-| `blocks`     | objects and ranges at pstore's and the caches' [block boundaries](#block-boundaries), through each server and both clients; digests, and an upload the client must verify by one; and objects overwritten, given up on, corrupted in a cache's store, or written through a cache |
+| `blocks`     | objects and ranges at pstore's and the caches' [block boundaries](#block-boundaries), through each server and both clients; digests, and an upload the client must verify by one; objects overwritten, given up on, corrupted in a cache's store, or written through a cache; and, under `-p cache-small`, objects evicted from a cache |
 | `tiering`    | V2 caches' tiering of large objects to object storage, under `-p cache-tiered`, including a copy replaced in the bucket |
 | `posc`       | interrupted and racing uploads, under `-p origin-posc`, `-p origin-atomic-uploads`, or `-p origin-pstore` ([POSC and metadata](#posc-and-metadata)) |
 | `metadata`   | metadata events, under `-p origin-metadata` ([POSC and metadata](#posc-and-metadata)) |
@@ -27,7 +27,7 @@ The suites run in this order:
 | `owners`     | origin-2, another owner, under `-p topo-multi-owner` ([another owner](#another-owner)) |
 | `sitelocal`  | cache-2, a site-local cache, under `-p topo-site-local-cache` |
 | `collections` | collections: prefixes with access control of their own, granted through the origins' embedded issuer ([collections](#collections)) |
-| `auth`       | each [credential](#authorization) at each server, in each namespace; each issuer's keys; tokens of one storage scope; paths that climb out of a namespace; and what a cache's refusal tells a client |
+| `auth`       | each [credential](#authorization) at each server, in each namespace; each issuer's keys; tokens of one storage scope, for another audience, and in the query string; paths that climb out of a namespace; and what a cache's refusal tells a client |
 | `transfers`  | gets and puts through `pelican object` and `stash_plugin`, through a cache and direct from an origin, byte-checked ([test data](#test-data)) |
 
 A suite that doesn't apply to the shape is skipped, and says why.
@@ -40,7 +40,9 @@ presented, so `auth` and `transfers` run last, by which time it usually
 is.
 
 These are functional checks, not stress tests: each moves a few
-objects, the largest about 16 MiB. Each suite writes a row per test case
+objects, the largest about 16 MiB, but for `blocks`'s `cache-evicted`,
+which under `-p cache-small` moves about 200 MiB through each cache, to
+make it evict. Each suite writes a row per test case
 to
 `framework/var/results/` ([Results](ci.md#results)). A scenario that
 raises an unexpected error fails, with the error as its note, and the
@@ -257,6 +259,25 @@ namespace.
   redirects, for a cache and for an origin, in every namespace: the
   issuer must be the namespace's, and `/public`, which has none, must
   name none.
+- **A token in the query string**, the `auth` suite's `query-token`
+  check: an XRootD cache forwards a client's token to an origin as
+  `?authz=Bearer%20<token>` (older ones bare), and a director's redirect
+  carries it the same way, so every origin and cache must take a token
+  in the `authz` query parameter, with or without the `Bearer ` prefix,
+  as it takes one in the header: a GET of the test object in
+  `/protected-a` with the `server` token so must pass, and one with the
+  `unknown` token be refused. An origin that takes no direct clients
+  refuses both.
+- **A token for another audience**, the `auth` suite's `audience` check:
+  a resource server must check a token's `aud` against its own, as the
+  WLCG token profile says. Every other token here names the profile's
+  "any" audience; this one, like `server`'s but for
+  `https://elsewhere.invalid`, must be refused by every origin, for a
+  GET of the test object and a PUT of a new one, which must store
+  nothing. Only the origins are asked (Pelican's `origin_serve/authz.go`,
+  and the audience in an XRootD origin's scitokens configuration): a
+  cache serves tokens minted for any origin, so what it should make of
+  an audience is not settled.
 
 Both suites wait until the `expired` token is 70 seconds past its expiry
 before presenting it, since native servers allow 60 seconds of clock
@@ -351,10 +372,15 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   direct clients, the origins are read only through the caches, and
   the clients' direct reads must be refused.
 - `put-checksum` runs `pelican object put --require-checksum` of every
-  size. The client verifies each upload against a digest the origin
-  reports, so the command must succeed, and leave the objects intact,
-  where the origins' storage reports digests, and fail where it reports
-  none (below), rather than call an unverified upload a success.
+  size, naming the first algorithm the origins' storage reports
+  (`--checksum-algorithm`; the client asks for `crc32c` otherwise). The
+  client verifies each upload against a digest the origin reports, so
+  the command must succeed, and leave the objects intact, for the
+  objects whose digests the storage reports, and fail for the rest,
+  rather than call an unverified upload a success: every object where
+  the storage reports none (below), and on an `s3v2` origin those over
+  5 MiB, which the client, declaring no length, sends in parts, of
+  which the S3 service keeps no MD5 (`framework/testlib/stores.py`).
 - How a V2 cache first sees an object decides how it fills (one stream,
   or block by block), so each cache reads one set of objects whole first,
   another in ranges first, and one each through `pelican object get`
@@ -378,9 +404,10 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   the client fails a download whose bytes don't match. Each origin must
   report `crc32c` and `md5`, but for what its storage cannot: XRootD's
   S3 and HTTPS plugins and the `httpsv2` and `ssh` backends compute none,
-  and `s3v2` reports only the MD5 that the S3 service holds
-  (`framework/testlib/stores.py`); a cache need report none, and the
-  row's note names those that report none. `digest-overwrite` then
+  and `s3v2` reports only the MD5 that the S3 service holds, which it
+  does not for an object over 5 MiB uploaded with no `Content-Length`,
+  in parts (`framework/testlib/stores.py`); a cache need report none,
+  and the row's note names those that report none. `digest-overwrite` then
   overwrites an object at each origin, by a PUT at once and by a write in
   the store a second later: a native origin keeps digests by the file's
   modification time,
@@ -431,6 +458,17 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   what it wrote, the cache must serve that at once. Likewise a DELETE,
   after which the cache must answer 404. Where `/protected-a` takes no
   writes, the PUT must be refused. An XRootD cache takes no writes.
+- `cache-evicted`, under `-p cache-small`, which bounds each V2 cache's
+  store (`Cache.HighWaterMark` 128 MiB, `Cache.LowWaterMark` 96 MiB;
+  Pelican's defaults are a share of the whole disk, which no suite could
+  fill): each cache reads, cold and whole, enough 8 MiB objects to exceed
+  its high water mark by half. Within 60 seconds its store
+  (`data/cache/<N>/persistent-cache/objects/`) must have come back under
+  the mark, and not fallen below the low one by more than an object; then
+  every object must still come back whole and in a range, as must the
+  first by `pelican object get --cache`. An XRootD cache measures its
+  filesystem, which a bind mount cannot bound, so `fed.sh` refuses the
+  preset with `cache-xrootd`.
 
 
 ## Listings

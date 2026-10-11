@@ -499,6 +499,19 @@ class Federation:
         return found
 
     @cached_property
+    def eviction(self) -> dict[str, tuple[int, int]]:
+        """Each cache whose store is bounded (`-p cache-small`), by service:
+        the high water mark, in bytes, at which it evicts, and the low one,
+        down to which it does. `<service> <high> <low>` per line, none if
+        the stores are unbounded."""
+        found: dict[str, tuple[int, int]] = {}
+        for line in self._read("eviction").splitlines():
+            if line.strip():
+                svc, high, low = line.split()
+                found[svc] = (int(high), int(low))
+        return found
+
+    @cached_property
     def topology(self) -> str:
         """TOPOLOGY: `full`, `tiny`, or `standalone`."""
         return self._line("topology")

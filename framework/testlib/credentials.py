@@ -325,16 +325,20 @@ def mint(
     scopes: tuple[str, ...],
     subject: str = SUBJECT,
     raw_scopes: tuple[str, ...] = (),
+    audience: str = "",
 ) -> None:
     """Write a token for namespace prefix (e.g. /protected-a/) to file
     out, with scopes (`pelican token create` flags, e.g. read) and
-    raw_scopes (scopes as such, e.g. pelican.transfer)."""
+    raw_scopes (scopes as such, e.g. pelican.transfer). Its audience is
+    the WLCG profile's "any" unless audience names one."""
     command = [common.binary("pelican"), "token", "create", fed.url + prefix]
     command += [f"--{scope}" for scope in scopes]
     for scope in raw_scopes:
         command += ["--raw-scope", scope]
     command += ["--subject", subject, "--issuer", issuer, "--scope-path", scope_path]
     command += ["--lifetime", str(lifetime), "--private-key", key]
+    if audience:
+        command += ["--audience", audience]
     with open(out, "w", encoding="utf-8") as f:
         done = subprocess.run(  # nosec B603
             command,
@@ -356,13 +360,25 @@ def mint_server(
     scopes: tuple[str, ...] = RWM,
     scope_path: str = "/",
     subject: str = SUBJECT,
+    audience: str = "",
 ) -> str:
     """Write a `server` token for namespace to file out, and return it:
     what the tests use for their own setup and checks. A token for less
-    of the namespace (scope_path), or for another subject, is the
-    origins' too."""
+    of the namespace (scope_path), for another subject, or for another
+    audience is the origins' too."""
     issuer = fed.issuer_of(namespace)
-    mint(fed, out, f"/{namespace}/", fed.origin_key, issuer, scope_path, LONG, scopes, subject)
+    mint(
+        fed,
+        out,
+        f"/{namespace}/",
+        fed.origin_key,
+        issuer,
+        scope_path,
+        LONG,
+        scopes,
+        subject,
+        audience=audience,
+    )
     with open(out, encoding="utf-8") as f:
         return f.read().strip()
 

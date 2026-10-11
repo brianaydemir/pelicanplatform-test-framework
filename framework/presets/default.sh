@@ -75,6 +75,16 @@ ORIGIN_TRANSFER_API=false
 # Cache.TieringTargets for every V2 cache (see presets/cache-tiered.sh).
 CACHE_TIERING=false
 
+# Cache.MemoryCacheSize for every V2 cache, as Pelican reads it, e.g. 64MB
+# (see presets/cache-memory.sh). Empty: no memory cache.
+CACHE_MEMORY_SIZE=
+
+# Cache.HighWaterMark and Cache.LowWaterMark for every V2 cache, in MiB
+# (see presets/cache-small.sh). Empty: Pelican's defaults, a share of the
+# whole disk.
+CACHE_HIGH_WATER_MIB=
+CACHE_LOW_WATER_MIB=
+
 # Server.DropPrivileges for every Pelican server (see
 # presets/server-unprivileged.sh).
 SERVER_DROP_PRIVILEGES=false

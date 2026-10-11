@@ -46,6 +46,13 @@ LIMITS: dict[str, dict[str, str]] = {
 # asks, where its storage can.
 ORIGIN_DIGESTS = ("crc32c", "md5")
 
+# An upload to an s3v2 origin with no Content-Length, as the clients
+# upload, goes to the S3 service in parts of the AWS SDK's default size
+# once it outgrows one (gocloud.dev's s3blob, which the backend uses), and
+# the service keeps no MD5 of an object held in parts. A declared length
+# sends the object whole.
+S3_PART = 5 << 20
+
 
 def url(origin: common.Origin, namespace: str, rel: str) -> str:
     """The URL of rel in namespace at origin, each character of rel that
@@ -67,6 +74,15 @@ def digests(fed: common.Federation) -> tuple[tuple[str, ...], Optional[str]]:
         return (), limits["checksum"]
     lacking = [limits[a] for a in ORIGIN_DIGESTS if a in limits]
     return tuple(a for a in ORIGIN_DIGESTS if a not in limits), lacking[0] if lacking else None
+
+
+def has_digests(fed: common.Federation, size: int, declared: bool) -> bool:
+    """Whether the origins report digests(fed) of an object of size bytes
+    that was uploaded with a Content-Length (declared) or in chunks: not an
+    s3v2 origin's object that arrived in parts (see S3_PART)."""
+    if not digests(fed)[0]:
+        return False
+    return fed.origin_variant != "s3v2" or declared or size <= S3_PART
 
 
 def held(

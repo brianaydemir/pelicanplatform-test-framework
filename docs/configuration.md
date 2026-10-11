@@ -48,9 +48,11 @@ EOF
   `Origin.CacheControl` empty, a file of yours can still set it, and
   the tests won't know: the `blocks` suite checks what the origins send
   only when `ORIGIN_CACHE_CONTROL` is set.
-- `fed.sh` generates `Logging.Level` (from `PELICAN_LOG_LEVEL`) and every
-  server's `EnableOIDC` (from `-p auth-oidc`) in `/fed/generated/conf`,
-  so a file of yours can override them, e.g. for one service.
+- `fed.sh` generates `Logging.Level` (from `PELICAN_LOG_LEVEL`), every
+  server's `EnableOIDC` (from `-p auth-oidc`), and the caches'
+  `Cache.MemoryCacheSize` and water marks (from `-p cache-memory` and
+  `-p cache-small`) in `/fed/generated/conf`, so a file of yours can
+  override them, e.g. for one service.
 - Under `-p topo-multi-origin`, an origin override usually belongs in
   both `origin-0/` and `origin-1/`.
 - `framework/config.d/base/40-origin.yaml` grants the embedded issuer's
