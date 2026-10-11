@@ -46,14 +46,31 @@ Server:
   # who is not a server administrator (see docs/tests.md).
   CollectionAdminUsers: [test-curator]
 
-# What the embedded issuer grants a user who logs in through the web UI:
-# only the built-in admin, so that the collections suite's users get
-# nothing but what collection ACLs grant them. /public has no issuer.
 Issuer:
+  # A web login's cookie carries the groups the user is in, from the
+  # server's own database, as the issuer suite's users need; the
+  # collections suite's act through bearer tokens, which carry none.
+  GroupSource: internal
+
+  # What the embedded issuer grants a user beyond their collections. A
+  # template's prefix is within the namespace of each issuer that applies
+  # it, as its tokens' scopes are, so the built-in admin may do anything
+  # in each namespace with an issuer (/public has none), and the issuer
+  # suite's users and groups get the prefixes under /data/issuer that
+  # docs/tests.md#issuer lists. The collections suite's users get
+  # nothing, so that their tokens carry only what collections grant.
+  # Under -p origin-export-templates, /protected-b's export has
+  # templates of its own, which replace these there (fed.sh).
   AuthorizationTemplates:
-    - prefix: /protected-a
+    - prefix: /
       actions: [read, create, modify]
       users: [admin]
-    - prefix: /protected-b
+    - prefix: /data/issuer/home/$USER
       actions: [read, create, modify]
-      users: [admin]
+      users: [test-analyst, test-member]
+    - prefix: /data/issuer/projects/$GROUP
+      actions: [read, create]
+      groups: [test-project-a, test-project-b]
+    - prefix: /data/issuer/archive
+      actions: [read]
+      group_regexes: ["^test-project-"]

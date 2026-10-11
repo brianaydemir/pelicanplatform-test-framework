@@ -257,7 +257,8 @@ export IMAGE_DEV IMAGE_ORIGIN IMAGE_CACHE IMAGE_DIRECTOR IMAGE_REGISTRY
 for fed_knob in ORIGIN_ENABLE_ISSUER ENABLE_OIDC EXTERNAL_ISSUER \
     ORIGIN_DISABLE_DIRECT_CLIENTS ORIGIN_POSC ORIGIN_ATOMIC_UPLOADS ORIGIN_METADATA \
     ORIGIN_MULTIUSER ORIGIN_BROKER ORIGIN_TRANSFER_API CACHE_TIERING \
-    SERVER_DROP_PRIVILEGES; do
+    SERVER_DROP_PRIVILEGES REGISTRY_REQUIRE_APPROVAL ISSUER_SHORT_TOKENS \
+    ORIGIN_EXPORT_TEMPLATES; do
   eval "fed_value=\${${fed_knob}}"
   # shellcheck disable=SC2154  # assigned by the eval above
   case "${fed_value}" in
@@ -265,6 +266,13 @@ for fed_knob in ORIGIN_ENABLE_ISSUER ENABLE_OIDC EXTERNAL_ISSUER \
     *) die "${fed_knob} must be 'true' or 'false', not '${fed_value}'" ;;
   esac
 done
+
+# Pelican has only these two.
+case "${DIRECTOR_DEFAULT_RESPONSE}" in
+  cache|origin) ;;
+  *) die "DIRECTOR_DEFAULT_RESPONSE must be 'cache' or 'origin', not" \
+         "'${DIRECTOR_DEFAULT_RESPONSE}'" ;;
+esac
 
 # Docker would create a missing directory, leaving the role layer empty.
 [ -d "framework/config.d/origin/${ORIGIN_VARIANT}" ] \
@@ -408,6 +416,12 @@ if [ "${fed_topology}" = standalone ]; then
   [ "${ORIGIN_DISABLE_DIRECT_CLIENTS}" = false ] \
       || die "a standalone origin has only direct clients, so Pelican refuses" \
              "ORIGIN_DISABLE_DIRECT_CLIENTS ('origin-no-direct')"
+  [ "${DIRECTOR_DEFAULT_RESPONSE}" = cache ] \
+      || die "the 'standalone' topology has no director, so DIRECTOR_DEFAULT_RESPONSE" \
+             "('director-default-origin') must be 'cache'"
+  [ "${REGISTRY_REQUIRE_APPROVAL}" = false ] \
+      || die "the 'standalone' topology has no registry, so it cannot require" \
+             "approval ('registry-approval')"
 fi
 
 # Without its backend, an origin comes up healthy with no storage.
@@ -430,9 +444,10 @@ case "${ORIGIN_VARIANT}" in
                "ORIGIN_NAMESPACES is '${fed_namespaces}'" ;;
 esac
 
-# The connection broker relays only to XRootD (origin/broker_client.go),
-# only for an origin with one export, and here only for origin-0 in a
-# container of its own.
+# The connection broker relays to the origin's XRootD
+# (origin/broker_client.go), only for an origin with one export
+# (origin/advertise.go), and here only for origin-0 in a container of
+# its own.
 if [ "${ORIGIN_BROKER}" = true ]; then
   fed_xrootd_origin \
       || die "ORIGIN_BROKER ('origin-broker') needs an XRootD origin ('origin-xrootd'," \
@@ -449,6 +464,23 @@ if [ "${ORIGIN_BROKER}" = true ]; then
           "profile '${fed_profile}' ($(fed_profile_presets "${fed_profile}"))"
     fi
   done
+fi
+
+# Both configure the origins' embedded issuer, which is off under the
+# external issuer; and the per-export templates go on /protected-b.
+if [ "${ORIGIN_ENABLE_ISSUER}" = false ]; then
+  [ "${ISSUER_SHORT_TOKENS}" = false ] \
+      || die "ISSUER_SHORT_TOKENS ('origin-short-tokens') shortens the origins' issuer's" \
+             "tokens, but the issuer is off (ORIGIN_ENABLE_ISSUER, 'auth-external-issuer')"
+  [ "${ORIGIN_EXPORT_TEMPLATES}" = false ] \
+      || die "ORIGIN_EXPORT_TEMPLATES ('origin-export-templates') gives the origins'" \
+             "issuer templates, but the issuer is off (ORIGIN_ENABLE_ISSUER," \
+             "'auth-external-issuer')"
+fi
+if [ "${ORIGIN_EXPORT_TEMPLATES}" = true ]; then
+  fed_exports_namespace protected-b \
+      || die "ORIGIN_EXPORT_TEMPLATES ('origin-export-templates') gives /protected-b" \
+             "templates of its own, but ORIGIN_NAMESPACES ('${fed_namespaces}') lacks it"
 fi
 
 # Only the posixv2 origin has POSC and publishes metadata.
@@ -775,7 +807,11 @@ fed_s3_bucket() {
 # gives it an issuer, which it does only for an export that takes writes
 # or needs a token to read, $4 is the issuer URL to pin and $5 the JWKS
 # file whose keys that issuer adds; either may be empty. $6, if given, is
-# its S3 bucket.
+# its S3 bucket. Under `origin-export-templates`, /protected-b gets
+# authorization templates of its own, which its issuer applies in place
+# of the global Issuer.AuthorizationTemplates
+# (framework/config.d/base/40-origin.yaml); the issuer suite expects
+# these.
 fed_export_entry() {
   fed_namespace_caps "$2"
   printf -- '    - FederationPrefix: %s\n' "$1"
@@ -788,6 +824,12 @@ fed_export_entry() {
   esac
   printf '      StoragePrefix: %s\n' "$3"
   [ -z "${6:-}" ] || printf '      S3Bucket: %s\n' "$6"
+  if [ "${ORIGIN_EXPORT_TEMPLATES}" = true ] && [ "$1" = /protected-b ]; then
+    printf '      AuthorizationTemplates:\n'
+    printf '        - prefix: /data/issuer/export\n'
+    printf '          actions: [read]\n'
+    printf '          users: [test-stranger]\n'
+  fi
 }
 
 fed_exports_header() {
@@ -958,6 +1000,10 @@ fed_generate() {
   printf '%s\n' "${fed_topology}" | fed_write framework/var/generated/topology
   printf '%s\n' "${ORIGIN_VARIANT}" | fed_write framework/var/generated/origin-variant
   printf '%s\n' "${ORIGIN_BROKER}" | fed_write framework/var/generated/origin-broker
+  printf '%s\n' "${DIRECTOR_DEFAULT_RESPONSE}" \
+      | fed_write framework/var/generated/director-default-response
+  printf '%s\n' "${REGISTRY_REQUIRE_APPROVAL}" \
+      | fed_write framework/var/generated/registry-approval
 
   # origin-0's transfer API (`origin-transfer-api`): its URL, the issuer of
   # its tokens, and the directory of the key that signs them, which is
@@ -1091,9 +1137,7 @@ fed_generate() {
   # origin-2, another owner (`topo-multi-owner`), with an issuer and a key
   # of its own: /other is like /protected-a, and /public/other like
   # /public, but nested in it. It has nothing like /protected-b. Its layer
-  # beats the shared one above. So that it can register a prefix inside
-  # origin-0's with its own key, the registry does not require key
-  # chaining.
+  # beats the shared one above.
   if fed_has_profile multi-owner; then
     {
       fed_exports_header
@@ -1110,15 +1154,54 @@ fed_generate() {
             "${bucket}"
       done
     } | fed_instance_write origin-2 60-origin-exports.yaml
+  else
+    fed_instance_rm origin-2 60-origin-exports.yaml
+  fi
+
+  # The registry: so that origin-2 can register a prefix inside origin-0's
+  # with its own key, it does not require key chaining; and under
+  # `registry-approval`, nothing serves until an administrator approves its
+  # registration, which the federation suite's `ready` scenario does.
+  {
+    printf -- '---\n'
+    printf '# Generated by %s. Do not edit.\n\n' "${progname}"
+    printf 'Registry:\n'
+    if fed_has_profile multi-owner; then
+      printf '  RequireKeyChaining: false\n'
+    fi
+    printf '  RequireOriginApproval: %s\n' "${REGISTRY_REQUIRE_APPROVAL}"
+    printf '  RequireCacheApproval: %s\n' "${REGISTRY_REQUIRE_APPROVAL}"
+  } | fed_write framework/var/generated/conf/60-registry.yaml
+
+  # The directors: where a GET of a bare path goes
+  # (`director-default-origin`).
+  {
+    printf -- '---\n'
+    printf '# Generated by %s. Do not edit.\n\n' "${progname}"
+    printf 'Director:\n  DefaultResponse: %s\n' "${DIRECTOR_DEFAULT_RESPONSE}"
+  } | fed_write framework/var/generated/conf/60-director.yaml
+
+  # How long the origins' embedded issuer's tokens last
+  # (`origin-short-tokens`): Pelican's defaults otherwise. issuer-lifetimes
+  # tells the tests, in seconds: access tokens, refresh tokens, and how
+  # long a used refresh token still works. export-templates says whether
+  # /protected-b has templates of its own (see fed_export_entry).
+  if [ "${ISSUER_SHORT_TOKENS}" = true ]; then
     {
       printf -- '---\n'
       printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-      printf 'Registry:\n  RequireKeyChaining: false\n'
-    } | fed_write framework/var/generated/conf/60-registry.yaml
+      printf 'Issuer:\n'
+      printf '  AccessTokenLifetime: 60s\n'
+      printf '  RefreshTokenLifetime: 240s\n'
+      printf '  RefreshTokenGracePeriod: 20s\n'
+    } | fed_write framework/var/generated/conf/60-issuer.yaml
+    printf '60 240 20\n'
   else
-    fed_instance_rm origin-2 60-origin-exports.yaml
-    rm -f framework/var/generated/conf/60-registry.yaml
-  fi
+    rm -f framework/var/generated/conf/60-issuer.yaml
+    printf '3600 604800 300\n'
+  fi | fed_write framework/var/generated/issuer-lifetimes
+  printf '%s\n' "${ORIGIN_EXPORT_TEMPLATES}" \
+      | fed_write framework/var/generated/export-templates
 
   # Each origin's backend (`origin-https`, `origin-httpsv2`, `origin-s3`,
   # `origin-s3v2`): its store, framework/var/data/origin/<N>, is
@@ -1390,7 +1473,8 @@ fed_prepare_dirs
 # Released binaries in framework/var/bin/, for use outside the service
 # containers:
 #
-#   linux/    the client the tests use in the dev container
+#   linux/    the client the tests use in the dev container, and
+#             pelican-server for the server-only commands they run
 #   <host>/   pelican-server for `keys`, plus a client for the host
 #
 # On a Linux host these are the same directory.
@@ -1416,8 +1500,9 @@ fed_fetch_archive() {
 }
 
 # True if framework/var/bin/ holds PELICAN_TAG's binaries. Only the
-# host's pelican-server is version-checked, so a custom linux/pelican
-# survives `init`.
+# host's pelican-server is version-checked, so a custom linux/pelican, or
+# on a host other than Linux a custom linux/pelican-server, survives
+# `init`.
 fed_have_binaries() {
   [ -x framework/var/bin/linux/pelican ] || return 1
   [ -e framework/var/bin/linux/stash_plugin ] || return 1
@@ -1439,6 +1524,7 @@ fed_fetch_binaries() {
 
   fed_fetch_archive pelican-server "${version}" "${fed_os}"
   if [ "${fed_os}" != Linux ]; then
+    fed_fetch_archive pelican-server "${version}" Linux
     fed_fetch_archive pelican "${version}" "${fed_os}"
     ln -sf pelican "${fed_host_bin}/stash_plugin"
   fi
@@ -1962,6 +2048,10 @@ fed_init() {
 
   if fed_have_binaries; then
     printf 'Keeping the %s binaries in framework/var/bin/.\n' "${PELICAN_TAG#v}"
+    # framework/var/bin/ may predate the fetching of this one.
+    if [ ! -x framework/var/bin/linux/pelican-server ]; then
+      fed_fetch_archive pelican-server "${PELICAN_TAG#v}" Linux
+    fi
   else
     fed_fetch_binaries
   fi

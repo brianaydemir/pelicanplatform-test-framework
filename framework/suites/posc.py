@@ -26,10 +26,11 @@ import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+from html.parser import HTMLParser
 from typing import Optional
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
-from testlib import blocks, common, stores, web
+from testlib import blocks, common, stores, web, webdav
 from testlib.common import die, shown, wait_for
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -42,7 +43,7 @@ SCENARIOS = {
     "overwrite": "the old object is served during an overwrite, and intact once it is cut",
     "concurrent": "two whole uploads of one object at once leave one of them, whole",
     "client": "killing `pelican object put` midway leaves nothing",
-    "hidden": "an HTML listing of the export does not show .pelican-posc",
+    "hidden": "neither a PROPFIND nor an HTML listing of the export shows .pelican-posc",
 }
 
 # The scenarios that each kind of staging cannot have, and why. A pstore
@@ -623,34 +624,73 @@ def client(test: Test) -> tuple[str, str]:
             test.remove(name)
 
 
+class Links(HTMLParser):
+    """The names an HTML listing links to: the last segment of each
+    href's path, decoded."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.names: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        href = dict(attrs).get("href")
+        if tag == "a" and href:
+            self.names.add(unquote(urlsplit(href).path).rstrip("/").rsplit("/", 1)[-1])
+
+
+def linked(body: bytes) -> set[str]:
+    """The names the HTML listing body links to."""
+    links = Links()
+    links.feed(body.decode(errors="replace"))
+    links.close()
+    return links.names
+
+
 def hidden(test: Test) -> tuple[str, str]:
     """Lists the export while an upload is held open, so that
-    .pelican-posc is there to hide. Pelican's HTML listing has a row per
-    entry, `<a href="...">name</a>`, and the export holds data/."""
+    .pelican-posc is there to hide: by PROPFIND (Depth 1), as `pelican
+    object ls` does, and as a browser does, by a GET for HTML, whose
+    listing links to each entry. The export holds data/, which both must
+    show. Pelican hides the staging directory from PROPFIND, but its HTML
+    listing reads the directory itself and shows it, so the row fails
+    there."""
     name = f"{test.run}-hidden"
     posc_dir = f"{test.origin.store_of('protected-a')}/.pelican-posc"
     url = f"{test.origin.url}/protected-a/"
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
     answer: Optional[web.Response] = None
+    listed: Optional[web.Response] = None
     try:
         staged = upload.started() and wait_for(lambda: test.new_staging() is not None, 10)
         there = os.path.isdir(posc_dir)
         if staged and there:
+            listed = webdav.propfind(url, "1", test.token)
             answer = web.request("GET", url, token=test.token, headers={"Accept": "text/html"})
     finally:
         upload.finish()
-    if answer is None:
+    if answer is None or listed is None:
         if not staged:
             return FAIL, upload.error or f"no staging file appeared ({http(upload.status)})"
         return FAIL, f"{shown(posc_dir)} does not exist, although an upload is staged"
+    if listed.status != 207:
+        return FAIL, f"PROPFIND {url}: {listed.describe()}, not 207"
+    try:
+        entries = webdav.relative(webdav.parse(listed.body), "/protected-a")
+    except ValueError as e:
+        return FAIL, f"PROPFIND {url}: {e}"
+    if "data" not in entries:
+        return FAIL, f"PROPFIND {url} does not list data/, so it is not the export's listing"
+    if ".pelican-posc" in entries:
+        return FAIL, f"PROPFIND {url} lists .pelican-posc"
     if answer.status != 200:
-        return FAIL, f"the listing got {answer.describe()}, not 200"
-    if b">data</a>" not in answer.body:
-        return FAIL, f"{url} does not list data/, so it is not the export's listing"
-    if b".pelican-posc" in answer.body:
-        return FAIL, f"{url} lists .pelican-posc"
-    return PASS, f"{shown(posc_dir)} exists"
+        return FAIL, f"the HTML listing got {answer.describe()}, not 200"
+    names = linked(answer.body)
+    if "data" not in names:
+        return FAIL, f"{url} does not link to data/, so it is not the export's listing"
+    if ".pelican-posc" in names:
+        return FAIL, f"the HTML listing of {url} shows .pelican-posc"
+    return PASS, f"{shown(posc_dir)} exists, and neither listing shows it"
 
 
 RUN = {

@@ -56,6 +56,10 @@ FACTORS: dict[str, tuple[str, ...]] = {
     "memory_cache": ("off", "on"),
     "store": ("unbounded", "bounded"),
     "privileges": ("root", "dropped"),
+    "default_response": ("cache", "origin"),
+    "approval": ("off", "on"),
+    "tokens": ("long", "short"),
+    "templates": ("global", "export"),
     "keys": ("kept", "rotated"),
 }
 
@@ -93,6 +97,10 @@ PRESETS: dict[str, tuple[str, str]] = {
     "cache-memory": ("memory_cache", "on"),
     "cache-small": ("store", "bounded"),
     "server-unprivileged": ("privileges", "dropped"),
+    "director-default-origin": ("default_response", "origin"),
+    "registry-approval": ("approval", "on"),
+    "origin-short-tokens": ("tokens", "short"),
+    "origin-export-templates": ("templates", "export"),
 }
 
 # Presets that add a service no Pelican server uses, and so make no
@@ -182,6 +190,14 @@ REFUSED: list[Rule] = [
         lambda s: s["topology"] == "standalone" and s["metadata"] != "off",
     ),
     (
+        "a standalone origin has no director to send bare paths anywhere",
+        lambda s: s["topology"] == "standalone" and s["default_response"] != "cache",
+    ),
+    (
+        "a standalone origin has no registry to require approval",
+        lambda s: s["topology"] == "standalone" and s["approval"] == "on",
+    ),
+    (
         "POSC and metadata publishing are posixv2's",
         lambda s: (s["posc"] == "on" or s["metadata"] != "off") and s["origin"] != "posixv2",
     ),
@@ -223,6 +239,16 @@ REFUSED: list[Rule] = [
         "the memory cache and a bounded store are the V2 cache's, which a standalone origin lacks",
         lambda s: (s["memory_cache"] == "on" or s["store"] == "bounded")
         and (s["cache"] != "v2" or s["topology"] == "standalone"),
+    ),
+    (
+        "short tokens and export templates are the origins' issuer's, not the external's",
+        lambda s: s["issuer"] == "external"
+        and (s["tokens"] == "short" or s["templates"] == "export"),
+    ),
+    (
+        "per-export templates go on /protected-b, which the shape does not export",
+        lambda s: s["templates"] == "export"
+        and (s["origin"] in ("https", "httpsv2") or s["direct"] == "no" or s["broker"] == "on"),
     ),
 ]
 

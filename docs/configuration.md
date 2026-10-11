@@ -49,17 +49,27 @@ EOF
   the tests won't know: the `blocks` suite checks what the origins send
   only when `ORIGIN_CACHE_CONTROL` is set.
 - `fed.sh` generates `Logging.Level` (from `PELICAN_LOG_LEVEL`), every
-  server's `EnableOIDC` (from `-p auth-oidc`), and the caches'
+  server's `EnableOIDC` (from `-p auth-oidc`), the caches'
   `Cache.MemoryCacheSize` and water marks (from `-p cache-memory` and
-  `-p cache-small`) in `/fed/generated/conf`, so a file of yours can
-  override them, e.g. for one service.
+  `-p cache-small`), `Director.DefaultResponse` (from
+  `-p director-default-origin`), the registry's
+  `RequireOriginApproval`, `RequireCacheApproval` (from
+  `-p registry-approval`), and `RequireKeyChaining` (off under
+  `-p topo-multi-owner`), and the embedded issuer's token lifetimes
+  (from `-p origin-short-tokens`) in `/fed/generated/conf`, so a file
+  of yours can override them, e.g. for one service; but the tests
+  expect what the presets say. Under `-p origin-export-templates`, the
+  generated `Origin.Exports` gives `/protected-b` authorization
+  templates of its own.
 - Under `-p topo-multi-origin`, an origin override usually belongs in
   both `origin-0/` and `origin-1/`.
-- `framework/config.d/base/40-origin.yaml` grants the embedded issuer's
-  `Issuer.AuthorizationTemplates` only to the built-in `admin`, and
-  names `test-curator` in `Server.CollectionAdminUsers`; the
-  `collections` suite depends on both
-  ([collections](tests.md#collections)).
+- `framework/config.d/base/40-origin.yaml` sets the embedded issuer's
+  `Issuer.AuthorizationTemplates`, which grant the built-in `admin` and
+  the `issuer` suite's users and groups ([issuer](tests.md#issuer)),
+  takes a web login's groups from the server's own database
+  (`Issuer.GroupSource`), and names `test-curator` in
+  `Server.CollectionAdminUsers`; the `collections` and `issuer` suites
+  depend on these ([collections](tests.md#collections)).
 
 
 ## Knobs

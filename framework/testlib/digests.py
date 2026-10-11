@@ -1,8 +1,10 @@
 """Checksums as a server reports them in an RFC 3230 Digest header,
 read as the Pelican client reads them (parseDigestHeader in Pelican's
-client/handle_http.go): md5, sha (SHA-1), and sha-256 in base64; crc32,
-crc32c, and adler32 in hex. XRootD writes crc32c in base64, which the
-client accepts too (xrootd/xrootd#2456), and so does this.
+client/handle_http.go): md5 and sha (SHA-1) in base64; crc32 and crc32c
+in hex. XRootD writes crc32c in base64, which the client accepts too
+(xrootd/xrootd#2456), and so does this. The client knows no other
+algorithm; adler32 (hex) and sha-256 (base64), which a server may
+report, are read as RFC 3230 has them.
 """
 
 import base64

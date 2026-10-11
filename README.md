@@ -44,8 +44,8 @@ does. Presets change the shape.
 check that applies to the federation's shape. The checks are grouped in
 suites (`framework/suites/`): `federation`, `commands`, `transfer-api`,
 `listings`, `names`, `blocks`, `tiering`, `posc`, `metadata`, `users`,
-`owners`, `sitelocal`, `collections`, `auth`, and `transfers`. A suite
-that doesn't apply to the shape is skipped, and says why.
+`owners`, `sitelocal`, `collections`, `issuer`, `auth`, and `transfers`.
+A suite that doesn't apply to the shape is skipped, and says why.
 [What the tests check](docs/tests.md) describes each one.
 
 ```sh
@@ -149,6 +149,13 @@ cd /app && CGO_ENABLED=0 go build -tags forceposix,client -o /scratch/framework/
 `init` keeps your binary. Only a change to `PELICAN_TAG`, or `reset.sh`,
 replaces it.
 
+The client lacks server-only commands, such as `origin collection`,
+which the `collections` suite's `cli` scenario runs. For those, the
+tests use the dev container's own `pelican-server`, if it has one, and
+otherwise `framework/var/bin/linux/pelican-server`, which `init`
+fetches if it is missing. To test your own, put it there; `init` keeps
+it.
+
 ### Pelican configuration
 
 Each service merges layers of configuration files, and later ones win.
@@ -248,6 +255,8 @@ objects:
 | `origin-multiuser`      | the origin reads and writes as each token's user (`Origin.Multiuser`); `posixv2` and `origin-xrootd` only |
 | `origin-broker`         | origin-0 uses director-0 as its connection broker; XRootD origins only, `/protected-a` only               |
 | `origin-transfer-api`   | the origins run the transfer API (`Origin.EnableTransferAPI`); see `transfer-api`                         |
+| `origin-short-tokens`   | the origins' issuer mints access tokens that last a minute and refresh tokens four (`Issuer.*TokenLifetime`); see `issuer` |
+| `origin-export-templates` | `/protected-b` has authorization templates of its own, replacing the global ones there; see `issuer`'s `templates` |
 
 **Authorization**
 
@@ -255,6 +264,13 @@ objects:
 | ---------------------- | --------------------------------------------------------------------------------- |
 | `auth-oidc`            | web UI login through an external identity provider                                |
 | `auth-external-issuer` | the exports trust `https://discovery:8444/issuer` instead of the origins' issuers |
+
+**Director and registry**
+
+| Preset                    | Effect                                                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `director-default-origin` | the directors send a GET of a bare path to an origin, not a cache (`Director.DefaultResponse`); see `federation`'s `redirects` |
+| `registry-approval`       | nothing serves until an administrator approves its registration (`Registry.Require{Origin,Cache}Approval`), which the `federation` suite does |
 
 **Every server**
 

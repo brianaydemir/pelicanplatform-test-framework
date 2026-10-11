@@ -82,7 +82,8 @@ SCOPES = {"create-only": ("write", False), "modify-only": ("modify", True)}
 
 TRAVERSAL = "traversal"
 SCENARIOS[TRAVERSAL] = (
-    "`..` in a path, however spelled, reaches no other namespace, nor beyond an export's storage"
+    "`..` in a path, however spelled, and a symbolic link in a store, reach no other"
+    " namespace, nor beyond an export's storage"
 )
 
 # Spellings of a step up a path: each server must keep a request within
@@ -581,6 +582,16 @@ def climbing(start: str, levels: int, rest: str) -> list[str]:
 Climb = tuple[str, Optional[str], frozenset[bytes]]
 
 
+def signing_keys(fed: common.Federation) -> dict[str, bytes]:
+    """Each origin's signing key, by its file name."""
+    keys: dict[str, bytes] = {}
+    for origin in fed.origins:
+        path = common.signing_key(f"issuer-keys/{origin.svc}")
+        with open(path, "rb") as f:
+            keys[os.path.basename(path)] = f.read()
+    return keys
+
+
 def traversal_climbs(
     test: Test, fed: common.Federation, sentinel: str, sentinels: frozenset[bytes]
 ) -> dict[str, list[Climb]]:
@@ -594,15 +605,13 @@ def traversal_climbs(
                   exports' storage (holding one of sentinels)
       filesystem  the origin's signing key, beside its store, in
                   /fed/issuer-keys, where an origin keeps its store in
-                  its own filesystem (at /data)"""
+                  its own filesystem (at /data)
+
+    The symlink climbs are symlink_climbs()'s."""
     tokens = {
         ns: None if ns == "public" else test.setup_tokens[ns] for ns in test.session.namespaces
     }
-    keys: dict[str, bytes] = {}
-    for origin in fed.origins:
-        path = common.signing_key(f"issuer-keys/{origin.svc}")
-        with open(path, "rb") as f:
-            keys[os.path.basename(path)] = f.read()
+    keys = signing_keys(fed)
     climbs: dict[str, list[Climb]] = {"namespace": [], "store": [], "filesystem": []}
     for start, token in tokens.items():
         for target in (ns for ns in PROTECTED if ns in fed.exports):
@@ -622,12 +631,49 @@ def traversal_climbs(
     return climbs
 
 
+def symlink_climbs(
+    test: Test, fed: common.Federation, sentinel: str, sentinels: frozenset[bytes]
+) -> tuple[list[Climb], list[str]]:
+    """The climbs of the traversal check that are symbolic links, made in
+    each store on disk, in the first exported protected namespace's
+    storage, under data/auth/: one to sentinel, beside the exports'
+    storage, by a relative path, and one to each origin's signing key, by
+    the absolute path its container sees. A backend that follows links
+    would serve what they point to (Pelican's posixv2 refuses one that
+    leaves the export; XRootD's posix follows it). The climbs, each with
+    the namespace's `server` token, and the links made."""
+    start = next((ns for ns in PROTECTED if ns in test.session.namespaces), None)
+    disk = [o for o in stores.unique(fed.origins) if not o.pstore]
+    if start is None or not disk:
+        return [], []
+    # Each link: its name, its target, and what it must not reach.
+    links = [("store", f"../../../{sentinel}", sentinels)]
+    links += [
+        (f"key-{name}", f"/fed/issuer-keys/{name}", frozenset({key}))
+        for name, key in signing_keys(fed).items()
+    ]
+    made: list[str] = []
+    for origin in disk:
+        for name, target, _ in links:
+            path = f"{origin.store_of(start)}/data/auth/{test.run}-symlink-{name}"
+            os.symlink(target, path)
+            made.append(path)
+    token = test.setup_tokens[start]
+    climbs: list[Climb] = [
+        (f"/{start}/data/auth/{test.run}-symlink-{name}", token, forbidden)
+        for name, _, forbidden in links
+    ]
+    return climbs, made
+
+
 def check_traversal(test: Test, fed: common.Federation) -> None:
-    """Send each climb of traversal_climbs() to every origin and cache,
-    each as is (http.client normalizes nothing): it must not come back
-    with the bytes it climbs toward. A row per server and kind of climb."""
+    """Send each climb of traversal_climbs() and symlink_climbs() to every
+    origin and cache, each as is (http.client normalizes nothing): it must
+    not come back with the bytes it climbs toward. A row per server and
+    kind of climb."""
     sentinel = f"traversal-{test.run}"
     written: dict[str, bytes] = {}
+    links: list[str] = []
     try:
         for origin in stores.unique(fed.origins):
             data = os.urandom(4096)
@@ -635,7 +681,9 @@ def check_traversal(test: Test, fed: common.Federation) -> None:
             if error:
                 die(f"could not write the traversal check's file: {error}")
             written[f"{origin.store}/{sentinel}"] = data
-        climbs = traversal_climbs(test, fed, sentinel, frozenset(written.values()))
+        sentinels = frozenset(written.values())
+        climbs = traversal_climbs(test, fed, sentinel, sentinels)
+        climbs["symlink"], links = symlink_climbs(test, fed, sentinel, sentinels)
         for target, url, _ in targets(fed):
             for kind, kind_climbs in climbs.items():
                 leaks: list[str] = []
@@ -658,7 +706,7 @@ def check_traversal(test: Test, fed: common.Federation) -> None:
                     print(f"{heading}       PASS  {len(kind_climbs)} paths")
                     test.report.add(case, PASS, f"{len(kind_climbs)} paths")
     finally:
-        for path in written:
+        for path in list(written) + links:
             os.remove(path)
 
 

@@ -3,9 +3,11 @@ encrypted store), the V2 cache, and the XRootD cache: write objects of
 sizes on either side of each boundary, then read them back, whole and in
 ranges, from each origin, through each cache, and through both clients;
 the digests that each server reports of them, and an upload the client
-must verify by one; and objects that caches read in overlapping pieces or
-give up on, that are overwritten once cached, that are corrupted in a
-cache's store, or that are written through a cache.
+must verify by one; conditional reads (If-None-Match, If-Modified-Since)
+and conditional writes (If-Match, If-None-Match); and objects that caches
+read in overlapping pieces or give up on, that are overwritten once
+cached, that are corrupted in a cache's store, or that are written
+through a cache.
 
 The sizes, ranges, and the layout facts behind them are in
 framework/testlib/blocks.py. Objects go under
@@ -38,6 +40,7 @@ import traceback
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from email.utils import formatdate
 from typing import Optional
 from urllib.parse import urlencode, urlsplit
 
@@ -65,10 +68,12 @@ SCENARIOS = {
     "digest-overwrite": "each origin's digests and ETag of an object follow its overwrites",
     "past-end": "a range that starts at or past an object's end: 416, not bytes",
     "empty": "a 0-byte object: 200 with no body; a range of it gets no bytes",
+    "conditional": "a GET with If-None-Match or If-Modified-Since: 304 only when the condition holds",
+    "conditional-put": "a PUT with If-Match or If-None-Match: refused (412) unless the condition holds",
     "mixed-version": "each cache: an object overwritten mid-way comes back as one version",
     "overwrite-cached": "each cache: an object it holds, overwritten, comes back as one version",
     "overwrite-range-first": "the same, for an object it first read through a range",
-    "write-through": "each V2 cache relays a PUT and a DELETE, and serves the result at once",
+    "write-through": "each V2 cache relays a PUT and a DELETE, and serves the result at once; an XRootD cache refuses",
     "cache-evicted": "each bounded V2 cache: objects past its bound evict, and every one still comes back",
 }
 
@@ -1046,7 +1051,10 @@ def cache_corrupted(test: Test) -> tuple[str, str]:
             try:
                 spoil(test, cache, token, rel, op, **params)
             except NoChaos as e:
-                return SKIP, f"{e}; Cache.EnableChaosAPI is in Pelican v26.0.0-rc.0 and later"
+                return (
+                    SKIP,
+                    f"{e}; Cache.EnableChaosAPI is in Pelican v7.27.0 and v26.0.0-rc.0 on",
+                )
             except ValueError as e:
                 problems.append(str(e))
                 continue
@@ -1308,6 +1316,217 @@ def empty(test: Test) -> tuple[str, str]:
                 )
         notes.append(f"{svc} ok")
     return PASS, ", ".join(notes)
+
+
+# The sizes whose conditional requests `conditional` sends: within a block,
+# and past an XRootD block.
+CONDITIONAL_SIZES = (blocks.BLOCK + 1, blocks.XROOTD_BLOCK + 1)
+# A time before any object here was written.
+LONG_AGO = "Thu, 01 Jan 2015 00:00:00 GMT"
+
+
+def conditions(etag: str, modified: str) -> list[tuple[str, str, bool]]:
+    """The conditions to send for an object whose ETag and Last-Modified
+    these are (RFC 9110): each header, its value, and whether it holds for
+    the object as it is, in which case a server may answer 304. Without
+    an ETag or a Last-Modified, the conditions on it are left out."""
+    found: list[tuple[str, str, bool]] = []
+    if etag:
+        strong = etag[2:] if etag.startswith("W/") else etag
+        found += [
+            ("If-None-Match", etag, True),
+            ("If-None-Match", f'"nope", {etag}', True),
+            ("If-None-Match", f"W/{strong}", True),
+            ("If-None-Match", "*", True),
+            ("If-None-Match", '"nope"', False),
+        ]
+    if modified:
+        tomorrow = formatdate(time.time() + 86400, usegmt=True)
+        found += [
+            ("If-Modified-Since", modified, True),
+            ("If-Modified-Since", tomorrow, True),
+            ("If-Modified-Since", LONG_AGO, False),
+        ]
+    return found
+
+
+def conditional_problems(
+    test: Test, svc: str, url: str, rel: str, data: bytes
+) -> tuple[list[str], set[str], set[str]]:
+    """Send each of conditions() for rel in /protected-a, which holds data,
+    to url's server: what is wrong, the headers it honored (304), and
+    those of ETag and Last-Modified it never sent."""
+    target = f"{url}/protected-a/{rel}"
+    answer = web.request("GET", target, token=test.token)
+    if answer.status != 200 or answer.body != data:
+        return [f"{svc}: {rel}: {answer.describe()}, or not the object"], set(), set()
+    etag, modified = answer.header("ETag"), answer.header("Last-Modified")
+    unsent = {
+        name for name, value in (("ETag", etag), ("Last-Modified", modified)) if not value
+    }
+    problems: list[str] = []
+    honored: set[str] = set()
+    for header, value, holds in conditions(etag, modified):
+        reply = web.request("GET", target, token=test.token, headers={header: value})
+        what = f"{svc}: {rel} with {header}: {value}"
+        if reply.status == 304:
+            if holds:
+                honored.add(header)
+            else:
+                problems.append(f"{what}: 304, though the condition does not hold")
+        elif reply.status != 200:
+            problems.append(f"{what}: {reply.describe()}, not 200 or 304")
+        elif reply.body != data:
+            problems.append(f"{what}: the body is not the object")
+    return problems, honored, unsent
+
+
+def conditional(test: Test) -> tuple[str, str]:
+    """Each server, asked for objects of the `whole` set with a condition
+    (RFC 9110, which lets a server ignore a condition on a GET, but never
+    answer 304 to one that does not hold): with If-None-Match naming the
+    ETag it sent, among others, weakened (W/), or as *, and with
+    If-Modified-Since at the Last-Modified it sent or later, it may answer
+    304, or 200 with the whole object; with If-None-Match naming another
+    ETag, or If-Modified-Since long ago, it must answer 200 with the whole
+    object. The origins are asked only if they take direct clients. The
+    note says what each server honored, and what it never sent."""
+    if why := test.not_uploaded(True):
+        return FAIL, why
+    servers = [(o.svc, o.url) for o in test.origins] if test.direct else []
+    servers += [(c.svc, c.url) for c in test.caches]
+    problems: list[str] = []
+    notes: list[str] = []
+    for svc, url in servers:
+        honored: set[str] = set()
+        unsent: set[str] = set()
+        for size in CONDITIONAL_SIZES:
+            wrong, right, missing = conditional_problems(
+                test, svc, url, test.rel("whole", size), test.data[("whole", size)]
+            )
+            problems += wrong
+            honored |= right
+            unsent |= missing
+        note = f"{svc} honors {', '.join(sorted(honored)) or 'none'}"
+        if unsent:
+            note += f", sends no {', '.join(sorted(unsent))}"
+        notes.append(note)
+    if problems:
+        return FAIL, first(problems)
+    return PASS, "; ".join(notes)
+
+
+def cas_put(
+    test: Test, origin: common.Origin, rel: str, data: bytes, header: str, value: str
+) -> web.Response:
+    """PUT data to rel in /protected-a at origin, on the condition header:
+    value."""
+    return web.request(
+        "PUT",
+        stores.url(origin, "protected-a", rel),
+        token=test.token,
+        upload=data,
+        headers={header: value},
+    )
+
+
+def cas_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str], str]:
+    """conditional_put at one origin, of rel: what is wrong, and a note."""
+    v1, v2, v3 = (os.urandom(4096) for _ in range(3))
+    problems: list[str] = []
+
+    def check(
+        what: str, answer: web.Response, allowed: bool, where: str, want: Optional[bytes]
+    ) -> None:
+        """The write what must have succeeded if allowed, and otherwise
+        been refused (412); either way the store must then hold want at
+        where (None: nothing)."""
+        if allowed and not answer.ok:
+            problems.append(f"{what}: {answer.describe()}")
+        elif not allowed and answer.status != 412:
+            problems.append(f"{what}: {answer.describe()}, not 412")
+        have = stores.held(origin, "protected-a", where, test.token)
+        if want is None and have is not None:
+            problems.append(f"after {what}, the store holds an object")
+        elif want is not None and have != common.digest(want):
+            problems.append(f"after {what}, the store does not hold what it should")
+
+    check(
+        "a PUT with If-None-Match: * of a new object",
+        cas_put(test, origin, rel, v1, "If-None-Match", "*"),
+        True,
+        rel,
+        v1,
+    )
+    if problems:
+        return problems, ""
+    check(
+        "a PUT with If-None-Match: * over it",
+        cas_put(test, origin, rel, v2, "If-None-Match", "*"),
+        False,
+        rel,
+        v1,
+    )
+    current = v1
+    etag = web.request("HEAD", stores.url(origin, "protected-a", rel), token=test.token).header(
+        "ETag"
+    )
+    if etag:
+        replaced = cas_put(test, origin, rel, v2, "If-Match", etag)
+        check("a PUT with If-Match naming its ETag", replaced, True, rel, v2)
+        if replaced.ok:
+            current = v2
+            check(
+                "a PUT with If-Match naming the ETag it replaced",
+                cas_put(test, origin, rel, v3, "If-Match", etag),
+                False,
+                rel,
+                v2,
+            )
+    check(
+        "a PUT with If-Match naming another ETag",
+        cas_put(test, origin, rel, v3, "If-Match", '"nope"'),
+        False,
+        rel,
+        current,
+    )
+    missing = f"{rel}-missing"
+    check(
+        "a PUT with If-Match: * of an object that does not exist",
+        cas_put(test, origin, missing, v3, "If-Match", "*"),
+        False,
+        missing,
+        None,
+    )
+    return problems, "with its ETag" if etag else "without an ETag, which it does not send"
+
+
+def conditional_put(test: Test) -> tuple[str, str]:
+    """Each origin that takes writes from direct clients: a PUT with
+    If-None-Match: * creates an object, and a second one is refused (412)
+    and changes nothing; one with If-Match naming the object's ETag
+    replaces it, and one naming the ETag it replaced, or another, is
+    refused and changes nothing; and one with If-Match: * of an object
+    that does not exist is refused, and stores nothing (RFC 9110). A
+    server that ignores a condition on a PUT would let two writers
+    overwrite each other unawares."""
+    if not test.direct:
+        return SKIP, "/protected-a takes no direct clients"
+    if not test.writes:
+        return SKIP, NO_WRITES
+    base = f"{test.base}/conditional-put"
+    errors = stores.make_dirs(test.origins, "protected-a", base, test.token)
+    if errors:
+        return FAIL, errors[0]
+    problems: list[str] = []
+    notes: list[str] = []
+    for origin in test.origins:
+        wrong, note = cas_problems(test, origin, f"{base}/{origin.svc}")
+        problems += [f"{origin.svc}: {w}" for w in wrong]
+        notes.append(f"{origin.svc} {note}")
+    if problems:
+        return FAIL, first(problems)
+    return PASS, "; ".join(notes)
 
 
 # mixed-version's object: three XRootD blocks, so that each kind of cache
@@ -1636,6 +1855,22 @@ def delete_through(test: Test, cache: common.Cache, rel: str) -> Optional[str]:
     return None
 
 
+def refused_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> Optional[str]:
+    """write_through()'s PUT through an XRootD cache of rel in
+    /protected-a, which every origin holds as v1: it must be refused, and
+    change no origin; what went wrong, or None."""
+    answer = web.request(
+        "PUT", f"{cache.url}/protected-a/{rel}", token=test.token, upload=os.urandom(len(v1))
+    )
+    if answer.status is None or not 400 <= answer.status < 500:
+        return (
+            f"a PUT: {answer.describe()}, not a refusal, though an XRootD cache takes no writes"
+        )
+    if not held_everywhere(test, rel, v1):
+        return "a PUT, refused, changed an origin"
+    return None
+
+
 def write_through(test: Test) -> tuple[str, str]:
     """Each V2 cache takes writes of /protected-a, which it relays to an
     origin through the director, and then drops its copy (proxyWrite in
@@ -1645,33 +1880,39 @@ def write_through(test: Test) -> tuple[str, str]:
     holds what was written, the cache must serve it at once. Then
     likewise a DELETE, after which the cache must serve nothing, unless
     the origins' storage cannot delete. Where /protected-a takes no
-    writes, the PUT must be refused. An XRootD cache takes no writes,
-    and is passed over."""
-    caches = [c for c in test.caches if c.kind == "v2"]
-    if not caches:
-        return SKIP, "no V2 cache, which alone takes writes"
+    writes, the PUT must be refused. An XRootD cache takes no writes, so
+    its PUT must be refused, and change no origin."""
     base = f"{test.base}/write-through"
-    v1 = {c.svc: os.urandom(OVERWRITE_SIZE) for c in caches}
+    v1 = {c.svc: os.urandom(OVERWRITE_SIZE) for c in test.caches}
     errors = upload_each(test, base, v1)
     if errors:
         return FAIL, errors[0]
     cannot_delete = stores.cannot(test.fed, "delete")
     deletes = test.writes and not cannot_delete
     problems: list[str] = []
-    for cache in caches:
+    for cache in test.caches:
         rel = f"{base}/{cache.svc}"
-        why = put_through(test, cache, rel, v1[cache.svc])
-        if not why and deletes:
-            why = delete_through(test, cache, rel)
+        if cache.kind != "v2":
+            why = refused_through(test, cache, rel, v1[cache.svc])
+        else:
+            why = put_through(test, cache, rel, v1[cache.svc])
+            if not why and deletes:
+                why = delete_through(test, cache, rel)
         if why:
             problems.append(f"{cache.svc}: {why}")
     if problems:
         return FAIL, first(problems)
-    if not test.writes:
-        return PASS, f"{len(caches)} V2 cache(s) refused a PUT"
-    if not deletes:
-        return PASS, f"{len(caches)} V2 cache(s) relayed a PUT; {cannot_delete}"
-    return PASS, f"{len(caches)} V2 cache(s) relayed a PUT and a DELETE"
+    kinds = Counter(c.kind for c in test.caches)
+    notes: list[str] = []
+    if kinds["xrootd"]:
+        notes.append(f"{kinds['xrootd']} XRootD cache(s) refused a PUT")
+    if kinds["v2"] and not test.writes:
+        notes.append(f"{kinds['v2']} V2 cache(s) refused a PUT")
+    elif kinds["v2"] and not deletes:
+        notes.append(f"{kinds['v2']} V2 cache(s) relayed a PUT; {cannot_delete}")
+    elif kinds["v2"]:
+        notes.append(f"{kinds['v2']} V2 cache(s) relayed a PUT and a DELETE")
+    return PASS, "; ".join(notes)
 
 
 # cache-evicted's objects: each this big, and enough of them to exceed a
@@ -1680,8 +1921,9 @@ EVICT_OBJECT = 8 << 20
 # How long a cache may take to evict down to its high water mark, in
 # seconds: its eviction runs every 10 seconds.
 EVICT_WAIT = 60
-# How far above the mark its object files may add up to: the cache counts
-# the objects' bytes, and each block's file holds 16 more (blocks.TAG).
+# How far above the mark its object files may add up to: the cache charges
+# itself each object's file as it makes it, and counts in the database
+# rather than on disk.
 EVICT_SLACK = 1 << 20
 
 
@@ -1811,6 +2053,8 @@ RUN = {
     "digest-overwrite": digest_overwrite,
     "past-end": past_end,
     "empty": empty,
+    "conditional": conditional,
+    "conditional-put": conditional_put,
     "mixed-version": mixed_version,
     "overwrite-cached": overwrite_cached,
     "overwrite-range-first": overwrite_range_first,

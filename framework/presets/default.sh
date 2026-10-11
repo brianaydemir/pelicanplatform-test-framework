@@ -30,6 +30,16 @@ ORIGIN_ENABLE_ISSUER=true
 # own (see presets/auth-external-issuer.sh).
 EXTERNAL_ISSUER=false
 
+# Whether the origins' embedded issuer mints tokens that soon expire
+# (Issuer.AccessTokenLifetime, Issuer.RefreshTokenLifetime, and
+# Issuer.RefreshTokenGracePeriod; see presets/origin-short-tokens.sh).
+ISSUER_SHORT_TOKENS=false
+
+# Whether the /protected-b export has authorization templates of its
+# own, in place of the global ones (see
+# presets/origin-export-templates.sh).
+ORIGIN_EXPORT_TEMPLATES=false
+
 # The namespaces the origins export, of `public`, `protected-a`, and
 # `protected-b` (see presets/origin-httpsv2.sh and
 # presets/origin-no-direct.sh). /public is read without a token, and
@@ -88,6 +98,17 @@ CACHE_LOW_WATER_MIB=
 # Server.DropPrivileges for every Pelican server (see
 # presets/server-unprivileged.sh).
 SERVER_DROP_PRIVILEGES=false
+
+# Director.DefaultResponse: where a director sends a GET of a bare path,
+# e.g. https://director-0:8444/public/data/0.0, which the Pelican client
+# never asks for but curl and browsers do: `cache` or `origin` (see
+# presets/director-default-origin.sh).
+DIRECTOR_DEFAULT_RESPONSE=cache
+
+# Registry.RequireOriginApproval and Registry.RequireCacheApproval: whether
+# a registration serves nothing until an administrator approves it (see
+# presets/registry-approval.sh).
+REGISTRY_REQUIRE_APPROVAL=false
 
 #---------------------------------------------------------------------------
 # The knobs that don't shape it, which the caller's environment may also

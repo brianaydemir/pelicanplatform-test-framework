@@ -13,12 +13,14 @@ import json
 import os
 import platform
 import re
+import shutil
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any, NoReturn, Optional, cast
+from urllib.parse import urlsplit
 
 from . import report as report_module
 
@@ -134,6 +136,17 @@ def binary(name: str) -> str:
     return path
 
 
+def server_binary() -> Optional[str]:
+    """The pelican-server to run server-only commands with, which the
+    client lacks: the container's own, if it has one; otherwise
+    framework/var/bin/<os>/pelican-server, if there is one."""
+    found = shutil.which("pelican-server")
+    if found is not None:
+        return found
+    path = os.path.join("bin", platform.system().lower(), "pelican-server")
+    return path if os.path.exists(path) else None
+
+
 def digest(data: bytes) -> str:
     """The SHA-256 of data."""
     return hashlib.sha256(data).hexdigest()
@@ -203,6 +216,13 @@ def storage_dir(namespace: str) -> str:
     return namespace.strip("/").replace("/", "-")
 
 
+def web_url_of(data_url: str) -> str:
+    """The web URL of the server that serves data at data_url, where its
+    web API is: every server's web port is 8444
+    (config.d/base/20-server.yaml), whatever port its data is on."""
+    return f"https://{urlsplit(data_url).hostname}:8444"
+
+
 @dataclass(frozen=True)
 class Origin:
     """A running origin."""
@@ -216,6 +236,11 @@ class Origin:
     def pstore(self) -> bool:
         """Whether its store is a pstore."""
         return self.kind == "pstore"
+
+    @property
+    def web_url(self) -> str:
+        """Its web URL (see web_url_of())."""
+        return web_url_of(self.url)
 
     def storage_namespace(self, namespace: str) -> str:
         """The namespace whose storage namespace reads here (see
@@ -308,6 +333,20 @@ class Cache:
     def site_local(self) -> bool:
         """Whether it is a site-local cache, which a client must name."""
         return self.role == "site-local"
+
+    @property
+    def web_url(self) -> str:
+        """Its web URL (see web_url_of())."""
+        return web_url_of(self.url)
+
+
+@dataclass(frozen=True)
+class IssuerLifetimes:
+    """How long the embedded issuer's tokens last, in seconds."""
+
+    access: int  # Issuer.AccessTokenLifetime
+    refresh: int  # Issuer.RefreshTokenLifetime
+    grace: int  # Issuer.RefreshTokenGracePeriod: how long a used refresh token still works
 
 
 @dataclass(frozen=True)
@@ -464,6 +503,41 @@ class Federation:
             found["director_endpoint"]
         ]
         return [str(url) for url in urls if url]
+
+    @property
+    def registry_url(self) -> str:
+        """The registry's web URL, from the federation's discovery
+        document; "" for a standalone origin, which has none."""
+        return str(self.discovery.get("namespace_registration_endpoint") or "")
+
+    @cached_property
+    def director_default_response(self) -> str:
+        """DIRECTOR_DEFAULT_RESPONSE: where a director sends a GET of a
+        bare path, `cache` or `origin` (see
+        presets/director-default-origin.sh)."""
+        return self._line("director-default-response")
+
+    @cached_property
+    def registry_approval(self) -> bool:
+        """REGISTRY_REQUIRE_APPROVAL: whether a registration serves nothing
+        until an administrator approves it (see
+        presets/registry-approval.sh)."""
+        return self._line("registry-approval") == "true"
+
+    @cached_property
+    def issuer_lifetimes(self) -> IssuerLifetimes:
+        """How long the origins' embedded issuer's tokens last:
+        `<access> <refresh> <grace>` seconds (see
+        presets/origin-short-tokens.sh)."""
+        access, refresh, grace = self._line("issuer-lifetimes").split()
+        return IssuerLifetimes(int(access), int(refresh), int(grace))
+
+    @cached_property
+    def export_templates(self) -> bool:
+        """ORIGIN_EXPORT_TEMPLATES: whether the /protected-b export has
+        authorization templates of its own (see
+        presets/origin-export-templates.sh)."""
+        return self._line("export-templates") == "true"
 
     @cached_property
     def metadata(self) -> str:

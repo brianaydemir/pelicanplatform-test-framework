@@ -1,6 +1,7 @@
 """Listings: PROPFIND at depths 0, 1, and infinity at each origin, each
 director, and each cache, in every namespace; who may list /protected-a;
-and an object that comes and goes.
+an object that comes and goes; and a GET of a collection, which is no
+object, and which no cache may keep as one.
 
 Objects go under /<namespace>/data/listings/<run>/, put straight in
 every origin's store, in each namespace's storage (see stores.seed();
@@ -48,6 +49,7 @@ SCENARIOS = {
     "protected-a-scope": "listing /protected-a with a token for elsewhere is refused everywhere",
     "public-no-token": "listing /public with no token is allowed everywhere",
     "new-object": "an object is listed as soon as it is uploaded, and not once removed",
+    "collection-get": "a GET of a collection is no object's bytes, and no cache keeps it as one",
 }
 
 # The tree under <base>/tree, in every namespace: each object's size (paths
@@ -631,6 +633,68 @@ def new_object(test: Test) -> tuple[str, str]:
     return PASS, "listed at once, and not once removed"
 
 
+def collection_get(test: Test) -> tuple[str, str]:
+    """A GET of a collection, tree/sub, which is no object (Pelican issue
+    #1706). An origin, asked without Accept: text/html, as a client that
+    expects bytes asks, refuses (a native origin, 405) or answers a
+    listing (an XRootD origin, HTML), never an object's bytes; asked with
+    it, answers an HTML listing. A federated cache must not keep what an
+    origin answers as the collection's object: its answer must be no
+    object's bytes, and a V2 cache's 200 must be typed
+    application/octet-stream, with X-Content-Type-Options: nosniff, and
+    carry no Age, on a second GET either; and the object in the
+    collection must come back intact afterward. The origins are asked
+    only if they take direct clients."""
+    caps = test.caps("protected-a")
+    token = test.tokens["protected-a"]
+    path = test.path("protected-a", "tree/sub")
+    want = stores.held(test.origins[0], "protected-a", f"{test.base}/tree/sub/c", token)
+    if want is None:
+        return FAIL, f"{test.origins[0].svc}'s store lacks tree/sub/c"
+
+    def is_object(body: bytes) -> bool:
+        return common.digest(body) == want
+
+    problems: list[str] = []
+    origins = test.origins if may_list(caps, "0", "origin") else []
+    for origin in origins:
+        for accept in ("", "text/html"):
+            headers = {"Accept": accept} if accept else None
+            answer = web.request("GET", origin_url(origin, path), token=token, headers=headers)
+            kind = answer.header("Content-Type").lower()
+            what = f"{origin.svc}: GET {path}{' as a browser' if accept else ''}"
+            if is_object(answer.body):
+                problems.append(f"{what}: served the object in it")
+            elif accept and answer.status != 200:
+                problems.append(f"{what}: {answer.describe()}, not a listing")
+            elif accept and not kind.startswith("text/html"):
+                problems.append(f"{what}: Content-Type '{kind}', not text/html")
+    for cache in test.caches:
+        url = f"{cache.url}{path}"
+        what = f"{cache.svc}: GET {path}"
+        for when in ("", ", again"):
+            answer = web.request("GET", url, token=token)
+            kind = answer.header("Content-Type").lower()
+            if is_object(answer.body):
+                problems.append(f"{what}{when}: served the object in it")
+            elif cache.kind == "v2" and answer.header("Age"):
+                problems.append(f"{what}{when}: Age, so it keeps the listing as the object")
+            elif cache.kind == "v2" and answer.status == 200:
+                if not kind.startswith("application/octet-stream"):
+                    problems.append(f"{what}{when}: Content-Type '{kind}', not octet-stream")
+                elif answer.header("X-Content-Type-Options").lower() != "nosniff":
+                    problems.append(f"{what}{when}: no X-Content-Type-Options: nosniff")
+        answer = web.request("GET", f"{cache.url}{path}/c", token=token)
+        if answer.status != 200 or not is_object(answer.body):
+            problems.append(
+                f"{cache.svc}: GET {path}/c after the collection: {answer.describe()},"
+                + " or not the object"
+            )
+    if problems:
+        return FAIL, first(problems)
+    return PASS, f"{len(origins)} origin(s), {len(test.caches)} cache(s)"
+
+
 RUN = {
     "origin-depth-0": origin_depth_0,
     "origin-depth-1": origin_depth_1,
@@ -644,6 +708,7 @@ RUN = {
     "protected-a-scope": protected_a_scope,
     "public-no-token": public_no_token,
     "new-object": new_object,
+    "collection-get": collection_get,
 }
 
 

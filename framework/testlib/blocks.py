@@ -17,8 +17,9 @@ local_cache/schema.go). Beyond that:
   object spills 32 bytes into a second chunk.
 - The V2 cache fetches the blocks that each read is missing, and Go's
   http.ServeContent reads 32 KiB at a time, so it fills a range miss at
-  most 8 blocks at a time. pstore reads 16 blocks per read of its disk
-  (local_cache/range_reader.go, storage.go).
+  most 8 blocks at a time. The block store that pstore and the V2 cache
+  share reads 16 blocks per read of its disk (local_cache/range_reader.go,
+  storage.go).
 - The XRootD cache uses 128 KiB blocks (xrootd/resources/xrootd-cache.cfg).
 - The V2 cache marks an object complete once it holds every block, and
   only then sends Age (local_cache/storage.go, persistent_cache_api.go).

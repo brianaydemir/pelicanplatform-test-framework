@@ -14,12 +14,12 @@ The suites run in this order:
 
 | Suite        | Tests                                                                 |
 | ------------ | --------------------------------------------------------------------- |
-| `federation` | that the federation serves at all, and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients; what its redirects tell a client of a namespace; a Pelican server's discovery document; under `-p origin-broker`, the connection broker; and with several origins, that an object one of them alone holds is routed there, and comes back |
+| `federation` | that the federation serves at all, and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients; what its redirects tell a client of a namespace, and where they lead a plain HTTP client, bare paths included ([redirects](#redirects)); a Pelican server's discovery document; under `-p origin-broker`, the connection broker; with several origins, that an object one of them alone holds is routed there, and comes back; under `-p registry-approval`, that nothing is routed to before its registration is approved; and that a server its admin declares down is routed to by no director until the downtime ends ([downtime](#downtime)) |
 | `commands`   | `ls`, `stat`, `delete`, `copy`, `sync`, and `du`, and what `get` and `put` do with what already exists ([client commands](#client-commands)) |
-| `transfer-api` | origin-0's transfer API, under `-p origin-transfer-api`: authentication, credentials, server-run copies, jobs, and confinement to the exports |
-| `listings`   | PROPFIND at each origin, director, and cache ([listings](#listings))  |
+| `transfer-api` | origin-0's transfer API, under `-p origin-transfer-api`: authentication, credentials, server-run copies, jobs, and confinement to the exports (`local-get` and `local-put`, which Pelican's main does not confine, so they fail there) |
+| `listings`   | PROPFIND at each origin, director, and cache, and a GET of a collection ([listings](#listings)) |
 | `names`      | objects whose [names](#names) a URL or a listing must encode, beside decoys |
-| `blocks`     | objects and ranges at pstore's and the caches' [block boundaries](#block-boundaries), through each server and both clients; digests, and an upload the client must verify by one; objects overwritten, given up on, corrupted in a cache's store, or written through a cache; and, under `-p cache-small`, objects evicted from a cache |
+| `blocks`     | objects and ranges at pstore's and the caches' [block boundaries](#block-boundaries), through each server and both clients; digests, and an upload the client must verify by one; conditional reads and writes; objects overwritten, given up on, corrupted in a cache's store, or written through a cache; and, under `-p cache-small`, objects evicted from a cache |
 | `tiering`    | V2 caches' tiering of large objects to object storage, under `-p cache-tiered`, including a copy replaced in the bucket |
 | `posc`       | interrupted and racing uploads, under `-p origin-posc`, `-p origin-atomic-uploads`, or `-p origin-pstore` ([POSC and metadata](#posc-and-metadata)) |
 | `metadata`   | metadata events, under `-p origin-metadata` ([POSC and metadata](#posc-and-metadata)) |
@@ -27,7 +27,8 @@ The suites run in this order:
 | `owners`     | origin-2, another owner, under `-p topo-multi-owner` ([another owner](#another-owner)) |
 | `sitelocal`  | cache-2, a site-local cache, under `-p topo-site-local-cache` |
 | `collections` | collections: prefixes with access control of their own, granted through the origins' embedded issuer ([collections](#collections)) |
-| `auth`       | each [credential](#authorization) at each server, in each namespace; each issuer's keys; tokens of one storage scope, for another audience, and in the query string; paths that climb out of a namespace; and what a cache's refusal tells a client |
+| `issuer`     | the origins' embedded issuer: what it grants of what a client asks for, through each flow, and its refresh tokens ([issuer](#issuer)) |
+| `auth`       | each [credential](#authorization) at each server, in each namespace; each issuer's keys; tokens of one storage scope, for another audience, and in the query string; paths and symbolic links that climb out of a namespace; and what a cache's refusal tells a client |
 | `transfers`  | gets and puts through `pelican object` and `stash_plugin`, through a cache and direct from an origin, byte-checked ([test data](#test-data)) |
 
 A suite that doesn't apply to the shape is skipped, and says why.
@@ -38,6 +39,61 @@ else runs. The
 `expired` credential must be 70 seconds past its expiry before it is
 presented, so `auth` and `transfers` run last, by which time it usually
 is.
+
+Under `-p registry-approval`, nothing serves until an administrator
+approves its registration, so before each of its tries `ready` approves
+every pending registration through the registry's admin API, as its
+built-in `admin`, with a token like the one `pelican registry` mints
+(`credentials.mint_user()`). Before approving, it asks each director
+where it would send the object: `approval` fails if any named a server
+whose registration was still pending, since the directors refuse the
+advertisements of such a server. On a rerun, nothing is pending, and
+`approval` says so.
+
+
+## Redirects
+
+A plain HTTP client, such as curl, asks a director for an object and
+follows the redirect (307) it gets, presenting its token again where it
+lands; the Pelican client asks for a cache or an origin by name
+(`/api/v1.0/director/object/` or `/origin/`), but curl and browsers ask
+for the bare path, which the director sends to a cache, or under
+`-p director-default-origin` (`Director.DefaultResponse`) to an origin.
+The `federation` suite's `redirects` check follows each director's
+redirects for each exported namespace, with the namespace's `server`
+token (none for `/public`):
+
+- A GET and a HEAD of the object's bare path must land at a cache, or
+  under `-p director-default-origin` at an origin; one with
+  `?directread` at an origin, where the namespace takes direct clients,
+  and otherwise find none (405), as the Pelican client's `--direct`
+  asks; and the object and origin routes at a cache and an origin.
+- What lands at a cache must be served: the object's bytes, or for a
+  HEAD its `Content-Length`. What lands at an origin must be served
+  only where the namespace takes direct clients, and otherwise refused
+  (401 or 403), as the origin refuses every direct client there.
+- A bare-path PUT of a new object must land at an origin, where the
+  namespace takes writes, which must then store it; where it takes
+  none, the director must find no origin, or the one it names refuse,
+  and no origin may hold the object.
+
+`hints` checks what the same redirects tell the client about the
+namespace ([authorization](#authorization)).
+
+
+## Downtime
+
+A server's admin declares it down through its web API
+(`/api/v1.0/downtime`), as before maintenance; the server tells the
+registry, from which the directors learn of it, and stop sending
+clients there. The `federation` suite's `downtime` check declares the
+last federated cache down for an hour, as its admin, with a token like
+`pelican cache introspect`'s; within 150 seconds no director may name
+it for the test object (the directors ask the registry every minute,
+`Director.RegistryQueryInterval`); then it ends the downtime, after
+which, as soon, every director must name it again. With several
+origins, it does the same for the last origin. The check is skipped in
+the `tiny` topology, whose servers and director are one process.
 
 These are functional checks, not stress tests: each moves a few
 objects, the largest about 16 MiB, but for `blocks`'s `cache-evicted`,
@@ -236,7 +292,12 @@ namespace.
   WLCG token profile says, `storage.create` may create an object, but
   neither replace nor delete one; `storage.modify` may do all three. Each
   write is of an object of its own, put in place first where it must
-  exist. A refused write must leave the object as it was.
+  exist. A refused write must leave the object as it was. Pelican's
+  native origin authorizes every PUT as a create, without asking whether
+  the object exists (`getActionFromMethod` in
+  `origin_serve/handlers.go`), so a `storage.create` token replaces an
+  object, and `create-only`'s `put-over` row fails there, on main and
+  v26.0.0-rc.3 alike.
 - **Out of a namespace**, the `auth` suite's `traversal` check sends
   every origin and cache paths that begin in one exported namespace and
   climb out of it with `..`, spelled as is, as `%2e%2e`, `%2E%2E`,
@@ -246,7 +307,14 @@ namespace.
   a file in each origin's store beside the namespaces' storage; or the
   origin's signing key, in `/fed/issuer-keys`, beside its store. The
   last two stand for what a server would expose if it let a path out of
-  an export's storage.
+  an export's storage. Its `symlink` rows ask the same of symbolic
+  links, which the check makes in each store on disk, in the first
+  protected namespace's storage: one to the file beside the namespaces'
+  storage, by a relative path, and one to each origin's signing key, by
+  the absolute path its container sees. Pelican's `posixv2` origin
+  refuses a link that leaves its export (`os.Root`); an XRootD `posix`
+  origin follows it, so the row fails there; the rclone backends and
+  the lab server skip links.
 - **What a refusal tells a client**, the `auth` suite's `hints` check:
   a GET of the test object at each V2 cache with no token must be refused
   with the headers a director's redirect carries, `X-Pelican-Namespace`,
@@ -390,20 +458,22 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   block and the whole object afterward, must be the object's.
 - `cache-corrupted` has each V2 cache spoil its own copy of an object it
   holds whole, through its chaos API (`Cache.EnableChaosAPI`, which the
-  framework turns on; Pelican v26.0.0-rc.3 and later, so the scenario
-  skips on an older cache): a block corrupted in its store, and bytes cut
-  from the end of another object's chunk file. A read of the spoiled part,
-  and of the whole object, must then come back as the object's bytes or
-  fail, never as other bytes, and within 30 seconds the whole object must
-  come back intact, fetched afresh. An XRootD cache has no such API, and
-  is passed over.
+  framework turns on; Pelican v7.27.0 and v26.0.0-rc.0 and later, so the
+  scenario skips on an older cache): a block corrupted in its store, and
+  bytes cut from the end of another object's chunk file. A read of the
+  spoiled part, and of the whole object, must then come back as the
+  object's bytes or fail, never as other bytes, and within 30 seconds
+  the whole object must come back intact, fetched afresh. An XRootD
+  cache has no such API, and is passed over.
 - `digests` asks every server for each object's digest by each
   algorithm in turn (`Want-Digest`: `crc32c`, `crc32`, `adler32`, `md5`,
   `sha`, `sha-256`), by HEAD, and by GET for `crc32c`. Every digest a
-  server reports must be the object's, read as the client reads it, since
-  the client fails a download whose bytes don't match. Each origin must
+  server reports must be the object's, read as the client reads it
+  (which knows `crc32c`, `crc32`, `md5`, and `sha`), since the client
+  fails a download whose bytes don't match. Each origin must
   report `crc32c` and `md5`, but for what its storage cannot: XRootD's
   S3 and HTTPS plugins and the `httpsv2` and `ssh` backends compute none,
+  an XRootD origin under `-p origin-multiuser` no `crc32c`,
   and `s3v2` reports only the MD5 that the S3 service holds, which it
   does not for an object over 5 MiB uploaded with no `Content-Length`,
   in parts (`framework/testlib/stores.py`); a cache need report none,
@@ -418,6 +488,26 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   that starts at or past the end (`past-end`) must get 416, or, from a
   server that ignores `Range`, the whole object. In a set of ranges, one
   past the end is passed over, as RFC 9110 says.
+- `conditional` sends each server conditional GETs of two objects (RFC
+  9110): with `If-None-Match` naming the `ETag` the server sent, among
+  others, weakened (`W/`), or as `*`, and with `If-Modified-Since` at
+  the `Last-Modified` it sent or later, the server may answer 304, or,
+  ignoring the condition, 200 with the whole object; with
+  `If-None-Match` naming another ETag, or `If-Modified-Since` long ago,
+  it must answer 200 with the whole object. A 304 to a condition that
+  doesn't hold would leave a client with stale bytes. The row's note
+  says what each server honored, and whether it sent no `ETag` or
+  `Last-Modified`, whose conditions are then left out.
+- `conditional-put` sends each origin that takes writes from direct
+  clients conditional PUTs: with `If-None-Match: *`, a new object is
+  created, and a second PUT refused (412), changing nothing; with
+  `If-Match` naming the object's `ETag`, it is replaced, and with the
+  ETag it replaced, or another, the PUT is refused, changing nothing;
+  and with `If-Match: *`, a PUT of an object that doesn't exist is
+  refused, storing nothing. A server that ignores a condition on a PUT
+  would let two writers overwrite each other unawares; Pelican's native
+  origins check it, and XRootD's HTTP server does not, so the row fails
+  on an XRootD origin.
 - `mixed-version` overwrites an object of three XRootD blocks at the
   origins after a cache has cached its first 4,080-byte block; each
   later response, to a range in the third XRootD block (which neither
@@ -457,7 +547,8 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   the `server` token must reach an origin, and once every origin holds
   what it wrote, the cache must serve that at once. Likewise a DELETE,
   after which the cache must answer 404. Where `/protected-a` takes no
-  writes, the PUT must be refused. An XRootD cache takes no writes.
+  writes, the PUT must be refused. An XRootD cache takes no writes, so
+  its PUT must be refused, and change no origin.
 - `cache-evicted`, under `-p cache-small`, which bounds each V2 cache's
   store (`Cache.HighWaterMark` 128 MiB, `Cache.LowWaterMark` 96 MiB;
   Pelican's defaults are a share of the whole disk, which no suite could
@@ -507,6 +598,19 @@ that a server that lists another namespace's lists the wrong tree.
   refused everywhere; listing `/public` with none must work.
 - `new-object` checks that an object shows up at once, by PROPFIND and
   with `pelican object ls`, and is gone once removed.
+- `collection-get` asks every server for a collection by GET, as a naive
+  client would, which is no object (Pelican issue #1706): an origin,
+  asked without `Accept: text/html`, refuses (a native origin, 405) or
+  answers a listing (an XRootD origin, HTML), never an object's bytes,
+  and asked with it answers an HTML listing. A federated cache must not
+  keep what an origin answers as the collection's object, which every
+  later request for that path would then get: its answer must be no
+  object's bytes; a V2 cache's 200 must be typed
+  `application/octet-stream`, with `X-Content-Type-Options: nosniff`,
+  so that a browser never runs a listing as a page on the cache's own
+  web origin, and carry no `Age`, on a second GET either, since a V2
+  cache sends `Age` only for an object it holds whole; and the object
+  in the collection must come back intact afterward.
 
 
 ## Names
@@ -551,7 +655,14 @@ scenarios.
   overwrite is under way, the origin must still serve the old object;
   and of two whole uploads of one object at once (`concurrent`), the
   object must end up all one of them. `hidden` lists the export while an
-  upload is staged, so that `.pelican-posc` is there to hide.
+  upload is staged, so that `.pelican-posc` is there to hide: by
+  PROPFIND, as `pelican object ls` does, and as a browser does, by a
+  GET for HTML, whose links it reads. Both must list `data/`, and
+  neither may show `.pelican-posc`. Pelican hides the staging directory
+  from PROPFIND, since POSC's filesystem says it isn't there, but its
+  HTML listing reads the export's directory itself
+  (`streamDirectoryListing` in `origin_serve/handlers.go`) and shows
+  it, so the row fails there, on main and v26.0.0-rc.3 alike.
 - **XRootD's POSC** (`-p origin-atomic-uploads`): `Origin.EnableAtomicUploads`
   stages each upload in `Origin.UploadTempLocation`, which Pelican
   requires on the exports' filesystem but in none of them, so `fed.sh`
@@ -685,9 +796,9 @@ issuer's admin API. The `client` and `cli` scenarios register two each,
 as the Pelican client and CLI do that themselves.
 
 The embedded issuer's `Issuer.AuthorizationTemplates`, which grant a
-user who logs in through the web UI, grant only the built-in `admin`
-(`40-origin.yaml`), so that the suite's users get only what collections
-grant them.
+user beyond their collections, grant only the built-in `admin` and the
+`issuer` suite's users and groups (`40-origin.yaml`), so that this
+suite's users get only what collections grant them.
 
 Each run makes groups of its own, owned by `test-owner`
 (`test-readers-<run>`, `test-writers-<run>`, and `test-admins-<run>`, for
@@ -733,12 +844,224 @@ the scenarios. In short:
   and a revoked grant is gone from the next token. The old token keeps
   its access until it expires, by design: a token is not revoked with
   the grant it came from.
-- `cli`: `pelican origin collection` creates, lists, changes, grants on,
-  and deletes a collection through the device flow, approved as
-  `test-curator`, and fails for `test-outsider`. The CLI manages the
-  first origin the director lists, so the scenario skips where that is
-  not the issuer origin; it and `client` skip for a standalone origin,
+- `cli`: `pelican-server origin collection` creates, lists, changes,
+  grants on, and deletes a collection through the device flow, approved
+  as `test-curator`, and fails for `test-outsider`. The command is
+  server-only: Pelican's client lacks it. The scenario runs the dev
+  container's own `pelican-server`, if it has one, and otherwise
+  `framework/var/bin/linux/pelican-server`, which `./fed.sh init`
+  fetches, and skips if there is neither. The CLI manages the first
+  origin the director lists, so the scenario skips where that is not
+  the issuer origin; it and `client` skip for a standalone origin,
   which has no director.
 
 The run's collections, groups, and objects are removed after the suite;
 the users stay.
+
+
+## Issuer
+
+The origins' embedded OAuth2 issuer (`oauth2/issuer/` in Pelican) mints
+a user's tokens for a namespace: what it grants is what the user is
+allowed, narrowed to what the client asked for and may carry. A user
+is allowed what `Issuer.AuthorizationTemplates` say, by name and by
+group, and what their collections and shares grant
+([collections](#collections)). A template's prefix is within the
+namespace of each issuer that applies it, as its tokens' scopes are,
+and an export may have templates of its own, which replace the global
+ones there. The
+`issuer` suite checks what the issuer grants of each request, through
+each of its flows, and how its refresh tokens behave. It needs the
+embedded issuer and a protected namespace, as `collections` does, and
+skips with the external issuer.
+
+`framework/config.d/base/40-origin.yaml` grants, within each namespace
+that has an issuer:
+
+| Prefix                       | Actions               | To                                               |
+| ---------------------------- | --------------------- | ------------------------------------------------ |
+| `/`                          | read, create, modify  | the built-in `admin`                             |
+| `/data/issuer/home/$USER`    | read, create, modify  | `test-analyst` and `test-member`                 |
+| `/data/issuer/projects/$GROUP` | read, create        | the groups `test-project-a` and `test-project-b` |
+| `/data/issuer/archive`       | read                  | any group named `test-project-*`                 |
+
+Under `-p origin-export-templates`, `fed.sh` gives the `/protected-b`
+export templates of its own, read on `/data/issuer/export` for
+`test-stranger`, so that its issuer grants that and nothing else.
+
+The suite's users are records of the issuer origin (origin-0, or
+`fed`), which its admin creates once and later runs reuse:
+`test-analyst`, `test-member`, and `test-stranger`, and `collections`'s
+`test-curator`, a collection administrator. `test-member` is in both
+groups, which the admin creates once, eligible to match templates. A
+group an ordinary user creates may not match a template until an
+administrator makes it eligible, so each run `test-stranger` makes one
+named like the template's, `test-project-rogue-<run>`, and the suite
+checks that it grants nothing until the admin flips it. The issuer
+learns a user's groups from how they logged in, so the suite logs each
+user in: the admin mints them a password invite, they set a password of
+the run's with it, and their login's cookie stands for them at the
+issuer's verification and authorization pages, carrying the groups
+they were in when they logged in (`Issuer.GroupSource: internal`), as a
+browser's would. Each run also makes a collection, `gamma`, under
+`/<namespace>/data/issuer/collections/<run>/`, which `test-stranger`
+may read and `test-member` write, and which `test-stranger` shares
+part of (`gamma/shared`) with `test-analyst` (not under
+`-p origin-multiuser`, which refuses shares), and an object in each
+prefix above, with `decoy/obj` in none. So, within the namespace:
+
+| User            | May                                                                       |
+| --------------- | ------------------------------------------------------------------------- |
+| `test-analyst`  | read, create, and modify `home/test-analyst`; read the share              |
+| `test-member`   | read, create, and modify `home/test-member` and `gamma`; read and create the projects; read `archive` |
+| `test-stranger` | read `gamma`; and `archive`, once the rogue group may match               |
+
+The admin creates the suite's clients through the issuer's admin API:
+one for the device flow and one for the authorization code flow, each
+allowed every scope a self-registered client gets and the refresh
+grant; one allowed only `openid` and `storage.read:/` and no refresh
+grant; and one for token exchange. The suite also uses the client every
+issuer seeds for browsers (`Issuer.PublicClientID`), which has no
+secret and proves itself with PKCE. The scenarios:
+
+- `discovery`: each namespace issuer's discovery document names itself
+  and endpoints under it, offers the four grants, and its JWKS holds
+  the key that signed a token it minted; the local issuer's names the
+  server's local issuer URL.
+- `templates`: what each user is granted of everything
+  (`storage.read:/`, `storage.modify:/`, `storage.create:/`, and
+  `share.access:/`): exactly the table above, plus the share's
+  `storage.read` and `share.access:/<share>` for `test-analyst`, with
+  the issuer, subject, WLCG `any` audience, and `wlcg.groups` (the
+  groups that earned something: both for `test-member`, none for the
+  others) right; the rogue group grants `archive` once eligible, and
+  not once ineligible again; and under `-p origin-export-templates`,
+  `/protected-b`'s issuer grants `test-stranger` `export` alone and
+  `test-member` nothing.
+- `requests`: what the device flow grants of each request, for
+  `test-member` unless said otherwise: an allowed scope, as asked; a
+  narrower one (`archive/sub`), as asked; a broader one
+  (`storage.read:/data/issuer`), as every allowed scope under it,
+  collections included; an action, a path, a case, or a prefix that is
+  not a path component (`archivex`), nothing; a scope that climbs with
+  `..` into a path not allowed, nothing, and into one allowed, the
+  scope as it resolves, never with `..`; `storage.delete`,
+  `pelican.transfer` (granted only to the transfer API's users), and
+  `collection.create` (a collection administrator's), nothing;
+  `collection.read:/` and the standard scopes (`openid`, `wlcg`,
+  `profile`, `email`), always; `test-stranger`'s `storage.read:/` as
+  `gamma`'s read and `storage.modify:/` as nothing; `test-analyst`'s
+  share by `share.access:/` or by its ID, and not by another's; and a
+  refresh token only with `offline_access`.
+- `code`: the same requests through the authorization code flow, with
+  PKCE: the user is sent back (303) with a code and the state, which
+  the client trades for tokens. A request for a scope the client may
+  not carry (`storage.delete:/`, `pelican.transfer`) is sent back with
+  `invalid_scope` instead of granted less; a wrong verifier and a
+  replayed code are refused (`invalid_grant`); a redirect URI the
+  client did not register gets no redirect (400); and the public
+  client's flow works, with no refresh token even for
+  `offline_access`.
+- `clients`: the read-only client's token has only `openid` and the
+  user's reads, and no refresh token; the code flow's client may not
+  start a device flow (`unauthorized_client`); a wrong secret and an
+  unknown client are refused (`invalid_client`), as a
+  `client_credentials` ping tells them apart; and the public client's
+  device flow gets no refresh token.
+- `device`: the verification page shows the scopes asked and the
+  client; polling before approval says `authorization_pending`, and
+  polling again within five seconds `slow_down`; an approved code
+  redeemed by another client, or redeemed twice, is `invalid_grant`,
+  and approved twice, refused; a denied flow polls `access_denied`;
+  nobody may see a flow's page; an unknown code is refused.
+- `data`: with tokens of everything they may have, each user reads
+  what the table allows straight at every origin, and is refused the
+  rest (`decoy`, another's home, `archive` for the others); where the
+  namespace takes writes, a PUT lands in a home and a project and is
+  refused in `archive`, `gamma` for `test-stranger`, and the share.
+  Through the federation, `pelican object get` fetches `archive/obj`
+  as `test-member` and fails as `test-stranger`; each federated cache
+  serves it to `test-member` and refuses `test-stranger`.
+- `refresh`: with `offline_access`, the device flow issues a refresh
+  token; a refresh gives a new access token, with the same scopes,
+  subject, issuer, and groups and the configured `expires_in`, that
+  reads `archive/obj` at the origin and introspects as active, and a
+  new refresh token, which introspects as active too. The used refresh
+  token still works within its grace period
+  (`Issuer.RefreshTokenGracePeriod`), so a client can retry a lost
+  response. Another client's refresh is `invalid_grant`, a client
+  without the refresh grant's `unauthorized_client`, and a token that
+  never was `invalid_grant`.
+- `revoked`: once `test-curator` revokes `test-stranger`'s read on
+  `gamma`, a refresh must not give `gamma`'s read back. Pelican's main
+  re-grants a refresh token's scopes as they were, without asking the
+  collections again, although `docs/collections-design.md` says a
+  refresh should, so this row fails there. A refresh token revoked
+  (RFC 7009) is `invalid_grant`, and the access token issued with it
+  introspects as inactive and is refused by `userinfo`; the origin,
+  which checks a token's signature and expiry alone, still honors it,
+  by design. Under `-p origin-short-tokens`, a refresh token reused
+  past its grace period is `invalid_grant`, and so is the newer one it
+  had been traded for: the reuse ends the chain.
+- `exchange` (RFC 8693): the exchange client, allowed `storage.read:/`
+  and `offline_access`, trades `test-member`'s token of everything for
+  one of `archive`'s read alone, which reads `archive/obj`; for a
+  scope it may not carry (`storage.modify`), it gets a token with
+  none; for no scope in particular, it gets the token's reads and
+  `offline_access`, and a refresh token; and it is refused another
+  audience (`invalid_target`), as the device client is refused the
+  grant (`unauthorized_client`) and a subject token that never was
+  (`invalid_grant`).
+- `expiry`, under `-p origin-short-tokens` (access tokens last a
+  minute, refresh tokens four, and a used refresh token twenty seconds
+  more; it skips otherwise): a token's `expires_in` and `exp - iat`
+  say the lifetime; once it has expired, it introspects as inactive,
+  `userinfo` refuses it, and the origin refuses it within 90 seconds,
+  which the row's note times. The origin is asked every 5 seconds from
+  a second past the token's expiry. Pelican's native origin keeps what
+  a token authorizes for 5 minutes from its last use
+  (`origin_serve/authz.go`), and checks its expiry only when it first
+  sees it, allowing 60 seconds of clock skew, so it takes the token at
+  the first try, and each try keeps it; it never refuses it, and the
+  row fails there, on main and v26.0.0-rc.3 alike. Its refresh token
+  then renews it, and the new one reads; and tokens left since the
+  suite began can no longer be refreshed once their refresh token has
+  expired (`invalid_grant`).
+- `client`: `pelican object get` of `archive/obj` as `test-member`,
+  with no token, acquires one from the issuer through the device flow,
+  which the suite approves once; a second get reuses it, approved by
+  nobody; and under `-p origin-short-tokens`, a get after the token
+  has expired succeeds, approved by nobody, since the client refreshed
+  it. It skips for a standalone origin, which has no director to find
+  the issuer through.
+
+The run's collection, share, rogue group, clients, and objects are
+removed after the suite; the users and their groups stay.
+
+
+## What is not tested
+
+Shapes that Pelican offers and this framework does not, and why:
+
+- `globus` and `globusv2` origins, which need Globus credentials, and
+  the `xroot` origin, which fronts another XRootD server.
+- `Cache.PermittedNamespaces`, which only narrows what a cache
+  advertises to the director; the V2 cache serves any namespace a
+  client asks it for.
+- `Director.CachesPullFromCaches`, which applies only to a request
+  carrying `?prefercached`, which no Pelican cache or client sends.
+- Lotman (`Cache.EnableLotman`), the XRootD cache's quotas; the
+  `localcache` module, a client-side cache over a Unix socket; and
+  `Client.FileRedirectRoots`, by which a cache sends a client that
+  shares its filesystem to a file instead of bytes.
+- `Origin.DisableCopies`, which turns third-party copies off.
+- Of the embedded issuer: groups from a file or an identity provider
+  (`Issuer.GroupSource`), which the suite's users get from the server's
+  own database; `pelican.transfer` granted through
+  `Transfer.EnabledGroups` or a scope grant; a client's own
+  registration (RFC 7591) and configuration (RFC 7592), beyond what
+  the Pelican client does for itself; and a device code's expiry, ten
+  minutes after it is issued.
+- `auth-oidc` and `with-grafana`, which need an identity provider and a
+  data source the framework lacks
+  ([Configuration](configuration.md#presets)).

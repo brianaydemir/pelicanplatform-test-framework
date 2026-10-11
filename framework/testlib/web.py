@@ -34,6 +34,13 @@ class Response:
         values = [v for k, v in self.headers if k.lower() == name.lower()]
         return values[-1] if values else ""
 
+    def cookie(self, name: str) -> str:
+        """The value of cookie name that the answer set, or ""."""
+        for key, value in self.headers:
+            if key.lower() == "set-cookie" and value.startswith(f"{name}="):
+                return value[len(name) + 1 :].split(";", 1)[0]
+        return ""
+
     @property
     def ok(self) -> bool:
         """Whether the status is a success (2xx)."""

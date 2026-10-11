@@ -55,9 +55,9 @@ collections of their own where they change things:
               metadata, and delete it
   ownership   only the owner hands a collection on, by setting its
               owner or by an invite that one user redeems once
-  cli         `pelican origin collection` manages collections through
-              the issuer's device flow, approved as test-curator, and
-              fails for an ordinary user
+  cli         `pelican-server origin collection` manages collections
+              through the issuer's device flow, approved as
+              test-curator, and fails for an ordinary user
 
 The run's collections, groups, and objects are removed after the suite;
 the users stay.
@@ -65,11 +65,8 @@ the users stay.
 
 import json
 import os
-import subprocess  # nosec B404
-import threading
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
@@ -77,6 +74,7 @@ from testlib import accounts, common, credentials, issuer, stores, web
 from testlib.accounts import Answer, Api, ApiError, must
 from testlib.common import die, warn
 from testlib.credentials import PROTECTED
+from testlib.issuer import ClientRun
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -93,7 +91,7 @@ SCENARIOS = {
     "revoke": "a revoked grant is gone from the next token, not the old one",
     "manage": "who may change a collection, its metadata, and delete it",
     "ownership": "only the owner hands a collection on, by setting its owner or by an invite",
-    "cli": "`pelican origin collection` manages collections through the device flow",
+    "cli": "`pelican-server origin collection` manages collections through the device flow",
 }
 
 COLLECTIONS = "/api/v1.0/origin_ui/collections"
@@ -202,18 +200,21 @@ class Test:
             )
         return self._clients[namespace]
 
+    def user(self, role: str, web_url: Optional[str] = None) -> issuer.User:
+        """role's user, as an issuer of the origin at web_url (the issuer
+        origin's by default) knows them."""
+        return issuer.User(token=self.web_token(role, web_url))
+
     def data_token(self, role: str) -> str:
         """A token for the namespace from its issuer, as role's user: what
         the user's collections allow right now."""
-        return issuer.token(
-            self.client(f"/{self.namespace}"), self.web_token(role), DATA_SCOPES
-        )
+        return issuer.token(self.client(f"/{self.namespace}"), self.user(role), DATA_SCOPES)
 
     def control_token(self, role: str) -> str:
         """A token from the origin's local issuer, as role's user, for
         managing collections."""
         return issuer.token(
-            self.client(issuer.LOCAL_NAMESPACE), self.web_token(role), CONTROL_SCOPES
+            self.client(issuer.LOCAL_NAMESPACE), self.user(role), CONTROL_SCOPES
         )
 
     def token_file(self, role: str) -> str:
@@ -440,69 +441,23 @@ def finish(test: Test) -> None:
 # The clients, acquiring tokens from the issuer themselves.
 
 
-@dataclass
-class ClientRun:
-    """How a client that acquires its own tokens ran."""
+def run_approving(
+    test: Test, args: Sequence[str], role: str, pelican: Optional[str] = None
+) -> ClientRun:
+    """Run `pelican <args>` (the binary at pelican, by default the
+    client) as role's user (see issuer.run_approving()), approving each
+    device flow it announces on its stderr as that user, at whichever
+    origin's issuer it names."""
 
-    status: int
-    stdout: str
-    stderr: str
-    approvals: int  # how many device flows it started, which the tests approved
-    problems: list[str]  # what went wrong approving
+    def approve_as_role(issuer_url: str, user_code: str) -> None:
+        web_url = issuer_url.split(issuer.ROUTE, 1)[0]
+        issuer.approve(issuer_url, user_code, test.user(role, web_url))
 
-
-def client_env(test: Test, role: str) -> dict[str, str]:
-    """The environment for a client acting as role's user: it may acquire
-    a token with no terminal, and keeps its credentials apart from other
-    users', since the issuer binds a client that registers itself to the
-    first user who approves a flow for it."""
-    env = dict(test.session.env)
-    env["PELICAN_SKIP_TERMINAL_CHECK"] = "1"
-    store = test.session.path(f"credentials/{role}")
-    os.makedirs(store, exist_ok=True)
-    env["PELICAN_CLIENT_CREDENTIALFILE"] = os.path.join(store, "client-credentials.pem")
-    return env
-
-
-def run_approving(test: Test, args: Sequence[str], role: str) -> ClientRun:
-    """Run `pelican <args>` as role's user, approving each device flow it
-    announces on its stderr as that user."""
-    with subprocess.Popen(  # nosec B603
-        [test.session.pelican, *args],
-        env=client_env(test, role),
-        cwd=test.session.tmp,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    ) as proc:
-        if proc.stdout is None or proc.stderr is None:
-            raise RuntimeError("the client's output is not piped")
-        stdout = proc.stdout
-        out: list[str] = []
-        collector = threading.Thread(target=lambda: out.append(stdout.read()))
-        collector.start()
-        killer = threading.Timer(CLIENT_TIMEOUT, proc.kill)
-        killer.start()
-        done = ClientRun(0, "", "", 0, [])
-        err: list[str] = []
-        for line in proc.stderr:
-            err.append(line)
-            flow = issuer.approval_url(line)
-            if flow:
-                done.approvals += 1
-                try:
-                    web_url = flow[0].split(issuer.ROUTE, 1)[0]
-                    issuer.approve(flow[0], flow[1], test.web_token(role, web_url))
-                except issuer.IssuerError as e:
-                    done.problems.append(str(e))
-        done.status = proc.wait()
-        killer.cancel()
-        collector.join()
-        done.stdout, done.stderr = "".join(out), "".join(err)
-        if done.status < 0:
-            done.problems.append(f"the client was killed after {CLIENT_TIMEOUT:.0f}s")
-        return done
+    session = test.session
+    env = issuer.client_env(session.env, session.path(f"credentials/{role}"))
+    return issuer.run_approving(
+        pelican or session.pelican, args, env, session.tmp, approve_as_role, CLIENT_TIMEOUT
+    )
 
 
 def cli_json(out: str) -> Any:
@@ -1085,9 +1040,12 @@ def first_origin(test: Test) -> Optional[str]:
 
 
 def cli(test: Test) -> tuple[str, str]:
-    """`pelican origin collection` manages collections through the
-    issuer's device flow, approved as test-curator, and fails for an
-    ordinary user."""
+    """`pelican-server origin collection` (the client lacks it) manages
+    collections through the issuer's device flow, approved as
+    test-curator, and fails for an ordinary user."""
+    server = test.session.pelican_server
+    if server is None:
+        return SKIP, "no pelican-server, which has `origin collection`; run ./fed.sh init"
     if test.fed.standalone:
         return SKIP, "a standalone origin has no director for the CLI to find it through"
     first = first_origin(test)
@@ -1100,7 +1058,7 @@ def cli(test: Test) -> tuple[str, str]:
 
     def manage_as(role: str, *args: str) -> ClientRun:
         done = run_approving(
-            test, ["--json", "-f", test.fed.url, "origin", "collection", *args], role
+            test, ["--json", "-f", test.fed.url, "origin", "collection", *args], role, server
         )
         problems.extend(done.problems)
         return done

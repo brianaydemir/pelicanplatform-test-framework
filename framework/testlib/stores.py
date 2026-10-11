@@ -68,8 +68,12 @@ def cannot(fed: common.Federation, operation: str) -> Optional[str]:
 
 def digests(fed: common.Federation) -> tuple[tuple[str, ...], Optional[str]]:
     """The algorithms of ORIGIN_DIGESTS that the origins' storage reports,
-    and why not the rest, if it lacks any."""
-    limits = LIMITS.get(fed.origin_variant, {})
+    and why not the rest, if it lacks any. An XRootD origin's multiuser
+    checksum path has no crc32c (xrootd/resources/xrootd-origin.cfg in
+    Pelican)."""
+    limits = dict(LIMITS.get(fed.origin_variant, {}))
+    if fed.origin_variant == "posix" and fed.multiuser:
+        limits["crc32c"] = "XRootD's multiuser checksum path computes no crc32c"
     if "checksum" in limits:
         return (), limits["checksum"]
     lacking = [limits[a] for a in ORIGIN_DIGESTS if a in limits]

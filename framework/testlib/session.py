@@ -42,6 +42,9 @@ class Session:
         self.fed = common.Federation()
         self.pelican = os.path.abspath(common.binary("pelican"))
         self.plugin = os.path.abspath(common.binary("stash_plugin"))
+        # None if there is none: only the scenarios that need it skip.
+        server = common.server_binary()
+        self.pelican_server = os.path.abspath(server) if server else None
         self.run = time.strftime("%Y%m%d-%H%M%S")
         self.tmp = tmp
         os.makedirs(self.path("tokens"))

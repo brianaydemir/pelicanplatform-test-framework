@@ -13,6 +13,12 @@ The suite uploads an object straight to every origin, under
              tries, 15 seconds apart, while it fails or does not answer,
              since a new cache refuses a namespace's tokens (403) until
              it has learned the namespace's issuers from the director
+  approval   under `-p registry-approval`, where nothing serves until
+             an administrator approves its registration, `ready`
+             approves every pending one through the registry's admin
+             API before it waits, and first asks the directors where
+             they would send the object: none may name a server whose
+             registration was still pending
   directors  each director must name every federated cache for it, and
              no site-local one, and every origin; and, for a client's
              direct read (?directread), every origin, or where the
@@ -30,6 +36,19 @@ The suite uploads an object straight to every origin, under
              takes a token, and its issuer (the X-Pelican-Namespace,
              X-Pelican-Authorization, and X-Pelican-Token-Generation
              headers), by which the client picks a token
+  redirects  a plain HTTP client, which follows a director's redirect
+             and presents its token again where it lands, as curl does:
+             in each namespace, at each director, a GET and a HEAD of
+             the object's bare path must land at a cache, or at an
+             origin under `-p director-default-origin`
+             (Director.DefaultResponse); one with ?directread at an
+             origin, where the namespace takes direct clients, and
+             otherwise find none; the object and origin routes at a
+             cache and an origin; and a bare-path PUT at an origin,
+             where the namespace takes writes, and otherwise nowhere
+             that takes it. What lands at a cache must be served, and
+             what lands at an origin only where the namespace takes
+             direct clients
   presence   with several origins, an object that one of them alone
              holds: each director must send an origin's read of it,
              plain and for a client's direct read, to that origin alone,
@@ -37,6 +56,11 @@ The suite uploads an object straight to every origin, under
              (Director.CheckOriginPresence, on by default); and it must
              come back through each cache, and by `pelican object get`,
              through a cache and direct
+  downtime   a server's admin declares it down through its web API, as
+             before maintenance: within 150 seconds no director may
+             name it, and once the downtime is ended, every director
+             must again, as soon; the last federated cache, and with
+             several origins, the last origin
 
 Its data, under each origin's data/federation/, on a pstore origin too,
 is removed after the suite.
@@ -45,17 +69,25 @@ is removed after the suite.
 import json
 import os
 import time
+import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
-from testlib import common, credentials, director, owners, stores, web
+from testlib import accounts, common, credentials, director, owners, stores, transfers, web
 from testlib.common import die
+from testlib.credentials import ALLOW
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
 
 SCENARIOS = {
     "ready": "an object uploaded to every origin comes back through the federation",
     "caches": "each cache serves it with the server's token (a new one refuses at first)",
+    "approval": (
+        "under `-p registry-approval`, no director named a server before its registration"
+        " was approved, which `ready` does"
+    ),
     "directors": (
         "each director names every federated cache and origin, and for a direct read,"
         " every origin if the namespace takes direct clients, and otherwise none"
@@ -63,7 +95,12 @@ SCENARIOS = {
     "discovery": "a Pelican server's discovery document names the federation's servers",
     "broker": "the directors name origin-0's connection broker, and no cache's",
     "hints": "each director's redirect names the namespace, whether it takes a token, and its issuer",
+    "redirects": (
+        "a plain HTTP client follows each director's redirects, of bare paths too, to a"
+        " cache or an origin, and gets the object"
+    ),
     "presence": "an object that one origin alone holds: the directors send reads of it there",
+    "downtime": "a server its admin declares down is named by no director, until it is up again",
 }
 
 # The scenarios that run whatever test.py is asked for.
@@ -73,6 +110,17 @@ REQUIRED = ("ready", "caches")
 TRIES, INTERVAL = 20, 15
 # How long `directors` and `broker` wait, in seconds.
 DIRECTORS_WAIT = 60
+# How long `downtime` waits for the directors, in seconds: they learn of a
+# downtime, and of its end, from the registry, which they ask every minute
+# (Director.RegistryQueryInterval), and which the server tells at once.
+DOWNTIME_WAIT = 150
+
+# The registry's registrations (`registry-approval`), each a prefix with a
+# status; a server's is /caches/<host> or /origins/<host>.
+REGISTRATIONS = "/api/v1.0/registry_ui/namespaces"
+SERVER_PREFIXES = ("/caches/", "/origins/")
+# A server's downtimes, through its web API.
+DOWNTIME = "/api/v1.0/downtime"
 
 # The connection broker's path, and the one namespace a brokered origin
 # exports (see presets/origin-broker.sh).
@@ -91,6 +139,17 @@ DISCOVERY_FIELDS = (
 def skip(_fed: common.Federation) -> Optional[str]:
     """Never: every shape has a federation to test."""
     return None
+
+
+@dataclass
+class Approval:
+    """What approving the registrations found (see approve_pending()):
+    the prefixes approved, the servers a director named while their
+    registration was pending, and what went wrong."""
+
+    approved: list[str] = field(default_factory=list[str])
+    named_early: list[str] = field(default_factory=list[str])
+    problems: list[str] = field(default_factory=list[str])
 
 
 class Probe:
@@ -112,6 +171,19 @@ class Probe:
         self.protected = next(ns for ns in credentials.PROTECTED if ns in self.fed.exports)
         self.read_ns = session.namespaces[0]
         self.uploaded = False
+        self.approval = Approval()
+
+    def admin(self, web_url: str, key_dir: str) -> accounts.Api:
+        """The web API of the server at web_url, as its admin (see
+        credentials.mint_admin()), signing with its key in key_dir."""
+        host = director.host(web_url)
+        token = credentials.mint_admin(
+            self.fed,
+            self.session.path(f"tokens/admin.{host}"),
+            credentials.local_issuer(self.fed, web_url),
+            common.signing_key(key_dir),
+        )
+        return accounts.Api(web_url, token)
 
     def upload(self) -> Optional[str]:
         """Put each namespace's probe at every origin, once (see
@@ -153,10 +225,65 @@ class Probe:
         return None
 
 
+def pending_registrations(api: accounts.Api) -> list[tuple[str, str]]:
+    """Each pending registration's ID and prefix."""
+    listed = accounts.must(
+        api.call("GET", f"{REGISTRATIONS}?status=Pending"), "listing pending registrations"
+    )
+    found: list[tuple[str, str]] = []
+    for row in listed.array:
+        entry = common.as_object(row) or {}
+        found.append((str(entry.get("id", "")), str(entry.get("prefix", ""))))
+    return found
+
+
+def approve_pending(probe: Probe) -> None:
+    """Approve every pending registration, as the registry's admin,
+    recording in probe.approval what was approved; and before approving,
+    which of the pending servers a director already names for the
+    object, which none should, since the directors refuse the
+    advertisements of a server whose registration is pending."""
+    fed, found = probe.fed, probe.approval
+    try:
+        host = director.host(fed.registry_url)
+        api = probe.admin(fed.registry_url, f"issuer-keys/{host}")
+        pending = pending_registrations(api)
+        if not pending:
+            return
+        servers = sorted(
+            prefix[len(start) :]
+            for _, prefix in pending
+            for start in SERVER_PREFIXES
+            if prefix.startswith(start)
+        )
+        path = f"/{probe.protected}/{probe.rel}"
+        for url in fed.directors:
+            for route in ("object", "origin"):
+                answer = director.ask(url, route, path)
+                found.named_early += [
+                    f"{director.host(url)} named {name}, whose registration was pending"
+                    for name in servers
+                    if answer.names(name)
+                ]
+        headers = accounts.csrf(api)
+        for reg_id, prefix in pending:
+            accounts.must(
+                api.call("PATCH", f"{REGISTRATIONS}/{reg_id}/approve", headers=headers),
+                f"approving {prefix}",
+            )
+            found.approved.append(prefix)
+    except accounts.ApiError as e:
+        found.problems.append(str(e))
+
+
 def ready(probe: Probe) -> tuple[str, str]:
-    """Dies if the federation never serves: nothing after it could pass."""
+    """Dies if the federation never serves: nothing after it could pass.
+    Where the registry requires approval, each try first approves what
+    is pending, since a server registers once it is up."""
     why: Optional[str] = None
     for n in range(1, TRIES + 1):
+        if probe.fed.registry_approval:
+            approve_pending(probe)
         why = probe.upload() or probe.get()
         if why is None:
             return PASS, f"{probe.read_ns}, after {n} tries" if n > 1 else probe.read_ns
@@ -199,6 +326,22 @@ def caches(probe: Probe) -> tuple[str, str]:
     if problems:
         return FAIL, common.first(problems)
     return PASS, f"{len(probe.fed.caches)} cache(s)"
+
+
+def approval(probe: Probe) -> tuple[str, str]:
+    """What `ready` found as it approved the registrations (see
+    approve_pending()): a director that named a server whose registration
+    was pending fails it."""
+    found = probe.approval
+    if not probe.fed.registry_approval:
+        return SKIP, "the registry requires no approval ('-p registry-approval')"
+    if found.problems:
+        return FAIL, common.first(found.problems)
+    if found.named_early:
+        return FAIL, common.first(found.named_early)
+    if not found.approved:
+        return PASS, "nothing was pending: an earlier run approved every registration"
+    return PASS, f"approved {len(found.approved)}: {', '.join(found.approved)}"
 
 
 def directors(probe: Probe) -> tuple[str, str]:
@@ -421,6 +564,126 @@ def hints(probe: Probe) -> tuple[str, str]:
     )
 
 
+def follow(
+    answer: web.Response, method: str, token: Optional[str], upload: Optional[bytes] = None
+) -> web.Response:
+    """The answer to method at answer's Location, presenting token again,
+    as a client that trusts the redirect does."""
+    return web.request(method, answer.header("Location"), token=token, upload=upload)
+
+
+def landed(answer: web.Response, servers: Sequence[tuple[str, str]]) -> Optional[str]:
+    """Which of servers (name, data URL) a redirect sends the client to,
+    by its Location; None if none of them."""
+    location = answer.header("Location")
+    return next((name for name, url in servers if location.startswith(url + "/")), None)
+
+
+def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[str]:
+    """What is wrong with where the director at director_url sends a plain
+    HTTP client's requests for the object in namespace, and with what it
+    gets there (see redirects())."""
+    fed = probe.fed
+    caps = fed.exports[namespace]
+    token = None if namespace == "public" else probe.session.token(namespace)
+    path = f"/{namespace}/{probe.rel}"
+    data = probe.data[namespace]
+    name = director.host(director_url)
+    at_caches = [(c.svc, c.url) for c in fed.federated_caches]
+    at_origins = [(o.svc, o.url) for o in fed.origins]
+    bare = at_origins if fed.director_default_response == "origin" else at_caches
+    # Each read: its method and path, the servers it must land at, and
+    # whether it asks for a direct read, which the director refuses (405)
+    # where the namespace takes no direct clients.
+    reads = [
+        ("GET", path, bare, False),
+        ("HEAD", path, bare, False),
+        ("GET", f"{path}{transfers.DIRECT_QUERY}", at_origins, True),
+        ("GET", f"/api/v1.0/director/object{path}", at_caches, False),
+        ("GET", f"/api/v1.0/director/origin{path}", at_origins, False),
+    ]
+    problems: list[str] = []
+    for method, target, where, asks_direct in reads:
+        answer = web.request(method, f"{director_url}{target}", token=token)
+        what = f"{name}: {method} {target}"
+        # What lands at an origin is served only to direct clients.
+        allowed = credentials.decide(ALLOW, caps, "get", direct=where is at_origins) == ALLOW
+        if asks_direct and not allowed:
+            if answer.status == 307:
+                problems.append(
+                    f"{what}: redirected, though /{namespace} takes no direct clients"
+                )
+            continue
+        if answer.status != 307:
+            problems.append(f"{what}: {answer.describe()}, not 307")
+            continue
+        at = landed(answer, where)
+        if at is None:
+            kind = "an origin" if where is at_origins else "a cache"
+            problems.append(f"{what}: redirected to {answer.header('Location')}, not {kind}")
+            continue
+        served = follow(answer, method, token)
+        length = served.header("Content-Length")
+        if not allowed:
+            if served.status not in (401, 403):
+                problems.append(f"{what} -> {at}: {served.describe()}, not a refusal")
+            elif served.body == data:
+                problems.append(f"{what} -> {at}: refused, but the body is the object")
+        elif served.status != 200:
+            problems.append(f"{what} -> {at}: {served.describe()}, not 200")
+        elif method == "GET" and served.body != data:
+            problems.append(f"{what} -> {at}: the body is not the object")
+        elif method == "HEAD" and length != str(len(data)):
+            problems.append(f"{what} -> {at}: Content-Length '{length}', not {len(data)}")
+
+    # A bare-path PUT goes to an origin, where the namespace takes writes.
+    rel = f"{probe.rel}-put-{name}"
+    payload = os.urandom(4096)
+    answer = web.request(
+        "PUT", f"{director_url}/{namespace}/{rel}", token=token, upload=payload
+    )
+    what = f"{name}: PUT /{namespace}/{rel}"
+    writes = "Writes" in caps
+    if writes and answer.status != 307:
+        problems.append(f"{what}: {answer.describe()}, not 307")
+    elif writes and landed(answer, at_origins) is None:
+        problems.append(f"{what}: redirected to {answer.header('Location')}, not an origin")
+    elif answer.status == 307:
+        served = follow(answer, "PUT", token, payload)
+        if writes and not served.ok:
+            problems.append(f"{what} -> {landed(answer, at_origins)}: {served.describe()}")
+        elif not writes and served.ok:
+            problems.append(f"{what}: succeeded, though /{namespace} takes no writes")
+    elif answer.status is None or not 400 <= answer.status < 500:
+        problems.append(f"{what}: {answer.describe()}, not a refusal")
+    held = stores.held_anywhere(fed.origins, namespace, rel, probe.session.tokens())
+    if writes and common.digest(payload) not in held:
+        problems.append(f"{what}: no origin holds what was put")
+    elif not writes and any(held):
+        problems.append(
+            f"{what}: an origin holds what was put, though /{namespace} takes no writes"
+        )
+    return problems
+
+
+def redirects(probe: Probe) -> tuple[str, str]:
+    """Each director's redirects, followed by a plain HTTP client (see
+    redirect_problems()), in each exported namespace."""
+    fed = probe.fed
+    if fed.standalone:
+        return SKIP, "a standalone origin has no director"
+    problems: list[str] = []
+    for url in fed.directors:
+        for namespace in probe.session.namespaces:
+            problems += redirect_problems(probe, url, namespace)
+    if problems:
+        return FAIL, common.first(problems)
+    return PASS, (
+        f"{len(fed.directors)} director(s), {len(probe.session.namespaces)} namespace(s):"
+        f" bare paths to {'an origin' if fed.director_default_response == 'origin' else 'a cache'}"
+    )
+
+
 def presence_problems(
     probe: Probe, holder: common.Origin, namespace: str, rel: str, data: bytes
 ) -> list[str]:
@@ -515,14 +778,91 @@ def presence(probe: Probe) -> tuple[str, str]:
     )
 
 
+def routed_to(fed: common.Federation, route: str, path: str, host: str) -> list[str]:
+    """The directors that would send a GET of path, for route, to host."""
+    return [
+        director.host(url)
+        for url in fed.directors
+        if director.ask(url, route, path).names(host)
+    ]
+
+
+def down(probe: Probe, svc: str, web_url: str, route: str) -> Optional[str]:
+    """Declare the server svc down for the next hour, as its admin, through
+    its web API at web_url; within DOWNTIME_WAIT seconds, no director may
+    name it for route; then end the downtime, after which, as soon, every
+    director must name it again. What went wrong, or None."""
+    fed = probe.fed
+    path = f"/{probe.protected}/{probe.rel}"
+    host = director.host(web_url)
+    before = routed_to(fed, route, path, host)
+    if len(before) != len(fed.directors):
+        return f"before its downtime, only {before} named it"
+    api = probe.admin(web_url, f"issuer-keys/{svc}")
+    headers = accounts.csrf(api)
+    now = int(time.time())
+    declared = {
+        "class": "SCHEDULED",
+        "severity": "Outage (completely inaccessible)",
+        "description": "pelican-test-framework",
+        "startTime": now - 60,
+        "endTime": now + 3600,
+    }
+    downtime_id = str(uuid.uuid4())
+    answer = api.call("POST", f"{DOWNTIME}/{downtime_id}", declared, headers)
+    if not answer.ok:
+        return f"declaring the downtime: {answer.describe()}"
+    why = None
+    if not common.wait_for(lambda: not routed_to(fed, route, path, host), DOWNTIME_WAIT, 5):
+        why = f"{routed_to(fed, route, path, host)} still named it {DOWNTIME_WAIT}s into its downtime"
+    ended = api.call("DELETE", f"{DOWNTIME}/{downtime_id}", headers=headers)
+    if why:
+        return why
+    if not ended.ok:
+        return f"ending the downtime: {ended.describe()}"
+    if not common.wait_for(
+        lambda: len(routed_to(fed, route, path, host)) == len(fed.directors), DOWNTIME_WAIT, 5
+    ):
+        return (
+            f"{DOWNTIME_WAIT}s after its downtime ended, only {routed_to(fed, route, path, host)}"
+            " named it"
+        )
+    return None
+
+
+def downtime(probe: Probe) -> tuple[str, str]:
+    """down() for the last federated cache, and with several origins, the
+    last origin."""
+    fed = probe.fed
+    if fed.standalone:
+        return SKIP, "a standalone origin has no director"
+    if fed.tiny:
+        return SKIP, "the tiny topology's servers and director are one process"
+    cache = fed.federated_caches[-1]
+    targets = [(cache.svc, cache.web_url, "object")]
+    if len(fed.origins) > 1:
+        targets.append((fed.origins[-1].svc, fed.origins[-1].web_url, "origin"))
+    for svc, web_url, route in targets:
+        why = down(probe, svc, web_url, route)
+        if why:
+            return FAIL, f"{svc}: {why}"
+    return PASS, (
+        f"{', '.join(svc for svc, _, _ in targets)}: dropped by {len(fed.directors)}"
+        " director(s), then named again"
+    )
+
+
 RUN = {
     "ready": ready,
     "caches": caches,
+    "approval": approval,
     "directors": directors,
     "discovery": discovery,
     "broker": broker,
     "hints": hints,
+    "redirects": redirects,
     "presence": presence,
+    "downtime": downtime,
 }
 
 
