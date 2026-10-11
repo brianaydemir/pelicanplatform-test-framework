@@ -35,8 +35,9 @@ profiles = (os.environ.get("COMPOSE_PROFILES") or "").split(",")
 # How many objects each origin holds in each namespace (see transfers.LOAD).
 OBJECTS = transfers.LOAD.objects
 # The namespaces of origin-2, another owner (`topo-multi-owner`), which
-# mirror /protected-a and /public.
-OWNER_NAMESPACES = ("other", "public/other")
+# mirror /protected-a and /public; and /public/secret, a protected prefix
+# inside /public (fed_owner_exports in fed.sh).
+OWNER_NAMESPACES = ("other", "public/other", "public/secret")
 # The collections that the suites write in, under each store's data/.
 SUITE_DIRS = (
     "put",

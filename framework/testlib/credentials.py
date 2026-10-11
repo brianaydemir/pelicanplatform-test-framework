@@ -329,11 +329,14 @@ def mint(
     subject: str = SUBJECT,
     raw_scopes: tuple[str, ...] = (),
     audience: str = "",
+    profile: str = "",
 ) -> None:
     """Write a token for namespace prefix (e.g. /protected-a/) to file
     out, with scopes (`pelican token create` flags, e.g. read) and
     raw_scopes (scopes as such, e.g. pelican.transfer). Its audience is
-    the WLCG profile's "any" unless audience names one."""
+    the profile's "any" unless audience names one. Its profile is the
+    WLCG token profile's unless profile names another (`scitokens2`, whose
+    flags grant `read:` and `write:` scopes, and whose "any" is `ANY`)."""
     command = [common.binary("pelican"), "token", "create", fed.url + prefix]
     command += [f"--{scope}" for scope in scopes]
     for scope in raw_scopes:
@@ -342,6 +345,8 @@ def mint(
     command += ["--lifetime", str(lifetime), "--private-key", key]
     if audience:
         command += ["--audience", audience]
+    if profile:
+        command += ["--profile", profile]
     with open(out, "w", encoding="utf-8") as f:
         done = subprocess.run(  # nosec B603
             command,
@@ -364,11 +369,12 @@ def mint_server(
     scope_path: str = "/",
     subject: str = SUBJECT,
     audience: str = "",
+    profile: str = "",
 ) -> str:
     """Write a `server` token for namespace to file out, and return it:
     what the tests use for their own setup and checks. A token for less
-    of the namespace (scope_path), for another subject, or for another
-    audience is the origins' too."""
+    of the namespace (scope_path), for another subject or audience, or of
+    another profile is the origins' too."""
     issuer = fed.issuer_of(namespace)
     mint(
         fed,
@@ -381,6 +387,7 @@ def mint_server(
         scopes,
         subject,
         audience=audience,
+        profile=profile,
     )
     with open(out, encoding="utf-8") as f:
         return f.read().strip()

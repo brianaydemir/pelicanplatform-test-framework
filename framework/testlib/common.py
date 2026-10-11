@@ -248,7 +248,7 @@ class Export:
     """An export of another owner's origin (see Owner)."""
 
     prefix: str  # its federation prefix, e.g. /public/other
-    like: str  # the namespace it mirrors, e.g. `public`
+    like: str  # the namespace it mirrors, e.g. `public`; `-` for none (/public/secret)
     caps: frozenset[str]  # its capabilities
     issuer: str  # the issuer URL it has, or would have
 

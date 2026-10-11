@@ -85,7 +85,8 @@ class Pair:
 
 def pairs(fed: common.Federation) -> list[Pair]:
     """Every export of another owner whose namespace the origins also
-    export."""
+    export. /public/secret mirrors none (its `like` is `-`), and is the
+    auth suite's (nested-protected)."""
     return [
         Pair(owner, export)
         for owner in fed.owners

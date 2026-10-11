@@ -602,6 +602,7 @@ services:
       - ./var/data/origin/1/protected-b:/srv/origin-1-protected-b
       - ./var/data/origin/2/other:/srv/origin-2-other
       - ./var/data/origin/2/public-other:/srv/origin-2-public-other
+      - ./var/data/origin/2/public-secret:/srv/origin-2-public-secret
       # Bucket `tier`, which the caches tier to (-p cache-tiered).
       - ./var/data/tier:/srv/tier
       - ./var/generated/s3-access-key:/fed/s3-access-key:ro

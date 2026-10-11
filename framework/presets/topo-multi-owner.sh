@@ -9,9 +9,12 @@
 # (Registry.RequireKeyChaining), as it does by default.
 #
 # origin-2 follows ORIGIN_NAMESPACES: /other is like /protected-a, and
-# /public/other like /public; nothing is like /protected-b. Its objects
-# are 2.<n>, in framework/var/data/origin/2/data/. The owners suite tests
-# it (docs/tests.md); the other suites test only the origins' namespaces.
+# /public/other like /public; nothing is like /protected-b. Where /public
+# is exported, it also exports /public/secret, which takes a token like
+# /protected-a, inside /public, for the auth suite's nested-protected
+# check. Its objects are 2.<n>, in each prefix's data/ in
+# framework/var/data/origin/2/. The owners suite tests it (docs/tests.md);
+# the other suites test only the origins' namespaces.
 #
 # fed.sh refuses `origin-ssh` and `origin-pstore`, which have no store for
 # it.

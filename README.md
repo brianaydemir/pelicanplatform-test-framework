@@ -210,7 +210,7 @@ objects:
 | `topo-tiny`             | the whole federation in one container; refuses `cache-xrootd`, `auth-external-issuer`, and every preset that adds a service but the metadata ones |
 | `topo-multi-origin`     | adds origin-1, a replica: origin-0's prefixes and key                                                                                             |
 | `topo-multi-cache`      | adds cache-1                                                                                                                                      |
-| `topo-multi-owner`      | adds origin-2, another owner: `/other`, and `/public/other` inside origin-0's `/public`, with a key and an issuer of its own; see `owners`        |
+| `topo-multi-owner`      | adds origin-2, another owner: `/other`, and `/public/other` and `/public/secret` inside origin-0's `/public`, with a key and an issuer of its own; see `owners` |
 | `topo-multi-director`   | adds director-1, which shares director-0's key                                                                                                    |
 | `topo-site-local-cache` | adds cache-2, a site-local cache that the director does not know of; see `sitelocal`                                                              |
 | `topo-standalone`       | origin-0 alone, as a standalone origin: no discovery host, director, registry, or cache; native origins only                                      |

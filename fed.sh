@@ -698,14 +698,33 @@ fed_own_issuer_url() {
   printf '%s/api/v1.0/issuer/ns%s\n' "$1" "$2"
 }
 
-# origin-2's federation prefix (`topo-multi-owner`) for the namespace $1
-# that it mirrors: /public/other is like /public, nested in it, and
-# /other like /protected-a. It has nothing like /protected-b.
-fed_owner_prefix() {
+# origin-2's exports (`topo-multi-owner`), one per line: its federation
+# prefix, and the origins' namespace that it mirrors, whose capabilities
+# it has. /public/other is like /public, nested in it, and /other like
+# /protected-a. It has nothing like /protected-b. Where /public is
+# exported, /public/secret, nested in it too, has /protected-a's
+# capabilities but mirrors no namespace (`-`): a protected prefix inside a
+# public one, for the auth suite's nested-protected check. It is not
+# inside /public/other, since one native origin cannot serve one export
+# inside another (their routes conflict).
+fed_owner_exports() {
+  for ns in ${fed_namespaces}; do
+    case "${ns}" in
+      public)      printf '/public/other public\n' ;;
+      protected-a) printf '/other protected-a\n' ;;
+    esac
+  done
+  if fed_exports_namespace public; then
+    printf '/public/secret -\n'
+  fi
+}
+
+# The namespace whose capabilities origin-2's export mirroring $1 has (see
+# fed_owner_exports).
+fed_owner_caps_of() {
   case "$1" in
-    public)      printf '/public/other\n' ;;
-    protected-a) printf '/other\n' ;;
-    *)           return 1 ;;
+    -) printf 'protected-a\n' ;;
+    *) printf '%s\n' "$1" ;;
   esac
 }
 
@@ -1061,10 +1080,10 @@ fed_generate() {
   # data URL, and store, as in origins; the directory (under
   # framework/var) of its issuer keys; and its web URL. owner-exports has
   # one line per export of theirs: service, federation prefix, the
-  # namespace it mirrors, its capabilities, and the issuer URL it gives
-  # the prefix, or would give it (/public/other has no issuer). origin-2
-  # always runs its own issuer (see docker-compose.yaml). Both are empty
-  # without another owner.
+  # namespace it mirrors (`-` for none; see fed_owner_exports), its
+  # capabilities, and the issuer URL it gives the prefix, or would give it
+  # (/public/other has no issuer). origin-2 always runs its own issuer
+  # (see docker-compose.yaml). Both are empty without another owner.
   {
     if fed_has_profile multi-owner; then
       printf '%s %s %s\n' "$(fed_origin_line origin-2 2)" issuer-keys/origin-2 \
@@ -1073,10 +1092,9 @@ fed_generate() {
   } | fed_write framework/var/generated/owners
   {
     if fed_has_profile multi-owner; then
-      for ns in ${fed_namespaces}; do
-        prefix=$(fed_owner_prefix "${ns}") || continue
-        fed_namespace_caps "${ns}"
-        printf 'origin-2 %s %s %s %s\n' "${prefix}" "${ns}" \
+      fed_owner_exports | while read -r prefix like; do
+        fed_namespace_caps "$(fed_owner_caps_of "${like}")"
+        printf 'origin-2 %s %s %s %s\n' "${prefix}" "${like}" \
             "$(printf '%s' "${fed_caps}" | tr ' ' ,)" \
             "$(fed_own_issuer_url https://origin-2:8444 "${prefix}")"
       done
@@ -1137,22 +1155,22 @@ fed_generate() {
 
   # origin-2, another owner (`topo-multi-owner`), with an issuer and a key
   # of its own: /other is like /protected-a, and /public/other like
-  # /public, but nested in it. It has nothing like /protected-b. Its layer
-  # beats the shared one above.
+  # /public, but nested in it; and /public/secret, nested in /public too,
+  # with /protected-a's capabilities (see fed_owner_exports). It has
+  # nothing like /protected-b. Its layer beats the shared one above.
   if fed_has_profile multi-owner; then
     {
       fed_exports_header
       first=yes
-      for ns in ${fed_namespaces}; do
-        prefix=$(fed_owner_prefix "${ns}") || continue
+      fed_owner_exports | while read -r prefix like; do
         [ -n "${first}" ] || printf '\n'
         first=""
         bucket=""
         if [ "${ORIGIN_VARIANT}" = s3 ]; then
           bucket=$(fed_s3_bucket origin-2 "${prefix}")
         fi
-        fed_export_entry "${prefix}" "${ns}" "$(fed_storage_prefix "${prefix}")" "" "" \
-            "${bucket}"
+        fed_export_entry "${prefix}" "$(fed_owner_caps_of "${like}")" \
+            "$(fed_storage_prefix "${prefix}")" "" "" "${bucket}"
       done
     } | fed_instance_write origin-2 60-origin-exports.yaml
   else
@@ -1445,7 +1463,7 @@ fed_prepare_dirs() {
       framework/var/data/lab-server; do
     fed_prepare_storage "${store}" public protected-a protected-b
   done
-  fed_prepare_storage framework/var/data/origin/2 other public-other
+  fed_prepare_storage framework/var/data/origin/2 other public-other public-secret
 }
 
 # Make directories $2... in store $1, writable by any user, unless they
