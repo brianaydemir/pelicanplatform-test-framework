@@ -99,6 +99,13 @@ def tier(size: int, declared: bool) -> str:
     return "buffered" if size <= SPILL else "streamed"
 
 
+def stored(size: int) -> int:
+    """How many bytes the V2 cache's file of an object of size bytes takes:
+    its blocks, and a tag for each (CalculateFileSize in Pelican's
+    local_cache)."""
+    return size + TAG * -(-size // BLOCK)
+
+
 def header(request: Request) -> str:
     """The Range header for request."""
     specs: list[str] = []

@@ -40,6 +40,7 @@ from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from . import common, jwt
 
@@ -460,16 +461,23 @@ def local_issuer(fed: common.Federation, web_url: str) -> str:
 
 
 def mint_user(
-    fed: common.Federation, out: str, issuer: str, key: str, username: str, lifetime: int = 300
+    fed: common.Federation,
+    out: str,
+    issuer: str,
+    key: str,
+    username: str,
+    lifetime: int = 300,
+    extra_scopes: tuple[str, ...] = (),
 ) -> str:
     """Write a token that a server's web API takes as username's, and
-    return it: scope WEB_SCOPE, from the server's local issuer (see
-    local_issuer()) and signed with its own key, as `pelican cache
-    introspect` mints the admin's (fetchOrGenerateWebAPIAdminToken in
-    Pelican's cmd/cmd_utils.go). The server resolves the subject to its
+    return it: scope WEB_SCOPE, and extra_scopes, from the server's local
+    issuer (see local_issuer()) and signed with its own key, as `pelican
+    cache introspect` mints the admin's (fetchOrGenerateWebAPIAdminToken
+    in Pelican's cmd/cmd_utils.go). The server resolves the subject to its
     record of that user (extractUserFromBearerToken in
     web_ui/authentication.go); the built-in `admin` always has one."""
-    mint(fed, out, "/", key, issuer, "/", lifetime, (), username, raw_scopes=(WEB_SCOPE,))
+    raw_scopes = (WEB_SCOPE, *extra_scopes)
+    mint(fed, out, "/", key, issuer, "/", lifetime, (), username, raw_scopes=raw_scopes)
     with open(out, encoding="utf-8") as f:
         return f.read().strip()
 
@@ -478,6 +486,54 @@ def mint_admin(fed: common.Federation, out: str, issuer: str, key: str) -> str:
     """Write the admin's token for a server (see mint_user()), and return
     it."""
     return mint_user(fed, out, issuer, key, "admin")
+
+
+# The scopes of a server's metrics (/metrics) and of its Prometheus query
+# API (/api/v1.0/prometheus/), which Monitoring.MetricAuthorization and
+# PromQLAuthorization, on by default, require.
+SCRAPE_SCOPE = "monitoring.scrape"
+QUERY_SCOPE = "monitoring.query"
+
+
+def key_dir_of(fed: common.Federation, web_url: str) -> str:
+    """The directory (under framework/var) of the keys of the server at
+    web_url: another owner's own, or issuer-keys/<its host>, where
+    fed.sh puts every other server's (`fed` in `tiny`)."""
+    for owner in fed.owners:
+        if owner.web_url == web_url:
+            return owner.key_dir
+    return f"issuer-keys/{urlsplit(web_url).hostname}"
+
+
+def web_token(
+    fed: common.Federation,
+    web_url: str,
+    subject: str,
+    scopes: tuple[str, ...],
+    lifetime: int = 300,
+    key: Optional[str] = None,
+) -> str:
+    """A token from the local issuer of the server at web_url (see
+    local_issuer()), for subject, with scopes (as such, e.g.
+    SCRAPE_SCOPE), lasting lifetime seconds, which jwt.encode() signs
+    with the server's own key, or with key: like the token a server mints
+    to scrape its own /metrics (createPromMetricToken in Pelican's
+    web_ui/authorization.go)."""
+    key = key or common.signing_key(key_dir_of(fed, web_url))
+    issuer = local_issuer(fed, web_url)
+    now = int(time.time())
+    claims = {
+        "aud": [issuer],
+        "exp": now + lifetime,
+        "iat": now,
+        "iss": issuer,
+        "jti": str(uuid.uuid4()),
+        "nbf": now,
+        "scope": " ".join(scopes),
+        "sub": subject,
+        "wlcg.ver": "1.0",
+    }
+    return jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), claims, key=key)
 
 
 def wait_until_stale(expiry: Optional[float]) -> None:

@@ -212,7 +212,7 @@ class Test:
         200 is asked again, once."""
         url = f"{cache.url}/protected-a/{self.rel(cache, name)}"
         answer = web.request("GET", url, token=self.token, headers=headers)
-        if answer.status == 200 and self.fed.origin_cache_control:
+        if answer.status == 200 and self.fed.sent_cache_control:
             answer = web.request("GET", url, token=self.token, headers=headers)
         return answer
 
@@ -448,11 +448,12 @@ def tampered(test: Test) -> tuple[str, str]:
 def overwritten(test: Test) -> tuple[str, str]:
     """A tiered object, overwritten at the origins with another of its
     size: each whole read through the cache must be all the old version
-    or all the new. With ORIGIN_CACHE_CONTROL (`-p origin-max-age`), the
-    cache must serve the new version once the old is stale, within
-    REVALIDATION_MARGIN seconds; without it, the cache decides for itself
-    how long its copy stays fresh."""
-    fresh = blocks.freshness(test.fed.origin_cache_control)
+    or all the new. With ORIGIN_CACHE_CONTROL (`-p origin-max-age`) at
+    native origins, the cache must serve the new version once the old is
+    stale, within REVALIDATION_MARGIN seconds; without it, and at XRootD
+    origins, which send none, the cache decides for itself how long its
+    copy stays fresh."""
+    fresh = blocks.freshness(test.fed.sent_cache_control)
     notes: list[str] = []
 
     def version(cache: common.Cache, name: str, versions: dict[str, bytes]) -> str:

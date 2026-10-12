@@ -7,9 +7,13 @@ A scenario is a set of transfers through one client, in one namespace,
 with one credential. Each runs through `pelican object get` or `put`,
 and again through stash_plugin as plugin-<scenario>, with the same
 batches. Each get also has a direct-<scenario> twin, which asks the
-director for an origin instead of a cache. A batch is one client
-invocation, of as many objects as the next of LOAD's sizes (see
-make_batches() and batch_count()).
+director for an origin instead of a cache, and a cache-<scenario> twin,
+which names the first federated cache (`--cache`, or
+Client.PreferredCaches for the plugin) and takes the objects from it,
+asking the director only what the namespace wants: the three ways a
+client can reach an object. A batch is one client invocation, of as
+many objects as the next of LOAD's sizes (see make_batches() and
+batch_count()).
 
 What a scenario should do depends on the namespace's capabilities in
 the shape (see outcome()). /public, which has no issuer, gets only the
@@ -49,7 +53,9 @@ class Scenario:
 
     name: str
     client: str  # "pelican" or "plugin"
-    route: str  # a get's: "cache", or "direct" (to an origin); a put's: "origin"
+    # A get's route: "cache" (the director's choice), "direct" (an
+    # origin), or "named" (a cache the client names); a put's: "origin".
+    route: str
     op: str  # "get" or "put"
     namespace: str  # one of NAMESPACES
     credential: Optional[Credential]  # None: no token, and no refusal expected
@@ -68,6 +74,11 @@ class Scenario:
     def direct(self) -> bool:
         """Whether its gets come straight from an origin."""
         return self.route == "direct"
+
+    @property
+    def named(self) -> bool:
+        """Whether its gets come from a cache the client names."""
+        return self.route == "named"
 
 
 def exported(scenario: Scenario, exports: Exports) -> bool:
@@ -92,12 +103,21 @@ def outcome(scenario: Scenario, exports: Exports) -> Outcome:
     return Outcome.PASS
 
 
+# What a get's scenarios are named after its route, and how they fetch.
+PREFIXES = {"cache": "", "direct": "direct-", "named": "cache-"}
+HOW = {
+    "cache": "through a cache",
+    "direct": "from an origin",
+    "named": "from the first federated cache, named",
+}
+
+
 def _how(route: str) -> str:
-    return "from an origin" if route == "direct" else "through a cache"
+    return HOW[route]
 
 
 def _gets(route: str) -> list[Scenario]:
-    prefix = "direct-" if route == "direct" else ""
+    prefix = PREFIXES[route]
     how = _how(route)
     scenarios = [
         Scenario(
@@ -199,7 +219,7 @@ def plugin_twin(scenario: Scenario) -> Scenario:
     )
 
 
-PELICAN_SCENARIOS = tuple(_gets("cache") + _gets("direct") + _puts())
+PELICAN_SCENARIOS = tuple(_gets("cache") + _gets("direct") + _gets("named") + _puts())
 PLUGIN_SCENARIOS = tuple(plugin_twin(s) for s in PELICAN_SCENARIOS)
 SCENARIOS = PELICAN_SCENARIOS + PLUGIN_SCENARIOS
 BY_NAME = {s.name: s for s in SCENARIOS}
@@ -241,7 +261,9 @@ def placed(scenario: Scenario, exports: Exports) -> Scenario:
 # names an upload after. So a batch is its URLs, and LocalFileName is
 # derived from them (local_name), never chosen on its own. A direct get
 # through the plugin asks for it with ?directread on each URL, since the
-# plugin has no flag for it; `pelican object get` is given --direct.
+# plugin has no flag for it; `pelican object get` is given --direct. A
+# named get's cache is in neither: the plugin takes it from
+# Client.PreferredCaches, and `pelican object get` from --cache.
 
 
 @dataclass(frozen=True)
@@ -606,6 +628,7 @@ def check_served_by(
     origin_hosts: AbstractSet[str],
     tiny: bool,
     cacheless: bool,
+    named: str = "",
 ) -> tuple[str, str]:
     """The verdict on the hosts that served route's downloads: PASS,
     FAIL, or SKIP (see report.py), and why. served is, for each namespace
@@ -617,7 +640,10 @@ def check_served_by(
     so each namespace with a download through a cache must have had some
     served by a cache (`cache-<N>`). A direct download must come from an
     origin, as must every download where there is no cache (cacheless).
-    In the tiny topology, one host is both, so neither says anything."""
+    A named download must come from the cache the client named (named,
+    its host), and from nowhere else: a client that fell back to the
+    director's choice would pass otherwise. In the tiny topology, one
+    host is everything, so none of these says anything."""
     if tiny:
         return report.SKIP, "the tiny topology's cache and origin are one host"
     hosts: dict[str, int] = {}
@@ -626,7 +652,11 @@ def check_served_by(
             hosts[host] = hosts.get(host, 0) + count
     if not hosts:
         return report.FAIL, f"no server recorded for any {route} download"
-    if route == "cache" and not cacheless:
+    if route == "named":
+        others = sorted(h for h in hosts if h != named)
+        if others:
+            return report.FAIL, f"named reads served by {', '.join(others)}, not {named}"
+    elif route == "cache" and not cacheless:
         lacking = [
             ns
             for ns, counts in sorted(served.items())

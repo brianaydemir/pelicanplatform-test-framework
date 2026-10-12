@@ -43,9 +43,12 @@ does. Presets change the shape.
 `./fed.sh test` runs `test.py` in the dev container, which runs every
 check that applies to the federation's shape. The checks are grouped in
 suites (`framework/suites/`): `federation`, `selftest`, `commands`,
-`transfer-api`, `listings`, `names`, `blocks`, `tiering`, `posc`,
-`metadata`, `users`, `owners`, `sitelocal`, `collections`, `issuer`,
-`advertise`, `webdav`, `auth`, and `transfers`.
+`client`, `transfer-api`, `listings`, `names`, `blocks`, `freshness`,
+`cache-api`, `throttling`, `exports`, `pstore`, `routing`,
+`director-api`, `registry`, `tiering`, `posc`, `metadata`, `users`,
+`owners`, `sitelocal`, `collections`, `issuer`, `accounts`,
+`advertise`, `webapi`, `observability`, `webdav`, `auth`,
+`transfers`, `restart`, and `keys`.
 A suite that doesn't apply to the shape is skipped, and says why.
 [What the tests check](docs/tests.md) describes each one.
 
@@ -256,7 +259,7 @@ objects:
 | `origin-multiuser`      | the origin reads and writes as each token's user (`Origin.Multiuser`); `posixv2` and `origin-xrootd` only |
 | `origin-broker`         | origin-0 uses director-0 as its connection broker; XRootD origins only, `/protected-a` only               |
 | `origin-transfer-api`   | the origins run the transfer API (`Origin.EnableTransferAPI`); see `transfer-api`                         |
-| `origin-short-tokens`   | the origins' issuer mints access tokens that last a minute and refresh tokens four (`Issuer.*TokenLifetime`); see `issuer` |
+| `origin-short-tokens`   | the origins' issuer mints access tokens and codes that last a minute and refresh tokens four (`Issuer.*Lifetime`); see `issuer` |
 | `origin-export-templates` | `/protected-b` has authorization templates of its own, replacing the global ones there; see `issuer`'s `templates` |
 
 **Authorization**
@@ -271,6 +274,7 @@ objects:
 | Preset                    | Effect                                                                                                             |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `director-default-origin` | the directors send a GET of a bare path to an origin, not a cache (`Director.DefaultResponse`); see `federation`'s `redirects` |
+| `director-discovery`      | director-0 serves the federation's metadata (`Director.EnableFederationMetadataHosting`), as its discovery host, so the federation is `pelican://director-0:8444`, and the nginx host runs only for `auth-external-issuer`; see `federation`'s `discovery` |
 | `registry-approval`       | nothing serves until an administrator approves its registration (`Registry.Require{Origin,Cache}Approval`), which the `federation` suite does |
 
 **Every server**

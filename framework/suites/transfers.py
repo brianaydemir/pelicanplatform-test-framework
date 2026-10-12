@@ -1,11 +1,13 @@
 """Transfers through the clients: each scenario's batches of objects,
 each batch one `pelican object get` or `put`, run together. The plugin-*
-scenarios run the same batches through stash_plugin instead, and the
-direct-* scenarios get from an origin rather than a cache. Then compare
-every byte moved with the origins' stores, and check that no batch left
-anything else in its directory, nor a failed get any file; and outside
-the tiny topology, check that in each namespace some cache served the
-downloads meant for one, and only an origin the direct ones.
+scenarios run the same batches through stash_plugin instead; the
+direct-* scenarios get from an origin rather than a cache, and the
+cache-* scenarios from the first federated cache, which the client
+names. Then compare every byte moved with the origins' stores, and
+check that no batch left anything else in its directory, nor a failed
+get any file; and outside the tiny topology, check that in each
+namespace some cache served the downloads meant for one, only an origin
+the direct ones, and only the named cache the named ones.
 
 What each scenario expects, how many batches it runs, and how a batch
 is judged, is in framework/testlib/transfers.py. Results go to
@@ -28,6 +30,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
+from urllib.parse import urlsplit
 
 from testlib import common, credentials, stores, transfers
 from testlib.common import die, warn
@@ -40,6 +43,9 @@ OUT = "data/transfers"
 
 
 SCENARIOS = {s.name: s.description for s in TABLE}
+
+# What a route's downloads must be served by, in the served-by-* rows.
+ROUTE_SERVERS = {"cache": "cache", "direct": "origin", "named": "named-cache"}
 
 
 def skip(_fed: common.Federation) -> Optional[str]:
@@ -96,13 +102,16 @@ def runnable(fed: common.Federation, selected: list[str], report: Report) -> lis
     """The selected scenarios, each as it runs in this shape (see
     transfers.placed()), but for those that can test nothing here, which
     are recorded as skipped: those in a namespace the shape does not
-    export, and those whose credential is moot."""
+    export, those that name a cache where the shape has no federated
+    one, and those whose credential is moot."""
     scenarios: list[Scenario] = []
     moot: dict[str, str] = {}
     for scenario in (transfers.placed(transfers.BY_NAME[n], fed.exports) for n in selected):
         why: Optional[str] = None
         if not transfers.exported(scenario, fed.exports):
             why = f"this shape does not export /{scenario.namespace}"
+        elif scenario.named and not fed.federated_caches:
+            why = "this shape has no federated cache for the client to name"
         elif scenario.credential is not None:
             why = credentials.moot(fed, scenario.credential)
         if why:
@@ -113,6 +122,13 @@ def runnable(fed: common.Federation, selected: list[str], report: Report) -> lis
     for why, count in Counter(moot.values()).items():
         warn(f"skipping {count} scenarios: {why}")
     return scenarios
+
+
+def named_cache(fed: common.Federation) -> common.Cache:
+    """The cache that the cache-* scenarios name: the first federated
+    one. A site-local cache, which a client must name, is the sitelocal
+    suite's."""
+    return fed.federated_caches[0]
 
 
 def make_directories(fed: common.Federation, plan: Plan) -> None:
@@ -228,8 +244,11 @@ def command(session: Session, plan: Plan, batch: Batch) -> tuple[list[str], dict
     output = os.path.abspath(f"{OUT}/output/{batch.id}")
     env = dict(session.env)
     if s.client == "plugin":
-        # A direct get's URLs carry ?directread (see transfers.batch_url).
+        # A direct get's URLs carry ?directread (see transfers.batch_url);
+        # a named get's cache is in the environment.
         env["_CONDOR_CREDS"] = os.path.abspath(f".condor_creds/{s.name}")
+        if s.named:
+            env["PELICAN_CLIENT_PREFERREDCACHES"] = named_cache(session.fed).url
         args = [session.plugin]
         if s.op == "put":
             args.append("-upload")
@@ -246,6 +265,8 @@ def command(session: Session, plan: Plan, batch: Batch) -> tuple[list[str], dict
         args += ["--token", os.path.abspath(token)]
     if s.direct:
         args.append("--direct")
+    if s.named:
+        args += ["--cache", named_cache(session.fed).url]
     if s.op == "get":
         args += [*batch.urls, "."]
     else:
@@ -490,22 +511,23 @@ def check_served(
 ) -> bool:
     """Which servers served the successful downloads, by client and
     route, judged by transfers.check_served_by(): outside `tiny`, a cache
-    must have served some of those meant for one in each namespace, and
-    an origin every direct one, and every one where there is no cache.
-    Uploads go straight to an origin, so they don't count. Returns
-    whether every verdict passed or skipped."""
+    must have served some of those meant for one in each namespace, an
+    origin every direct one, and every one where there is no cache, and
+    the named cache every named one. Uploads go straight to an origin,
+    so they don't count. Returns whether every verdict passed or
+    skipped."""
     ok = True
     origin_hosts = {o.svc for o in fed.origins}
     header = False
     for client in ("pelican", "plugin"):
-        for route in ("cache", "direct"):
+        for route in ("cache", "direct", "named"):
             gets = [
                 s
                 for s in plan.scenarios
                 if s.client == client and s.op == "get" and s.route == route
             ]
             downloads = [s for s in gets if expected[s.name] is Outcome.PASS]
-            case = f"served-by-{'cache' if route == 'cache' else 'origin'}-{client}"
+            case = f"served-by-{ROUTE_SERVERS[route]}-{client}"
             if gets and not downloads:
                 why = f"no {route} download should succeed in this shape"
                 report.add(case, SKIP, why, seconds=None)
@@ -527,8 +549,11 @@ def check_served(
             for host, count in sorted(hosts.items()):
                 print(f"  {label:<17} {count:>6} {host}")
 
+            named = ""
+            if route == "named":
+                named = urlsplit(named_cache(fed).url).hostname or named_cache(fed).svc
             verdict, note = transfers.check_served_by(
-                route, served, origin_hosts, fed.tiny, not fed.caches
+                route, served, origin_hosts, fed.tiny, not fed.caches, named
             )
             if verdict == FAIL:
                 warn(f"{note} ({client})")

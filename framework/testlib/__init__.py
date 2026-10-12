@@ -2,6 +2,8 @@
 framework/init-data.py share.
 
   blocks       the blocks suite's sizes and ranges, and checking a range
+  cacheapi     a V2 cache's own APIs: prestage, evict, stats, purges, and
+               introspection
   common       paths, messages, the command line, and generated/
   control      restarting, stopping, or reconfiguring a service mid-run,
                through framework/control.py on the host
@@ -11,10 +13,14 @@ framework/init-data.py share.
   metrics      a server's /metrics, and how a counter moved
   owners       another owner's namespaces beside the origins', for the
                owners suite
+  registry     the registry's own APIs: registering a prefix, keys of a
+               run's own, and the keys in a JWKS
   report       one row per test case, in framework/var/results/
   session      what every suite shares in one run: tokens, the client
   stores       what the origins hold, putting objects straight there, and
                what their storage cannot do
+  stub         a stub HTTP server in the dev container, for servers to
+               fetch from, which answers as a test tells it
   transfers    the transfers suite's scenarios, batches, and verdicts
   web          HTTP(S) requests straight to a server
   webdav       PROPFIND, and reading the listings it gets

@@ -84,18 +84,44 @@ browsers, which has no secret. The scenarios:
   client      `pelican object get` acquires a token from the issuer,
               approved as the user, and reuses it; under
               `-p origin-short-tokens`, refreshes it once it expires
+  isolation   each namespace's issuer is a trust domain of its own: its
+              clients, tokens, revocations, and collections are nothing
+              to another's, nor is a namespace that begins like it
+  device-csrf the verification page refuses a decision whose CSRF token
+              is not in both its cookie and the body
+  admin-clients
+              only the admin may use the admin API for clients, which
+              shows no secret, refuses a grant it does not know, and
+              narrows or deletes a client at once
+  cors-and-pkce
+              another site may read no endpoint that takes credentials,
+              and the public client may not run the code flow without
+              PKCE
+  code-expiry device and authorization codes expire unredeemed; needs
+              `-p origin-short-tokens`
+  registration
+              a client that registers itself (RFC 7591) gets only the
+              device and refresh grants, a redirect URI on this host and
+              a short name, and its first user; and manages itself
+              (RFC 7592) only with its registration access token
+
+`registration` registers a client, as the Pelican client does in the
+`client` scenario and the collections suite; the issuer allows an
+address five registrations, then one a minute, so it comes last, and
+waits once for the limit if it must.
 
 The run's collection, group, clients, and objects are removed after the
 suite; the users and their groups stay.
 """
 
 import dataclasses
+import json
 import os
 import secrets
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote
 
 from suites import collections
@@ -120,6 +146,12 @@ SCENARIOS = {
     "exchange": "token exchange narrows a token to what is asked and the client may carry",
     "expiry": "an expired access token is refused; a refresh token renews it until it expires",
     "client": "`pelican object get` acquires a token, reuses it, and refreshes it once expired",
+    "isolation": "each namespace's issuer: its clients, tokens, and collections are its own",
+    "device-csrf": "the verification page refuses a decision with a forged CSRF token",
+    "admin-clients": "the admin API for clients: the admin's alone, no secrets, changes obeyed",
+    "cors-and-pkce": "no credentialed endpoint for another site; the public client needs PKCE",
+    "code-expiry": "device and authorization codes expire unredeemed",
+    "registration": "a client that registers itself: its grants, URIs, name, user, and config",
 }
 
 ROLES = ("analyst", "member", "stranger")
@@ -160,6 +192,15 @@ DOOMED_WAIT = 600
 POLL_INTERVAL = 5.2
 # How long a client may take to acquire its token and finish.
 CLIENT_TIMEOUT = 180.0
+# How long past a code's expiry `code-expiry` redeems it, allowing for
+# clock skew between containers.
+CODE_MARGIN = 3
+# What the verification page says to a user who approves a flow for a
+# client that registered itself and is bound to another user.
+BOUND_ELSEWHERE = "This client is registered to a different user"
+# How long the issuer takes to allow another registration from an
+# address that has used up its five (one a minute).
+REGISTRATION_WAIT = 61
 
 
 def username(role: str) -> str:
@@ -387,11 +428,15 @@ def log_in(test: Test, role: str) -> User:
 
 def prepare(test: Test) -> None:
     """Make the run's users and groups (once), logins, collection, share,
-    objects, and the tokens that `expiry` leaves to expire."""
-    sweep(test)
+    objects, and the tokens that `expiry` leaves to expire. The admin,
+    and each user, agree to the origin's AUP first, without which it
+    refuses them its user and group routes."""
     admin = test.api("admin")
+    accounts.agree_to_aup(admin)
+    sweep(test)
     for role in (*ROLES, "curator"):
         test.ids[role] = accounts.ensure_user(admin, username(role))
+        accounts.agree_to_aup(test.api(role))
     for name in GROUPS:
         test.groups[name] = accounts.ensure_group(admin, name, eligible=True)
         must(accounts.set_eligible(admin, test.groups[name], True), f"making {name} eligible")
@@ -1346,6 +1391,459 @@ def client_scenario(test: Test) -> tuple[str, str]:
     return outcome(problems, ", ".join(notes))
 
 
+# --------------------------------------------------------------------------
+# The issuer's boundaries.
+
+
+def refused_with(answer: web.Response, status: int, error: str) -> bool:
+    """Whether answer is an OAuth2 error of status and error."""
+    return answer.status == status and issuer.error_of(answer) == error
+
+
+def isolation(test: Test) -> tuple[str, str]:
+    """Each namespace's issuer is a trust domain of its own: a client, a
+    refresh token, or an access token of one is nothing to another, a
+    revocation at one is nothing to the other, a namespace that merely
+    begins like another has no issuer, and a collection in one is not
+    granted by the other."""
+    problems: list[str] = []
+    stray = f"{test.web}{issuer.ROUTE}/{test.namespace}x/.well-known/openid-configuration"
+    found = web.request("GET", stray)
+    if found.status != 404 or "token_endpoint" in issuer.decoded(found):
+        problems.append(f"GET {stray}: {found.describe()}, not 404")
+    other = credentials.OTHER[test.namespace]
+    if other not in test.fed.exports:
+        return outcome(problems, f"/{test.namespace}x has no issuer; no /{other} to cross")
+    mine, theirs = test.client("device"), test.client("device", other)
+    toks = test.tokens("member", ("offline_access", f"{R}:/{ARCHIVE}"))
+    if toks.refresh is None:
+        return FAIL, "no refresh token came with offline_access"
+    crossed = dataclasses.replace(
+        mine,
+        url=theirs.url,
+        device_url=theirs.device_url,
+        token_url=theirs.token_url,
+        authorize_url=theirs.authorize_url,
+    )
+    answer = issuer.start_device(crossed, (f"{R}:/{ARCHIVE}",))
+    if not refused_with(answer, 401, "invalid_client"):
+        problems.append(f"the client at /{other}'s device endpoint: {answer.describe()}")
+    answer = issuer.refresh(crossed, toks.refresh)
+    if not refused_with(answer, 401, "invalid_client"):
+        problems.append(f"the client at /{other}'s token endpoint: {answer.describe()}")
+    answer = issuer.refresh(theirs, toks.refresh)
+    if not refused_with(answer, 400, "invalid_grant"):
+        problems.append(
+            f"the refresh token at /{other}: {answer.describe()}, not invalid_grant"
+        )
+    said = issuer.introspect(theirs, toks.access)
+    if said.get("active") is not False:
+        problems.append(f"the access token introspects at /{other} as {said}")
+    answer = issuer.userinfo(theirs.url, toks.access)
+    if answer.status != 401:
+        problems.append(f"/{other}'s userinfo with the access token: {answer.describe()}")
+    answer = issuer.exchange(test.client("exchange", other), toks.access, (f"{R}:/{ARCHIVE}",))
+    if not refused_with(answer, 400, "invalid_grant"):
+        problems.append(f"an exchange of the access token at /{other}: {answer.describe()}")
+    for tok, hint in ((toks.access, "access_token"), (toks.refresh, "refresh_token")):
+        issuer.revoke(theirs, tok, hint)
+        said = issuer.introspect(mine, tok, hint)
+        if not said.get("active"):
+            problems.append(f"the {hint}, revoked at /{other}, introspects as {said}")
+    problems += collection_isolation(test, other)
+    return outcome(problems, f"/{test.namespace}'s clients and tokens are nothing to /{other}")
+
+
+def collection_isolation(test: Test, other: str) -> list[str]:
+    """What is wrong with what other's issuer grants of gamma, which is a
+    collection of the suite's namespace alone, though other holds an
+    object at the same path: it should grant nothing of it."""
+    problems: list[str] = []
+    rel = f"{test.gamma_rel}/obj"
+    errors = stores.seed_everywhere(
+        test.fed.origins,
+        other,
+        rel,
+        os.urandom(OBJECT_SIZE),
+        test.session.token(other),
+        test.fed.exports[other],
+    )
+    if other not in test.seeded:
+        test.seeded.append(other)
+    if errors:
+        return [f"could not put /{other}/{rel} in place: {errors[0]}"]
+    wanted = (f"{R}:/", f"{M}:/", scope("read", test.gamma_rel))
+    granted = data_scopes(test.tokens("member", wanted).access)
+    if scope("read", test.gamma_rel) not in granted:
+        problems.append(f"/{test.namespace}'s issuer does not grant gamma to test-member")
+    tok = test.tokens("member", wanted, namespace=other).access
+    gamma = sorted(s for s in data_scopes(tok) if f":/{test.gamma_rel}" in s)
+    if gamma:
+        problems.append(f"/{other}'s issuer grants /{test.namespace}'s collection: {gamma}")
+    if "DirectReads" in test.fed.exports[other]:
+        target = stores.url(test.origin, other, rel)
+        answer = web.request("GET", target, token=tok)
+        if answer.status not in REFUSED:
+            problems.append(f"GET {target} with /{other}'s token: {answer.describe()}")
+    return problems
+
+
+def device_csrf(test: Test) -> tuple[str, str]:
+    """The verification page refuses an approval, and a denial, whose CSRF
+    token is not both in its cookie and in the body, alike; the flow is
+    still pending after them, and an approval with it still works."""
+    problems: list[str] = []
+    client, member = test.client("device"), test.user("member")
+    flow = issuer.started(issuer.start_device(client, (f"{R}:/{ARCHIVE}",)), client)
+    device_code, user_code = str(flow["device_code"]), str(flow["user_code"])
+    forged = (
+        ("approve", issuer.CSRF_NO_COOKIE, "without the cookie"),
+        ("approve", issuer.CSRF_WRONG_COOKIE, "with a cookie of another value"),
+        ("approve", issuer.CSRF_NONE, "with neither cookie nor token"),
+        ("deny", issuer.CSRF_NO_COOKIE, "denied without the cookie"),
+    )
+    for action, csrf, what in forged:
+        answer = issuer.decide(client.url, user_code, member, action, csrf)
+        said = issuer.decoded(answer)
+        if answer.status != 403 or said.get("error") != "CSRF validation failed":
+            problems.append(f"{what}: {answer.describe()}, {said.get('error')!r}")
+    polled = issuer.poll(client, device_code)
+    if not refused_with(polled, 400, "authorization_pending"):
+        problems.append(f"polling after them: {polled.describe()}, not authorization_pending")
+    try:
+        issuer.approve(client.url, user_code, member)
+        time.sleep(POLL_INTERVAL)
+        issuer.tokens_of(issuer.poll(client, device_code), "redeeming the approved code")
+    except IssuerError as e:
+        problems.append(f"approving with the CSRF token after them: {e}")
+    return outcome(problems, f"{len(forged)} forged decisions refused; the flow still works")
+
+
+def admin_clients(test: Test) -> tuple[str, str]:
+    """The admin API for the issuer's clients: only the admin may use it;
+    it never shows a secret; it creates clients only of the grants it
+    knows; and a client it narrows, or deletes, can do only as much as it
+    now says."""
+    problems: list[str] = []
+    namespace, admin = f"/{test.namespace}", test.web_token("admin")
+    for who, tok, status in (
+        ("nobody", None, 401),
+        ("test-member", test.web_token("member"), 403),
+    ):
+        answer = issuer.admin_call(test.web, namespace, tok)
+        if answer.status != status:
+            problems.append(f"listing the clients as {who}: {answer.describe()}, not {status}")
+    made = issuer.create_client(
+        test.web, namespace, admin, name=f"pelican-test-framework admin-clients {test.run}"
+    )
+    gone = False
+    try:
+        answer = issuer.admin_call(
+            test.web, namespace, test.web_token("member"), "DELETE", made.client_id
+        )
+        if answer.status != 403:
+            problems.append(f"deleting a client as test-member: {answer.describe()}, not 403")
+        listed = issuer.admin_call(test.web, namespace, admin)
+        rows = collections.objects(common.as_array(json_of(listed)) or [])
+        if listed.status != 200 or made.client_id not in {r.get("client_id") for r in rows}:
+            problems.append(f"the admin's list: {listed.describe()}, without the new client")
+        shown = issuer.admin_call(test.web, namespace, admin, "GET", made.client_id)
+        detail = issuer.decoded(shown)
+        grants = [issuer.DEVICE_GRANT, issuer.REFRESH_GRANT]
+        if shown.status != 200 or detail.get("grant_types") != grants:
+            problems.append(f"the admin's GET of the client: {shown.describe()}, {detail}")
+        if any("secret" in key for row in [*rows, detail] for key in row):
+            problems.append("the admin's list or GET shows a client's secret")
+        body = {"client_name": f"pelican-test-framework {test.run}"}
+        answer = issuer.admin_call(
+            test.web,
+            namespace,
+            admin,
+            "POST",
+            body={**body, "grant_types": ["client_credentials"]},
+        )
+        if answer.status != 400:
+            problems.append(
+                f"creating a client_credentials client: {answer.describe()}, not 400"
+            )
+            stray = str(issuer.decoded(answer).get("client_id") or "")
+            if stray:
+                issuer.delete_client(test.web, namespace, admin, stray)
+        toks = issuer.device_tokens(
+            made, test.user("member"), ("offline_access", f"{R}:/{ARCHIVE}")
+        )
+        problems += narrowed_client_problems(test, made, toks.refresh or "")
+        answer = issuer.admin_call(
+            test.web, namespace, admin, "PUT", f"nonesuch-{test.run}", {"scopes": ["openid"]}
+        )
+        if answer.status != 404:
+            problems.append(f"changing a client that never was: {answer.describe()}, not 404")
+        answer = issuer.admin_call(test.web, namespace, admin, "DELETE", made.client_id)
+        gone = answer.status == 204
+        if not gone:
+            problems.append(f"deleting the client: {answer.describe()}, not 204")
+        answer = issuer.refresh(made, toks.refresh or "")
+        if not refused_with(answer, 401, "invalid_client"):
+            problems.append(
+                f"a refresh by the deleted client: {answer.describe()}, not invalid_client"
+            )
+        answer = issuer.admin_call(test.web, namespace, admin, "DELETE", made.client_id)
+        if answer.status != 404:
+            problems.append(f"deleting the client again: {answer.describe()}, not 404")
+    finally:
+        if not gone:
+            failed = issuer.delete_client(test.web, namespace, admin, made.client_id)
+            if failed:
+                warn(f"could not remove the admin-clients client: {failed}")
+    return outcome(problems, "admin only; no secrets; narrowed and deleted clients obey")
+
+
+def json_of(answer: web.Response) -> object:
+    """The JSON value in answer's body, or None."""
+    try:
+        return json.loads(answer.body)
+    except ValueError:
+        return None
+
+
+def narrowed_client_problems(test: Test, made: issuer.Client, refresh_token: str) -> list[str]:
+    """What is wrong with a client the admin narrows: once it may no
+    longer refresh, refresh_token, which it was issued, is refused; once
+    it may carry only archive's read, its tokens carry no more."""
+    problems: list[str] = []
+    namespace, admin = f"/{test.namespace}", test.web_token("admin")
+    grants = [issuer.DEVICE_GRANT]
+    answer = issuer.admin_call(
+        test.web, namespace, admin, "PUT", made.client_id, {"grant_types": grants}
+    )
+    if answer.status != 200 or issuer.decoded(answer).get("grant_types") != grants:
+        problems.append(f"dropping the refresh grant: {answer.describe()}")
+    answer = issuer.refresh(made, refresh_token)
+    if not refused_with(answer, 400, "unauthorized_client"):
+        problems.append(
+            f"a refresh once the grant is dropped: {answer.describe()}, not unauthorized_client"
+        )
+    narrow = ["openid", f"{R}:/{ARCHIVE}"]
+    answer = issuer.admin_call(
+        test.web, namespace, admin, "PUT", made.client_id, {"scopes": narrow}
+    )
+    if answer.status != 200 or issuer.decoded(answer).get("scopes") != narrow:
+        problems.append(f"narrowing the scopes: {answer.describe()}")
+    wanted = ("openid", "offline_access", f"{R}:/", f"{M}:/")
+    toks = issuer.device_tokens(made, test.user("member"), wanted)
+    if issuer.scopes(toks.access) != frozenset(narrow) or toks.refresh is not None:
+        problems.append(
+            f"the narrowed client's token has {sorted(issuer.scopes(toks.access))}"
+            + f" and {'a' if toks.refresh else 'no'} refresh token"
+        )
+    return problems
+
+
+def cors_and_pkce(test: Test) -> tuple[str, str]:
+    """A site the issuer does not know may read its discovery document,
+    which is public, but its endpoints that take credentials do not let
+    it read their answers; and the public client may not run the code
+    flow without PKCE."""
+    problems: list[str] = []
+    evil = {"Origin": "https://evil.invalid"}
+    target = f"{test.issuer_url}/.well-known/openid-configuration"
+    found = web.request("GET", target, headers=evil)
+    allowed = found.header("Access-Control-Allow-Origin")
+    if found.status != 200 or allowed not in ("", "*"):
+        problems.append(
+            f"GET {target} from another site: {found.describe()}, allowing {allowed!r}"
+        )
+    client = test.client("device")
+    for method, url in (
+        ("POST", client.token_url),
+        ("POST", client.device_url),
+        ("OPTIONS", client.token_url),
+    ):
+        headers = {**evil, **issuer.FORM, "Access-Control-Request-Method": "POST"}
+        answer = web.request(method, url, upload=b"", headers=headers)
+        allowed = answer.header("Access-Control-Allow-Origin")
+        if answer.status is None or allowed:
+            problems.append(
+                f"{method} {url} from another site: {answer.describe()}, {allowed!r}"
+            )
+    state = secrets.token_urlsafe(12)
+    sent = issuer.authorize(
+        test.client("public"), test.user("member"), (f"{R}:/{ARCHIVE}",), "", state
+    )
+    back = issuer.redirected(sent)
+    if back.get("code") or (back.get("error") != "invalid_request" and sent.status != 400):
+        problems.append(
+            f"the public client's code flow without PKCE: {sent.describe()},"
+            + f" sent back with {back or 'nothing'}"
+        )
+    return outcome(problems, "no credentialed endpoint for another site; PKCE required")
+
+
+def code_expiry(test: Test) -> tuple[str, str]:
+    """A device code and an authorization code expire unredeemed once
+    their lifetime is over, and a device code may then not be approved."""
+    lifetime = test.lifetimes.code
+    if lifetime > SHORT:
+        return SKIP, f"codes last {lifetime}s ('-p origin-short-tokens' shortens them)"
+    problems: list[str] = []
+    client, member, wanted = test.client("device"), test.user("member"), (f"{R}:/{ARCHIVE}",)
+    approved = issuer.started(issuer.start_device(client, wanted), client)
+    unapproved = issuer.started(issuer.start_device(client, wanted), client)
+    for flow in (approved, unapproved):
+        if flow.get("expires_in") != lifetime:
+            problems.append(
+                f"a device flow expires_in {flow.get('expires_in')!r}, not {lifetime}"
+            )
+    issuer.approve(client.url, str(approved["user_code"]), member)
+    code_client = test.client("code")
+    verifier, challenge = issuer.pkce()
+    sent = issuer.authorize(code_client, member, wanted, challenge, secrets.token_urlsafe(12))
+    auth_code = issuer.redirected(sent).get("code", "")
+    issued = time.time()
+    if not auth_code:
+        problems.append(f"the authorization for a code: {sent.describe()}")
+    # The codes were issued before `issued`, the device codes first.
+    time.sleep(max(0.0, issued + lifetime + CODE_MARGIN - time.time()))
+    polled = issuer.poll(client, str(approved["device_code"]))
+    expired = ("expired_token", "invalid_grant")
+    if polled.status != 400 or issuer.error_of(polled) not in expired:
+        problems.append(f"redeeming an expired device code: {polled.describe()}")
+    answer = issuer.decide(client.url, str(unapproved["user_code"]), member, "approve")
+    if answer.status != 400:
+        problems.append(f"approving an expired device code: {answer.describe()}, not 400")
+    if auth_code:
+        answer = issuer.code_tokens(code_client, auth_code, verifier)
+        if not refused_with(answer, 400, "invalid_grant"):
+            problems.append(
+                f"redeeming an expired authorization code: {answer.describe()},"
+                + " not invalid_grant"
+            )
+    return outcome(problems, f"device and authorization codes expired after {lifetime}s")
+
+
+def registered(test: Test, metadata: dict[str, Any]) -> web.Response:
+    """Register a client at the suite's issuer with metadata, waiting
+    out the rate limit once if the issuer's other registrations have used
+    it up."""
+    answer = issuer.register(test.issuer_url, metadata)
+    if answer.status == 429:
+        time.sleep(REGISTRATION_WAIT)
+        answer = issuer.register(test.issuer_url, metadata)
+    return answer
+
+
+def registration(test: Test) -> tuple[str, str]:
+    """A client that registers itself (RFC 7591) gets the device and
+    refresh grants alone, whatever it asks; may not name a redirect URI
+    off this host, or a long name; is bound to the first user who
+    approves a flow for it; and manages its registration (RFC 7592) only
+    with its registration access token, which cannot widen its grants."""
+    problems: list[str] = []
+    name = f"pelican-test-framework registration {test.run}"
+    grants = {issuer.DEVICE_GRANT, issuer.REFRESH_GRANT}
+    made = registered(test, {"client_name": name, "grant_types": [issuer.CODE_GRANT]})
+    record = issuer.decoded(made)
+    client_id = str(record.get("client_id") or "")
+    access = str(record.get("registration_access_token") or "")
+    if made.status != 201 or not client_id or not access:
+        problems.append(f"registering a client: {made.describe()}, with {sorted(record)}")
+    elif set(common.as_array(record.get("grant_types")) or []) != grants:
+        problems.append(f"asking for the code grant, it was given {record.get('grant_types')}")
+    try:
+        for metadata, status, error, what in (
+            (
+                {"client_name": name, "redirect_uris": ["https://evil.invalid/callback"]},
+                403,
+                "invalid_redirect_uri",
+                "a redirect URI off this host",
+            ),
+            ({"client_name": "x" * 129}, 400, "invalid_client_metadata", "a 129-byte name"),
+        ):
+            answer = registered(test, metadata)
+            if not refused_with(answer, status, error):
+                problems.append(f"registering with {what}: {answer.describe()}, not {error}")
+                stray = str(issuer.decoded(answer).get("client_id") or "")
+                if stray:
+                    issuer.delete_client(
+                        test.web, f"/{test.namespace}", test.web_token("admin"), stray
+                    )
+        if client_id and access:
+            client = issuer.client_of(
+                test.web, f"/{test.namespace}", client_id, str(record.get("client_secret", ""))
+            )
+            problems += binding_problems(test, client)
+            problems += configuration_problems(test, client_id, access, grants)
+    finally:
+        if client_id:
+            gone = issuer.admin_call(
+                test.web, f"/{test.namespace}", test.web_token("admin"), "DELETE", client_id
+            )
+            if gone.status not in (204, 404):
+                warn(f"could not remove the registered client: {gone.describe()}")
+    return outcome(problems, "grants restricted, URIs and names checked, bound, managed")
+
+
+def binding_problems(test: Test, client: issuer.Client) -> list[str]:
+    """What is wrong with a client that registered itself: test-member,
+    the first to approve a flow for it, should get tokens through it, and
+    test-analyst should then be refused it."""
+    problems: list[str] = []
+    try:
+        toks = issuer.device_tokens(client, test.user("member"), (f"{R}:/{ARCHIVE}",))
+        if issuer.scopes(toks.access) != frozenset({f"{R}:/{ARCHIVE}"}):
+            problems.append(f"its token has {sorted(issuer.scopes(toks.access))}")
+    except IssuerError as e:
+        problems.append(f"test-member's flow with the registered client: {e}")
+    flow = issuer.started(issuer.start_device(client, (f"{R}:/{ARCHIVE}",)), client)
+    answer = issuer.decide(client.url, str(flow["user_code"]), test.user("analyst"), "approve")
+    said = issuer.decoded(answer)
+    if answer.status != 403 or said.get("error") != BOUND_ELSEWHERE:
+        problems.append(
+            f"test-analyst approving after test-member: {answer.describe()}, {said}"
+        )
+    polled = issuer.poll(client, str(flow["device_code"]))
+    if not refused_with(polled, 400, "authorization_pending"):
+        problems.append(f"polling after test-analyst's approval: {polled.describe()}")
+    return problems
+
+
+def configuration_problems(
+    test: Test, client_id: str, access: str, grants: set[str]
+) -> list[str]:
+    """What is wrong with a registered client's configuration endpoint
+    (RFC 7592): it should refuse no registration access token and a wrong
+    one; with the right one (access), read the client, rename it but not
+    widen its grants, and delete it, after which the token is nothing."""
+    problems: list[str] = []
+    url = test.issuer_url
+    for method in ("GET", "PUT", "DELETE"):
+        for tok, what in ((None, "no token"), ("wrong", "a wrong token")):
+            body = {"client_name": "renamed"} if method == "PUT" else None
+            answer = issuer.configuration(url, client_id, method, tok, body)
+            if answer.status != 401:
+                problems.append(f"{method} its configuration with {what}: {answer.describe()}")
+    shown = issuer.configuration(url, client_id, "GET", access)
+    said = issuer.decoded(shown)
+    if shown.status != 200 or said.get("client_id") != client_id or "client_secret" in said:
+        problems.append(f"GET its configuration: {shown.describe()}, with {sorted(said)}")
+    wider = {"client_name": "renamed", "grant_types": [issuer.CODE_GRANT]}
+    changed = issuer.configuration(url, client_id, "PUT", access, wider)
+    said = issuer.decoded(changed)
+    if changed.status != 200 or said.get("client_name") != "renamed":
+        problems.append(
+            f"PUT its configuration: {changed.describe()}, named {said.get('client_name')!r}"
+        )
+    if set(common.as_array(said.get("grant_types")) or []) != grants:
+        problems.append(f"PUT asking for the code grant gave it {said.get('grant_types')}")
+    gone = issuer.configuration(url, client_id, "DELETE", access)
+    if gone.status != 204:
+        problems.append(f"DELETE its configuration: {gone.describe()}, not 204")
+    shown = issuer.configuration(url, client_id, "GET", access)
+    if shown.status != 401:
+        problems.append(f"GET its configuration once deleted: {shown.describe()}, not 401")
+    return problems
+
+
 RUN = {
     "discovery": discovery,
     "templates": templates,
@@ -1359,6 +1857,12 @@ RUN = {
     "exchange": exchange,
     "expiry": expiry,
     "client": client_scenario,
+    "isolation": isolation,
+    "device-csrf": device_csrf,
+    "admin-clients": admin_clients,
+    "cors-and-pkce": cors_and_pkce,
+    "code-expiry": code_expiry,
+    "registration": registration,
 }
 
 

@@ -10,19 +10,49 @@ are the server's tokens for /protected-a. Objects go under
 credentials it added, afterward. A job may read or write the origin's
 own filesystem only through an export, so `local-get` and `local-put`
 check that a job is refused one that leaves the exports.
+
+The API's edges come after its main paths: tokens whose subjects are
+no usernames (`subjects`), a finished job cancelled (`cancel-finished`),
+a job's event stream (`events`), sources on the origin's own network and
+a prefix that merely begins like an export (`ssrf-and-prefixes`), and
+`pelican transfer credential` (`credential-cli`). Two need configuration
+that no shape has: `enabled-groups` (Transfer.EnabledGroups, a group of
+the run's own) and `oauth-clients` (Transfer.EnableOAuth2Clients), for
+which the suite restarts origin-0 once with both, as the last of its
+configuration layers (control.restart_with()), and restores it; and
+`restart`, which restarts origin-0 while a job runs. Each restart needs
+a control helper and a topology other than `tiny`, whose origin is the
+whole federation's process; elsewhere those rows skip, and say why.
 """
 
+import contextlib
+import glob
 import json
 import os
+import re
+import secrets
 import time
 import traceback
 import uuid
-from collections.abc import Callable
-from typing import Any, Optional
+from collections.abc import Callable, Sequence
+from datetime import datetime
+from typing import Any, Optional, Union
 
-from testlib import blocks, common, credentials, stores, web
-from testlib.common import die, first
-from testlib.report import FAIL, PASS
+from testlib import (
+    accounts,
+    blocks,
+    common,
+    control,
+    credentials,
+    director,
+    issuer,
+    stores,
+    web,
+)
+from testlib.accounts import Api
+from testlib.common import die, first, warn
+from testlib.issuer import User
+from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 
 SCENARIOS = {
@@ -40,7 +70,35 @@ SCENARIOS = {
     "cancel": "cancelling an unknown job is not found; a finished one stays finished",
     "local-get": "a job may not download to the origin's own filesystem outside an export",
     "local-put": "a job may not upload from the origin's own filesystem",
+    "subjects": "tokens whose subjects are a URL, a character, 65 characters, or `admin`: taken",
+    "cancel-finished": "cancelling a job that failed keeps it failed",
+    "events": "a job's event stream reports its status until it ends; another user's is not found",
+    "ssrf-and-prefixes": (
+        "a source on loopback or link-local, and a prefix that merely begins like an export,"
+        " are refused; no credential's token is in the database in plain"
+    ),
+    "credential-cli": (
+        "`pelican transfer credential add`, `list`, and `delete` agree with the API,"
+        " and show no token"
+    ),
+    "enabled-groups": (
+        "with Transfer.EnabledGroups, the issuer grants pelican.transfer to a member alone,"
+        " whose token and login cookie the API takes (restarts origin-0)"
+    ),
+    "oauth-clients": (
+        "OAuth2 clients are off by default; on, a token exchange bootstraps a credential"
+        " that jobs use, and that the server refreshes (restarts origin-0)"
+    ),
+    "restart": (
+        "a job that a restart of origin-0 interrupts fails, saying so; a credential"
+        " survives; the restart forgets a finished job, which a cancel must leave as it was"
+    ),
 }
+
+# The scenarios that need origin-0 configured otherwise (see
+# configured()), and the one that restarts it.
+CONFIGURED = ("enabled-groups", "oauth-clients")
+RESTARTS = "restart"
 
 # The transfer API's scope, and its routes.
 SCOPE = "pelican.transfer"
@@ -51,6 +109,43 @@ JOB_WAIT = 120
 FINISHED = ("completed", "failed", "cancelled")
 # A key that no server knows (see credentials.keys()).
 UNKNOWN_KEY = "test-keys/unknown.pem"
+# Its other routes.
+OAUTH_CLIENTS = "/oauth-clients"
+BOOTSTRAP = "/credentials/bootstrap/token-exchange"
+EVENT_STREAM = {"Accept": "text/event-stream"}
+# The run's configuration of origin-0, as the last of its layers
+# (control.restart_with()), and how long the suite waits afterward until
+# every director names origin-0 again and the API answers.
+CONFIG_FILE = "90-transfer-api.yaml"
+SETTLE_WAIT = 150
+# `subjects`: each case's subject. A URL, one character, and 65 characters
+# are no usernames (ValidateIdentifier in database/identifiers.go);
+# `admin` is the built-in user's.
+SUBJECTS = (
+    ("url", "http://cilogon.org/serverA/users/1234"),
+    ("short", "x"),
+    ("long", "u" * 65),
+    ("admin", "admin"),
+)
+# `ssrf-and-prefixes`: sources on the origin's own network, which
+# Server.SSRFProtection.AllowedCIDRs (config.d/base/40-origin.yaml) does
+# not allow, though it allows the private ranges.
+SSRF_SOURCES = (
+    ("link-local", "http://169.254.169.254/latest/meta-data/"),
+    ("loopback", "http://127.0.0.1:8444/api/v1.0/health"),
+)
+# The grants and scopes of the OAuth2 client that `oauth-clients`
+# registers with the transfer API: the token exchange (RFC 8693) that
+# bootstraps a credential, and the refresh grant that renews it.
+EXCHANGE_GRANTS = f"{issuer.EXCHANGE_GRANT} {issuer.REFRESH_GRANT}"
+CREDENTIAL_SCOPES = ("storage.read:/", "storage.create:/", "storage.modify:/", "offline_access")
+# `restart`: Origin.TransferRateLimit, so that a copy of the source object
+# is still under way when origin-0 restarts: a posixv2 origin reads and
+# writes it through one bucket (origin_serve/rate_limited_fs.go), so 8 MiB
+# takes about a minute. Other backends are not slowed.
+RATE_LIMIT = "256KB/s"
+# What a job interrupted by a restart must say (transfer/recovery.go).
+INTERRUPTED = "interrupted by transfer server restart"
 
 
 def skip(fed: common.Federation) -> Optional[str]:
@@ -64,6 +159,18 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 class ApiError(Exception):
     """The API refused what a scenario's setup asked of it."""
+
+
+# A row: its case (appended to the scenario's name, if any), its status,
+# and its note. A scenario returns one, or a list of them.
+Row = tuple[str, str, str]
+Rows = Union[tuple[str, str], list[Row]]
+
+
+def outcome(problems: Sequence[str], note: str) -> Row:
+    """A row with no case: FAIL with the first of problems, or PASS with
+    note."""
+    return ("", FAIL, first(problems)) if problems else ("", PASS, note)
 
 
 class Test:
@@ -83,8 +190,22 @@ class Test:
         # The object that the jobs copy: past pstore's chunk, so that a copy
         # takes many reads and writes.
         self.data = os.urandom(blocks.CHUNK_UNDECLARED + 4321)
-        self.credential_ids: list[str] = []
+        self.credential_ids: list[tuple[str, str]] = []  # each with the token that owns it
         self._finished_job: Optional[dict[str, Any]] = None
+        # The API is origin-0's (`fed` in the tiny topology): its web URL,
+        # and its service, which `restart` restarts.
+        self.web = self.url
+        self.svc = self.fed.origins[0].svc
+        self.key = common.signing_key(self.key_dir)
+        self._admin: Optional[str] = None
+        # What the configured scenarios make, to remove afterward.
+        self.issuer_clients: list[tuple[str, issuer.Client]] = []  # by namespace
+        self.user_ids: list[str] = []
+        self.group_ids: list[str] = []
+        self.oauth_client_ids: list[str] = []
+        # The secrets that `ssrf-and-prefixes` must find nowhere in the
+        # origin's database in plain, beyond the storage tokens.
+        self.secrets: list[str] = []
 
     def mint(self, name: str, key: str, subject: str) -> str:
         """A token for the transfer API, signed with key, for subject."""
@@ -103,6 +224,49 @@ class Test:
         )
         with open(path, encoding="utf-8") as f:
             return f.read().strip()
+
+    def admin_token(self) -> str:
+        """A token that origin-0's web API takes as its admin's (see
+        credentials.mint_admin())."""
+        if self._admin is None:
+            self._admin = credentials.mint_admin(
+                self.fed,
+                self.session.path("tokens/transfer-api.admin"),
+                credentials.local_issuer(self.fed, self.web),
+                self.key,
+            )
+        return self._admin
+
+    def admin(self) -> Api:
+        """origin-0's web API, as its admin."""
+        return Api(self.web, self.admin_token())
+
+    def token_file(self, name: str, token: str) -> str:
+        """token, in a file for the client's --token: its path."""
+        path = self.session.path(f"tokens/transfer-api.{name}.file")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(token)
+        return path
+
+    def issuer_client(
+        self,
+        namespace: str,
+        grants: Sequence[str],
+        allowed_scopes: Sequence[str] = issuer.CLIENT_SCOPES,
+    ) -> issuer.Client:
+        """A client of origin-0's issuer of namespace (issuer.LOCAL_NAMESPACE
+        for its local one), which its admin creates, allowed grants and
+        allowed_scopes; removed when the suite ends."""
+        made = issuer.create_client(
+            self.web,
+            namespace,
+            self.admin_token(),
+            grants,
+            allowed_scopes,
+            name=f"pelican-test-framework transfer-api {self.session.run}",
+        )
+        self.issuer_clients.append((namespace, made))
+        return made
 
     def call(
         self,
@@ -139,14 +303,15 @@ class Test:
             self.fed.origins, "protected-a", self.rel(name), {"protected-a": self.storage}
         )
 
-    def add_credential(self, name: str, token: str) -> str:
-        """Add a storage credential for the user: its ID."""
+    def add_credential(self, name: str, token: str, owner: Optional[str] = None) -> str:
+        """Add a storage credential for the user, or for owner, a token of
+        another subject: its ID."""
         status, found, raw = self.call(
-            "POST", "/credentials", self.token, {"name": name, "access_token": token}
+            "POST", "/credentials", owner or self.token, {"name": name, "access_token": token}
         )
         if status != 201 or not found.get("id"):
             raise ApiError(f"could not add credential {name}: HTTP {status}: {raw[:200]!r}")
-        self.credential_ids.append(str(found["id"]))
+        self.credential_ids.append((str(found["id"]), owner or self.token))
         return str(found["id"])
 
     def submit(
@@ -157,15 +322,31 @@ class Test:
         status, found, _ = self.call("POST", "/jobs", token or self.token, body)
         return status, found
 
-    def wait(self, job_id: str) -> dict[str, Any]:
+    def wait(self, job_id: str, token: Optional[str] = None) -> dict[str, Any]:
         """The job's status once it is finished, or as it stands after
-        JOB_WAIT seconds."""
+        JOB_WAIT seconds; as the user, or as token's."""
         deadline = time.monotonic() + JOB_WAIT
         while True:
-            _, found, _ = self.call("GET", f"/jobs/{job_id}", self.token)
+            _, found, _ = self.call("GET", f"/jobs/{job_id}", token or self.token)
             if found.get("status") in FINISHED or time.monotonic() >= deadline:
                 return found
             time.sleep(2)
+
+    def copied(
+        self, name: str, source_id: str, dest_id: str, token: Optional[str] = None
+    ) -> Optional[str]:
+        """Copy the source object to object name of the run, through a job
+        with the credentials, as the user or as token's, and wait for it:
+        why it did not complete, with the copy at some origin, or None."""
+        status, found = self.submit(self.copy_job("src", name, source_id, dest_id), token)
+        if status != 201 or not found.get("job_id"):
+            return f"submitting a copy to {name}: HTTP {status}: {found}"
+        job = self.wait(str(found["job_id"]), token)
+        if job.get("status") != "completed":
+            return f"the copy to {name}: {job.get('status')} ({str(job.get('error'))[:120]})"
+        if common.digest(self.data) not in self.held(name):
+            return f"the copy to {name} completed, but no origin holds it"
+        return None
 
     def copy_job(self, source: str, dest: str, source_id: str, dest_id: str) -> dict[str, Any]:
         """A job that copies object source to object dest of the run."""
@@ -232,7 +413,7 @@ def credentials_scenario(test: Test) -> tuple[str, str]:
     )
     if status != 201 or not found.get("id"):
         return FAIL, f"adding it: HTTP {status}: {raw[:200]!r}"
-    test.credential_ids.append(str(found["id"]))
+    test.credential_ids.append((str(found["id"]), test.token))
     shown = [raw]
     status, _, raw = test.call("GET", "/credentials", test.token)
     shown.append(raw)
@@ -334,7 +515,7 @@ def other_user(test: Test) -> tuple[str, str]:
     status, _, _ = test.call("DELETE", f"/jobs/{job['job_id']}", other)
     if status != 404:
         return FAIL, f"cancelling the user's job: HTTP {status}, not 404"
-    writer = test.credential_ids[0]
+    writer = test.credential_ids[0][0]
     status, found = test.submit(test.copy_job("src", "other", writer, writer), other)
     if status != 400:
         return FAIL, f"using the user's credential: HTTP {status}, not 400: {found}"
@@ -423,7 +604,652 @@ def local_put(test: Test) -> tuple[str, str]:
     return confined(test, transfer, lambda: any(test.held("local-put")))
 
 
-RUN: dict[str, Callable[[Test], tuple[str, str]]] = {
+# --------------------------------------------------------------------------
+# The API's edges.
+
+
+def subjects(test: Test) -> list[Row]:
+    """pelican.transfer tokens whose subjects are no usernames (a URL, one
+    character, 65), or the built-in `admin`'s: each must list its jobs
+    (200), run a copy of its own, and see no other subject's job. The API
+    resolves each token's issuer and subject to a user of its own
+    (GetOrCreateUser in database/collection.go, from
+    TransferAuthMiddleware in transfer/auth.go)."""
+    rows: list[Row] = []
+    for case, subject in SUBJECTS:
+        token = test.mint(f"subject-{case}", test.key, subject)
+        status, found, _ = test.call("GET", "/jobs", token)
+        if status != 200:
+            what = f"{found.get('code')}: {str(found.get('error'))[:80]}"
+            rows.append((case, FAIL, f"GET /jobs as {subject!r}: HTTP {status}, {what}"))
+            continue
+        problems: list[str] = []
+        writer = test.add_credential(f"{test.session.run}-{case}", test.storage, owner=token)
+        why = test.copied(f"subject-{case}", writer, writer, token)
+        if why:
+            problems.append(why)
+        status, listed, _ = test.call("GET", "/jobs", token)
+        jobs = [common.as_object(j) or {} for j in common.as_array(listed.get("jobs")) or []]
+        mine = [str(j.get("job_id")) for j in jobs]
+        if status != 200 or not mine:
+            problems.append(f"the subject's jobs: HTTP {status}, listing {len(mine)}")
+        elif case != "admin":
+            # The user's own token is for another subject, so it must see
+            # none of these; `admin`'s record is whoever the API takes the
+            # built-in user to be, which the user is not either.
+            status, _, _ = test.call("GET", f"/jobs/{mine[0]}", test.token)
+            if status != 404:
+                problems.append(f"another subject's GET of the job: HTTP {status}, not 404")
+        rows.append(
+            (case, *outcome(problems, f"{subject[:40]!r}: lists, copies, and owns")[1:])
+        )
+    return rows
+
+
+def cancel_finished(test: Test) -> tuple[str, str]:
+    """A job that failed (its destination credential may only read),
+    cancelled: the cancel is taken (2xx) or refused as too late (409),
+    and the job must stay `failed`. Pelican's CancelJob counts every
+    transfer of a failed job as cancelled, and the handler then records
+    the job cancelled (client_agent/transfer_manager.go,
+    transfer/handlers.go)."""
+    stamp = test.session.run
+    writer = test.add_credential(f"{stamp}-cancel-src", test.storage)
+    reader = test.add_credential(f"{stamp}-cancel-ro", test.read_only)
+    status, found = test.submit(test.copy_job("src", "cancel-failed", writer, reader))
+    if status != 201 or not found.get("job_id"):
+        return FAIL, f"submitting the copy: HTTP {status}: {found}"
+    job_id = str(found["job_id"])
+    job = test.wait(job_id)
+    if job.get("status") != "failed":
+        return FAIL, f"the job: {job.get('status')}, not failed"
+    status, _, raw = test.call("DELETE", f"/jobs/{job_id}", test.token)
+    if status is None or not (200 <= status < 300 or status == 409):
+        return FAIL, f"cancelling it: HTTP {status}, not 2xx or 409: {raw[:120]!r}"
+    _, after, _ = test.call("GET", f"/jobs/{job_id}", test.token)
+    if after.get("status") != "failed":
+        return FAIL, f"cancelling a failed job (HTTP {status}) made it {after.get('status')}"
+    return PASS, f"HTTP {status}, still failed"
+
+
+def parse_sse(text: str) -> list[tuple[str, dict[str, Any]]]:
+    """The events in a text/event-stream body: each one's kind (`message`
+    if it names none) and its data, as a JSON object ({} if it is not
+    one). Comments (keepalives) are passed over."""
+    parsed: list[tuple[str, dict[str, Any]]] = []
+    kind = ""
+    data: list[str] = []
+    for line in text.splitlines() + [""]:
+        if line == "":
+            if data:
+                try:
+                    found = common.as_object(json.loads("\n".join(data))) or {}
+                except ValueError:
+                    found = {}
+                parsed.append((kind or "message", found))
+            kind, data = "", []
+        elif line.startswith(":"):
+            continue
+        elif line.startswith("event:"):
+            kind = line[len("event:") :].strip()
+        elif line.startswith("data:"):
+            data.append(line[len("data:") :].strip())
+    return parsed
+
+
+def events(test: Test) -> tuple[str, str]:
+    """A job's event stream (GET /jobs/<id>/events with Accept:
+    text/event-stream): `status` events whose data names the job, the
+    last of them its terminal status, after which the stream ends
+    (StreamJobEvents in client_agent/job_events.go). Another user's job's
+    stream is not found (404)."""
+    writer = test.add_credential(f"{test.session.run}-events", test.storage)
+    status, found = test.submit(test.copy_job("src", "events", writer, writer))
+    if status != 201 or not found.get("job_id"):
+        return FAIL, f"submitting the copy: HTTP {status}: {found}"
+    job_id = str(found["job_id"])
+    answer = web.request(
+        "GET",
+        f"{test.url}{API}/jobs/{job_id}/events",
+        token=test.token,
+        headers=EVENT_STREAM,
+        timeout=JOB_WAIT,
+    )
+    if answer.status != 200:
+        return FAIL, f"the stream: {answer.describe()}"
+    if not answer.header("Content-Type").startswith("text/event-stream"):
+        return FAIL, f"the stream is typed {answer.header('Content-Type')!r}"
+    seen = parse_sse(answer.body.decode(errors="replace"))
+    if not seen:
+        return FAIL, f"no event in {len(answer.body)} bytes of stream"
+    kinds = {kind for kind, _ in seen}
+    if kinds != {"status"}:
+        return FAIL, f"events of kinds {sorted(kinds)}, not status alone"
+    others = [str(data.get("job_id")) for _, data in seen if data.get("job_id") != job_id]
+    if others:
+        return FAIL, f"an event names job {others[0]!r}, not {job_id}"
+    last = str(seen[-1][1].get("status"))
+    if last not in FINISHED:
+        return FAIL, f"the stream ended with status {last!r}, not a terminal one"
+    if last != "completed":
+        return FAIL, f"the job ended {last}: {str(seen[-1][1].get('error'))[:120]}"
+    _, job, _ = test.call("GET", f"/jobs/{job_id}", test.token)
+    if job.get("status") != last:
+        return FAIL, f"the stream ended {last}, but the job is {job.get('status')}"
+    other = test.mint("events-other", test.key, "pelican-test-other")
+    refused_answer = web.request(
+        "GET", f"{test.url}{API}/jobs/{job_id}/events", token=other, headers=EVENT_STREAM
+    )
+    if refused_answer.status != 404:
+        return FAIL, f"another user's stream of the job: {refused_answer.describe()}, not 404"
+    return PASS, f"{len(seen)} status event(s), ending {last}; another user: 404"
+
+
+def database_files(test: Test) -> list[str]:
+    """origin-0's database, and its journal, under framework/var/state."""
+    return sorted(glob.glob(f"state/{test.svc}/*.sqlite*"))
+
+
+def ssrf_and_prefixes(test: Test) -> list[Row]:
+    """A job whose source is on loopback or link-local, which no allowed
+    range covers, must be refused (403, ENDPOINT_NOT_ALLOWED); one whose
+    source and destination are under a prefix that merely begins like an
+    export, 403 PATH_NOT_ALLOWED, since a prefix matches whole path
+    segments (transferMatchesPrefixes in transfer/handlers.go). And no
+    credential's token may lie in the origin's database in plain, which
+    keeps each encrypted (transfer/encryption.go)."""
+    rows: list[Row] = []
+    problems: list[str] = []
+    for case, source in SSRF_SOURCES:
+        body = {
+            "transfers": [
+                {"operation": "copy", "source": source, "destination": test.url_of("ssrf")}
+            ]
+        }
+        status, found = test.submit(body)
+        if status != 403 or found.get("code") != "ENDPOINT_NOT_ALLOWED":
+            problems.append(
+                f"{case} ({source}): HTTP {status}, {found.get('code')}, not 403"
+                + " ENDPOINT_NOT_ALLOWED"
+            )
+    rows.append(("endpoints", *outcome(problems, "loopback and link-local: 403")[1:]))
+    sibling = f"{test.fed.url}/protected-ab/{test.rel('x')}"
+    body = {
+        "transfers": [{"operation": "copy", "source": sibling, "destination": f"{sibling}-2"}]
+    }
+    status, found = test.submit(body)
+    if status != 403 or found.get("code") != "PATH_NOT_ALLOWED":
+        rows.append(
+            ("prefix", FAIL, f"HTTP {status}, {found.get('code')}, not 403 PATH_NOT_ALLOWED")
+        )
+    else:
+        rows.append(("prefix", PASS, "/protected-ab: 403"))
+    # The tokens that the suite stored, and any client secret it
+    # registered, as bytes, since the database holds strings as is.
+    secrets_held = [test.storage, test.read_only, *test.secrets]
+    files = database_files(test)
+    if not files:
+        rows.append(
+            ("secrets", INCONCLUSIVE, f"no database under framework/var/state/{test.svc}")
+        )
+        return rows
+    leaked: list[str] = []
+    for path in files:
+        try:
+            with open(path, "rb") as f:
+                content = f.read()
+        except OSError as e:
+            rows.append(("secrets", INCONCLUSIVE, f"cannot read framework/var/{path}: {e}"))
+            return rows
+        leaked += [
+            f"{os.path.basename(path)} holds a token in plain"
+            for secret in secrets_held
+            if secret.encode() in content
+        ]
+    rows.append(("secrets", *outcome(leaked, f"{len(files)} file(s), no token in plain")[1:]))
+    return rows
+
+
+def cli_json(out: str) -> Any:
+    """The JSON a `pelican transfer` command printed, or None."""
+    try:
+        return json.loads(out.strip() or "null")
+    except ValueError:
+        return None
+
+
+def credential_cli(test: Test) -> tuple[str, str]:
+    """`pelican transfer credential add`, `list`, and `delete`, with the
+    user's token in a file, against origin-0 (cmd/transfer_credential.go):
+    each must agree with the API, and `list` must show no token."""
+    token_file = test.token_file("cli-user", test.token)
+    name = f"{test.session.run}-cli"
+    common_args = ["--server", test.url, "--token", token_file, "--json"]
+    code, out, err = test.session.pelican_cmd(
+        "transfer",
+        "credential",
+        "add",
+        "--name",
+        name,
+        "--access-token-file",
+        test.session.token_file("protected-a"),
+        "--issuer",
+        test.fed.issuer_of("protected-a"),
+        *common_args,
+    )
+    if code != 0:
+        return FAIL, f"add: exit {code}: {last_line(err or out)}"
+    made = common.as_object(cli_json(out)) or {}
+    cred_id = str(made.get("id") or "")
+    if not cred_id or made.get("name") != name:
+        return FAIL, f"add printed no credential named {name}: {last_line(out)}"
+    test.credential_ids.append((cred_id, test.token))
+    if test.storage in out + err:
+        return FAIL, "add printed the token"
+    status, found, _ = test.call("GET", f"/credentials/{cred_id}", test.token)
+    if status != 200 or found.get("name") != name:
+        return FAIL, f"the API's GET of what add made: HTTP {status}, {found.get('name')!r}"
+    code, out, err = test.session.pelican_cmd("transfer", "credential", "list", *common_args)
+    if code != 0:
+        return FAIL, f"list: exit {code}: {last_line(err or out)}"
+    listed = [common.as_object(c) or {} for c in common.as_array(cli_json(out)) or []]
+    if not any(c.get("id") == cred_id and c.get("name") == name for c in listed):
+        return FAIL, f"list does not show {name} ({cred_id}): {last_line(out)}"
+    if test.storage in out + err:
+        return FAIL, "list printed the token"
+    code, out, err = test.session.pelican_cmd(
+        "transfer", "credential", "delete", cred_id, *common_args
+    )
+    if code != 0:
+        return FAIL, f"delete: exit {code}: {last_line(err or out)}"
+    status, _, _ = test.call("GET", f"/credentials/{cred_id}", test.token)
+    if status != 404:
+        return FAIL, f"the API's GET of what delete removed: HTTP {status}, not 404"
+    test.credential_ids.remove((cred_id, test.token))
+    return PASS, f"{cred_id}: added, listed without its token, deleted"
+
+
+# --------------------------------------------------------------------------
+# The scenarios that need origin-0 configured otherwise: a group of the
+# run's own in Transfer.EnabledGroups, and Transfer.EnableOAuth2Clients.
+
+
+def unconfigurable(test: Test) -> Optional[str]:
+    """Why origin-0 cannot be restarted with configuration of the run's
+    own, or None."""
+    if test.fed.tiny:
+        return "the tiny topology's origin is the whole federation's process"
+    return control.unavailable()
+
+
+def transfer_group(test: Test) -> str:
+    """The group that the run's configuration names in
+    Transfer.EnabledGroups."""
+    return f"xfer-{test.session.run}"
+
+
+def configured_text(test: Test) -> str:
+    """The run's configuration of origin-0."""
+    group = json.dumps(transfer_group(test))
+    return f"Transfer:\n  EnabledGroups: [{group}]\n  EnableOAuth2Clients: true\n"
+
+
+def settle(test: Test) -> Optional[str]:
+    """Wait until the API answers and, where there are directors, every
+    one names origin-0 for the source object again; why not within
+    SETTLE_WAIT seconds, or None."""
+    fed = test.fed
+    path = f"/protected-a/{test.rel('src')}"
+    host = director.host(fed.origins[0].url)
+    found: list[str] = []
+
+    def ready() -> bool:
+        found.clear()
+        status, _, _ = test.call("GET", "/ping", None)
+        if status != 200:
+            found.append(f"the API's ping got HTTP {status}")
+            return False
+        named = director.naming(fed.directors, "origin", path, host)
+        if len(named) != len(fed.directors):
+            found.append(f"only {named} named {host}")
+            return False
+        return True
+
+    if not common.wait_for(ready, SETTLE_WAIT, interval=5):
+        return f"after {SETTLE_WAIT}s, {first(found) if found else 'origin-0 is not back'}"
+    return None
+
+
+def run_configured(test: Test, names: list[str], results: common.Results) -> None:
+    """Restart origin-0 with the run's configuration, run the scenarios
+    named, and restore it, waiting each time until the federation serves
+    as before."""
+    try:
+        with control.restart_with(test.svc, {CONFIG_FILE: configured_text(test)}):
+            why = settle(test)
+            if why:
+                for name in names:
+                    results.add(f"{name} configured", FAIL, f"once origin-0 restarted, {why}")
+                return
+            for name in names:
+                record(results, name, guarded(CONFIGURED_RUN[name], test))
+    except control.ControlError as e:
+        for name in names:
+            results.add(f"{name} configured", FAIL, str(e))
+        return
+    why = settle(test)
+    if why:
+        results.add("restored", FAIL, f"once origin-0 was restored, {why}")
+
+
+def log_in(test: Test, username: str, user_id: str) -> str:
+    """Log username in, with a password of the run's set through an
+    invite the admin mints: the login cookie, which carries the groups
+    they are in."""
+    invite = accounts.password_invite(test.admin(), user_id)
+    password = secrets.token_urlsafe(12)
+    accounts.set_password(test.web, invite, password)
+    return accounts.login(test.web, username, password)
+
+
+def enabled_groups(test: Test) -> list[Row]:
+    """With Transfer.EnabledGroups naming a group of the run's, the
+    origin's local issuer grants pelican.transfer to a member who asks,
+    through the device flow approved with their login cookie, and not to
+    another user (transferAccessAllowed in oauth2/issuer/handlers.go);
+    the member's token is taken at the API (200), the other's refused;
+    and the member's login cookie is taken too, since the API takes a
+    cookie whose groups match (TransferAuthMiddleware in
+    transfer/auth.go), while the other's is refused (403)."""
+    admin = test.admin()
+    accounts.agree_to_aup(admin)
+    group = transfer_group(test)
+    gid = accounts.create_group(admin, group)
+    test.group_ids.append(gid)
+    users = {
+        "member": f"xfer-member-{test.session.run}",
+        "other": f"xfer-other-{test.session.run}",
+    }
+    cookies: dict[str, str] = {}
+    for role, username in users.items():
+        made = accounts.must(
+            admin.call("POST", accounts.USERS, {"username": username}), f"creating {username}"
+        )
+        user_id = str(made.object.get("id", ""))
+        test.user_ids.append(user_id)
+        token = credentials.mint_user(
+            test.fed,
+            test.session.path(f"tokens/transfer-api.web.{role}"),
+            credentials.local_issuer(test.fed, test.web),
+            test.key,
+            username,
+        )
+        accounts.agree_to_aup(Api(test.web, token))
+        if role == "member":
+            accounts.add_member(admin, gid, user_id)
+        cookies[role] = log_in(test, username, user_id)
+    client = test.issuer_client(
+        issuer.LOCAL_NAMESPACE, (issuer.DEVICE_GRANT,), ("openid", SCOPE)
+    )
+    rows: list[Row] = []
+    tokens: dict[str, str] = {}
+    problems: list[str] = []
+    for role, username in users.items():
+        try:
+            tokens[role] = issuer.token(client, User(cookie=cookies[role]), ("openid", SCOPE))
+        except issuer.IssuerError as e:
+            problems.append(f"{username}'s device flow: {e}")
+            continue
+        granted = SCOPE in issuer.scopes(tokens[role])
+        if granted != (role == "member"):
+            problems.append(
+                f"{users[role]}'s token {'has' if granted else 'lacks'} {SCOPE}:"
+                + f" {sorted(issuer.scopes(tokens[role]))}"
+            )
+    rows.append(("issuer", *outcome(problems, f"{SCOPE} to the member alone")[1:]))
+    problems = []
+    for role, want in (("member", (200,)), ("other", (401, 403))):
+        if role not in tokens:
+            continue
+        status, _, _ = test.call("GET", "/jobs", tokens[role])
+        if status not in want:
+            problems.append(f"GET /jobs with {users[role]}'s token: HTTP {status}, not {want}")
+    rows.append(("token", *outcome(problems, "the member's taken, the other's refused")[1:]))
+    problems = []
+    for role, want in (("member", (200,)), ("other", (403,))):
+        answer = web.request(
+            "GET", f"{test.url}{API}/jobs", headers={"Cookie": f"login={cookies[role]}"}
+        )
+        if answer.status not in want:
+            problems.append(
+                f"GET /jobs with {users[role]}'s login cookie: {answer.describe()}, not {want}"
+            )
+    rows.append(("cookie", *outcome(problems, "the member's taken, the other's refused")[1:]))
+    return rows
+
+
+def oauth_clients_disabled(test: Test) -> list[Row]:
+    """With Transfer.EnableOAuth2Clients off, as by default, the OAuth2
+    client routes refuse everyone (403, DISABLED)."""
+    problems: list[str] = []
+    body = {
+        "name": "off",
+        "issuer_url": test.fed.issuer_of("protected-a"),
+        "client_id": "off",
+        "client_secret": "off",  # nosec B105: no secret, since the route is off
+    }
+    for method, sent in (("GET", None), ("POST", body)):
+        status, found, _ = test.call(method, OAUTH_CLIENTS, test.token, sent)
+        if status != 403 or found.get("code") != "DISABLED":
+            problems.append(f"{method}: HTTP {status}, {found.get('code')}, not 403 DISABLED")
+    return [("disabled", *outcome(problems, "GET and POST: 403 DISABLED")[1:])]
+
+
+def expiry_of(found: dict[str, Any]) -> Optional[datetime]:
+    """A credential's token_expiry, as a time."""
+    text = str(found.get("token_expiry") or "")
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text)
+    text = re.sub(r"[Zz]$", "+00:00", text)
+    try:
+        return datetime.fromisoformat(text) if text else None
+    except ValueError:
+        return None
+
+
+def oauth_clients(test: Test) -> list[Row]:
+    """With Transfer.EnableOAuth2Clients on: a client of the namespace
+    issuer's, which the admin creates for the token exchange and the
+    refresh grant, is registered with the API (POST /oauth-clients, 201),
+    listed without its secret, and deleted (`crud`); through it, a token
+    the admin got from the issuer is exchanged for a credential
+    (POST /credentials/bootstrap/token-exchange, 201), which a copy then
+    uses (`bootstrap`; handleTokenExchangeBootstrap in
+    transfer/bootstrap.go); and under short tokens, a copy once the
+    credential's access token has expired must still complete, since the
+    server refreshes it first (`refresh`; getDecryptedAccessToken in
+    transfer/credentials.go)."""
+    issuer_url = test.fed.issuer_of("protected-a")
+    # Under the external issuer, the origin's admin can make no client
+    # of it: `crud` registers made-up credentials, and the rest skip.
+    external = test.fed.external_issuer or not test.fed.embedded_issuer
+    exchange: Optional[issuer.Client] = None
+    device: Optional[issuer.Client] = None
+    client_id, client_secret = f"made-up-{test.session.run}", secrets.token_urlsafe(24)
+    if not external:
+        exchange = test.issuer_client(
+            "/protected-a", (issuer.EXCHANGE_GRANT, issuer.REFRESH_GRANT)
+        )
+        device = test.issuer_client("/protected-a", (issuer.DEVICE_GRANT,))
+        client_id, client_secret = exchange.client_id, exchange.client_secret
+    test.secrets.append(client_secret)
+    rows: list[Row] = []
+    problems: list[str] = []
+    body = {
+        "name": f"{test.session.run}-exchange",
+        "issuer_url": issuer_url,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "grant_types": EXCHANGE_GRANTS,
+        "scopes": " ".join(CREDENTIAL_SCOPES),
+    }
+    status, found, raw = test.call("POST", OAUTH_CLIENTS, test.token, body)
+    registered = str(found.get("id") or "")
+    if status != 201 or not registered:
+        return [("crud", FAIL, f"registering the client: HTTP {status}: {raw[:200]!r}")]
+    test.oauth_client_ids.append(registered)
+    shown = [raw]
+    status, _, raw = test.call("GET", OAUTH_CLIENTS, test.token)
+    shown.append(raw)
+    if status != 200 or registered.encode() not in raw:
+        problems.append(f"listing the clients: HTTP {status}, without {registered}")
+    if any(client_secret.encode() in answer for answer in shown):
+        problems.append("an answer shows the client's secret")
+    status, _, _ = test.call("POST", OAUTH_CLIENTS, test.token, body)
+    if status != 409:
+        problems.append(f"registering it again: HTTP {status}, not 409")
+    rows.append(
+        ("crud", *outcome(problems, f"{registered}: registered, listed, no secret")[1:])
+    )
+    if device is None:
+        skipped = "the exports trust the external issuer, whose clients the origin cannot make"
+        return rows + [("bootstrap", SKIP, skipped), ("refresh", SKIP, skipped)]
+
+    try:
+        subject = issuer.token(device, User(token=test.admin_token()), CREDENTIAL_SCOPES)
+    except issuer.IssuerError as e:
+        return rows + [("bootstrap", FAIL, f"the admin's token from the issuer: {e}")]
+    body = {
+        "subject_token": subject,
+        "issuer_url": issuer_url,
+        "name": f"{test.session.run}-bootstrapped",
+        "scopes": " ".join(CREDENTIAL_SCOPES),
+    }
+    status, found, raw = test.call("POST", BOOTSTRAP, test.token, body)
+    cred_id = str(found.get("id") or "")
+    if status != 201 or not cred_id:
+        return rows + [("bootstrap", FAIL, f"HTTP {status}: {raw[:300]!r}")]
+    test.credential_ids.append((cred_id, test.token))
+    first_expiry = expiry_of(found)
+    why = test.copied("bootstrapped", cred_id, cred_id)
+    if why:
+        rows.append(("bootstrap", FAIL, why))
+    else:
+        rows.append(("bootstrap", PASS, f"credential {cred_id}, whose copy landed"))
+
+    lifetimes = test.fed.issuer_lifetimes
+    if lifetimes.access > 300:
+        rows.append(("refresh", SKIP, "access tokens last an hour ('-p origin-short-tokens')"))
+        return rows
+    if first_expiry is None:
+        rows.append(("refresh", FAIL, "the credential names no token_expiry"))
+        return rows
+    wait = first_expiry.timestamp() + 3 - time.time()
+    if wait > 0:
+        print(f"Waiting {wait:.0f}s until the credential's access token has expired ...")
+        time.sleep(wait)
+    why = test.copied("refreshed", cred_id, cred_id)
+    if why:
+        rows.append(("refresh", FAIL, f"once the access token had expired, {why}"))
+        return rows
+    _, found, _ = test.call("GET", f"/credentials/{cred_id}", test.token)
+    later = expiry_of(found)
+    if later is None or later <= first_expiry:
+        rows.append(("refresh", FAIL, f"the copy landed, but token_expiry is {later}"))
+        return rows
+    rows.append(("refresh", PASS, "the copy landed, with a refreshed token"))
+    return rows
+
+
+CONFIGURED_RUN: dict[str, Callable[[Test], Rows]] = {
+    "enabled-groups": enabled_groups,
+    "oauth-clients": oauth_clients,
+}
+
+
+# --------------------------------------------------------------------------
+# restart
+
+
+def restart(test: Test) -> list[Row]:
+    """origin-0 restarted while a copy runs (slowed, where the origin can
+    be): the job must then be `failed`, saying it was interrupted by a
+    restart (reconcileInterruptedJobs in transfer/recovery.go), or, if
+    the copy finished first, the row is inconclusive. A credential stored
+    before the restart must still work (`credential`). And a job that
+    finished before the restart, which the manager no longer holds,
+    cancelled, must keep its status (`forgotten`): Pelican records it
+    cancelled instead (handleCancelTransferJob in transfer/handlers.go)."""
+    why = unconfigurable(test)
+    if why:
+        return [("", SKIP, why)]
+    stamp = test.session.run
+    kept = test.add_credential(f"{stamp}-kept", test.storage)
+    forgotten = test.finished_job()
+    writer = test.add_credential(f"{stamp}-interrupted", test.storage)
+    slowed = test.fed.origin_variant == "posixv2"
+    text = f"Origin:\n  TransferRateLimit: {RATE_LIMIT}\n"
+    rows: list[Row] = []
+    job: dict[str, Any] = {}
+    job_id = ""
+    try:
+        with (
+            control.restart_with(test.svc, {CONFIG_FILE: text})
+            if slowed
+            else contextlib.nullcontext()
+        ):
+            why = settle(test) if slowed else None
+            if why:
+                return [("interrupted", FAIL, f"once origin-0 restarted slowed, {why}")]
+            status, found = test.submit(test.copy_job("src", "interrupted", writer, writer))
+            if status != 201 or not found.get("job_id"):
+                return [("interrupted", FAIL, f"submitting the copy: HTTP {status}: {found}")]
+            job_id = str(found["job_id"])
+            control.restart(test.svc)
+            _, job, _ = test.call("GET", f"/jobs/{job_id}", test.token)
+    except control.ControlError as e:
+        return [("interrupted", FAIL, str(e))]
+    why = settle(test)
+    if why:
+        rows.append(("interrupted", FAIL, f"once origin-0 restarted, {why}"))
+        return rows
+    if job.get("status") == "completed":
+        rows.append(("interrupted", INCONCLUSIVE, "the copy finished before the restart"))
+    elif job.get("status") != "failed" or INTERRUPTED not in str(job.get("error")):
+        rows.append(
+            (
+                "interrupted",
+                FAIL,
+                f"after the restart, the job is {job.get('status')}:"
+                + f" {str(job.get('error'))[:120]!r}",
+            )
+        )
+    else:
+        rows.append(("interrupted", PASS, f"failed: {INTERRUPTED}"))
+    why = test.copied("kept", kept, kept)
+    rows.append(("credential", FAIL, why) if why else ("credential", PASS, "the copy landed"))
+    forgotten_id = str(forgotten["job_id"])
+    status, _, raw = test.call("DELETE", f"/jobs/{forgotten_id}", test.token)
+    if status is None or not (200 <= status < 300 or status == 409):
+        rows.append(
+            ("forgotten", FAIL, f"cancelling it: HTTP {status}, not 2xx or 409: {raw[:120]!r}")
+        )
+        return rows
+    _, after, _ = test.call("GET", f"/jobs/{forgotten_id}", test.token)
+    if after.get("status") != forgotten.get("status"):
+        rows.append(
+            (
+                "forgotten",
+                FAIL,
+                f"cancelling a {forgotten.get('status')} job the restart forgot (HTTP {status})"
+                + f" made it {after.get('status')}",
+            )
+        )
+    else:
+        rows.append(("forgotten", PASS, f"HTTP {status}, still {forgotten.get('status')}"))
+    return rows
+
+
+RUN: dict[str, Callable[[Test], Rows]] = {
     "ping": ping,
     "auth-none": lambda test: auth_with(test, None),
     "auth-storage-token": lambda test: auth_with(test, test.storage),
@@ -438,6 +1264,11 @@ RUN: dict[str, Callable[[Test], tuple[str, str]]] = {
     "cancel": cancel,
     "local-get": local_get,
     "local-put": local_put,
+    "subjects": subjects,
+    "cancel-finished": cancel_finished,
+    "events": events,
+    "ssrf-and-prefixes": ssrf_and_prefixes,
+    "credential-cli": credential_cli,
 }
 
 
@@ -464,18 +1295,73 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         )
         if errors:
             die(f"could not put the source object in place: {first(errors)}")
-        for name in selected:
-            try:
-                status, note = RUN[name](test)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                status, note = FAIL, f"{type(e).__name__}: {e}"
-            results.add(name, status, note)
+        plain = [n for n in selected if n not in CONFIGURED and n != RESTARTS]
+        for name in plain:
+            record(results, name, guarded(RUN[name], test))
+        if "oauth-clients" in selected:
+            record(results, "oauth-clients", guarded(oauth_clients_disabled, test))
+        configured_names = [n for n in selected if n in CONFIGURED]
+        if configured_names:
+            why = unconfigurable(test)
+            if why:
+                for name in configured_names:
+                    results.add(f"{name} configured", SKIP, why)
+            else:
+                run_configured(test, configured_names, results)
+        if RESTARTS in selected:
+            record(results, RESTARTS, guarded(restart, test))
     finally:
-        for credential in test.credential_ids:
-            test.call("DELETE", f"/credentials/{credential}", test.token)
+        finish(test)
         errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/xfer", tokens)
         if errors:
             common.warn(f"could not remove the run's objects: {first(errors)}")
+
+
+def guarded(check: Callable[[Test], Rows], test: Test) -> list[Row]:
+    """check(test)'s rows; one failing row if it raised."""
+    try:
+        found = check(test)
+    except ApiError as e:
+        return [("", FAIL, str(e))]
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        # A bug, or a server answering what the suite can't read: the
+        # scenario fails, and the rest still run.
+        traceback.print_exc()
+        return [("", FAIL, f"{type(e).__name__}: {e}")]
+    if isinstance(found, list):
+        return found
+    return [("", found[0], found[1])]
+
+
+def record(results: common.Results, name: str, rows: list[Row]) -> None:
+    """Record rows as scenario name's."""
+    for case, status, note in rows:
+        results.add(f"{name} {case}".strip(), status, note)
+
+
+def finish(test: Test) -> None:
+    """Remove what the scenarios made: the credentials, the OAuth2 clients
+    (if origin-0 still has them on), the issuer's clients, and the run's
+    users and groups."""
+    for credential, owner in test.credential_ids:
+        test.call("DELETE", f"/credentials/{credential}", owner)
+    for client_id in test.oauth_client_ids:
+        test.call("DELETE", f"{OAUTH_CLIENTS}/{client_id}", test.token)
+    for namespace, made in test.issuer_clients:
+        failed = issuer.delete_client(test.web, namespace, test.admin_token(), made.client_id)
+        if failed:
+            warn(f"could not remove the issuer's client {made.client_id}: {failed}")
+    if not test.user_ids and not test.group_ids:
+        return
+    try:
+        admin = test.admin()
+        for user_id in test.user_ids:
+            failed = accounts.delete_user(admin, user_id)
+            if failed:
+                warn(f"could not remove user {user_id}: {failed}")
+        for group_id in test.group_ids:
+            failed = accounts.delete_group(admin, group_id)
+            if failed:
+                warn(f"could not remove group {group_id}: {failed}")
+    except accounts.ApiError as e:
+        warn(f"could not remove the run's users and groups: {e}")

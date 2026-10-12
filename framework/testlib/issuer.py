@@ -17,11 +17,13 @@ grants what the user is allowed, narrowed to what the client asked for
 and may carry (handleDeviceVerifySubmit and handleAuthorize in
 oauth2/issuer/handlers.go).
 
-A client that registers itself is bound to the first user who approves
-a flow for it, and the issuer allows an address five registrations,
-then one a minute (oauth2/issuer/rate_limit.go). So the tests register
-none: the server's admin creates the clients they need through the
-issuer's admin API, and every user uses them.
+A client that registers itself (RFC 7591) is bound to the first user
+who approves a flow for it, and the issuer allows an address five
+registrations, then one a minute (oauth2/issuer/rate_limit.go). So the
+tests' clients are made otherwise: the server's admin creates the
+clients they need through the issuer's admin API, and every user uses
+them. register() and configuration() are for testing registration
+itself.
 
 An origin serves an issuer for each export that has one, at
 <web URL>/api/v1.0/issuer/ns<prefix>, and a local issuer for its own
@@ -207,6 +209,24 @@ def client_of(
     )
 
 
+def admin_call(
+    web_url: str,
+    namespace: str,
+    bearer: Optional[str],
+    method: str = "GET",
+    client_id: str = "",
+    body: Optional[dict[str, Any]] = None,
+) -> web.Response:
+    """method the server's admin API for the clients of its issuer of
+    namespace, presenting bearer (a web token; None for none): the list of
+    them, or with client_id, that one, sending body as JSON if given."""
+    target = f"{web_url}{ADMIN_ROUTE}{namespace}/clients"
+    if client_id:
+        target += f"/{client_id}"
+    upload = None if body is None else json.dumps(body).encode()
+    return web.request(method, target, token=bearer, upload=upload, headers=JSON)
+
+
 def create_client(
     web_url: str,
     namespace: str,
@@ -280,6 +300,30 @@ def tokens_of(answer: web.Response, what: str) -> Tokens:
     )
 
 
+def register(issuer_url: str, metadata: dict[str, Any]) -> web.Response:
+    """Register a client at issuer_url itself (RFC 7591), with metadata:
+    its credentials, metadata, and registration access token."""
+    return web.request(
+        "POST", f"{issuer_url}/oidc-cm", upload=json.dumps(metadata).encode(), headers=JSON
+    )
+
+
+def configuration(
+    issuer_url: str,
+    client_id: str,
+    method: str,
+    access: Optional[str],
+    metadata: Optional[dict[str, Any]] = None,
+) -> web.Response:
+    """method (GET, PUT, or DELETE) the configuration of a client that
+    registered itself (RFC 7592), presenting access, its registration
+    access token (None for none), and sending metadata if given."""
+    upload = None if metadata is None else json.dumps(metadata).encode()
+    return web.request(
+        method, f"{issuer_url}/oidc-cm/{client_id}", token=access, upload=upload, headers=JSON
+    )
+
+
 # --------------------------------------------------------------------------
 # The device flow.
 
@@ -326,20 +370,39 @@ def consent_page(issuer_url: str, user_code: str, user: User) -> web.Response:
     )
 
 
-def decide(issuer_url: str, user_code: str, user: User, action: str) -> web.Response:
+# How decide() returns the CSRF token that the verification page set: in
+# the body and its cookie, as the page's own form does; or forged, in the
+# body alone, with a cookie of another value, or in neither.
+CSRF_SENT = "sent"
+CSRF_NO_COOKIE = "no-cookie"
+CSRF_WRONG_COOKIE = "wrong-cookie"
+CSRF_NONE = "none"
+
+
+def decide(
+    issuer_url: str, user_code: str, user: User, action: str, csrf: str = CSRF_SENT
+) -> web.Response:
     """Approve or deny (action) the device flow with user_code at
-    issuer_url, as user, sending back the CSRF cookie the verification
-    page set."""
+    issuer_url, as user, returning the CSRF token the verification page
+    set as csrf says."""
     page = f"{issuer_url}/device"
     shown = consent_page(issuer_url, user_code, user)
-    csrf = shown.cookie("csrf_token")
-    if shown.status != 200 or not csrf:
+    issued = shown.cookie("csrf_token")
+    if shown.status != 200 or not issued:
         raise failed(f"GET {page}", shown)
-    body = {"user_code": user_code, "action": action, "csrf_token": csrf}
-    cookies = f"csrf_token={csrf}"
+    body = {"user_code": user_code, "action": action}
+    if csrf != CSRF_NONE:
+        body["csrf_token"] = issued
+    cookies: list[str] = []
+    if csrf == CSRF_SENT:
+        cookies.append(f"csrf_token={issued}")
+    elif csrf == CSRF_WRONG_COOKIE:
+        cookies.append(f"csrf_token={secrets.token_urlsafe(32)}")
     if user.cookie is not None:
-        cookies += f"; login={user.cookie}"
-    headers = {**JSON, **user.headers, "Cookie": cookies}
+        cookies.append(f"login={user.cookie}")
+    headers = {**JSON, **user.headers}
+    if cookies:
+        headers["Cookie"] = "; ".join(cookies)
     return web.request("POST", page, upload=json.dumps(body).encode(), headers=headers)
 
 
@@ -384,17 +447,18 @@ def authorize(
     redirect_uri: Optional[str] = None,
 ) -> web.Response:
     """Ask client's issuer, as user, to authorize client for the scopes
-    wanted: a redirect (303) back to the client's redirect URI (or
-    redirect_uri) with a code, or an error."""
+    wanted, with the PKCE challenge (none if ""): a redirect (303) back
+    to the client's redirect URI (or redirect_uri) with a code, or an
+    error."""
     query = {
         "response_type": "code",
         "client_id": client.client_id,
         "redirect_uri": client.redirect_uri if redirect_uri is None else redirect_uri,
         "scope": " ".join(wanted),
         "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
     }
+    if challenge:
+        query.update(code_challenge=challenge, code_challenge_method="S256")
     return web.request(
         "GET", f"{client.authorize_url}?{urlencode(query)}", headers=user.headers
     )

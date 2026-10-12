@@ -44,6 +44,10 @@ collections of their own where they change things:
   client      `pelican object get` with no token acquires one from the
               issuer itself, which the tests approve: a reader's works,
               and an outsider's gets nothing
+  share-confinement
+              a reader may share only within the collection: a share
+              that climbs out of it, lies beside it, begins like it, or
+              lies outside every export is refused
   shares      a reader shares part of a collection with a guest, whose
               access is the lesser of the share's and the sharer's,
               and goes with the sharer's; what may not be shared; and
@@ -86,6 +90,7 @@ SCENARIOS = {
     "tokens": "the issuer grants each user the storage scopes of their collections alone",
     "data": "what those tokens allow, at each origin and through the federation",
     "client": "`pelican object get` acquires a token from the issuer, approved as the user",
+    "share-confinement": "a share must lie within its collection; one beside it is refused",
     "shares": "a reader's share grants a guest the lesser of its access and the reader's",
     "expiry": "a grant with an expiry grants nothing after it",
     "revoke": "a revoked grant is gone from the next token, not the old one",
@@ -391,11 +396,15 @@ def sweep(test: Test, this_run: bool) -> None:
 
 
 def prepare(test: Test) -> None:
-    """Make the run's users (once), groups, collections, and objects."""
+    """Make the run's users (once), groups, collections, and objects. The
+    admin, and each user, agree to the origin's AUP first, without which
+    it refuses them its user and group routes."""
     sweep(test, this_run=False)
     admin = test.api("admin")
+    accounts.agree_to_aup(admin)
     for role in ROLES:
         test.ids[role] = accounts.ensure_user(admin, username(role))
+        accounts.agree_to_aup(test.api(role))
     owner = test.api("owner")
     for name, members in GROUPS.items():
         test.groups[name] = accounts.create_group(owner, test.group_name(name))
@@ -823,6 +832,51 @@ def client(test: Test) -> tuple[str, str]:
     return outcome(problems, "test-reader's get approved and done; test-outsider's refused")
 
 
+def covers(scope: str, path: str) -> bool:
+    """Whether scope, if a storage scope, grants something of path, a
+    path within the namespace."""
+    if not scope.startswith("storage."):
+        return False
+    granted = scope.split(":", 1)[-1].rstrip("/")
+    return path == granted or path.startswith(granted + "/")
+
+
+def share_confinement(test: Test) -> tuple[str, str]:
+    """test-sharer, who may read alpha, may share only within it: a share
+    whose namespace climbs out of alpha, lies beside it, begins like it
+    without being in it, or lies outside every export is refused (400),
+    and test-guest's token gets nothing of decoy. Pelican's
+    database.CreateShare cleans the namespace before it compares it with
+    alpha's, so this is a check against regressions."""
+    if test.fed.multiuser:
+        return SKIP, "a multiuser origin refuses every share (see `shares`)"
+    problems: list[str] = []
+    alpha, sharer = test.coll["alpha"], test.api("sharer")
+    bad = (
+        (f"{test.path('alpha')}/../decoy", "climbing out of alpha"),
+        (test.path("decoy"), "beside alpha"),
+        (test.path("alphax"), "beginning like alpha"),
+        (f"/elsewhere/{test.run}", "outside every export"),
+    )
+    made: list[str] = []
+    for n, (namespace, why) in enumerate(bad):
+        answer = share(sharer, alpha, f"confined-{n}", namespace)
+        if answer.status != 400:
+            problems.append(f"a share {why} ({namespace}): {answer.describe()}, not 400")
+        if answer.ok:
+            made.append(str(answer.object.get("id")))
+            grant(sharer, made[-1], personal("guest"), "read")
+    try:
+        decoy = f"/{test.rel('decoy')}"
+        found = sorted(s for s in storage_scopes(test.data_token("guest")) if covers(s, decoy))
+        if found:
+            problems.append(f"test-guest's token has {found}, which read decoy")
+    finally:
+        for sid in made:
+            delete(test.api("admin"), sid)
+    return outcome(problems, "each refused (400); test-guest gets nothing of decoy")
+
+
 def shares(test: Test) -> tuple[str, str]:
     """test-sharer, who may read alpha, shares alpha/shared with
     test-guest, whose access is the lesser of the share's and
@@ -1121,6 +1175,7 @@ RUN = {
     "tokens": tokens,
     "data": data,
     "client": client,
+    "share-confinement": share_confinement,
     "shares": shares,
     "expiry": expiry,
     "revoke": revoke_scenario,

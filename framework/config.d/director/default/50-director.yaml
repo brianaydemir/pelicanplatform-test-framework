@@ -6,3 +6,9 @@ Director:
 
   # Pelican's default, stated because short test runs depend on it.
   OriginCacheHealthTestInterval: 15s
+
+  # Whom the director names for help, at /api/v1.0/director_ui/contact
+  # and in its refusals of unapproved servers; the director-api suite
+  # checks them (CONTACT_* in framework/suites/director_api.py).
+  SupportContactEmail: support@pelican-testing.invalid
+  SupportContactUrl: https://pelican-testing.invalid/support

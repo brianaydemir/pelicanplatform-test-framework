@@ -31,8 +31,9 @@ ORIGIN_ENABLE_ISSUER=true
 EXTERNAL_ISSUER=false
 
 # Whether the origins' embedded issuer mints tokens that soon expire
-# (Issuer.AccessTokenLifetime, Issuer.RefreshTokenLifetime, and
-# Issuer.RefreshTokenGracePeriod; see presets/origin-short-tokens.sh).
+# (Issuer.AccessTokenLifetime, Issuer.RefreshTokenLifetime,
+# Issuer.RefreshTokenGracePeriod, and Issuer.AuthorizationCodeLifetime;
+# see presets/origin-short-tokens.sh).
 ISSUER_SHORT_TOKENS=false
 
 # Whether the /protected-b export has authorization templates of its
@@ -104,6 +105,12 @@ SERVER_DROP_PRIVILEGES=false
 # never asks for but curl and browsers do: `cache` or `origin` (see
 # presets/director-default-origin.sh).
 DIRECTOR_DEFAULT_RESPONSE=cache
+
+# Whether director-0 serves the federation's metadata
+# (Director.EnableFederationMetadataHosting), as the discovery host, in
+# place of the `discovery` service, which then does not run (see
+# presets/director-discovery.sh).
+DIRECTOR_DISCOVERY=false
 
 # Registry.RequireOriginApproval and Registry.RequireCacheApproval: whether
 # a registration serves nothing until an administrator approves it (see

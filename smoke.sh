@@ -58,7 +58,7 @@ shape_presets() {
     posixv2-xrootd-tx)
       echo "cache-xrootd topo-multi-origin topo-multi-cache topo-multi-owner" \
            "auth-external-issuer origin-metadata-tx server-unprivileged" \
-           "origin-transfer-api" ;;
+           "origin-transfer-api director-discovery" ;;
     tiny-posixv2-posc)
       echo "topo-tiny origin-posc origin-metadata server-unprivileged" \
            "origin-transfer-api cache-memory cache-small" \
@@ -67,7 +67,8 @@ shape_presets() {
     ssh-xrootd)
       echo "origin-ssh cache-xrootd topo-multi-cache topo-multi-director" \
            "topo-site-local-cache origin-transfer-api director-default-origin" \
-           "registry-approval origin-short-tokens origin-export-templates" ;;
+           "registry-approval origin-short-tokens origin-export-templates" \
+           "director-discovery" ;;
     s3v2-xrootd)
       echo "origin-s3v2 cache-xrootd topo-multi-owner origin-no-direct" \
            "server-unprivileged topo-site-local-cache topo-multi-director" \
@@ -83,7 +84,7 @@ shape_presets() {
     s3v2-v2)
       echo "origin-s3v2 topo-multi-origin topo-multi-cache auth-external-issuer" \
            "origin-max-age cache-tiered origin-transfer-api cache-memory cache-small" \
-           "registry-approval" ;;
+           "registry-approval director-discovery" ;;
     tiny-posixv2-tx)
       echo "topo-tiny origin-posc origin-metadata-tx origin-max-age" \
            "origin-multiuser director-default-origin origin-export-templates" ;;
@@ -102,7 +103,7 @@ shape_presets() {
       echo "topo-multi-origin topo-multi-cache origin-no-direct origin-posc" \
            "origin-metadata-tx origin-multiuser topo-site-local-cache cache-tiered" \
            "topo-multi-director cache-memory cache-small registry-approval" \
-           "origin-short-tokens" ;;
+           "origin-short-tokens director-discovery" ;;
     posixv2-xrootd-posc)
       echo "cache-xrootd topo-multi-origin topo-multi-cache topo-multi-owner" \
            "auth-external-issuer origin-posc origin-multiuser" ;;
@@ -112,19 +113,20 @@ shape_presets() {
     httpsv2-v2)
       echo "origin-httpsv2 topo-multi-origin topo-multi-cache topo-multi-owner" \
            "origin-max-age server-unprivileged with-lab cache-tiered cache-memory cache-small" \
-           "origin-short-tokens" ;;
+           "origin-short-tokens director-discovery" ;;
     xrootd-xrootd)
       echo "origin-xrootd cache-xrootd topo-multi-origin topo-multi-cache" \
            "topo-multi-owner origin-export-templates topo-multi-director" \
            "topo-site-local-cache origin-atomic-uploads origin-multiuser" \
-           "registry-approval director-default-origin" ;;
+           "registry-approval director-default-origin director-discovery" ;;
     posixv2-xrootd-no-direct)
       echo "cache-xrootd origin-no-direct origin-metadata server-unprivileged" ;;
     s3-xrootd-broker)
       echo "origin-s3 cache-xrootd origin-broker topo-multi-cache" \
            "topo-multi-director topo-site-local-cache auth-external-issuer" \
            "origin-no-direct origin-max-age origin-transfer-api" \
-           "server-unprivileged registry-approval director-default-origin" ;;
+           "server-unprivileged registry-approval director-default-origin" \
+           "director-discovery" ;;
     s3-v2)
       echo "origin-s3 topo-multi-origin topo-multi-owner cache-tiered cache-memory cache-small" \
            "origin-short-tokens origin-export-templates" ;;
@@ -135,14 +137,15 @@ shape_presets() {
     https-xrootd)
       echo "origin-https cache-xrootd topo-multi-origin topo-multi-cache" \
            "topo-multi-owner topo-multi-director auth-external-issuer" \
-           "origin-no-direct origin-transfer-api server-unprivileged" ;;
+           "origin-no-direct origin-transfer-api server-unprivileged" \
+           "director-discovery" ;;
     xrootd-v2-broker)
       echo "origin-xrootd origin-broker cache-tiered origin-atomic-uploads" \
            "origin-multiuser cache-memory auth-external-issuer" ;;
     pstore-v2)
-      echo "origin-pstore cache-tiered" ;;
+      echo "origin-pstore cache-tiered director-discovery" ;;
     posixv2-v2-metadata)
-      echo "origin-metadata cache-tiered topo-multi-director" ;;
+      echo "origin-metadata cache-tiered topo-multi-director director-discovery" ;;
     xrootd-v2)
       echo "origin-xrootd auth-external-issuer" ;;
     standalone-posixv2)

@@ -337,6 +337,7 @@ class IssuerLifetimes:
     access: int  # Issuer.AccessTokenLifetime
     refresh: int  # Issuer.RefreshTokenLifetime
     grace: int  # Issuer.RefreshTokenGracePeriod: how long a used refresh token still works
+    code: int  # Issuer.AuthorizationCodeLifetime: authorization and device codes
 
 
 # The origins that XRootD serves (ORIGIN_VARIANT); the rest are Pelican's
@@ -459,6 +460,13 @@ class Federation:
         Pelican), rather than XRootD (see XROOTD_ORIGINS)."""
         return self.origin_variant not in XROOTD_ORIGINS
 
+    @property
+    def sent_cache_control(self) -> str:
+        """The Cache-Control that the origins send: ORIGIN_CACHE_CONTROL
+        (origin_cache_control) at native origins, and nothing at XRootD
+        ones, which have no Origin.CacheControl."""
+        return self.origin_cache_control if self.native_origins else ""
+
     def storage_namespace(self, namespace: str) -> str:
         """The namespace whose storage namespace reads at the origins, all
         of one ORIGIN_VARIANT (see storage_namespace())."""
@@ -528,10 +536,10 @@ class Federation:
     @cached_property
     def issuer_lifetimes(self) -> IssuerLifetimes:
         """How long the origins' embedded issuer's tokens last:
-        `<access> <refresh> <grace>` seconds (see
+        `<access> <refresh> <grace> <code>` seconds (see
         presets/origin-short-tokens.sh)."""
-        access, refresh, grace = self._line("issuer-lifetimes").split()
-        return IssuerLifetimes(int(access), int(refresh), int(grace))
+        access, refresh, grace, code = self._line("issuer-lifetimes").split()
+        return IssuerLifetimes(int(access), int(refresh), int(grace), int(code))
 
     @cached_property
     def export_templates(self) -> bool:
@@ -585,6 +593,14 @@ class Federation:
                 svc, high, low = line.split()
                 found[svc] = (int(high), int(low))
         return found
+
+    @cached_property
+    def pelican_version(self) -> Optional[str]:
+        """The version that every server should report: PELICAN_TAG's,
+        without the `v`; None if the shape runs images of the user's own,
+        whose versions no one knows in advance."""
+        found = self._line("pelican-version")
+        return None if found == "custom" else found
 
     @cached_property
     def topology(self) -> str:

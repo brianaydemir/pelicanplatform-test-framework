@@ -46,6 +46,14 @@ Server:
   # who is not a server administrator (see docs/tests.md).
   CollectionAdminUsers: [test-curator]
 
+  # The accounts suite's authorities by group and its user administrator
+  # by name (see docs/tests.md). Each server reserves the groups' names
+  # as it starts, so that no user may create a group of either name; the
+  # suite adds its users to them, for a while.
+  AdminGroups: [test-server-admins]
+  CollectionAdminGroups: [test-collection-admins]
+  UserAdminUsers: [test-user-admin]
+
 Issuer:
   # A web login's cookie carries the groups the user is in, from the
   # server's own database, as the issuer suite's users need; the

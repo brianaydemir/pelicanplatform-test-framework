@@ -1,7 +1,9 @@
 """Listings: PROPFIND at depths 0, 1, and infinity at each origin, each
 director, and each cache, in every namespace; who may list /protected-a;
-an object that comes and goes; and a GET of a collection, which is no
-object, and which no cache may keep as one.
+an object that comes and goes; Depth 1 of an object, which is no
+collection; a GET of a collection, which is no object, and which no
+cache may keep as one; and the links of an origin's HTML listing, which
+a browser follows, among names that a URL must encode.
 
 Objects go under /<namespace>/data/listings/<run>/, put straight in
 every origin's store, in each namespace's storage (see stores.seed();
@@ -28,9 +30,11 @@ import time
 import traceback
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
+from html.parser import HTMLParser
 from typing import Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
+from suites.names import NAMES
 from testlib import common, credentials, stores, web, webdav
 from testlib.common import die, first, warn
 from testlib.report import FAIL, PASS, SKIP
@@ -50,6 +54,8 @@ SCENARIOS = {
     "public-no-token": "listing /public with no token is allowed everywhere",
     "new-object": "an object is listed as soon as it is uploaded, and not once removed",
     "collection-get": "a GET of a collection is no object's bytes, and no cache keeps it as one",
+    "html-links": "each origin's HTML listing links to each object by its name, and no decoy",
+    "plain-object-listing": "Depth 1 of an object, at each origin and cache, and `ls` of it, list it alone",
 }
 
 # The tree under <base>/tree, in every namespace: each object's size (paths
@@ -695,6 +701,207 @@ def collection_get(test: Test) -> tuple[str, str]:
     return PASS, f"{len(origins)} origin(s), {len(test.caches)} cache(s)"
 
 
+class Anchors(HTMLParser):
+    """The links (<a href>) of an HTML page: each href, and its text, as a
+    browser reads them, with character references resolved."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[tuple[str, str]] = []
+        self._href: Optional[str] = None
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        if tag == "a":
+            self._href = dict(attrs).get("href")
+            self._text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._href is not None:
+            self.links.append((self._href.strip(), "".join(self._text).strip()))
+            self._href = None
+
+
+def anchors(page: bytes) -> list[tuple[str, str]]:
+    """The links of an HTML page (see Anchors)."""
+    parser = Anchors()
+    parser.feed(page.decode("utf-8", "replace"))
+    parser.close()
+    return parser.links
+
+
+# What a browser leaves as it is in a URL's path, and in its query: every
+# printable ASCII character but these (the WHATWG URL standard's path and
+# query percent-encode sets). It percent-encodes the rest, and anything
+# beyond ASCII as UTF-8, but leaves a `%` as it is.
+PATH_SAFE = "".join(chr(c) for c in range(0x21, 0x7F) if chr(c) not in '"#<>?`{}')
+QUERY_SAFE = "".join(chr(c) for c in range(0x21, 0x7F) if chr(c) not in "\"#<>'")
+
+
+def followed(page: str, href: str) -> str:
+    """The URL that a browser asks for when it follows a link to href on
+    the page at URL page: href resolved against page, without its
+    fragment, and percent-encoded as PATH_SAFE and QUERY_SAFE say."""
+    parts = urlsplit(urljoin(page, href))
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            quote(parts.path, safe=PATH_SAFE),
+            quote(parts.query, safe=QUERY_SAFE),
+            "",
+        )
+    )
+
+
+def is_html(answer: web.Response) -> bool:
+    """Whether answer is an HTML page."""
+    kind = answer.header("Content-Type").lower()
+    return answer.status == 200 and kind.startswith("text/html")
+
+
+# html-links' collection, beside the names suite's objects: its name, and
+# the size of the one object in it.
+HTML_SUB = "sub"
+HTML_INNER = 4321
+
+
+def link_problems(
+    test: Test, svc: str, page: str, listing: web.Response, objects: Mapping[str, bytes]
+) -> list[str]:
+    """What is wrong with the links of listing, the HTML listing at URL
+    page of a collection that holds objects (by name) and HTML_SUB, at
+    origin svc. A link is known by its text, the entry's name (a
+    collection's with a / after it), as a browser's user knows it."""
+    token = test.tokens["protected-a"]
+    host = urlsplit(page).netloc
+    problems: list[str] = []
+    linked: set[str] = set()
+    for href, text in anchors(listing.body):
+        url = followed(page, href)
+        if urlsplit(url).netloc != host:
+            continue
+        name = text.rstrip("/")
+        what = f"{svc}: the link to {name!r} ({href})"
+        if name in objects:
+            linked.add(name)
+            answer = web.request("GET", url, token=token)
+            other = next((n for n, data in objects.items() if data == answer.body), "")
+            if answer.status != 200:
+                problems.append(f"{what}: {answer.describe()}")
+            elif other != name:
+                bytes_of = f"{other!r}'s bytes" if other else "bytes that are no object's"
+                problems.append(f"{what}: {bytes_of}")
+        elif name in ("..", HTML_SUB):
+            # The parent's listing must link to this collection, and the
+            # child's to the object in it.
+            linked.add(name)
+            want = "html" if name == ".." else "inner"
+            answer = web.request("GET", url, token=token, headers={"Accept": "text/html"})
+            if not is_html(answer):
+                problems.append(f"{what}: {answer.describe()}, not an HTML listing")
+            elif want not in [t.rstrip("/") for _, t in anchors(answer.body)]:
+                problems.append(f"{what}: a listing without {want!r}")
+        else:
+            problems.append(f"{svc}: a link to {text!r} ({href}), which is no entry")
+    missing = [n for n in [*objects, HTML_SUB] if n not in linked]
+    if missing:
+        more = f" (and {len(missing) - 1} more)" if len(missing) > 1 else ""
+        problems.append(f"{svc}: no link to {missing[0]!r}{more}")
+    return problems
+
+
+def html_links(test: Test) -> tuple[str, str]:
+    """Each origin's HTML listing (a GET with Accept: text/html) of a
+    collection that holds the names suite's objects, beside their decoys,
+    and a collection, HTML_SUB: following each link as a browser does
+    (followed()) must bring the object of its name, never a decoy's bytes
+    or a 404, and the link to HTML_SUB, or to the parent (..), if there is
+    one, its listing. Every entry must have a link. A native origin's
+    listing must carry Cache-Control: no-store, as Pelican sends it, so
+    that no cache keeps it. An origin that answers no HTML listing, as
+    only a native origin over storage on its own host does, is passed
+    over, and named in the note; collection-get fails it. The origins are
+    asked only if they take direct clients."""
+    caps = test.caps("protected-a")
+    if not may_list(caps, "0", "origin"):
+        return SKIP, "/protected-a takes no direct clients"
+    token = test.tokens["protected-a"]
+    rel = f"{test.base}/html"
+    # Each a size of its own, as in the names suite.
+    objects = {name: os.urandom(1000 + 37 * n) for n, name in enumerate(NAMES)}
+    errors = stores.make_dirs(test.origins, "protected-a", f"{rel}/{HTML_SUB}", token)
+    for name, data in [*objects.items(), (f"{HTML_SUB}/inner", os.urandom(HTML_INNER))]:
+        if errors:
+            break
+        errors += stores.seed_everywhere(
+            test.origins, "protected-a", f"{rel}/{name}", data, token, caps
+        )
+    if errors:
+        return FAIL, errors[0]
+    problems: list[str] = []
+    unlisted: list[str] = []
+    for origin in test.origins:
+        page = origin_url(origin, quote(f"/protected-a/{rel}/"))
+        answer = web.request("GET", page, token=token, headers={"Accept": "text/html"})
+        if not is_html(answer):
+            unlisted.append(origin.svc)
+            continue
+        control = answer.header("Cache-Control")
+        if test.fed.native_origins and "no-store" not in control.lower():
+            problems.append(f"{origin.svc}: the listing's Cache-Control is '{control}'")
+        problems += link_problems(test, origin.svc, page, answer, objects)
+    if problems:
+        return FAIL, first(problems)
+    if len(unlisted) == len(test.origins):
+        return SKIP, "no origin answers an HTML listing (see collection-get)"
+    note = f"{len(test.origins) - len(unlisted)} origin(s)"
+    if unlisted:
+        note += f"; no HTML listing from {', '.join(unlisted)}"
+    return PASS, note
+
+
+def plain_object_listing(test: Test) -> tuple[str, str]:
+    """PROPFIND Depth 1 of an object, tree/b, which is no collection, at
+    every origin and cache: 207, listing the object alone, with its size,
+    as Depth 0 would (RFC 4918, section 9.1); or, where the server may not
+    list (may_list()), a refusal. And `pelican object ls -l --json` of it
+    must list it alone, where /protected-a has Listings (Pelican's
+    TestListPlainObjectPosixV2)."""
+    caps = test.caps("protected-a")
+    token = test.tokens["protected-a"]
+    path = test.path("protected-a", "tree/b")
+    problems: list[str] = []
+    for svc, url, role in servers(test):
+        target = f"{url}{path}"
+        if not may_list(caps, "1", role):
+            if why := test.refusal(target, "1", token):
+                problems.append(f"{svc}: {why}")
+            continue
+        _, got, why = test.listing(target, "1", path, token)
+        if got is None:
+            problems.append(f"{svc}: {why}")
+        elif set(got) != {""}:
+            problems.append(f"{svc}: Depth 1 of the object listed {sorted(got)}")
+        elif got[""].collection or got[""].size != TREE["b"]:
+            problems.append(f"{svc}: Depth 1 of the object: not the {TREE['b']}-byte object")
+    note = f"{len(servers(test))} server(s)"
+    if "Listings" in caps:
+        listed, why = test.ls("tree/b")
+        if listed is None:
+            problems.append(f"`pelican object ls` of the object: {why}")
+        elif listed != {"b": (False, TREE["b"])}:
+            problems.append(f"`pelican object ls` of the object listed {listed}")
+        note += ", and the client"
+    if problems:
+        return FAIL, first(problems)
+    return PASS, note
+
+
 RUN = {
     "origin-depth-0": origin_depth_0,
     "origin-depth-1": origin_depth_1,
@@ -709,6 +916,8 @@ RUN = {
     "public-no-token": public_no_token,
     "new-object": new_object,
     "collection-get": collection_get,
+    "html-links": html_links,
+    "plain-object-listing": plain_object_listing,
 }
 
 

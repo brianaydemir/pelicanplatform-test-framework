@@ -28,6 +28,7 @@ Server:
   DatabaseBackup:
     Location: /var/lib/pelican/backups
 
-Monitoring:
-  MetricAuthorization: false
-  PromQLAuthorization: false
+# Monitoring.MetricAuthorization and PromQLAuthorization stay on, as
+# Pelican ships them: the tests present a token for /metrics
+# (framework/testlib/metrics.py), and the observability suite checks who
+# may read it.

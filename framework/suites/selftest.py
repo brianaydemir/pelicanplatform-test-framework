@@ -18,6 +18,7 @@ Each reads an object of its own under /protected-a/data/selftest/<run>/,
 which the suite puts in place and removes.
 """
 
+import json
 import os
 import time
 import traceback
@@ -32,7 +33,10 @@ from testlib.session import Session
 
 SCENARIOS = {
     "trailers": "a V2 cache's X-Transfer-Status trailer comes back when asked for, and only then",
-    "jwt": "a token jwt.encode() signs with the origins' key is taken, and refused once expired",
+    "jwt": (
+        "a token jwt.encode() signs with the origins' key is taken, and refused once expired;"
+        " jwt.verify() finds its key in the origins' JWKS, and in no other"
+    ),
     "metrics": "a GET straight to a native origin raises its pelican_http_requests_total",
     "restart-cache": (
         "cache-0, restarted mid-run, is named by every director again, and serves what"
@@ -152,7 +156,9 @@ def jwt_tokens(test: Test) -> tuple[str, str]:
     mints (credentials.server_claims(), jwt.header(), jwt.key_id()),
     must read the object at every origin; the same token, expired ten
     minutes ago (well past native servers' 60 seconds of clock skew),
-    must be refused."""
+    must be refused. jwt.verify() must find the token's key, by its kid,
+    in the first origin's published JWKS (/.well-known/issuer.jwks), and
+    none in a JWKS of the `unknown` test key alone."""
     if not test.direct:
         return SKIP, f"/{NAMESPACE} takes no direct clients"
     fed = test.fed
@@ -177,7 +183,28 @@ def jwt_tokens(test: Test) -> tuple[str, str]:
         answer = web.request("GET", url, token=expired)
         if answer.status not in (401, 403):
             return FAIL, f"{origin.svc}: GET with the expired token got {answer.describe()}"
+    why = verify_problem(fed, token, str(head["kid"]))
+    if why:
+        return FAIL, why
     return PASS, f"{len(stores.unique(fed.origins))} origin(s); kid {head['kid']}"
+
+
+def verify_problem(fed: common.Federation, token: str, kid: str) -> Optional[str]:
+    """Why jwt.verify() does not find token's key, kid, in the first
+    origin's published JWKS, or finds one in a JWKS of the `unknown`
+    test key alone, or None."""
+    origin = fed.origins[0]
+    jwks = web.request("GET", f"{origin.web_url}/.well-known/issuer.jwks")
+    if not jwks.ok:
+        return f"{origin.svc}'s JWKS: {jwks.describe()}"
+    found = jwt.verify(token, jwks.body)
+    if found != kid:
+        return f"jwt.verify() found {found!r} in {origin.svc}'s JWKS, not {kid!r}"
+    other = json.dumps({"keys": [jwt.public_jwk(credentials.keys(fed)["unknown"])]})
+    found = jwt.verify(token, other.encode())
+    if found is not None:
+        return f"jwt.verify() found {found!r} in a JWKS of the unknown key alone"
+    return None
 
 
 def http_requests(test: Test) -> tuple[str, str]:

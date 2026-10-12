@@ -135,18 +135,22 @@ x-needs-backends: &needs-backends
 # origin's issuer URL, which fed.sh must reproduce exactly. Each Pelican
 # server's host port is repeated in its config.d/instance/ file.
 #
-# fed.sh enables the `federation` profile but for a standalone origin,
-# and `external-issuer` for `-p auth-external-issuer`.
+# fed.sh enables the `federation` profile but for a standalone origin;
+# `discovery` with it, unless director-0 serves the federation's metadata
+# (`-p director-discovery`); and `external-issuer` for
+# `-p auth-external-issuer`.
 #===========================================================================
 
 services:
 
   # Hosts the federation metadata outside any director, as the OSDF does,
-  # where the directors are interchangeable.
+  # where the directors are interchangeable. Under `-p director-discovery`,
+  # director-0 hosts it instead, and this runs only for the external
+  # issuer, if at all.
   discovery:
     hostname: discovery
     image: nginx:alpine
-    profiles: ["federation", "external-issuer"]
+    profiles: ["discovery", "external-issuer"]
     # 127.0.0.1, not localhost: BusyBox wget tries only the first address,
     # which may be ::1, and nginx listens on IPv4 only.
     healthcheck:
@@ -181,7 +185,7 @@ services:
     profiles: ["federation"]
     healthcheck: *pelican-health
     depends_on:
-      discovery: { condition: service_healthy }
+      discovery: { condition: service_healthy, required: false }
     deploy:
       resources:
         limits: { memory: "${DIRECTOR_MEM:?run through ./fed.sh}" }
@@ -207,13 +211,16 @@ services:
   # Another director (`-p topo-multi-director`), which must hold
   # director-0's key: both sign as the federation, whose JWKS is
   # director-0's. `./fed.sh keys` keeps the two in step.
+  # Likewise after director-0, its discovery host under
+  # `-p director-discovery`.
   director-1:
     hostname: director-1
     image: "${IMAGE_DIRECTOR:?run through ./fed.sh}"
     profiles: ["multi-director"]
     healthcheck: *pelican-health
     depends_on:
-      discovery: { condition: service_healthy }
+      discovery: { condition: service_healthy, required: false }
+      director-0: { condition: service_healthy }
     deploy:
       resources:
         limits: { memory: "${DIRECTOR_MEM:?run through ./fed.sh}" }
@@ -236,13 +243,17 @@ services:
       - ./var/state/director-1:/var/lib/pelican
     <<: *common-secrets
 
+  # It starts after director-0, which under `-p director-discovery` it
+  # discovers the federation through; a director needs no registry to
+  # start.
   registry:
     hostname: registry
     image: "${IMAGE_REGISTRY:?run through ./fed.sh}"
     profiles: ["federation"]
     healthcheck: *pelican-health
     depends_on:
-      discovery: { condition: service_healthy }
+      discovery: { condition: service_healthy, required: false }
+      director-0: { condition: service_healthy }
     deploy:
       resources:
         limits: { memory: "${REGISTRY_MEM:?run through ./fed.sh}" }
@@ -654,7 +665,7 @@ services:
       - "-addr=:9999"
       - "-path=/events"
       - "-audience=http://metadata:9999/events"
-      - "-federation=https://discovery:8444"
+      - "-federation=${FED_DISCOVERY_URL:?run through ./fed.sh}"
       - "-ca=/certs/ca.crt"
       - "-require-namespace-scope"
     healthcheck:

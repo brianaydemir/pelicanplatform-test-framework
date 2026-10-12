@@ -13,11 +13,19 @@ framework/var/generated/origins, under /protected-a/data/posc/. Only
 the upload is seen under way: a new staging file, or growth in
 pstore/objects on pstore. Afterward, /protected-a/data/posc is emptied on
 every store.
+
+`posc-expiry` checks the native POSC's reaping of abandoned staging
+files, and its guard on the staging directory. Its `idle` row restarts
+the first origin with a short Origin.Posc.FileTimeout and keepalive
+(control.restart_with()), restores it afterward, and waits until the
+federation serves again; without a control helper, or in the `tiny`
+topology, whose origin is the whole federation's process, it skips.
 """
 
 import glob
 import os
 import re
+import shutil
 import socket
 import ssl
 import subprocess  # nosec B404
@@ -25,13 +33,15 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
+from http.client import HTTPException, HTTPSConnection
 from typing import Optional
 from urllib.parse import unquote, urlsplit
 
-from testlib import blocks, common, metrics, stores, web, webdav
-from testlib.common import die, shown, wait_for
+from testlib import blocks, common, control, director, metrics, stores, web, webdav
+from testlib.common import die, first, shown, wait_for, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -44,7 +54,14 @@ SCENARIOS = {
     "concurrent": "two whole uploads of one object at once leave one of them, whole",
     "client": "killing `pelican object put` midway leaves nothing",
     "hidden": "neither a PROPFIND nor an HTML listing of the export shows .pelican-posc",
+    "posc-expiry": "stale staging files are reaped, an idle upload kept, and staging guarded",
 }
+
+# A row: its status and note.
+Row = tuple[str, str]
+
+# posc-expiry's cases, each a row named `posc-expiry <case>`.
+EXPIRY_CASES = ("mode", "stale", "staging-put", "staging-mkcol", "idle")
 
 # The scenarios that each kind of staging cannot have, and why. A pstore
 # origin has no staging file to watch, and XRootD stages uploads outside
@@ -53,9 +70,11 @@ SKIPS: dict[str, dict[str, str]] = {
     "pstore": {
         "stalled": "pstore commits a version at close, with no staging file",
         "hidden": "pstore commits a version at close, with no staging file",
+        "posc-expiry": "pstore commits a version at close, with no staging file",
     },
     "atomic": {
-        "hidden": "XRootD stages uploads outside the exports, so there is nothing to hide"
+        "hidden": "XRootD stages uploads outside the exports, so there is nothing to hide",
+        "posc-expiry": "only the native POSC has Origin.Posc.FileTimeout and its reaper",
     },
 }
 
@@ -63,8 +82,26 @@ SKIPS: dict[str, dict[str, str]] = {
 # Origin.UploadTempLocation, which fed.sh sets (fed_generate).
 ATOMIC_DIR = ".in-progress"
 
-# The gauge of uploads that POSC is staging.
+# The gauge of uploads that POSC is staging, and the count of staging
+# files it has reaped.
 POSC_ACTIVE = "pelican_origin_posc_active_uploads"
+POSC_EXPIRED = "pelican_origin_posc_expired_total"
+
+# posc-expiry: how long ago a planted staging file was last modified, to
+# be stale under the default Origin.Posc.FileTimeout (1h); `idle`'s
+# restart's FileTimeout and KeepaliveInterval, in seconds, how old a file
+# it plants is, stale under that timeout but not the default, and how
+# long its upload idles, past the timeout; and how long the reaper, which
+# sweeps every 5 seconds (expireLoop in origin_serve/posc.go), may take.
+STALE_AGE = 2 * 3600
+FILE_TIMEOUT = 20
+KEEPALIVE = 5
+SHORT_STALE_AGE = 40
+IDLE = 35
+REAP_WAIT = 15
+CONFIG_FILE = "90-posc.yaml"
+# How long the federation may take to serve again after the restart.
+SETTLE_WAIT = 150
 
 MIB = 1 << 20
 
@@ -694,6 +731,283 @@ def hidden(test: Test) -> tuple[str, str]:
     return PASS, f"{shown(posc_dir)} exists, and neither listing shows it"
 
 
+# --------------------------------------------------------------------------
+# posc-expiry
+
+
+class Problem(Exception):
+    """A row could not do what it needed to judge Pelican: it fails, with
+    this as its note."""
+
+
+def guarded(check: Callable[[], Row]) -> Row:
+    """check's row; a FAIL if it could not set up, or raised."""
+    try:
+        return check()
+    except Problem as e:
+        return FAIL, str(e)
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        # A bug, or a server answering what the suite can't read: the row
+        # fails, and the rest still run.
+        traceback.print_exc()
+        return FAIL, f"{type(e).__name__}: {e}"
+
+
+def staging_root(test: Test) -> str:
+    """POSC's staging directory in the first origin's /protected-a."""
+    return f"{test.origin.store_of('protected-a')}/.pelican-posc"
+
+
+def planted_dir(test: Test) -> str:
+    """The staging directory of the suite's own, as if a user's, in which
+    posc-expiry plants staging files."""
+    return f"{staging_root(test)}/expiry-{test.run}"
+
+
+def plant(test: Test, age: float) -> str:
+    """A staging file in planted_dir(), last modified age seconds ago, as
+    an abandoned upload leaves; its path. Raises Problem if POSC has no
+    staging directory yet, which posc-expiry's first upload makes, as
+    that user's (see users' `posc-multiuser`); the suite does not make
+    it."""
+    if not os.path.isdir(staging_root(test)):
+        raise Problem(
+            f"{shown(staging_root(test))} does not exist, though an upload has been staged"
+        )
+    rel = f".pelican-posc/expiry-{test.run}/in_progress.{int(time.time())}.{os.getpid()}"
+    error = stores.write_file(test.origin.store_of("protected-a"), rel, b"abandoned\n")
+    if error:
+        raise Problem(error)
+    path = f"{test.origin.store_of('protected-a')}/{rel}"
+    then = time.time() - age
+    os.utime(path, (then, then))
+    return path
+
+
+def expired(test: Test) -> float:
+    """POSC_EXPIRED, at the first origin; 0 if it does not answer."""
+    return (metrics.fetch(test.origin_web) or metrics.EMPTY).value(POSC_EXPIRED)
+
+
+def reaped(test: Test, age: float, timeout: str) -> list[str]:
+    """Plant a staging file last modified age seconds ago, which the
+    reaper must remove within REAP_WAIT seconds, and count in POSC_EXPIRED,
+    since it is older than Origin.Posc.FileTimeout (timeout); what went
+    wrong."""
+    before = expired(test)
+    path = plant(test, age)
+    problems: list[str] = []
+    if not wait_for(lambda: not os.path.exists(path), REAP_WAIT):
+        problems.append(
+            (
+                f"{shown(path)}, last modified {age:.0f}s ago, outlived"
+                f" Origin.Posc.FileTimeout ({timeout}) by {REAP_WAIT}s"
+            )
+        )
+    elif not wait_for(lambda: expired(test) > before, 5):
+        problems.append(f"{POSC_EXPIRED} did not rise from {before:g}")
+    return problems
+
+
+def expiry_mode(test: Test) -> Row:
+    """A complete upload's object has mode 0644, as without POSC: the 0666
+    with which the WebDAV handler opens a PUT's file, less the origin's
+    umask, 022. POSC opens its staging file with the mode asked for, and
+    renames it into place (TestPoscFinalPermMatchesRequested). This
+    upload, the scenario's first, also makes POSC's staging directory, if
+    there is none yet."""
+    name = f"{test.run}-mode"
+    answer = test.full_put(os.urandom(4096), name)
+    if not answer.ok:
+        return FAIL, f"upload got {answer.describe()}"
+    path = test.object_file(name)
+    if path is None:
+        return FAIL, f"upload got {answer.describe()}, but no object is in the store"
+    mode = os.stat(path).st_mode & 0o777
+    if mode != 0o644:
+        return FAIL, f"{shown(path)} has mode {mode:04o}, not 0644"
+    return PASS, f"{shown(path)}: 0644"
+
+
+def expiry_stale(test: Test) -> Row:
+    """A staging file abandoned two hours ago, past the default
+    Origin.Posc.FileTimeout of an hour, is reaped at the next sweep, and
+    counted (expireFiles in origin_serve/posc.go)."""
+    problems = reaped(test, STALE_AGE, "1h, the default")
+    if problems:
+        return FAIL, first(problems)
+    return PASS, f"reaped within {REAP_WAIT}s, and counted"
+
+
+def expiry_staging_put(test: Test) -> Row:
+    """A PUT straight into the staging directory: POSC hides it, so the
+    origin must answer as for a path whose parent is missing (409), and
+    write nothing there."""
+    name = f"{test.run}-put"
+    url = f"{test.origin.url}/protected-a/.pelican-posc/{name}"
+    answer = web.request("PUT", url, token=test.token, upload=b"staged\n")
+    problems: list[str] = []
+    if answer.status != 409:
+        problems.append(f"PUT {url} got {answer.describe()}, not 409")
+    left = f"{staging_root(test)}/{name}"
+    if os.path.exists(left):
+        problems.append(f"PUT {url} ({answer.describe()}) left {shown(left)}")
+    return (FAIL, first(problems)) if problems else (PASS, answer.describe())
+
+
+def expiry_staging_mkcol(test: Test) -> Row:
+    """A MKCOL straight into the staging directory: POSC refuses it
+    (poscFileSystem.Mkdir's EIO), so the origin must answer 405, and make
+    nothing there."""
+    name = f"{test.run}-mkcol"
+    url = f"{test.origin.url}/protected-a/.pelican-posc/{name}"
+    answer = web.request("MKCOL", url, token=test.token)
+    problems: list[str] = []
+    if answer.status != 405:
+        problems.append(f"MKCOL {url} got {answer.describe()}, not 405")
+    left = f"{staging_root(test)}/{name}"
+    if os.path.exists(left):
+        problems.append(f"MKCOL {url} ({answer.describe()}) made {shown(left)}")
+    return (FAIL, first(problems)) if problems else (PASS, answer.describe())
+
+
+def expiry_idle(test: Test) -> Row:
+    """With Origin.Posc.FileTimeout FILE_TIMEOUT and KeepaliveInterval
+    KEEPALIVE seconds: a planted staging file, stale under that timeout but
+    not the default, is reaped, so the restart's timeout is in force; and
+    an upload that sends half its bytes, then idles IDLE seconds, past the
+    timeout, keeps its staging file, whose keepalive refreshes its
+    mtime (touchOpenFiles), and completes whole once it sends the rest."""
+    problems = reaped(test, SHORT_STALE_AGE, f"{FILE_TIMEOUT}s")
+    if problems:
+        return FAIL, f"the short timeout is not in force: {first(problems)}"
+    name = f"{test.run}-idle"
+    data = os.urandom(2 * MIB)
+    url = urlsplit(f"{test.base_url}/{name}")
+    test.mark()
+    conn = HTTPSConnection(
+        url.hostname or "", url.port or 443, timeout=120, context=web.tls_context()
+    )
+    try:
+        conn.putrequest("PUT", url.path)
+        conn.putheader("Authorization", f"Bearer {test.token}")
+        conn.putheader("Content-Length", str(len(data)))
+        conn.endheaders()
+        conn.send(data[:MIB])
+        if not wait_for(lambda: test.new_staging() is not None, 10):
+            return FAIL, "no staging file appeared for the upload"
+        staged = test.new_staging() or ""
+        time.sleep(IDLE)
+        kept = os.path.exists(staged)
+        conn.send(data[MIB:])
+        answer = conn.getresponse()
+        answer.read()
+        status = answer.status
+    except (OSError, HTTPException) as e:
+        return FAIL, f"the upload failed: {type(e).__name__}: {e}"
+    finally:
+        conn.close()
+    if not kept:
+        problems.append(f"{shown(staged)} was reaped while its upload idled {IDLE}s")
+    if status not in (200, 201, 204):
+        problems.append(f"the upload got HTTP {status}, having idled {IDLE}s")
+    elif not test.holds(name, data):
+        problems.append(f"HTTP {status}, but the object is not the whole upload")
+    if problems:
+        return FAIL, first(problems)
+    return PASS, f"idled {IDLE}s, past the {FILE_TIMEOUT}s timeout; HTTP {status}, whole"
+
+
+def unrestartable(test: Test) -> Optional[str]:
+    """Why the first origin cannot be restarted with configuration of the
+    suite's own, or None."""
+    if test.fed.tiny:
+        return "the tiny topology's origin is the whole federation's process"
+    return control.unavailable()
+
+
+def serving(test: Test) -> Optional[str]:
+    """Why the namespace is not served as before, or None: every origin
+    must answer a HEAD of the probe, every director name every origin for
+    it, and every federated cache answer a HEAD of it."""
+    path = f"/protected-a/data/posc/{test.run}-probe"
+    for origin in test.fed.origins:
+        answer = web.request("HEAD", f"{origin.url}{path}", token=test.token)
+        if answer.status != 200:
+            return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
+    for url in test.fed.directors:
+        where = director.ask(url, "origin", path, token=test.token)
+        for origin in test.fed.origins:
+            if not where.names(director.host(origin.url)):
+                return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
+    for cache in test.fed.federated_caches:
+        answer = web.request("HEAD", f"{cache.url}{path}", token=test.token)
+        if answer.status != 200:
+            return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
+    return None
+
+
+def settle(test: Test) -> Optional[str]:
+    """Wait until the federation serves the namespace as before (see
+    serving()); why it doesn't within SETTLE_WAIT seconds, or None."""
+    deadline = time.time() + SETTLE_WAIT
+    why = serving(test)
+    while why and time.time() < deadline:
+        time.sleep(5)
+        why = serving(test)
+    return f"after {SETTLE_WAIT}s, {why}" if why else None
+
+
+def idle_restarted(test: Test) -> Row:
+    """expiry_idle(), with the first origin restarted with the short
+    timeout and keepalive; then restore it, and wait until the federation
+    serves again."""
+    why = unrestartable(test)
+    if why:
+        return SKIP, why
+    for origin in stores.unique(test.fed.origins):
+        error = stores.write_file(
+            origin.store_of("protected-a"), f"data/posc/{test.run}-probe", b"probe\n"
+        )
+        if error:
+            return FAIL, f"putting the probe: {error}"
+    text = "\n".join(
+        [
+            "Origin:",
+            "  Posc:",
+            f"    FileTimeout: {FILE_TIMEOUT}s",
+            f"    KeepaliveInterval: {KEEPALIVE}s",
+        ]
+    )
+    svc = test.origin.svc
+    print(f"\nRestarting {svc} with:\n{text}")
+    rows: list[Row] = []
+    try:
+        with control.restart_with(svc, {CONFIG_FILE: text + "\n"}):
+            rows.append(guarded(lambda: expiry_idle(test)))
+    except control.ControlError as e:
+        # Restarting, or restoring, failed: the row fails if it never ran.
+        warn(f"restarting {svc}, or restoring it: {e}")
+        if not rows:
+            rows.append((FAIL, f"restarting {svc}: {e}"))
+    why = settle(test)
+    if why:
+        warn(f"with {svc} restored, {why}")
+    return rows[0]
+
+
+def posc_expiry(test: Test) -> dict[str, Row]:
+    """The native POSC's reaping of abandoned staging files, and its guard
+    on its staging directory, by case."""
+    return {
+        "mode": guarded(lambda: expiry_mode(test)),
+        "stale": guarded(lambda: expiry_stale(test)),
+        "staging-put": guarded(lambda: expiry_staging_put(test)),
+        "staging-mkcol": guarded(lambda: expiry_staging_mkcol(test)),
+        "idle": idle_restarted(test),
+    }
+
+
 RUN = {
     "commit": commit,
     "stalled": stalled,
@@ -735,6 +1049,10 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             if name in skips:
                 results.add(name, SKIP, skips[name])
                 continue
+            if name == "posc-expiry":
+                for case, row in posc_expiry(test).items():
+                    results.add(f"{name} {case}", *row)
+                continue
             try:
                 status, note = RUN[name](test)
             except CouldNotConnect as e:
@@ -746,9 +1064,17 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 status, note = FAIL, f"{type(e).__name__}: {e}"
             results.add(name, status, note)
     finally:
-        # Every scenario's objects, and whatever an interrupted upload left.
+        # Every scenario's objects, and whatever an interrupted upload left;
+        # and posc-expiry's own staging directory.
         errors = stores.empty_tree_everywhere(
             session.fed.origins, session.fed.exports, "data/posc", session.tokens()
         )
+        if test.kind == "posc":
+            try:
+                shutil.rmtree(planted_dir(test))
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                errors.append(f"removing framework/var/{planted_dir(test)}: {e.strerror}")
         if errors:
-            common.warn(f"could not empty /protected-a/data/posc: {common.first(errors)}")
+            warn(f"could not empty /protected-a/data/posc: {first(errors)}")

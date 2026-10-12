@@ -9,6 +9,9 @@
 # federation metadata itself. fed.sh points the federation URLs here.
 Director:
   EnableFederationMetadataHosting: true
+  # As in config.d/director/default/, which this topology doesn't mount.
+  SupportContactEmail: support@pelican-testing.invalid
+  SupportContactUrl: https://pelican-testing.invalid/support
 
 Cache:
   # No cache role layer is mounted in this topology.

@@ -8,7 +8,8 @@
 # (libXrdMultiuser). The users must exist in the origin's image, which has
 # `pelican` (uid 10941) and `xrootd` (10940). fed.sh maps the tests'
 # tokens (subject pelican-test-framework) to `pelican`, and any other
-# token to `xrootd` (see framework/var/generated/multiuser-mapfile.json).
+# token to `xrootd` (see framework/var/generated/multiuser-mapfile.json),
+# but for the `users` suite's subjects and group, which its rules map.
 #
 # Switching users needs root, so fed.sh refuses `server-unprivileged`,
 # and any origin but those two. The test objects are yours, mode 0644, in

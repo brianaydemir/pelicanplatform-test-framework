@@ -8,7 +8,9 @@ true` and `TE: trailers`), to report a failure after its headers.
 
 import functools
 import http.client
+import socket
 import ssl
+import time
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Optional, Union
@@ -147,6 +149,96 @@ def request(
         return Response(None)
     finally:
         conn.close()
+
+
+@dataclass
+class Timed:
+    """A GET, and when its body came, in seconds from when it was sent."""
+
+    response: Response
+    first: Optional[float]  # when the first bytes asked for had come, if they did
+    whole: Optional[float]  # when the whole body had come, if it did
+
+
+def timed_get(
+    url: str,
+    token: Optional[str],
+    first: int,
+    headers: Optional[Mapping[str, str]] = None,
+    timeout: float = 60,
+) -> Timed:
+    """GET url, as request() does, timing when the first `first` bytes of
+    the body come, and when the rest do, as a client that reads a body as
+    it streams in sees them."""
+    conn, target = _connect(url, timeout)
+    sent = dict(headers or {})
+    if token is not None:
+        sent["Authorization"] = f"Bearer {token}"
+    started = time.monotonic()
+    head: Optional[float] = None
+    try:
+        conn.request("GET", target, headers=sent)
+        answer = conn.getresponse()
+        body = answer.read(first)
+        if len(body) == first:
+            head = time.monotonic() - started
+        body += answer.read()
+        whole = time.monotonic() - started
+        return Timed(Response(answer.status, body, tuple(answer.getheaders())), head, whole)
+    except (OSError, http.client.HTTPException):
+        return Timed(Response(None), head, None)
+    finally:
+        conn.close()
+
+
+def statuses_before_body(
+    method: str,
+    url: str,
+    token: Optional[str] = None,
+    headers: Optional[Mapping[str, str]] = None,
+    timeout: float = 10,
+) -> tuple[int, ...]:
+    """Send method's request line and headers to url, but none of the
+    body they announce, as a client waiting on `Expect: 100-continue`
+    does, and read what the server answers meanwhile: each status it
+    sends, any interim one (100 Continue) first, up to the first final
+    one. Fewer if the server says nothing more within timeout, or hangs
+    up; none if it never answers. http.client can't say: it passes over
+    a 100 Continue, and sends a body whole."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    lines = [f"{method} {target} HTTP/1.1", f"Host: {parts.netloc}", "Connection: close"]
+    if token is not None:
+        lines.append(f"Authorization: Bearer {token}")
+    lines += [f"{name}: {value}" for name, value in (headers or {}).items()]
+    found: list[int] = []
+    try:
+        raw = socket.create_connection((host, port), timeout=timeout)
+        try:
+            conn = raw
+            if parts.scheme == "https":
+                conn = tls_context().wrap_socket(raw, server_hostname=host)
+        except OSError:
+            raw.close()
+            raise
+        with conn:
+            conn.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
+            pending = b""
+            while not found or found[-1] < 200:
+                head, sep, rest = pending.partition(b"\r\n\r\n")
+                if sep:
+                    found.append(int(head.split(b"\r\n", 1)[0].split(b" ", 2)[1]))
+                    pending = rest
+                    continue
+                more = conn.recv(1 << 16)
+                if not more:
+                    break
+                pending += more
+    except (OSError, ValueError, IndexError):
+        pass
+    return tuple(found)
 
 
 def read_part(url: str, token: Optional[str], size: int, timeout: float = 60) -> Response:

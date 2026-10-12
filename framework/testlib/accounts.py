@@ -26,6 +26,11 @@ GROUPS = "/api/v1.0/groups"
 WHOAMI = "/api/v1.0/auth/whoami"
 LOGIN = "/api/v1.0/auth/login"
 REDEEM_PASSWORD = "/api/v1.0/invites/redeem/password"  # nosec B105
+REDEEM_GROUP = "/api/v1.0/invites/redeem"
+AUP = "/api/v1.0/aup"
+ME = "/api/v1.0/me"
+MY_AUP = "/api/v1.0/me/aup"
+MY_GROUPS = "/api/v1.0/me/groups"
 
 JSON = {"Content-Type": "application/json"}
 FORM = {"Content-Type": "application/x-www-form-urlencoded"}
@@ -70,10 +75,12 @@ class Answer:
 
 @dataclass(frozen=True)
 class Api:
-    """The web API of the server at url, as the user whose token this is."""
+    """The web API of the server at url, as the user whose token this is,
+    or whose login cookie (login()) this is."""
 
     url: str
     token: Optional[str]
+    cookie: Optional[str] = None
 
     def call(
         self,
@@ -87,6 +94,8 @@ class Api:
         sent = dict(headers or {})
         if body is not None:
             sent.update(JSON)
+        if self.cookie is not None:
+            sent["Cookie"] = f"login={self.cookie}"
         answer = web.request(
             method, self.url + path, token=self.token, upload=upload, headers=sent
         )
@@ -120,6 +129,22 @@ def csrf(api: Api) -> dict[str, str]:
     return {"X-CSRF-Token": token, "Cookie": f"_gorilla_csrf={cookie}", "Origin": api.url}
 
 
+def agree_to_aup(api: Api) -> None:
+    """Have api's user agree to the server's acceptable use policy, as
+    they would on first logging in, if it has one: every server serves a
+    built-in one unless Server.AUPFile is `none` (web_ui/aup.go in
+    Pelican). Until they agree, it refuses them its routes for users,
+    groups, and much of /me (RequireAUPCompliance), its admin included.
+    Raises ApiError if that fails."""
+    found = api.call("GET", AUP)
+    if found.status == 404:
+        return
+    version = must(found, f"GET {AUP}").object.get("version")
+    if not version:
+        raise ApiError(f"GET {AUP}: {found.describe()}, with no version")
+    must(api.call("POST", MY_AUP, {"version": version}), f"agreeing to AUP {version}")
+
+
 def find_user(api: Api, username: str) -> Optional[str]:
     """The ID of the user named username, if there is one."""
     for user in must(api.call("GET", USERS), "listing users").array:
@@ -137,6 +162,20 @@ def ensure_user(api: Api, username: str) -> str:
         return found
     made = must(api.call("POST", USERS, {"username": username}), f"creating user {username}")
     return str(made.object.get("id", ""))
+
+
+def set_status(api: Api, user_id: str, status: str) -> Answer:
+    """Make the user active or inactive (status), as a user
+    administrator."""
+    return api.call("PUT", f"{USERS}/{user_id}/status", {"status": status})
+
+
+def delete_user(api: Api, user_id: str) -> Optional[str]:
+    """Delete the user, as a user administrator; why that failed, or
+    None. The server keeps the record, marked deleted, and frees its
+    name."""
+    answer = api.call("DELETE", f"{USERS}/{user_id}")
+    return None if answer.ok else f"deleting user {user_id}: {answer.describe()}"
 
 
 def find_group(api: Api, name: str) -> Optional[str]:
@@ -225,9 +264,10 @@ def set_password(web_url: str, invite: str, password: str) -> None:
         raise ApiError(f"POST {REDEEM_PASSWORD}: {answer.describe()}")
 
 
-def login(web_url: str, username: str, password: str) -> str:
-    """Log in to the server at web_url as username: the login cookie.
-    Waits out the server's limit of a login a second."""
+def try_login(web_url: str, username: str, password: str) -> web.Response:
+    """Try to log in to the server at web_url as username: its answer,
+    which sets the login cookie if it succeeded. Waits out the server's
+    limit of a login a second."""
     form = urlencode({"user": username, "password": password}).encode()
     answer = web.Response(None)
     for _ in range(LOGIN_TRIES):
@@ -235,6 +275,13 @@ def login(web_url: str, username: str, password: str) -> str:
         if answer.status != 429:
             break
         time.sleep(1.1)
+    return answer
+
+
+def login(web_url: str, username: str, password: str) -> str:
+    """Log in to the server at web_url as username: the login cookie.
+    Waits out the server's limit of a login a second."""
+    answer = try_login(web_url, username, password)
     cookie = answer.cookie("login")
     if answer.status != 200 or not cookie:
         raise ApiError(f"POST {LOGIN} as {username}: {answer.describe()}, with no login cookie")

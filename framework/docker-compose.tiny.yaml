@@ -145,7 +145,7 @@ services:
       - "-addr=:9999"
       - "-path=/events"
       - "-audience=http://metadata:9999/events"
-      - "-federation=https://fed:8444"
+      - "-federation=${FED_DISCOVERY_URL:?run through ./fed.sh}"
       - "-ca=/certs/ca.crt"
       - "-require-namespace-scope"
     healthcheck:

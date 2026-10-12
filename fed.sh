@@ -85,9 +85,11 @@ fed_certs="framework/var/certs/ca.crt framework/var/certs/tls.crt framework/var/
 #   webdav            webdav, the backend of https and httpsv2 origins
 #   s3                s3, the backend of s3 and s3v2 origins
 #
-# fed.sh enables two more itself: `federation` (the discovery host,
-# director-0, registry, and cache-0) outside the `standalone` topology,
-# and `external-issuer` (the discovery host) for `auth-external-issuer`.
+# fed.sh enables three more itself: `federation` (director-0, registry,
+# and cache-0) outside the `standalone` topology; `discovery` (the
+# discovery host) there too, unless director-0 serves the federation's
+# metadata (`director-discovery`); and `external-issuer` (the discovery
+# host) for `auth-external-issuer`.
 
 fed_profiles="multi-origin multi-cache multi-owner multi-director site-local-cache lab"
 fed_profiles="${fed_profiles} metadata monitoring webdav s3"
@@ -259,7 +261,7 @@ for fed_knob in ORIGIN_ENABLE_ISSUER ENABLE_OIDC EXTERNAL_ISSUER \
     ORIGIN_DISABLE_DIRECT_CLIENTS ORIGIN_POSC ORIGIN_ATOMIC_UPLOADS ORIGIN_METADATA \
     ORIGIN_MULTIUSER ORIGIN_BROKER ORIGIN_TRANSFER_API CACHE_TIERING \
     SERVER_DROP_PRIVILEGES REGISTRY_REQUIRE_APPROVAL ISSUER_SHORT_TOKENS \
-    ORIGIN_EXPORT_TEMPLATES; do
+    ORIGIN_EXPORT_TEMPLATES DIRECTOR_DISCOVERY; do
   eval "fed_value=\${${fed_knob}}"
   # shellcheck disable=SC2154  # assigned by the eval above
   case "${fed_value}" in
@@ -394,6 +396,9 @@ if [ "${fed_topology}" = tiny ]; then
   [ "${EXTERNAL_ISSUER}" = false ] \
       || die "the 'tiny' topology has no discovery host to serve the external" \
              "issuer ('auth-external-issuer')"
+  [ "${DIRECTOR_DISCOVERY}" = false ] \
+      || die "the 'tiny' topology's director is its discovery host already, so" \
+             "DIRECTOR_DISCOVERY ('director-discovery') must be 'false'"
 fi
 
 # A standalone origin is one origin with no director, registry, or cache
@@ -423,6 +428,9 @@ if [ "${fed_topology}" = standalone ]; then
   [ "${REGISTRY_REQUIRE_APPROVAL}" = false ] \
       || die "the 'standalone' topology has no registry, so it cannot require" \
              "approval ('registry-approval')"
+  [ "${DIRECTOR_DISCOVERY}" = false ] \
+      || die "the 'standalone' topology has no director to serve the federation's" \
+             "metadata, so DIRECTOR_DISCOVERY ('director-discovery') must be 'false'"
 fi
 
 # Without its backend, an origin comes up healthy with no storage.
@@ -611,14 +619,33 @@ fi
 
 # The profiles that fed.sh enables itself (see fed_profiles), which the
 # checks above leave out: the federation's servers, which a standalone
-# origin does without, and the discovery host, which serves the external
-# issuer.
+# origin does without; the discovery host, unless director-0 serves the
+# federation's metadata; and the discovery host again, which serves the
+# external issuer.
 if [ "${fed_topology}" = full ]; then
   COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}federation"
+  if [ "${DIRECTOR_DISCOVERY}" = false ]; then
+    COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}discovery"
+  fi
 fi
 if [ "${fed_topology}" != tiny ] && [ "${EXTERNAL_ISSUER}" = true ]; then
   COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}external-issuer"
 fi
+
+# The federation's discovery URL, which fed_generate builds everything
+# else from, and the metadata verifier takes from the environment
+# (docker-compose.yaml): the `discovery` service's, or director-0's
+# (`director-discovery`); in `tiny`, the one host's; for a standalone
+# origin, its own.
+case "${fed_topology}" in
+  tiny)       FED_DISCOVERY_URL=https://fed:8444 ;;
+  standalone) FED_DISCOVERY_URL=https://origin-0:8444 ;;
+  *)          FED_DISCOVERY_URL=https://discovery:8444
+              if [ "${DIRECTOR_DISCOVERY}" = true ]; then
+                FED_DISCOVERY_URL=https://director-0:8444
+              fi ;;
+esac
+export FED_DISCOVERY_URL
 
 # `check` asks only whether the checks above pass.
 if [ "$1" = check ]; then
@@ -908,24 +935,23 @@ fed_generate() {
   # Every service, dev included, gets its federation URLs from here. In
   # `tiny`, one host is everything. A standalone origin is its own
   # discovery host, and has no director or registry. The federation's
-  # JWKS is its directors', or the standalone origin's.
+  # JWKS is its directors', or the standalone origin's. The discovery
+  # URL is FED_DISCOVERY_URL's (see above).
+  fed_discovery_url=${FED_DISCOVERY_URL}
   case "${fed_topology}" in
     tiny)
-      fed_discovery_url=https://fed:8444
       fed_director_url=https://fed:8444
       fed_registry_url=https://fed:8444
       directors=https://fed:8444
       fed_origin_url=https://fed:8444
       fed_origin_key_dir=issuer-keys/fed ;;
     standalone)
-      fed_discovery_url=https://origin-0:8444
       fed_director_url=""
       fed_registry_url=""
       directors=""
       fed_origin_url=https://origin-0:8444
       fed_origin_key_dir=issuer-keys/origin-0 ;;
     *)
-      fed_discovery_url=https://discovery:8444
       fed_director_url=https://director-0:8444
       fed_registry_url=https://registry:8444
       directors=https://director-0:8444
@@ -941,9 +967,12 @@ fed_generate() {
   fi
   fed_federation_url="pelican://${fed_discovery_url#https://}"
   fed_jwks_uri="${fed_director_url:-${fed_origin_url}}/.well-known/issuer.jwks"
-  # The connection broker (`origin-broker`) is director-0's.
+  # The connection broker (`origin-broker`) is director-0's. A director
+  # that serves the federation's metadata (`director-discovery`) names
+  # its own broker, which Pelican turns on by default
+  # (Director.EnableBroker), whether or not an origin uses it.
   fed_broker_url=""
-  if [ "${ORIGIN_BROKER}" = true ]; then
+  if [ "${ORIGIN_BROKER}" = true ] || [ "${DIRECTOR_DISCOVERY}" = true ]; then
     fed_broker_url=${fed_director_url}
   fi
 
@@ -1050,6 +1079,22 @@ fed_generate() {
   else
     printf 'off\n'
   fi | fed_write framework/var/generated/origin-metadata
+
+  # The version that every server should report: PELICAN_TAG's, without
+  # the `v`, if the shape runs only its images; `custom` if it runs any of
+  # the user's own. `tiny` and `standalone` run IMAGE_ORIGIN alone.
+  fed_images="${IMAGE_ORIGIN}=origin"
+  if [ "${fed_topology}" = full ]; then
+    fed_images="${fed_images} ${IMAGE_CACHE}=cache ${IMAGE_DIRECTOR}=director"
+    fed_images="${fed_images} ${IMAGE_REGISTRY}=registry"
+  fi
+  fed_version=${PELICAN_TAG#v}
+  for fed_image in ${fed_images}; do
+    if [ "${fed_image%=*}" != "${IMAGE_HUB}/${fed_image##*=}:${PELICAN_TAG}" ]; then
+      fed_version=custom
+    fi
+  done
+  printf '%s\n' "${fed_version}" | fed_write framework/var/generated/pelican-version
 
   # One line per exported namespace: its prefix and capabilities. The
   # tests read it to know what each namespace should allow.
@@ -1200,11 +1245,25 @@ fed_generate() {
     printf 'Director:\n  DefaultResponse: %s\n' "${DIRECTOR_DEFAULT_RESPONSE}"
   } | fed_write framework/var/generated/conf/60-director.yaml
 
+  # director-0 alone serves the federation's metadata
+  # (`director-discovery`), which framework/config.d/director/default/
+  # turns off: another director must still answer 410 there.
+  if [ "${DIRECTOR_DISCOVERY}" = true ]; then
+    {
+      printf -- '---\n'
+      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
+      printf 'Director:\n  EnableFederationMetadataHosting: true\n'
+    } | fed_instance_write director-0 60-discovery.yaml
+  else
+    fed_instance_rm director-0 60-discovery.yaml
+  fi
+
   # How long the origins' embedded issuer's tokens last
   # (`origin-short-tokens`): Pelican's defaults otherwise. issuer-lifetimes
-  # tells the tests, in seconds: access tokens, refresh tokens, and how
-  # long a used refresh token still works. export-templates says whether
-  # /protected-b has templates of its own (see fed_export_entry).
+  # tells the tests, in seconds: access tokens, refresh tokens, how long a
+  # used refresh token still works, and authorization and device codes.
+  # export-templates says whether /protected-b has templates of its own
+  # (see fed_export_entry).
   if [ "${ISSUER_SHORT_TOKENS}" = true ]; then
     {
       printf -- '---\n'
@@ -1213,11 +1272,12 @@ fed_generate() {
       printf '  AccessTokenLifetime: 60s\n'
       printf '  RefreshTokenLifetime: 240s\n'
       printf '  RefreshTokenGracePeriod: 20s\n'
+      printf '  AuthorizationCodeLifetime: 60s\n'
     } | fed_write framework/var/generated/conf/60-issuer.yaml
-    printf '60 240 20\n'
+    printf '60 240 20 60\n'
   else
     rm -f framework/var/generated/conf/60-issuer.yaml
-    printf '3600 604800 300\n'
+    printf '3600 604800 300 600\n'
   fi | fed_write framework/var/generated/issuer-lifetimes
   printf '%s\n' "${ORIGIN_EXPORT_TEMPLATES}" \
       | fed_write framework/var/generated/export-templates
@@ -1250,12 +1310,28 @@ fed_generate() {
   # operations run as the Unix user its token maps to, who must exist in
   # the origin's image. The tests' tokens map to `pelican` (uid 10941);
   # any other token, e.g. a director's test, to `xrootd` (10940); and
-  # requests without a token run as `nobody`, Pelican's default.
+  # requests without a token run as `nobody`, Pelican's default. The
+  # rules after the first are the `users` suite's, for subjects and a
+  # group that only its tokens carry: two map to system accounts, which
+  # Origin.MultiuserMinID must refuse; the rest map to `pelican`, so that
+  # an upload's owner shows that the rule matched, not the default. A
+  # `path` rule is relative to the namespace in XrdSciTokens' mapfile;
+  # the second names the federation's path, in case Pelican reads it so.
   if [ "${ORIGIN_MULTIUSER}" = true ]; then
     {
       printf '[\n'
       printf '  {"sub": "pelican-test-framework", "result": "pelican",\n'
-      printf '   "comment": "the tests'"'"' tokens (framework/testlib/credentials.py)"}\n'
+      printf '   "comment": "the tests'"'"' tokens (framework/testlib/credentials.py)"},\n'
+      printf '  {"sub": "users-root", "result": "root",\n'
+      printf '   "comment": "the users suite'"'"'s min-id: below Origin.MultiuserMinID"},\n'
+      printf '  {"sub": "users-daemon", "result": "daemon",\n'
+      printf '   "comment": "the users suite'"'"'s min-id: below Origin.MultiuserMinID"},\n'
+      printf '  {"sub": "users-path", "path": "/data/users/mapped", "result": "pelican",\n'
+      printf '   "comment": "the users suite'"'"'s mapfile path"},\n'
+      printf '  {"sub": "users-path", "path": "/protected-a/data/users/mapped",\n'
+      printf '   "result": "pelican", "comment": "the users suite'"'"'s mapfile path"},\n'
+      printf '  {"group": "xrootd", "result": "pelican",\n'
+      printf '   "comment": "the users suite'"'"'s mapfile group"}\n'
       printf ']\n'
     } | fed_write framework/var/generated/multiuser-mapfile.json
     {

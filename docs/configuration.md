@@ -52,7 +52,44 @@ EOF
   variable, though, so without `-p origin-max-age`, which leaves
   `Origin.CacheControl` empty, a file of yours can still set it, and
   the tests won't know: the `blocks` suite checks what the origins send
-  only when `ORIGIN_CACHE_CONTROL` is set.
+  only when `ORIGIN_CACHE_CONTROL` is set. The `freshness` suite sets it
+  this way itself, for a while, in the tests' own layer
+  ([cache freshness](tests.md#cache-freshness)).
+- No preset slows a server, since every suite would crawl. The
+  `throttling` suite slows the origins (`Origin.TransferRateLimit`) and
+  shrinks the V2 caches' scheduler (`Cache.WorkerCount`,
+  `Cache.Throttle.*`) itself, for as long as it runs, in the tests' own
+  layer ([throttling](tests.md#throttling)).
+- No preset gives an export without `Listings`, or one without
+  `DirectReads` beside others with them, or turns copies off
+  (`Origin.DisableCopies`). The `exports` suite restarts the origins
+  so for a while, in the tests' own layer, with `fed.sh`'s
+  `Origin.Exports` restated, which then also replaces any of yours
+  ([exports and copies](tests.md#exports-and-copies)).
+- No preset bounds a pstore origin's store (`Origin.PStoreStorageDirs`),
+  which would bound every suite's writes, or backs up its catalog
+  (`Origin.PStoreMetadataBackup*`). The `pstore` suite restarts the
+  first origin so for a while, in the tests' own layer
+  ([pstore](tests.md#pstore)).
+- `framework/config.d/instance/` declares where cache-0, cache-1,
+  origin-0, and origin-1 are (`GeoLocation`), which the directors sort
+  by, and the `routing` suite checks. No preset changes how the
+  directors sort or filter the servers (`Director.CacheSortMethod`,
+  `CheckCachePresence`, `FilteredServers`,
+  `AssumePresenceAtSingleOrigin`, and the response hostnames). Under
+  `-p topo-multi-cache`, the `routing` suite restarts the directors so
+  for a while, in the tests' own layer ([routing](tests.md#routing)).
+- `framework/config.d/director/default/` (and `instance/fed/`, in
+  `tiny`) names a support contact (`Director.SupportContactEmail` and
+  `SupportContactUrl`), which the `director-api` suite checks
+  ([director APIs](tests.md#director-apis)).
+- Under `-p origin-multiuser`, `fed.sh` generates the mapfile,
+  `framework/var/generated/multiuser-mapfile.json`, and sets
+  `Origin.ScitokensNameMapFile` and `Origin.ScitokensDefaultUser` in
+  `/fed/generated/conf`. The `users` suite adds a rule to the mapfile
+  for a while, in place, and restarts the origins with
+  `Origin.ScitokensUsernameClaim` set and no default user, in the
+  tests' own layer ([Unix users](tests.md#unix-users)).
 - `fed.sh` generates `Logging.Level` (from `PELICAN_LOG_LEVEL`), every
   server's `EnableOIDC` (from `-p auth-oidc`), the caches'
   `Cache.MemoryCacheSize` and water marks (from `-p cache-memory` and
@@ -60,12 +97,21 @@ EOF
   `-p director-default-origin`), the registry's
   `RequireOriginApproval`, `RequireCacheApproval` (from
   `-p registry-approval`), and `RequireKeyChaining` (off under
-  `-p topo-multi-owner`), and the embedded issuer's token lifetimes
-  (from `-p origin-short-tokens`) in `/fed/generated/conf`, so a file
+  `-p topo-multi-owner`), and the embedded issuer's token and code
+  lifetimes (from `-p origin-short-tokens`) in `/fed/generated/conf`, and
+  director-0's `Director.EnableFederationMetadataHosting` (from
+  `-p director-discovery`) in its `/fed/generated.instance`, so a file
   of yours can override them, e.g. for one service; but the tests
   expect what the presets say. Under `-p origin-export-templates`, the
   generated `Origin.Exports` gives `/protected-b` authorization
   templates of its own.
+- No preset names a group in `Transfer.EnabledGroups`, or turns on the
+  transfer API's OAuth2 clients (`Transfer.EnableOAuth2Clients`). Under
+  `-p origin-transfer-api`, the `transfer-api` suite restarts origin-0
+  so for a while, with a group of the run's own, in the tests' own
+  layer, and once more slowed (`Origin.TransferRateLimit`) while it
+  restarts it again with a job under way
+  ([transfer API](tests.md#transfer-api)).
 - Under `-p topo-multi-origin`, an origin override usually belongs in
   both `origin-0/` and `origin-1/`.
 - `framework/config.d/base/40-origin.yaml` sets the embedded issuer's
@@ -74,7 +120,12 @@ EOF
   takes a web login's groups from the server's own database
   (`Issuer.GroupSource`), and names `test-curator` in
   `Server.CollectionAdminUsers`; the `collections` and `issuer` suites
-  depend on these ([collections](tests.md#collections)).
+  depend on these ([collections](tests.md#collections)). It also names
+  the `accounts` suite's authorities: the groups `test-server-admins`
+  in `Server.AdminGroups` and `test-collection-admins` in
+  `Server.CollectionAdminGroups`, whose names each server reserves as
+  it starts, and `test-user-admin` in `Server.UserAdminUsers`
+  ([accounts](tests.md#accounts)).
 
 
 ## Knobs
@@ -167,3 +218,10 @@ with.
   generates its own.
 - `keys` also lists the four [test keys](tests.md#authorization), which
   `keys init` creates. They are never rotated.
+- The `keys` suite adds and rotates keys itself, as `keys add` and
+  `keys rotate` do, while the federation runs, and puts them back: a key
+  it added is removed, and one it made the signer is renamed to sort
+  last, so it stays as a verify-only key, since a V2 cache must keep the
+  keys that sealed its store ([keys](tests.md#keys)). Its `master-key`
+  scenario also retires a cache's keys for a moment, and restores them
+  with the cache's master key file.

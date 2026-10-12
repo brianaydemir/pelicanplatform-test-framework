@@ -119,6 +119,8 @@ DOWNTIME_WAIT = 150
 # status; a server's is /caches/<host> or /origins/<host>.
 REGISTRATIONS = "/api/v1.0/registry_ui/namespaces"
 SERVER_PREFIXES = ("/caches/", "/origins/")
+# The statuses of a registration awaiting approval.
+PENDING_STATUSES = ("Incomplete", "Pending")
 # A server's downtimes, through its web API.
 DOWNTIME = "/api/v1.0/downtime"
 
@@ -226,14 +228,19 @@ class Probe:
 
 
 def pending_registrations(api: accounts.Api) -> list[tuple[str, str]]:
-    """Each pending registration's ID and prefix."""
-    listed = accounts.must(
-        api.call("GET", f"{REGISTRATIONS}?status=Pending"), "listing pending registrations"
-    )
+    """Each pending registration's ID and prefix: each awaiting approval,
+    whether Incomplete, as a server's own registration starts (Pelican's
+    registry/registry.go, since v26.0.0-rc.1), or Pending, as one whose
+    form has been filled in does."""
     found: list[tuple[str, str]] = []
-    for row in listed.array:
-        entry = common.as_object(row) or {}
-        found.append((str(entry.get("id", "")), str(entry.get("prefix", ""))))
+    for status in PENDING_STATUSES:
+        listed = accounts.must(
+            api.call("GET", f"{REGISTRATIONS}?status={status}"),
+            f"listing {status} registrations",
+        )
+        for row in listed.array:
+            entry = common.as_object(row) or {}
+            found.append((str(entry.get("id", "")), str(entry.get("prefix", ""))))
     return found
 
 
@@ -412,18 +419,18 @@ def directors(probe: Probe) -> tuple[str, str]:
 
 
 def discovery(probe: Probe) -> tuple[str, str]:
-    """The discovery document that a Pelican server serves, in the tiny
-    topology (its director) or for a standalone origin: each of
-    DISCOVERY_FIELDS as fed.sh has it (an empty one may be missing), and
-    a jwks_uri that serves the server's own keys. Elsewhere, the
-    discovery host serves fed.sh's own document."""
+    """The discovery document that a Pelican server serves, where one is
+    the discovery host: director-0 under `-p director-discovery`
+    (Director.EnableFederationMetadataHosting), the tiny topology's one
+    server, or a standalone origin. Each of DISCOVERY_FIELDS must be as
+    fed.sh has it (an empty one may be missing), and the jwks_uri serve
+    the server's own keys, by which the federation's tokens are checked.
+    Elsewhere, the discovery host serves fed.sh's own document."""
     fed = probe.fed
-    if fed.topology == "tiny":
-        key_dir = "issuer-keys/fed"
-    elif fed.standalone:
-        key_dir = "issuer-keys/origin-0"
-    else:
+    host = director.host(str(fed.discovery["discovery_endpoint"]))
+    if host == "discovery":
         return SKIP, "the discovery host serves fed.sh's own document"
+    key_dir = f"issuer-keys/{host}"
     url = f"{fed.discovery['discovery_endpoint']}/.well-known/pelican-configuration"
     answer = web.request("GET", url)
     if answer.status != 200:
@@ -796,13 +803,15 @@ def down(probe: Probe, svc: str, web_url: str, route: str) -> Optional[str]:
         return f"before its downtime, only {before} named it"
     api = probe.admin(web_url, f"issuer-keys/{svc}")
     headers = accounts.csrf(api)
-    now = int(time.time())
+    # A downtime's times are in milliseconds since the epoch: a server
+    # refuses seconds (isValidTimeRange in web_ui/server_api.go).
+    now = int(time.time() * 1000)
     declared = {
         "class": "SCHEDULED",
         "severity": "Outage (completely inaccessible)",
         "description": "pelican-test-framework",
-        "startTime": now - 60,
-        "endTime": now + 3600,
+        "startTime": now - 60_000,
+        "endTime": now + 3_600_000,
     }
     downtime_id = str(uuid.uuid4())
     answer = api.call("POST", f"{DOWNTIME}/{downtime_id}", declared, headers)

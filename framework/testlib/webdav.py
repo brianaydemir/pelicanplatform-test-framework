@@ -36,6 +36,7 @@ class Entry:
     collection: bool
     size: Optional[int]  # None if no getcontentlength came
     modified: Optional[datetime] = None  # None if no getlastmodified came
+    etag: Optional[str] = None  # its getetag, as sent; None if none came
 
 
 def propfind(
@@ -63,6 +64,7 @@ def parse(body: bytes) -> list[Entry]:
         if not href:
             raise ValueError("a response without an href")
         collection, size, modified = False, None, None
+        etag: Optional[str] = None
         for propstat in response.findall(f"{DAV}propstat"):
             status = propstat.findtext(f"{DAV}status", "").split()
             if len(status) < 2 or status[1] != "200":
@@ -84,8 +86,11 @@ def parse(body: bytes) -> list[Entry]:
                         modified = parsedate_to_datetime(date.strip())
                     except (TypeError, ValueError):
                         raise ValueError(f"{href}: getlastmodified '{date}'") from None
+                tag = prop.findtext(f"{DAV}getetag")
+                if tag is not None and tag.strip():
+                    etag = tag.strip()
         path = unquote(urlsplit(href).path).rstrip("/")
-        entries.append(Entry(path, collection, size, modified))
+        entries.append(Entry(path, collection, size, modified, etag))
     return entries
 
 

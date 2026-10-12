@@ -10,8 +10,9 @@ and summarized in index.tsv as `<id> <status> <type> <path> <event id>`
 (tab-separated), written last. Faults, chosen by the basename of the
 event's object path:
 
-  reject-*     422, which the origin never retries
-  fail-once-*  503 for the first delivery of each event, then as usual
+  reject-*       422, which the origin never retries
+  fail-once-*    503 for the first delivery of each event, then as usual
+  fail-always-*  503 for every delivery, so that the event stays queued
 
 Anything else goes to RECORDER_UPSTREAM, and its answer comes back.
 GET /healthz answers 200 only if the upstream's /healthz does.
@@ -181,6 +182,8 @@ class Handler(BaseHTTPRequestHandler):
                 failed_once.add(eid)
         if name.startswith("reject-"):
             fault, status, answer = "reject", 422, b"rejected by the recorder\n"
+        elif name.startswith("fail-always-"):
+            fault, status, answer = "fail-always", 503, b"always failed by the recorder\n"
         elif fail_once:
             fault, status, answer = "fail-once", 503, b"failed once by the recorder\n"
         else:

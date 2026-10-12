@@ -57,6 +57,7 @@ FACTORS: dict[str, tuple[str, ...]] = {
     "store": ("unbounded", "bounded"),
     "privileges": ("root", "dropped"),
     "default_response": ("cache", "origin"),
+    "discovery": ("host", "director"),
     "approval": ("off", "on"),
     "tokens": ("long", "short"),
     "templates": ("global", "export"),
@@ -98,6 +99,7 @@ PRESETS: dict[str, tuple[str, str]] = {
     "cache-small": ("store", "bounded"),
     "server-unprivileged": ("privileges", "dropped"),
     "director-default-origin": ("default_response", "origin"),
+    "director-discovery": ("discovery", "director"),
     "registry-approval": ("approval", "on"),
     "origin-short-tokens": ("tokens", "short"),
     "origin-export-templates": ("templates", "export"),
@@ -170,6 +172,10 @@ REFUSED: list[Rule] = [
         lambda s: s["topology"] == "tiny" and s["issuer"] == "external",
     ),
     (
+        "the 'tiny' topology's director is its discovery host already",
+        lambda s: s["topology"] == "tiny" and s["discovery"] == "director",
+    ),
+    (
         "a standalone origin needs a native backend",
         lambda s: s["topology"] == "standalone" and s["origin"] in XROOTD_ORIGINS,
     ),
@@ -196,6 +202,10 @@ REFUSED: list[Rule] = [
     (
         "a standalone origin has no registry to require approval",
         lambda s: s["topology"] == "standalone" and s["approval"] == "on",
+    ),
+    (
+        "a standalone origin has no director to serve the federation's metadata",
+        lambda s: s["topology"] == "standalone" and s["discovery"] == "director",
     ),
     (
         "POSC and metadata publishing are posixv2's",

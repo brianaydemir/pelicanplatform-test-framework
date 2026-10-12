@@ -15,3 +15,9 @@ OIDC:
 # framework/testlib/credentials.py).
 Server:
   IssuerJwks: /fed/issuer-jwks/test.jwks
+
+# Where this server says it is (Madison), which the directors sort by
+# rather than by GeoIP, of which the framework has no database. The
+# routing suite's distance scenario depends on it (GEO in
+# framework/suites/routing.py).
+GeoLocation: "43.07,-89.38"

@@ -8,6 +8,7 @@ Origin:
   PStoreLocation: /data/pstore
 
   # Shortened so that a test run exercises the verification passes, which
-  # first run one interval after startup.
+  # first run one interval after startup, and which the pstore suite's
+  # scheduled-passes checks.
   PStoreIndexCheckInterval: 1m
   PStoreDataScanInterval: 1m

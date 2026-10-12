@@ -47,6 +47,10 @@ SUITE_DIRS = (
     "selftest",
     "cmd",
     "blocks",
+    "freshness",
+    "cache-api",
+    "throttling",
+    "exports",
     "collections",
     "federation",
     "listings",
@@ -56,6 +60,9 @@ SUITE_DIRS = (
     "sitelocal",
     "tiering",
     "xfer",
+    "client",
+    "restart",
+    "keys",
 )
 
 

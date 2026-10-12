@@ -9,3 +9,9 @@
 # the host (see docker-compose.yaml), not its container hostname.
 OIDC:
   ClientRedirectHostname: localhost:8447
+
+# Where this server says it is (Lisbon), which the directors sort by
+# rather than by GeoIP, of which the framework has no database. The
+# routing suite's distance scenario depends on it (GEO in
+# framework/suites/routing.py).
+GeoLocation: "38.72,-9.14"
