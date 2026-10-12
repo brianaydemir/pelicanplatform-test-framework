@@ -46,9 +46,10 @@ services:
       - "origin"
       - "--module"
       - "cache"
-    # Only matters under `-p origin-metadata`.
+    # Only matter under `-p origin-metadata` and `-p auth-oidc`.
     depends_on:
       metadata: { condition: service_healthy, required: false }
+      idp: { condition: service_healthy, required: false }
     healthcheck:
       test: ["CMD", "/fed/bin/service-health.sh"]
       start_period: 90s
@@ -106,6 +107,42 @@ services:
         target: /etc/pelican/oidc-client-secret
       - source: server-web-passwd
         target: /etc/pelican/server-web-passwd
+
+  # As in docker-compose.yaml.
+  idp:
+    hostname: idp
+    image: python:3-alpine
+    profiles: ["idp"]
+    command: ["python3", "-u", "/fed/bin/idp.py"]
+    environment:
+      IDP_ISSUER: https://idp:9007
+      IDP_PORT: "9007"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import ssl, urllib.request; c = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); c.check_hostname = False; c.verify_mode = ssl.CERT_NONE; urllib.request.urlopen('https://127.0.0.1:9007/healthz', context=c, timeout=5)"
+      start_period: 30s
+      start_interval: 1s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 64M }
+    ports:
+      - "9007:9007"
+    volumes:
+      - ./idp/idp.py:/fed/bin/idp.py:ro
+      - ./etc/idp-users.json:/fed/idp/users.json:ro
+      - ./var/generated:/fed/generated:ro
+      - ./var/data/idp:/var/log/idp
+    secrets:
+      - source: tls-crt
+        target: /certs/tls.crt
+      - source: tls-key
+        target: /certs/tls.key
 
   # As in docker-compose.yaml, but the federation is `fed`.
   metadata:

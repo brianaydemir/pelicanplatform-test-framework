@@ -34,6 +34,10 @@ refuse, and with what status.
                       CacheResponseHostnames: a bare path asked of such
                       a name, by Host or X-Forwarded-Host, goes to an
                       origin or a cache
+  permitted-namespaces
+                      a cache restricted to a namespace
+                      (Cache.PermittedNamespaces) is named for that
+                      namespace alone, and listed with it alone
 
 Each service's own layer (framework/config.d/instance/) gives cache-0
 and origin-0 a GeoLocation in Madison, and cache-1 and origin-1 one in
@@ -50,7 +54,9 @@ off; and FilteredServers naming the last cache, with
 AssumePresenceAtSingleOrigin off and response hostnames that no DNS
 knows, sent as headers. Each time, and once restored, it waits until
 every director names every server again. Elsewhere, what needs a restart
-is skipped.
+is skipped. `permitted-namespaces` restarts the last cache instead,
+restricted to /public, or to another protected namespace, and waits
+likewise.
 
 The suite puts its objects at every origin, in the first protected
 namespace, under data/routing/<run>/, and removes them afterward.
@@ -91,6 +97,9 @@ SCENARIOS = {
     ),
     "filtered": "a cache in Director.FilteredServers is named by no director",
     "response-hostnames": "a bare path asked of a response hostname goes to an origin or a cache",
+    "permitted-namespaces": (
+        "a cache restricted to a namespace (Cache.PermittedNamespaces) is named for it alone"
+    ),
 }
 
 # A row: its case (appended to the scenario's name, if any), its status,
@@ -185,10 +194,17 @@ class Test:
         self.token = session.token(self.namespace)
         self.base = f"data/routing/{self.run}"
         # The probe, which every origin holds; `warm`, which every origin
-        # holds, and only `adaptive` reads, through the last cache; and
-        # `missing`, which none does.
-        self.data = {"probe": os.urandom(4096), "warm": os.urandom(8192)}
-        self.objects = {name: f"{self.base}/{name}" for name in ("probe", "warm", "missing")}
+        # holds, and only `adaptive` reads, through the last cache;
+        # `missing`, which none does; and `permitted`, which only
+        # `permitted-namespaces` puts, in another namespace.
+        self.data = {
+            "probe": os.urandom(4096),
+            "warm": os.urandom(8192),
+            "permitted": os.urandom(4096),
+        }
+        self.objects = {
+            name: f"{self.base}/{name}" for name in ("probe", "warm", "missing", "permitted")
+        }
         self.caches = [Server(c.svc, c.url, c.kind) for c in self.fed.federated_caches]
         self.origins = [Server(o.svc, o.url, "origin") for o in self.fed.origins]
 
@@ -1327,6 +1343,205 @@ def restarted(
 
 
 # --------------------------------------------------------------------------
+# permitted-namespaces: a cache restricted to a namespace, which it then
+# alone advertises (Cache.PermittedNamespaces; filterAdsBasedOnNamespace
+# in Pelican's cache/advertise.go).
+
+# How many times `permitted-namespaces` asks each director.
+PERMITTED_ASKS = FILTERED_ASKS
+
+
+def permitted_namespace(test: Test) -> Optional[str]:
+    """The namespace that `permitted-namespaces` leaves the last cache:
+    /public, if exported, else another protected namespace; None if the
+    shape exports only the suite's own."""
+    if "public" in test.fed.exports:
+        return "public"
+    others = [ns for ns in credentials.PROTECTED if ns in test.fed.exports]
+    return next((ns for ns in others if ns != test.namespace), None)
+
+
+def names_cache(answer: web.Response, cache: Server) -> bool:
+    """Whether a director's redirect sends the client to cache, or lists
+    it in Link."""
+    listed = [director.host(u) for u, _ in link_entries(answer.header("Link"))]
+    return cache.host in listed or director.host(answer.header("Location")) == cache.host
+
+
+def permitted_routing(test: Test, permitted: str, restricted: Server) -> Optional[str]:
+    """Why the directors don't route as the restriction says, or None:
+    each must name the restricted cache for the object in the permitted
+    namespace, and not for the probe in the suite's own, for which it
+    must still name every other cache."""
+    others = [c for c in test.caches if c.host != restricted.host]
+    for url in test.fed.directors:
+        name = director.host(url)
+        path = test.path("permitted", permitted)
+        answer = ask(f"{url}{OBJECT}{path}", test.token_for(permitted))
+        if answer.status != 307:
+            return f"{name}: {path}: {answer.describe()}, not 307"
+        if not names_cache(answer, restricted):
+            return f"{name} does not name {restricted.svc} for /{permitted}"
+        path = test.path("probe")
+        answer = ask(f"{url}{OBJECT}{path}", test.token)
+        if answer.status != 307:
+            return f"{name}: {path}: {answer.describe()}, not 307"
+        if names_cache(answer, restricted):
+            return f"{name} names {restricted.svc} for /{test.namespace}"
+        for other in others:
+            if not names_cache(answer, other):
+                return f"{name} does not name {other.svc} for /{test.namespace}"
+    return None
+
+
+def permitted_listing(test: Test, permitted: str, restricted: Server) -> tuple[str, str]:
+    """Each director's list of servers must show the restricted cache
+    with namespacePrefixes of the permitted namespace, and any under it,
+    and no other."""
+    problems: list[str] = []
+    for url in test.fed.directors:
+        what = director.host(url)
+        answer = web.request("GET", f"{url}{SERVERS}")
+        try:
+            rows = common.as_array(json.loads(answer.body)) or []
+        except ValueError:
+            rows = []
+        mine = [
+            r
+            for r in (common.as_object(r) or {} for r in rows)
+            if r.get("type") == "Cache"
+            and director.host(str(r.get("webUrl", ""))) == restricted.host
+        ]
+        if not mine:
+            problems.append(
+                f"{what}: {SERVERS} ({answer.describe()}) does not list {restricted.svc}"
+            )
+            continue
+        prefixes = [str(p) for p in common.as_array(mine[0].get("namespacePrefixes")) or []]
+        wrong = [
+            p
+            for p in prefixes
+            if p.rstrip("/") != f"/{permitted}" and not p.startswith(f"/{permitted}/")
+        ]
+        if wrong or not prefixes:
+            problems.append(f"{what} lists {restricted.svc} with namespacePrefixes {prefixes}")
+    return outcome(problems, f"/{permitted} alone")
+
+
+def permitted_direct(test: Test, permitted: str, restricted: Server) -> tuple[str, str]:
+    """Asked straight, the restricted cache must serve the object in the
+    permitted namespace; of the probe in the suite's own, it may serve it
+    or refuse, but never other bytes."""
+    data = test.data["permitted"]
+    answer = web.request(
+        "GET",
+        f"{restricted.url}{test.path('permitted', permitted)}",
+        token=test.token_for(permitted),
+    )
+    if answer.status != 200 or answer.body != data:
+        return FAIL, f"/{permitted}: {answer.describe()}" + (
+            ", but not the object" if answer.status == 200 else ""
+        )
+    answer = web.request("GET", f"{restricted.url}{test.path('probe')}", token=test.token)
+    if answer.status == 200 and answer.body != test.data["probe"]:
+        return FAIL, f"/{test.namespace}: HTTP 200, but not the object"
+    said = "served" if answer.status == 200 else f"refused ({answer.describe()})"
+    return PASS, f"/{permitted} served; /{test.namespace} {said}"
+
+
+def put_permitted(test: Test, permitted: str) -> Optional[str]:
+    """Put the `permitted` object in the permitted namespace's storage at
+    every origin (on a pstore origin, /public's is /protected-a's); why
+    that failed, or None."""
+    target = test.fed.storage_namespace(permitted)
+    token = test.session.token(target)
+    caps = test.fed.exports[target]
+    rel = test.objects["permitted"]
+    for origin in stores.unique(test.fed.origins):
+        errors = stores.make_dirs([origin], target, test.base, token)
+        if errors:
+            return errors[0]
+        why = stores.seed(origin, target, rel, test.data["permitted"], token, caps)
+        if why:
+            return why
+    return None
+
+
+def permitted_namespaces(test: Test, add: Callable[[str, str, str, str], None]) -> None:
+    """Restart the last cache restricted to one namespace, check how the
+    directors route and list it, and what it serves, and restore it;
+    then wait until the directors route as before. add() records a row:
+    its scenario, case, status, and note."""
+    scenario = "permitted-namespaces"
+    why = unrestartable(test)
+    permitted = permitted_namespace(test)
+    if not why and permitted is None:
+        why = f"the shape exports no namespace beside /{test.namespace}"
+    if why or permitted is None:
+        for case in ("routing", "listing", "direct"):
+            add(scenario, case, SKIP, why or "")
+        return
+    why = put_permitted(test, permitted)
+    if why:
+        add(scenario, "", FAIL, f"putting the object in /{permitted}: {why}")
+        return
+    restricted = test.caches[-1]
+    text = f"Cache:\n  PermittedNamespaces:\n    - /{permitted}\n"
+    print(f"\nRestarting {restricted.svc} with:\n{text}")
+    found: list[str] = []
+
+    def routed() -> bool:
+        problem = permitted_routing(test, permitted, restricted)
+        found[:] = [problem] if problem else []
+        return problem is None
+
+    try:
+        with control.restart_with(restricted.svc, {CONFIG_FILE: text}):
+            if not common.wait_for(routed, SETTLE_WAIT, interval=5):
+                add(
+                    scenario,
+                    "routing",
+                    FAIL,
+                    f"{SETTLE_WAIT}s after the restart, {first(found)}",
+                )
+            else:
+                problems: list[str] = []
+                for _ in range(PERMITTED_ASKS):
+                    problem = permitted_routing(test, permitted, restricted)
+                    if problem:
+                        problems.append(problem)
+                        break
+                note = f"{restricted.svc} named for /{permitted} alone, in {PERMITTED_ASKS} asks per director"
+                add(scenario, "routing", *outcome(problems, note))
+            add(
+                scenario,
+                "listing",
+                *checked(
+                    functools.partial(
+                        permitted_listing, permitted=permitted, restricted=restricted
+                    ),
+                    test,
+                ),
+            )
+            add(
+                scenario,
+                "direct",
+                *checked(
+                    functools.partial(
+                        permitted_direct, permitted=permitted, restricted=restricted
+                    ),
+                    test,
+                ),
+            )
+    except control.ControlError as e:
+        add(scenario, "", FAIL, f"restarting {restricted.svc}, or restoring it: {e}")
+        warn(f"restarting {restricted.svc}, or restoring it: {e}")
+    why = settle(test)
+    if why:
+        warn(f"with {restricted.svc} restored, {why}")
+
+
+# --------------------------------------------------------------------------
 
 
 RUN: dict[str, Callable[[Test], list[Row]]] = {
@@ -1365,7 +1580,8 @@ def put_objects(test: Test) -> Optional[str]:
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Put the objects in place, run the selected scenarios, the
     restarts' last, and remove the objects. `stat`'s `single-checked`
-    row needs a restart only with one origin."""
+    row needs a restart only with one origin. `permitted-namespaces`
+    restarts a cache, not the directors, and comes last."""
     test = Test(session)
 
     def add(scenario: str, case: str, status: str, note: str) -> None:
@@ -1388,12 +1604,11 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         elif "stat" in selected:
             later.append("stat")
         restarted(test, later, add)
+        if "permitted-namespaces" in selected:
+            permitted_namespaces(test, add)
     finally:
         errors = stores.empty_tree_everywhere(
-            session.fed.origins,
-            {test.namespace: test.caps},
-            "data/routing",
-            {test.namespace: test.token},
+            session.fed.origins, session.fed.exports, "data/routing", session.tokens()
         )
         if errors:
             warn(f"could not remove the suite's objects: {first(errors)}")

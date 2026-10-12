@@ -16,10 +16,11 @@ every origin, and are removed afterward. It needs /protected-a, as
                     cache's age of the object, and the server's
                     checksums; what a missing object, a refusal, and a
                     mixed batch say; and the exit status
-  failover          with several V2 caches: a download that fails
-                    partway at the first cache, whose copy its chaos API
-                    spoiled, resumes at the second, by Range, with the
-                    ETag unchanged; the plugin's ad records both attempts
+  failover          with a V2 cache beside another, of either kind: a
+                    download that fails partway at the first cache, whose
+                    copy its chaos API spoiled, resumes at the second, by
+                    Range, with the ETag unchanged; the plugin's ad
+                    records both attempts
   etag-agreement    every server reports one ETag for an object, by HEAD
                     and by GET, and each cache's is one of the origins'
   token-discovery   which token the client presents: BEARER_TOKEN,
@@ -46,6 +47,10 @@ every origin, and are removed afterward. It needs /protected-a, as
                     a preferred cache that is down: with `+`, a director's
                     cache serves instead; without, the client fails to
                     reach it
+  async-job         `get --async` and `copy --async`, which the client
+                    agent runs: the bytes, `pelican job status` and
+                    `list`, a finished job cancelled, and the agent
+                    stopped
 """
 
 import json
@@ -83,7 +88,7 @@ SCENARIOS = {
     ),
     "failover": (
         "a download that fails partway at one cache resumes at the next, by Range, with the"
-        " ETag unchanged (several V2 caches)"
+        " ETag unchanged (a V2 cache beside another)"
     ),
     "etag-agreement": "every server reports one ETag by HEAD and by GET; a cache's is an origin's",
     "token-discovery": (
@@ -110,6 +115,10 @@ SCENARIOS = {
     "preferred-cache-down": (
         "a preferred cache that is down: with `+`, a director's cache serves; without, a"
         " contact error"
+    ),
+    "async-job": (
+        "`get --async` and `copy --async` through the client agent: the bytes, `job status`"
+        " and `list`, a finished job cancelled, and the agent stopped"
     ),
 }
 
@@ -792,7 +801,8 @@ def spoil(test: Test, cache: common.Cache, name: str, block: int) -> Optional[st
 
 
 def failover(test: Test) -> list[Row]:
-    """Two V2 caches hold an object whole; the first's copy has a block
+    """A V2 cache and another cache (of either kind, as under
+    `-p cache-mixed`) hold an object whole; the first's copy has a block
     corrupted, which it cannot repair once the object is gone from every
     origin. `pelican object get --cache <first>,<second>` must then
     succeed, with the object's bytes, the first attempt failing after
@@ -801,9 +811,12 @@ def failover(test: Test) -> list[Row]:
     to if the ETag changed (downloadObject in client/handle_http.go).
     stash_plugin, with the same preferred caches, must record both
     attempts."""
-    caches = test.v2_caches()
-    if len(caches) < 2:
-        return [("", SKIP, "fewer than two federated V2 caches ('-p topo-multi-cache')")]
+    feds = test.fed.federated_caches
+    v2 = [c for c in feds if c.kind == "v2"]
+    if not v2 or len(feds) < 2:
+        return [
+            ("", SKIP, "no federated V2 cache beside another cache ('-p topo-multi-cache')")
+        ]
     if test.fed.sent_cache_control:
         return [
             (
@@ -813,7 +826,8 @@ def failover(test: Test) -> list[Row]:
                 + " would revalidate against origins that no longer hold the object",
             )
         ]
-    first_cache, second = caches[0], caches[1]
+    first_cache = v2[0]
+    second = next(c for c in feds if c.svc != first_cache.svc)
     rows: list[Row] = []
     for case in ("get", "plugin"):
         name = f"failover-{case}"
@@ -1636,6 +1650,246 @@ def preferred_cache_down(test: Test) -> list[Row]:
 
 
 # --------------------------------------------------------------------------
+# async-job: the client agent.
+
+# The agent's files, by the environment variable that names each
+# (ClientAgent.Socket, PidFile, and DbLocation): in a directory of the
+# suite's own, so that no agent of an earlier run's, or of the user's, is
+# spoken to, and nothing of the run's outlives it.
+AGENT_FILES = {
+    "PELICAN_CLIENTAGENT_SOCKET": "agent.sock",
+    "PELICAN_CLIENTAGENT_PIDFILE": "agent.pid",
+    "PELICAN_CLIENTAGENT_DBLOCATION": "agent.db",
+}
+# How long the agent may take to stop once told to, in seconds.
+AGENT_STOP_WAIT = 15
+# The status of a job that finished well (client_agent/models.go).
+COMPLETED = "completed"
+
+
+def agent_env(test: Test) -> dict[str, str]:
+    """The session's environment, with the agent's files (AGENT_FILES) in
+    the suite's directory."""
+    directory = os.path.join(test.tmp, "agent")
+    os.makedirs(directory, exist_ok=True)
+    env = dict(test.session.env)
+    for name, file_name in AGENT_FILES.items():
+        env[name] = os.path.join(directory, file_name)
+    return env
+
+
+def last_json_value(text: str) -> Any:
+    """The last JSON value in text, which may span lines, as the job
+    commands print theirs (json.MarshalIndent); ValueError if there is
+    none."""
+    decoder = json.JSONDecoder()
+    found: list[Any] = []
+    at = 0
+    while True:
+        m = re.search(r"[{\[]", text[at:])
+        if not m:
+            break
+        start = at + m.start()
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except ValueError:
+            at = start + 1
+            continue
+        found.append(value)
+        at = end
+    if not found:
+        raise ValueError("no JSON in the output")
+    return found[-1]
+
+
+def job_id(out: str) -> str:
+    """The job ID that an --async command printed, or ""."""
+    m = re.search(r"Job created: (\S+)", out)
+    return m.group(1) if m else ""
+
+
+def job_status(
+    pelican: Callable[..., tuple[int, str, str]], job: str
+) -> tuple[Optional[dict[str, Any]], str]:
+    """What `pelican job status --json` says of job (JobStatus in
+    client_agent/models.go), or None and why not."""
+    code, out, err = pelican("job", "status", "--json", job)
+    if code != 0:
+        return None, f"`job status`: exit {code}: {last_line(err or out)}"
+    try:
+        found = common.as_object(last_json_value(out))
+    except ValueError as e:
+        return None, f"`job status`: unreadable output ({e}): {last_line(out)}"
+    if found is None:
+        return None, "`job status`: the JSON is no object"
+    return found, ""
+
+
+def status_problems(found: Mapping[str, Any], job: str, size: int) -> list[str]:
+    """What is wrong with a finished job's status: it must be completed,
+    name the job, hold one transfer, and count the object's bytes."""
+    problems: list[str] = []
+    if found.get("status") != COMPLETED:
+        problems.append(f"status {found.get('status')!r}, not {COMPLETED!r}")
+    if found.get("job_id") != job:
+        problems.append(f"job_id {found.get('job_id')!r}, not {job!r}")
+    moved = common.as_array(found.get("transfers")) or []
+    if len(moved) != 1:
+        problems.append(f"{len(moved)} transfers, not 1")
+    progress = common.as_object(found.get("progress")) or {}
+    if progress.get("bytes_transferred") != size:
+        problems.append(f"bytes_transferred {progress.get('bytes_transferred')!r}, not {size}")
+    return problems
+
+
+def stop_agent(pelican: Callable[..., tuple[int, str, str]]) -> tuple[str, str]:
+    """`pelican client-agent stop`, after which `client-agent status`
+    must say, within AGENT_STOP_WAIT seconds, that no agent runs."""
+    code, out, err = pelican("client-agent", "stop")
+    if code != 0:
+        return FAIL, f"exit {code}: {last_line(err or out)}"
+    said = last_line(out)
+
+    def stopped() -> bool:
+        _, status_out, _ = pelican("client-agent", "status")
+        return "not running" in status_out
+
+    if not common.wait_for(stopped, AGENT_STOP_WAIT, interval=1):
+        return FAIL, f"`client-agent status` says it runs {AGENT_STOP_WAIT}s after: {said}"
+    return PASS, said
+
+
+def async_job(test: Test) -> list[Row]:
+    """`pelican object get --async --wait` and `object copy --async
+    --wait`, which hand a transfer to the client agent (`pelican
+    client-agent`, a daemon of the client's own, which the first starts;
+    cmd/object_get.go and client_agent/ in Pelican) and wait for it: the
+    download must bring the object's bytes (`get`), and the upload land
+    at an origin (`copy`, where /protected-a takes writes); `pelican job
+    status --json` must report the download's job completed, with one
+    transfer and the object's bytes (`status`), and `job list --json`
+    list it (`list`); `job cancel` of the finished job must leave it
+    completed (`cancel-finished`); and `client-agent stop` must stop the
+    agent (`stop`), which runs whatever else happened. The agent's
+    socket, PID file, and database are the run's own (agent_env())."""
+    env = agent_env(test)
+    name = "async"
+    data = os.urandom(OBJECT_SIZE)
+    test.put(name, data)
+    rows: list[Row] = []
+
+    def pelican(*args: str, cwd: Optional[str] = None) -> tuple[int, str, str]:
+        return test.session.pelican_cmd(*args, env=env, cwd=cwd)
+
+    job = ""
+    try:
+        directory = test.directory("async-get")
+        target = os.path.join(directory, "object")
+        code, out, err = pelican(
+            "object",
+            "get",
+            "--async",
+            "--wait",
+            "--token",
+            test.token_file,
+            test.url(name),
+            target,
+            cwd=directory,
+        )
+        job = job_id(out)
+        if code != 0:
+            rows.append(("get", FAIL, f"exit {code}: {last_line(err or out)}"))
+        elif not job:
+            rows.append(("get", FAIL, f"no job ID printed: {last_line(out)}"))
+        elif common.sha256(target) != common.digest(data):
+            rows.append(("get", FAIL, "the file is not the object"))
+        else:
+            rows.append(("get", PASS, f"job {job}"))
+
+        if not job:
+            rows.append(("status", SKIP, "no job to ask about"))
+        else:
+            found, why = job_status(pelican, job)
+            if found is None:
+                rows.append(("status", FAIL, why))
+            else:
+                problems = status_problems(found, job, len(data))
+                if problems:
+                    rows.append(("status", FAIL, first(problems)))
+                else:
+                    rows.append(("status", PASS, f"{COMPLETED}, {len(data)} bytes"))
+
+        code, out, err = pelican("job", "list", "--json")
+        if code != 0:
+            rows.append(("list", FAIL, f"exit {code}: {last_line(err or out)}"))
+        else:
+            try:
+                listed = common.as_object(last_json_value(out)) or {}
+            except ValueError as e:
+                listed = {}
+                rows.append(("list", FAIL, f"unreadable output ({e}): {last_line(out)}"))
+            else:
+                ids = [
+                    str(j.get("job_id"))
+                    for j in (
+                        common.as_object(j) or {}
+                        for j in common.as_array(listed.get("jobs")) or []
+                    )
+                ]
+                if job and job not in ids:
+                    rows.append(("list", FAIL, f"lists {ids}, not {job}"))
+                else:
+                    rows.append(("list", PASS, f"{len(ids)} job(s)"))
+
+        if not test.writes:
+            rows.append(("copy", SKIP, "/protected-a takes no writes"))
+        else:
+            upload = os.urandom(OBJECT_SIZE)
+            local = test.local("async-copy/source", upload)
+            rel = test.rel("async-copy")
+            code, out, err = pelican(
+                "object",
+                "copy",
+                "--async",
+                "--wait",
+                "--token",
+                test.token_file,
+                local,
+                test.url("async-copy"),
+                cwd=os.path.dirname(local),
+            )
+            held = stores.held_anywhere(
+                test.fed.origins, NAMESPACE, rel, {NAMESPACE: test.token}
+            )
+            if code != 0:
+                rows.append(("copy", FAIL, f"exit {code}: {last_line(err or out)}"))
+            elif common.digest(upload) not in held:
+                rows.append(("copy", FAIL, "succeeded, but no origin holds the upload"))
+            else:
+                rows.append(("copy", PASS, f"job {job_id(out) or '(unnamed)'}"))
+
+        if not job:
+            rows.append(("cancel-finished", SKIP, "no job to cancel"))
+        else:
+            code, out, err = pelican("job", "cancel", job)
+            said = f"cancel exit {code}: {last_line(out or err)}"
+            found, why = job_status(pelican, job)
+            if found is None:
+                rows.append(("cancel-finished", FAIL, f"{said}; then {why}"))
+            elif found.get("status") != COMPLETED:
+                rows.append(
+                    (
+                        "cancel-finished",
+                        FAIL,
+                        f"{said}; then status {found.get('status')!r}, not {COMPLETED!r}",
+                    )
+                )
+            else:
+                rows.append(("cancel-finished", PASS, f"{said}; still {COMPLETED}"))
+    finally:
+        rows.append(("stop", *stop_agent(pelican)))
+    return rows
+
 
 Rows = Union[tuple[str, str], list[Row]]
 
@@ -1650,6 +1904,7 @@ RUN: dict[str, Callable[[Test], Rows]] = {
     "skipstat-failover": skipstat_failover,
     "multi-source": multi_source,
     "preferred-cache-down": preferred_cache_down,
+    "async-job": async_job,
 }
 
 

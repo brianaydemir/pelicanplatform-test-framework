@@ -23,6 +23,16 @@ TOPOLOGY=full
 ORIGIN_VARIANT=posixv2
 CACHE_VARIANT=v2
 
+# cache-1's kind, where it differs from the other caches' (see
+# presets/cache-mixed.sh): a directory name under config.d/cache/, or
+# empty for CACHE_VARIANT.
+CACHE_1_VARIANT=
+
+# Whether the full topology runs cache-0 at all (see
+# presets/topo-no-cache.sh). The `tiny` topology's cache module and the
+# `standalone` topology's lack of one are not this knob's.
+FEDERATED_CACHE=true
+
 # Origin.EnableIssuer.
 ORIGIN_ENABLE_ISSUER=true
 
@@ -83,6 +93,10 @@ ORIGIN_BROKER=false
 # Origin.EnableTransferAPI (see presets/origin-transfer-api.sh).
 ORIGIN_TRANSFER_API=false
 
+# Whether a transfer server of its own runs the transfer API (see
+# presets/topo-transfer-server.sh).
+TRANSFER_SERVER=false
+
 # Cache.TieringTargets for every V2 cache (see presets/cache-tiered.sh).
 CACHE_TIERING=false
 
@@ -133,5 +147,6 @@ ORIGIN_MEM=512M
 CACHE_MEM=512M
 DIRECTOR_MEM=256M
 REGISTRY_MEM=128M
+TRANSFER_MEM=256M
 DEV_MEM=1024M
 FED_MEM=1024M

@@ -37,11 +37,16 @@ each native origin, and skip an XRootD origin; `symlink-writes` and
                          verbs; PUT onto a collection and DELETE of the
                          export's root are refused; PROPPATCH sets no
                          property
+  cache-methods          at each cache, the methods a cache serves for
+                         no one (POST, MKCOL, COPY, MOVE, PROPPATCH,
+                         and LOCK): a V2 cache answers 405, an XRootD
+                         cache refuses, and no origin's store changes
 
-Everything goes under /protected-a/data/webdav/<run>/<origin>/, which
-the suite removes afterward, with what a Destination could have
-reached in /protected-b and /public. Every token is the origins' own,
-for /protected-a, of the scopes each scenario names.
+Everything goes under /protected-a/data/webdav/<run>/<origin>/, and
+what `cache-methods` sends the caches under .../caches/, which the
+suite removes afterward, with what a Destination could have reached
+in /protected-b and /public. Every token is the origins' own, for
+/protected-a, of the scopes each scenario names.
 """
 
 import os
@@ -50,7 +55,7 @@ import shutil
 import traceback
 import xml.etree.ElementTree as ET  # nosec B405
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 from urllib.parse import urlsplit
 
 from testlib import common, credentials, digests, stores, web, webdav
@@ -80,6 +85,10 @@ SCENARIOS = {
     "webdav-semantics": (
         "OPTIONS of the root names the verbs; PUT onto a collection, DELETE of the root,"
         " and PROPPATCH change nothing"
+    ),
+    "cache-methods": (
+        "POST, MKCOL, COPY, MOVE, PROPPATCH, and LOCK at each cache: 405 from a V2 cache,"
+        " refused by an XRootD one, and no origin changed"
     ),
 }
 
@@ -127,6 +136,14 @@ PROPPATCH = (
 # takes writes, for which Pelican turns on Copies (registerRootOptions in
 # origin_serve/handlers.go).
 VERBS = ("OPTIONS", "GET", "HEAD", "PUT", "DELETE", "PROPFIND", "MKCOL", "COPY", "MOVE")
+
+# The methods a cache serves for no one: it serves objects and listings
+# (GET, HEAD, and PROPFIND), and relays a PUT or a DELETE to an origin
+# (the blocks suite's `write-through`), and that is all a V2 cache
+# routes, so Gin answers the rest 405 (HandleMethodNotAllowed in
+# Pelican's web_ui/ui.go). Each is sent with the `server` token, which
+# would let an origin honor it, so a cache that relayed one would show.
+CACHE_METHODS = ("POST", "MKCOL", "COPY", "MOVE", "PROPPATCH", "LOCK")
 
 # Objects a browser would run script in, if it rendered them.
 PAGES = {
@@ -270,21 +287,22 @@ def at(origin: common.Origin, rel: str) -> str:
 
 
 class Findings:
-    """What a scenario found wrong at each origin, and what it noted."""
+    """What a scenario found wrong at each server (an origin, or for
+    `cache-methods` a cache), and what it noted."""
 
     def __init__(self) -> None:
         self.problems: list[str] = []
         self.notes: list[str] = []
 
-    def add(self, origin: common.Origin, problem: Optional[str]) -> None:
-        """Record problem, if any, at origin, and print it."""
+    def add(self, server: Union[common.Origin, common.Cache], problem: Optional[str]) -> None:
+        """Record problem, if any, at server, and print it."""
         if problem:
-            self.problems.append(f"{origin.svc}: {problem}")
-            print(f"    {origin.svc}: {problem}")
+            self.problems.append(f"{server.svc}: {problem}")
+            print(f"    {server.svc}: {problem}")
 
-    def note(self, origin: common.Origin, note: str) -> None:
-        """Note what origin did."""
-        self.notes.append(f"{origin.svc}: {note}")
+    def note(self, server: Union[common.Origin, common.Cache], note: str) -> None:
+        """Note what server did."""
+        self.notes.append(f"{server.svc}: {note}")
 
     def result(self, passed: str) -> tuple[str, str]:
         """FAIL with the problems, or PASS with passed and the notes."""
@@ -973,6 +991,82 @@ def webdav_semantics(test: Test) -> tuple[str, str]:
     return found.result(f"{len(test.fed.origins)} origin(s)")
 
 
+# --------------------------------------------------------------------------
+# cache-methods
+
+
+def cache_request(method: str, url: str, token: str, destination: str) -> web.Response:
+    """Send method to url, with token, as a client that meant it would: a
+    COPY or MOVE to destination, a LOCK and a PROPPATCH with their
+    bodies, and a POST with one of its own."""
+    if method in ("COPY", "MOVE"):
+        return copy_or_move(method, url, token, destination)
+    bodies = {
+        "LOCK": (LOCK_INFO, "application/xml; charset=utf-8"),
+        "PROPPATCH": (PROPPATCH, "application/xml; charset=utf-8"),
+        "POST": (b"x=1", "application/x-www-form-urlencoded"),
+    }
+    if method in bodies:
+        body, content_type = bodies[method]
+        return web.request(
+            method, url, token=token, upload=body, headers={"Content-Type": content_type}
+        )
+    return web.request(method, url, token=token)
+
+
+def cache_methods(test: Test) -> tuple[str, str]:
+    """At each cache, each of CACHE_METHODS, with the `server` token: of an
+    object of the run's own, which every origin holds (POST, COPY, MOVE,
+    PROPPATCH, and LOCK), or of a new path beside it (MKCOL), with a COPY
+    or MOVE's Destination beside it too. A V2 cache must answer 405; an
+    XRootD cache must refuse (4xx or 5xx), as its HTTP server sees fit,
+    which the note records. Whatever the answer, no origin's store may
+    change: the object must keep its bytes, and nothing may appear at
+    the new path or the Destination."""
+    caches = test.fed.caches
+    if not caches:
+        return SKIP, "this shape has no cache"
+    fed = test.fed
+    base = f"data/webdav/{test.session.run}/caches"
+    errors = stores.make_dirs(fed.origins, NAMESPACE, base, test.token)
+    if errors:
+        raise SetupError(f"could not make {base} ({errors[0]})")
+    found = Findings()
+    for cache in caches:
+        rel = f"{base}/{cache.svc}-obj"
+        data = os.urandom(4096)
+        errors = stores.put_everywhere(fed.origins, NAMESPACE, rel, data, test.token)
+        if errors:
+            raise SetupError(f"could not put {rel} at every origin ({errors[0]})")
+        new = f"{base}/{cache.svc}-mkcol"
+        destination = f"{base}/{cache.svc}-dest"
+        answered: list[str] = []
+        for method in CACHE_METHODS:
+            target = f"{cache.url}/{NAMESPACE}/{new if method == 'MKCOL' else rel}"
+            answer = cache_request(
+                method, target, test.token, f"{cache.url}/{NAMESPACE}/{destination}"
+            )
+            answered.append(f"{method} {answer.status}")
+            if cache.kind == "v2" and answer.status != 405:
+                found.add(cache, f"{method} got {answer.describe()}, not 405")
+            elif answer.status is None or not 400 <= answer.status < 600:
+                found.add(cache, f"{method} got {answer.describe()}, not a refusal")
+            for origin in stores.unique(fed.origins):
+                what = f"after {method} at {cache.svc}"
+                found.add(
+                    origin, test.stored(origin, NAMESPACE, rel, data, f"{what}: the object")
+                )
+                found.add(
+                    origin,
+                    test.stored(
+                        origin, NAMESPACE, destination, None, f"{what}: the Destination"
+                    ),
+                )
+                found.add(origin, test.made(origin, new, False, f"{what}: the new path"))
+        found.note(cache, ", ".join(answered))
+    return found.result(f"{len(caches)} cache(s)")
+
+
 RUN = {
     "post-create-only": post_create_only,
     "copy-move-destination": copy_move_destination,
@@ -982,6 +1076,7 @@ RUN = {
     "symlink-writes": symlink_writes,
     "stored-html": stored_html,
     "webdav-semantics": webdav_semantics,
+    "cache-methods": cache_methods,
 }
 
 

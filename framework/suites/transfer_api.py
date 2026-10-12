@@ -1,15 +1,22 @@
-"""The transfer API of origin-0 (`-p origin-transfer-api`), which runs
-transfer jobs on the server: its authentication, the storage
-credentials it keeps for each user, third-party copies through it, the
-jobs it reports, and what it confines jobs to.
+"""The transfer API, which runs transfer jobs on the server: its
+authentication, the storage credentials it keeps for each user,
+third-party copies through it, the jobs it reports, and what it
+confines jobs to. It is origin-0's (`-p origin-transfer-api`), or a
+transfer server's own (`-p topo-transfer-server`), in a process of its
+own: generated/transfer-api says which (common.Federation.transfer_api).
 
-Its own tokens carry the pelican.transfer scope, from origin-0's
-issuer, which the suite mints with origin-0's key; storage credentials
-are the server's tokens for /protected-a. Objects go under
-/protected-a/data/xfer/<run>/; the suite removes them, and the
-credentials it added, afterward. A job may read or write the origin's
-own filesystem only through an export, so `local-get` and `local-put`
-check that a job is refused one that leaves the exports.
+Its own tokens carry the pelican.transfer scope, from its host's
+issuer, which the suite mints with that host's key: origin-0's, or the
+transfer server's local issuer; storage credentials are the server's
+tokens for /protected-a. Objects go under /protected-a/data/xfer/<run>/;
+the suite removes them, and the credentials it added, afterward. A job
+of origin-0's API may read or write the origin's own filesystem only
+through an export, so `local-get` and `local-put` check that a job is
+refused one that leaves the exports; a transfer server confines a job
+to nothing (RegisterTransferAPI in Pelican's transfer/transfer.go), so
+there they check that such a job runs, and moves the bytes it names,
+and `path-not-allowed` that a job no export holds is taken and then
+fails.
 
 The API's edges come after its main paths: tokens whose subjects are
 no usernames (`subjects`), a finished job cancelled (`cancel-finished`),
@@ -61,7 +68,10 @@ SCENARIOS = {
     "auth-storage-token": "a storage token, without pelican.transfer, is refused",
     "auth-unknown-key": "a pelican.transfer token signed by a key no server knows is refused",
     "credentials": "a storage credential is listed, never shown, and its name is its own",
-    "copy": "`object copy --transfer-server ... --wait`: a third-party copy, byte for byte",
+    "copy": (
+        "`object copy --transfer-server ... --wait`: a third-party copy, byte for byte; and"
+        " `--dest-origin`, which finds origin-0's transfer API, or none"
+    ),
     "job-status": "a finished job reports completed, and is listed",
     "bad-dest-credential": "a copy with a read-only destination credential fails, and writes nothing",
     "unknown-credential": "a job naming a credential that does not exist is refused",
@@ -182,7 +192,7 @@ class Test:
         api = self.fed.transfer_api
         if api is None:
             die("framework/var/generated/transfer-api says the transfer API is off")
-        self.url, self.issuer, self.key_dir = api
+        self.url, self.issuer, self.key_dir = api.url, api.issuer, api.key_dir
         self.base = f"data/xfer/{session.run}"
         self.storage = session.token("protected-a")
         self.read_only = session.token("protected-a", credentials.R)
@@ -192,14 +202,26 @@ class Test:
         self.data = os.urandom(blocks.CHUNK_UNDECLARED + 4321)
         self.credential_ids: list[tuple[str, str]] = []  # each with the token that owns it
         self._finished_job: Optional[dict[str, Any]] = None
-        # The API is origin-0's (`fed` in the tiny topology): its web URL,
-        # and its service, which `restart` restarts.
+        # Whether the API confines jobs to the origin's exports: origin-0's
+        # does, a transfer server's does not.
+        self.confined = api.confined
+        # The API's host, origin-0 (`fed` in the tiny topology) or the
+        # transfer server: its web URL, its service, which `restart`
+        # restarts, and its key.
         self.web = self.url
-        self.svc = self.fed.origins[0].svc
+        self.svc = api.svc
         self.key = common.signing_key(self.key_dir)
+        # origin-0, whose namespace issuer the OAuth2 clients are of, and
+        # which `restart` slows: the API's host, or another server.
+        self.origin_web = self.fed.origin_web_url
+        self.origin_svc = self.fed.origins[0].svc
+        self.origin_key = common.signing_key(f"issuer-keys/{self.origin_svc}")
         self._admin: Optional[str] = None
-        # What the configured scenarios make, to remove afterward.
-        self.issuer_clients: list[tuple[str, issuer.Client]] = []  # by namespace
+        self._origin_admin: Optional[str] = None
+        # What the configured scenarios make, to remove afterward: the
+        # issuer's clients, each with the web URL and the admin token
+        # that made it.
+        self.issuer_clients: list[tuple[str, str, str, issuer.Client]] = []
         self.user_ids: list[str] = []
         self.group_ids: list[str] = []
         self.oauth_client_ids: list[str] = []
@@ -226,7 +248,7 @@ class Test:
             return f.read().strip()
 
     def admin_token(self) -> str:
-        """A token that origin-0's web API takes as its admin's (see
+        """A token that the API's host's web API takes as its admin's (see
         credentials.mint_admin())."""
         if self._admin is None:
             self._admin = credentials.mint_admin(
@@ -237,8 +259,22 @@ class Test:
             )
         return self._admin
 
+    def origin_admin_token(self) -> str:
+        """A token that origin-0's web API takes as its admin's: the same
+        token where origin-0 is the API's host."""
+        if self.origin_web == self.web:
+            return self.admin_token()
+        if self._origin_admin is None:
+            self._origin_admin = credentials.mint_admin(
+                self.fed,
+                self.session.path("tokens/transfer-api.origin-admin"),
+                credentials.local_issuer(self.fed, self.origin_web),
+                self.origin_key,
+            )
+        return self._origin_admin
+
     def admin(self) -> Api:
-        """origin-0's web API, as its admin."""
+        """The API's host's web API, as its admin."""
         return Api(self.web, self.admin_token())
 
     def token_file(self, name: str, token: str) -> str:
@@ -254,18 +290,23 @@ class Test:
         grants: Sequence[str],
         allowed_scopes: Sequence[str] = issuer.CLIENT_SCOPES,
     ) -> issuer.Client:
-        """A client of origin-0's issuer of namespace (issuer.LOCAL_NAMESPACE
-        for its local one), which its admin creates, allowed grants and
-        allowed_scopes; removed when the suite ends."""
+        """A client of the issuer of namespace, origin-0's, or of the API's
+        host's local issuer (issuer.LOCAL_NAMESPACE), which the server's
+        admin creates, allowed grants and allowed_scopes; removed when the
+        suite ends."""
+        if namespace == issuer.LOCAL_NAMESPACE:
+            site, token = self.web, self.admin_token()
+        else:
+            site, token = self.origin_web, self.origin_admin_token()
         made = issuer.create_client(
-            self.web,
+            site,
             namespace,
-            self.admin_token(),
+            token,
             grants,
             allowed_scopes,
             name=f"pelican-test-framework transfer-api {self.session.run}",
         )
-        self.issuer_clients.append((namespace, made))
+        self.issuer_clients.append((site, namespace, token, made))
         return made
 
     def call(
@@ -433,17 +474,20 @@ def credentials_scenario(test: Test) -> tuple[str, str]:
     return PASS, str(found["id"])
 
 
-def copy(test: Test) -> tuple[str, str]:
-    """`pelican object copy` through the transfer API, waiting for it."""
+def copy(test: Test) -> list[Row]:
+    """`pelican object copy` through the transfer API, waiting for it
+    (`server`); and with `--dest-origin` naming origin-0 instead of
+    `--transfer-server`, which asks the origin whether it runs the
+    transfer API (pingTransferService in cmd/object_copy.go) and
+    submits the copy there if it does (`dest-origin`): where origin-0's
+    is the API, the copy must land; where a transfer server's is, the
+    command must fail, saying that the service is not available there,
+    and land nothing."""
     writer = test.add_credential(f"{test.session.run}-cli", test.storage)
     token_file = test.session.path("tokens/transfer-api.user.file")
     with open(token_file, "w", encoding="utf-8") as f:
         f.write(test.token)
-    code, out, err = test.session.pelican_cmd(
-        "object",
-        "copy",
-        "--transfer-server",
-        test.url,
+    common_args = [
         "--transfer-server-token",
         token_file,
         "--source-credential-id",
@@ -453,13 +497,48 @@ def copy(test: Test) -> tuple[str, str]:
         "--wait",
         "--json",
         test.url_of("src"),
-        test.url_of("cli-copy"),
+    ]
+    rows: list[Row] = []
+    code, out, err = test.session.pelican_cmd(
+        "object", "copy", "--transfer-server", test.url, *common_args, test.url_of("cli-copy")
     )
     if code != 0:
-        return FAIL, f"exit {code}: {last_line(err or out)}"
-    if common.digest(test.data) not in test.held("cli-copy"):
-        return FAIL, "no origin holds the copy"
-    return PASS, ""
+        rows.append(("server", FAIL, f"exit {code}: {last_line(err or out)}"))
+    elif common.digest(test.data) not in test.held("cli-copy"):
+        rows.append(("server", FAIL, "no origin holds the copy"))
+    else:
+        rows.append(("server", PASS, "the copy landed"))
+    code, out, err = test.session.pelican_cmd(
+        "object",
+        "copy",
+        "--dest-origin",
+        test.origin_web,
+        *common_args,
+        test.url_of("dest-origin-copy"),
+    )
+    landed = common.digest(test.data) in test.held("dest-origin-copy")
+    if test.origin_web == test.web:
+        if code != 0:
+            rows.append(("dest-origin", FAIL, f"exit {code}: {last_line(err or out)}"))
+        elif not landed:
+            rows.append(("dest-origin", FAIL, "exit 0, but no origin holds the copy"))
+        else:
+            rows.append(("dest-origin", PASS, "found origin-0's transfer API; the copy landed"))
+    elif code == 0:
+        rows.append(("dest-origin", FAIL, "exit 0, though origin-0 runs no transfer API"))
+    elif landed:
+        rows.append(("dest-origin", FAIL, f"exit {code}, but the copy landed anyway"))
+    elif "not available" not in err + out:
+        rows.append(
+            (
+                "dest-origin",
+                FAIL,
+                f"exit {code}, not for want of the service: {last_line(err or out)}",
+            )
+        )
+    else:
+        rows.append(("dest-origin", PASS, f"exit {code}: {last_line(err or out)}"))
+    return rows
 
 
 def job_status(test: Test) -> tuple[str, str]:
@@ -522,14 +601,33 @@ def other_user(test: Test) -> tuple[str, str]:
     return PASS, ""
 
 
+def unconfined(test: Test, body: dict[str, Any], what: str) -> tuple[str, str]:
+    """A job that no export holds, submitted to a transfer server, which
+    confines jobs to nothing: it must be taken (201), and then fail,
+    since nothing serves what it names, never complete."""
+    status, found = test.submit(body)
+    if status != 201 or not found.get("job_id"):
+        return FAIL, (
+            f"{what}: HTTP {status}, {found.get('code')}, not 201 from a transfer server,"
+            " which confines jobs to no export"
+        )
+    job = test.wait(str(found["job_id"]))
+    if job.get("status") != "failed":
+        return FAIL, f"{what}: taken, then {job.get('status')}, not failed"
+    return PASS, f"{what}: taken, then failed: {str(job.get('error'))[:80]}"
+
+
 def path_not_allowed(test: Test) -> tuple[str, str]:
-    """A copy between paths that no export of the origin holds."""
+    """A copy between paths that no export of the origin holds: refused
+    by origin-0's API, taken and then failed by a transfer server's."""
     elsewhere = f"{test.fed.url}/elsewhere/{test.rel('x')}"
     body = {
         "transfers": [
             {"operation": "copy", "source": elsewhere, "destination": f"{elsewhere}-2"}
         ]
     }
+    if not test.confined:
+        return unconfined(test, body, "/elsewhere")
     status, found = test.submit(body)
     if status != 403 or found.get("code") != "PATH_NOT_ALLOWED":
         return FAIL, f"HTTP {status}, {found.get('code')}, not 403 PATH_NOT_ALLOWED"
@@ -553,10 +651,14 @@ def cancel(test: Test) -> tuple[str, str]:
 
 
 def confined(
-    test: Test, transfer: dict[str, Any], landed: Callable[[], bool]
+    test: Test, transfer: dict[str, Any], landed: Callable[[], Optional[str]], expected: str
 ) -> tuple[str, str]:
-    """A job of one transfer that leaves the exports: it must be refused,
-    or fail, and landed() must find nothing written."""
+    """A job of one transfer that leaves the exports, on the API's host's
+    own filesystem. landed() is the SHA-256 of what it moved, if
+    anything, and expected what that would be. Origin-0's API confines
+    jobs to its exports, so it must refuse the job, or fail it, and
+    landed() find nothing. A transfer server confines jobs to nothing:
+    there the job must complete, and landed() find the bytes it named."""
     writer = test.add_credential(f"{test.session.run}-{transfer['operation']}", test.storage)
     body = {
         "transfers": [transfer],
@@ -564,29 +666,55 @@ def confined(
         "dest_credential_id": writer,
     }
     status, found = test.submit(body)
+    if not test.confined:
+        if status != 201 or not found.get("job_id"):
+            return FAIL, (
+                f"refused (HTTP {status}, {found.get('code')}), though a transfer server"
+                " confines jobs to no export"
+            )
+        job = test.wait(str(found["job_id"]))
+        if job.get("status") != "completed":
+            return FAIL, (
+                f"taken, then {job.get('status')}, though a transfer server confines jobs to"
+                f" no export: {str(job.get('error'))[:120]}"
+            )
+        moved = landed()
+        if moved is None:
+            return FAIL, "completed, but what it moved is not there"
+        if moved != expected:
+            return FAIL, "completed, but what it moved is not the bytes it named"
+        return PASS, "taken and completed, as a transfer server confines jobs to no export"
     if status == 201 and found.get("job_id"):
         job = test.wait(str(found["job_id"]))
-        if job.get("status") == "completed" or landed():
+        if job.get("status") == "completed" or landed() is not None:
             return FAIL, f"the job ran: {job.get('status')}, and wrote outside the exports"
         return PASS, f"accepted, then {job.get('status')}"
-    if landed():
+    if landed() is not None:
         return FAIL, f"refused (HTTP {status}), but something was written"
     return PASS, f"refused (HTTP {status}, {found.get('code')})"
 
 
 def local_get(test: Test) -> tuple[str, str]:
-    """A `get` to the origin's /data, its store's mount, which no export
-    names as is: it must not write the file there."""
+    """A `get` to the API's host's own filesystem, outside every export:
+    origin-0's /data, its store's mount, which no export names as is, or
+    the transfer server's /var/lib/pelican, its state. Origin-0's API
+    must not write the file there; a transfer server's must, and the
+    file must be the source object."""
     name = f"local-get-{test.session.run}"
-    # Every origin-0 mounts framework/var/data/origin/0 at /data.
-    landed = f"data/origin/0/{name}"
+    if test.confined:
+        # Every origin-0 mounts framework/var/data/origin/0 at /data.
+        destination, landed = f"/data/{name}", f"data/origin/0/{name}"
+    else:
+        # The transfer server mounts framework/var/state/transfer at
+        # /var/lib/pelican (docker-compose.yaml).
+        destination, landed = f"/var/lib/pelican/{name}", f"state/{test.svc}/{name}"
     transfer = {
         "operation": "get",
         "source": test.url_of("src"),
-        "destination": f"/data/{name}",
+        "destination": destination,
     }
     try:
-        return confined(test, transfer, lambda: os.path.exists(landed))
+        return confined(test, transfer, lambda: common.sha256(landed), common.digest(test.data))
     finally:
         try:
             os.remove(landed)
@@ -595,13 +723,20 @@ def local_get(test: Test) -> tuple[str, str]:
 
 
 def local_put(test: Test) -> tuple[str, str]:
-    """A `put` from a file of the origin's own: it must not land."""
+    """A `put` from a file of the API's host's own, /etc/hostname, which
+    Docker writes as the container's hostname and a newline: origin-0's
+    API must not land it; a transfer server's must, as the file."""
     transfer = {
         "operation": "put",
         "source": "/etc/hostname",
         "destination": test.url_of("local-put"),
     }
-    return confined(test, transfer, lambda: any(test.held("local-put")))
+    return confined(
+        test,
+        transfer,
+        lambda: next((d for d in test.held("local-put") if d), None),
+        common.digest(f"{test.svc}\n".encode()),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -746,7 +881,8 @@ def events(test: Test) -> tuple[str, str]:
 
 
 def database_files(test: Test) -> list[str]:
-    """origin-0's database, and its journal, under framework/var/state."""
+    """The API's host's database, and its journal, under
+    framework/var/state."""
     return sorted(glob.glob(f"state/{test.svc}/*.sqlite*"))
 
 
@@ -777,13 +913,20 @@ def ssrf_and_prefixes(test: Test) -> list[Row]:
     body = {
         "transfers": [{"operation": "copy", "source": sibling, "destination": f"{sibling}-2"}]
     }
-    status, found = test.submit(body)
-    if status != 403 or found.get("code") != "PATH_NOT_ALLOWED":
-        rows.append(
-            ("prefix", FAIL, f"HTTP {status}, {found.get('code')}, not 403 PATH_NOT_ALLOWED")
-        )
+    if not test.confined:
+        rows.append(("prefix", *unconfined(test, body, "/protected-ab")))
     else:
-        rows.append(("prefix", PASS, "/protected-ab: 403"))
+        status, found = test.submit(body)
+        if status != 403 or found.get("code") != "PATH_NOT_ALLOWED":
+            rows.append(
+                (
+                    "prefix",
+                    FAIL,
+                    f"HTTP {status}, {found.get('code')}, not 403 PATH_NOT_ALLOWED",
+                )
+            )
+        else:
+            rows.append(("prefix", PASS, "/protected-ab: 403"))
     # The tokens that the suite stored, and any client secret it
     # registered, as bytes, since the database holds strings as is.
     secrets_held = [test.storage, test.read_only, *test.secrets]
@@ -1192,8 +1335,9 @@ def restart(test: Test) -> list[Row]:
     job: dict[str, Any] = {}
     job_id = ""
     try:
+        # origin-0 is slowed, whether or not it is the API's host.
         with (
-            control.restart_with(test.svc, {CONFIG_FILE: text})
+            control.restart_with(test.origin_svc, {CONFIG_FILE: text})
             if slowed
             else contextlib.nullcontext()
         ):
@@ -1282,7 +1426,11 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             die(f"framework/var/{directory} is missing; run ./fed.sh init")
     tokens = session.tokens()
     test = Test(session)
-    print(f"Transfer API at {test.url}, objects under /protected-a/{test.base}/\n")
+    confined_to = "the exports" if test.confined else "nothing"
+    print(
+        f"Transfer API at {test.url} ({test.svc}, confined to {confined_to}),"
+        + f" objects under /protected-a/{test.base}/\n"
+    )
     try:
         errors = stores.make_dirs(fed.origins, "protected-a", test.base, test.storage)
         errors += stores.seed_everywhere(
@@ -1347,8 +1495,8 @@ def finish(test: Test) -> None:
         test.call("DELETE", f"/credentials/{credential}", owner)
     for client_id in test.oauth_client_ids:
         test.call("DELETE", f"{OAUTH_CLIENTS}/{client_id}", test.token)
-    for namespace, made in test.issuer_clients:
-        failed = issuer.delete_client(test.web, namespace, test.admin_token(), made.client_id)
+    for site, namespace, token, made in test.issuer_clients:
+        failed = issuer.delete_client(site, namespace, token, made.client_id)
         if failed:
             warn(f"could not remove the issuer's client {made.client_id}: {failed}")
     if not test.user_ids and not test.group_ids:

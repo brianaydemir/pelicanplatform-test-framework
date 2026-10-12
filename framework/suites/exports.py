@@ -27,8 +27,17 @@ configuration allows.
   direct-reads-capability  an export without DirectReads, beside others
                            with it, refuses a GET straight to the origin,
                            and serves one through a cache
+  backend-token            an https or httpsv2 origin that reaches its
+                           backend with a static token
+                           (Origin.HttpAuthTokenFile): every request it
+                           sends carries it, and never a client's, and
+                           everything still works
+  backend-passthrough      an httpsv2 origin that forwards the client's
+                           token (Origin.HttpAuthTokenPassthrough): each
+                           request of the client's carries it, and none
+                           the static token
 
-The last two scenarios, and disable-copies's `disabled` row, need
+The capability scenarios, and disable-copies's `disabled` row, need
 capabilities that no shape gives, so the suite restarts every origin to
 give them, as the last of its configuration layers
 (control.restart_with()): fed.sh's Origin.Exports restated, with
@@ -37,6 +46,9 @@ Listings and /public without DirectReads, and Origin.DisableCopies.
 Afterward it restores them. This needs native origins that take direct
 clients, a control helper, and a topology other than `tiny`, whose
 origin is the whole federation's process; elsewhere those rows skip.
+The backend scenarios likewise restart the origins to reach their
+backend through the `webdav-gate` service, which logs what each request
+carried (see GATE_LOG).
 
 Each scenario asks only the native origins (origin_serve/ in Pelican)
 but `multipart-put` and disable-copies's `public` row, which ask an
@@ -59,10 +71,10 @@ from urllib.parse import quote
 
 from suites.cache_api import Findings
 from suites.metadata import index
-from suites.webdav import root_url
+from suites.webdav import copy_or_move, root_url
 from testlib import common, control, director, stores, web, webdav
 from testlib.common import die, first, warn
-from testlib.report import FAIL, SKIP
+from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
 from testlib.stub import HOST as STUB_HOST
 from testlib.stub import Reply, Stub
@@ -77,6 +89,14 @@ SCENARIOS = {
     "listings-capability": "an export without Listings refuses Depth 1 and HTML listings",
     "direct-reads-capability": (
         "an export without DirectReads refuses a direct GET, and serves one through a cache"
+    ),
+    "backend-token": (
+        "an HTTPS backend reached with a static token (Origin.HttpAuthTokenFile): every"
+        " request carries it, and never a client's"
+    ),
+    "backend-passthrough": (
+        "an httpsv2 backend reached with the client's token (Origin.HttpAuthTokenPassthrough):"
+        " the client's requests carry it, and none the static one"
     ),
 }
 
@@ -95,6 +115,8 @@ ROWS: dict[str, tuple[str, ...]] = {
     "disable-copies": ("disable-copies public", "disable-copies disabled"),
     "listings-capability": ("listings-capability",),
     "direct-reads-capability": ("direct-reads-capability",),
+    "backend-token": ("backend-token",),
+    "backend-passthrough": ("backend-passthrough",),
 }
 # The rows that need the origins restarted with other exports.
 RESTARTED = ("disable-copies disabled", "listings-capability", "direct-reads-capability")
@@ -138,6 +160,25 @@ GENERATED_EXPORTS = (
     "generated/instance/{svc}/60-origin-exports.yaml",
     "generated/conf/60-origin-exports.yaml",
 )
+
+# The HTTPS backends' gate (`webdav-gate` in docker-compose.yaml): nginx
+# in front of the `webdav` service, which relays every request and logs
+# the Authorization it came with, `<seconds> <method> <path>
+# "<Authorization>"` per line (`-` for none), in GATE_LOG, under
+# framework/var, checking nothing. The backend scenarios restart the
+# origins to reach their backend through it, as the last of their
+# configuration layers (BACKEND_FILE), with the static token that
+# fed.sh made in TOKEN_FILE (TOKEN_FILE_MOUNTED in the origin), or with
+# the client's own.
+GATE_URL = "https://webdav-gate:8444"
+GATE_LOG = "data/webdav-gate/access.log"
+TOKEN_FILE = "generated/http-auth-token"  # nosec B105
+TOKEN_FILE_MOUNTED = "/fed/generated/http-auth-token"  # nosec B105
+BACKEND_FILE = "92-backend.yaml"
+# The sizes of the objects the backend scenarios move.
+GATED_SIZE = 40000
+# The range they read, within one.
+GATED_RANGE = (100, 199)
 
 # What every refusal of a request must be; of a listing, an origin may
 # also answer that it does not allow the method (405).
@@ -988,6 +1029,305 @@ def direct_reads_capability(test: Test, layout: Layout, data: Mapping[str, bytes
     return found.row(f"/{namespace} without DirectReads")
 
 
+# --------------------------------------------------------------------------
+# backend-token and backend-passthrough
+
+
+def ungated(test: Test, passthrough: bool) -> Optional[str]:
+    """Why the origins cannot reach their backend through the gate, or
+    None: their storage is no HTTPS backend; for passthrough, XRootD's
+    HTTPS plugin, which has none; /protected-a that cannot be written
+    straight at the origins; or no control helper."""
+    fed = test.fed
+    if fed.origin_variant not in ("https", "httpsv2"):
+        return f"the origins' storage ({fed.origin_variant}) is no HTTPS backend"
+    if passthrough and not fed.native_origins:
+        return (
+            "XRootD's HTTPS plugin (libXrdHTTPServer) forwards no client's token:"
+            " Origin.HttpAuthTokenPassthrough is the httpsv2 backend's"
+        )
+    return test.writable() or control.unavailable()
+
+
+def static_token() -> str:
+    """The static token that fed.sh made for the origins (TOKEN_FILE)."""
+    try:
+        with open(TOKEN_FILE, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        raise SetupError(f"framework/var/{TOKEN_FILE} is missing; run ./fed.sh init") from None
+
+
+def backend_files(svc: str, passthrough: bool) -> dict[str, str]:
+    """The configuration of origin svc's restart: its backend through the
+    gate, reached with the client's token, or with the static one."""
+    lines = ["Origin:", f"  HttpServiceUrl: {GATE_URL}/{svc}"]
+    if passthrough:
+        lines.append("  HttpAuthTokenPassthrough: true")
+    else:
+        lines.append(f"  HttpAuthTokenFile: {TOKEN_FILE_MOUNTED}")
+    return {BACKEND_FILE: "\n".join(lines) + "\n"}
+
+
+def gate_log() -> list[str]:
+    """The gate's log, line by line; none if there is none yet."""
+    try:
+        with open(GATE_LOG, encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines()
+    except FileNotFoundError:
+        return []
+
+
+def log_entries(lines: Sequence[str]) -> list[tuple[str, str, str]]:
+    """Each line's method, path, and Authorization (`-` for none)."""
+    found: list[tuple[str, str, str]] = []
+    for line in lines:
+        m = re.match(r'\S+ (\S+) (\S+) "(.*)"$', line)
+        if m:
+            found.append((m.group(1), m.group(2), m.group(3)))
+    return found
+
+
+def describe_auth(auth: str, static: str, client: str) -> str:
+    """What an Authorization in the log was, without repeating a token."""
+    if auth == "-":
+        return "no token"
+    if auth == f"Bearer {static}":
+        return "the static token"
+    if auth == f"Bearer {client}":
+        return "the client's token"
+    return "another token"
+
+
+def gated_exercise(test: Test, origin: common.Origin, mode: str) -> tuple[list[str], list[str]]:
+    """Use origin's backend through the gate, straight at origin, with the
+    `server` token: PUT an object with a length and one in chunks; GET
+    the first whole, and a range of it, and HEAD it; PROPFIND Depth 1 of
+    the run's collection, which must list both; and at a native origin,
+    MKCOL a collection, MOVE the second object, and DELETE what it moved,
+    which the store on disk, which the backend serves, must show. What
+    went wrong, and the paths it asked for, under /protected-a."""
+    problems: list[str] = []
+    collection = f"{test.base}/{origin.svc}"
+    declared, chunked = f"{collection}/{mode}-put", f"{collection}/{mode}-chunked"
+    paths = [declared, chunked]
+    data = {declared: os.urandom(GATED_SIZE), chunked: os.urandom(GATED_SIZE)}
+    for rel, stream in ((declared, False), (chunked, True)):
+        error = stores.put(origin, NAMESPACE, rel, data[rel], test.token, chunked=stream)
+        if error:
+            problems.append(error)
+        problems.append(test.stored(origin, NAMESPACE, rel, data[rel], f"on disk, {rel}") or "")
+    url = stores.url(origin, NAMESPACE, declared)
+    answer = web.request("GET", url, token=test.token)
+    if answer.status != 200 or answer.body != data[declared]:
+        problems.append(f"GET {declared}: {answer.describe()}, {len(answer.body)} bytes")
+    first_byte, last_byte = GATED_RANGE
+    answer = web.request(
+        "GET", url, token=test.token, headers={"Range": f"bytes={first_byte}-{last_byte}"}
+    )
+    if answer.status != 206 or answer.body != data[declared][first_byte : last_byte + 1]:
+        problems.append(f"GET of a range of {declared}: {answer.describe()}")
+    answer = web.request("HEAD", url, token=test.token)
+    if answer.status != 200 or answer.header("Content-Length") != str(GATED_SIZE):
+        problems.append(f"HEAD {declared}: {answer.describe()}")
+    paths.append(collection)
+    listing = stores.url(origin, NAMESPACE, collection) + "/"
+    answer = webdav.propfind(listing, "1", test.token)
+    try:
+        if answer.status != 207:
+            raise ValueError(answer.describe())
+        names = set(webdav.relative(webdav.parse(answer.body), f"/{NAMESPACE}/{collection}"))
+    except ValueError as e:
+        problems.append(f"PROPFIND Depth 1 of {collection}: {e}")
+    else:
+        missing = [
+            os.path.basename(p) for p in (declared, chunked) if os.path.basename(p) not in names
+        ]
+        if missing:
+            problems.append(f"PROPFIND Depth 1 of {collection} lists no {', '.join(missing)}")
+    if test.fed.native_origins:
+        made = f"{collection}/{mode}-coll"
+        answer = web.request("MKCOL", stores.url(origin, NAMESPACE, made), token=test.token)
+        if answer.status != 201:
+            problems.append(f"MKCOL {made}: {answer.describe()}, not 201")
+        moved = f"{collection}/{mode}-moved"
+        answer = copy_or_move(
+            "MOVE",
+            stores.url(origin, NAMESPACE, chunked),
+            test.token,
+            stores.url(origin, NAMESPACE, moved),
+        )
+        if answer.status not in (201, 204):
+            problems.append(f"MOVE {chunked} to {moved}: {answer.describe()}, not 201 or 204")
+        problems.append(
+            test.stored(origin, NAMESPACE, moved, data[chunked], f"on disk, {moved}") or ""
+        )
+        problems.append(
+            test.stored(origin, NAMESPACE, chunked, None, "on disk, the MOVE's source") or ""
+        )
+        answer = web.request("DELETE", stores.url(origin, NAMESPACE, moved), token=test.token)
+        if not answer.ok:
+            problems.append(f"DELETE {moved}: {answer.describe()}")
+        problems.append(
+            test.stored(origin, NAMESPACE, moved, None, f"on disk, {moved} after its DELETE")
+            or ""
+        )
+        paths += [made, moved]
+    return [f"{origin.svc}: {p}" for p in problems if p], paths
+
+
+def gated_clients(test: Test, mode: str) -> tuple[list[str], str]:
+    """Through the federation, with the `server` token: `pelican object
+    get` of the object that gated_exercise() put at every origin, which
+    a cache, or without one an origin, fetches from an origin, and so
+    through the gate; and `pelican object put` of a new object, which
+    lands at an origin through it. What went wrong, and the put's path
+    under /protected-a."""
+    problems: list[str] = []
+    fed = test.fed
+    origin = fed.origins[0]
+    rel = f"{test.base}/{origin.svc}/{mode}-put"
+    target = test.session.path(f"exports-{mode}-get")
+    code, out, err = test.session.pelican_cmd(
+        "object", "get", "--token", test.token_file, f"{fed.url}/{NAMESPACE}/{rel}", target
+    )
+    try:
+        held = stores.held(origin, NAMESPACE, rel, test.token)
+    except stores.Unreadable as e:
+        held = None
+        problems.append(str(e))
+    if code != 0:
+        problems.append(f"`pelican object get` of {rel}: exit {code}: {last_line(err or out)}")
+    elif common.sha256(target) != held:
+        problems.append(f"`pelican object get` of {rel}: the file is not the object")
+    source = test.session.path(f"exports-{mode}-client")
+    data = os.urandom(GATED_SIZE)
+    with open(source, "wb") as f:
+        f.write(data)
+    uploaded = f"{test.base}/{origin.svc}/{mode}-client"
+    code, out, err = test.session.pelican_cmd(
+        "object", "put", "--token", test.token_file, source, f"{fed.url}/{NAMESPACE}/{uploaded}"
+    )
+    if code != 0:
+        problems.append(
+            f"`pelican object put` of {uploaded}: exit {code}: {last_line(err or out)}"
+        )
+    elif common.digest(data) not in stores.held_anywhere(
+        fed.origins, NAMESPACE, uploaded, {NAMESPACE: test.token}
+    ):
+        problems.append(f"`pelican object put` of {uploaded}: no origin's store holds it")
+    return problems, uploaded
+
+
+def log_problems(
+    test: Test,
+    entries: Sequence[tuple[str, str, str]],
+    static: str,
+    passthrough: bool,
+    direct: Sequence[str],
+) -> tuple[list[str], str]:
+    """What is wrong with what the gate logged since the origins were
+    restarted (entries), and a note on it. With the static token, every
+    request must carry it, and none a client's. With passthrough, each
+    request for a path the test asked an origin for straight (direct)
+    must carry the client's token, and none may carry the static one;
+    the rest (the origin's own probes, and what it fetched for a cache)
+    are counted. Either way, the gate must have seen a GET, a PUT, and
+    a DELETE."""
+    client = test.token
+    if not entries:
+        return [
+            "the gate logged no request: the origins did not reach their backend through it"
+        ], ""
+    problems: list[str] = []
+    if passthrough:
+        asked = {f"/{NAMESPACE}/{p}" for p in direct}
+        own = [e for e in entries if any(e[1].rstrip("/").endswith(p) for p in asked)]
+        for method, path, auth in own:
+            if auth != f"Bearer {client}":
+                problems.append(
+                    f"{method} {path} carried {describe_auth(auth, static, client)}, not"
+                    + " the client's token"
+                )
+        for method, path, auth in entries:
+            if auth == f"Bearer {static}":
+                problems.append(f"{method} {path} carried the static token")
+        without = sum(1 for _, _, auth in entries if auth == "-")
+        note = (
+            f"{len(entries)} requests logged: {len(own)} of the client's own, each with its"
+            f" token; {without} with none"
+        )
+    else:
+        for method, path, auth in entries:
+            if auth != f"Bearer {static}":
+                problems.append(
+                    f"{method} {path} carried {describe_auth(auth, static, client)}, not the"
+                    + " static token"
+                )
+        note = f"{len(entries)} requests logged, every one with the static token"
+    seen = sorted({method for method, _, _ in entries})
+    for method in ("GET", "PUT", "DELETE"):
+        if method not in seen:
+            problems.append(f"the gate saw no {method}, only {', '.join(seen)}")
+    return problems, note
+
+
+def gated_checks(test: Test, passthrough: bool, static: str, before: int) -> Row:
+    """With the origins restarted to reach their backend through the
+    gate: once the federation serves as before, use the backend straight
+    at each origin (gated_exercise()) and through the federation
+    (gated_clients()), then judge what the gate logged (log_problems())."""
+    why = settle(test)
+    if why:
+        return FAIL, f"with the origins restarted, {why}"
+    mode = "passthrough" if passthrough else "token"
+    problems: list[str] = []
+    direct: list[str] = []
+    for origin in test.fed.origins:
+        found, paths = gated_exercise(test, origin, mode)
+        problems += found
+        direct += paths
+    found, uploaded = gated_clients(test, mode)
+    problems += found
+    direct.append(uploaded)
+    entries = log_entries(gate_log()[before:])
+    found, note = log_problems(test, entries, static, passthrough, direct)
+    problems += found
+    for problem in problems:
+        print(f"    {problem}")
+    if problems:
+        return FAIL, first(problems)
+    return PASS, f"{len(test.fed.origins)} origin(s); {note}"
+
+
+def gated(test: Test, passthrough: bool) -> Row:
+    """backend-token, or with passthrough backend-passthrough: restart
+    every origin to reach its backend through the gate (see ungated()),
+    check (gated_checks()), and restore them."""
+    why = ungated(test, passthrough)
+    if why:
+        return SKIP, why
+    static = static_token()
+    files = {o.svc: backend_files(o.svc, passthrough) for o in test.fed.origins}
+    how = (
+        "the client's token (Origin.HttpAuthTokenPassthrough)"
+        if passthrough
+        else "a static token (Origin.HttpAuthTokenFile)"
+    )
+    print(f"\nRestarting the origins to reach their backend through {GATE_URL}, with {how}")
+    before = len(gate_log())
+    try:
+        with restarted(test, files):
+            row = attempt(partial(gated_checks, test, passthrough, static, before))
+    except control.ControlError as e:
+        row = (FAIL, f"restarting the origins: {e}")
+        warn(f"restarting the origins to reach their backend through the gate: {e}")
+    why = settle(test)
+    if why:
+        warn(f"with the origins restored, {why}")
+    return row
+
+
 RESTART_CHECKS: dict[str, Callable[[Test, Layout, Mapping[str, bytes]], Row]] = {
     "disable-copies disabled": copies_disabled,
     "listings-capability": listings_capability,
@@ -1128,5 +1468,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             later = [r for name in selected for r in ROWS[name] if r in RESTARTED]
             if later:
                 run_restarted(test, later, record)
+            for name in ("backend-token", "backend-passthrough"):
+                if name in selected:
+                    print(f"  {name} ...")
+                    record(name, gated(test, name == "backend-passthrough"))
     finally:
         clean("after the run")

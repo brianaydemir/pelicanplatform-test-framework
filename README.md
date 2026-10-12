@@ -107,7 +107,7 @@ the client, in `framework/var/bin/`:
 | config for one service                               | `local/config.d/instance/<service>/*.yaml` | `./fed.sh restart <service>`    |
 | a [knob](docs/configuration.md#knobs)                | your environment, or a local preset        | `./fed.sh init`, `up`           |
 | a [shape of your own](docs/configuration.md#presets) | `local/presets/<name>.sh`                  | `./fed.sh -p <name> init`, `up` |
-| an OIDC client (`-p auth-oidc`)                      | `local/etc/oidc-client-{id,secret}`        | `./fed.sh restart`              |
+| another identity provider's client                   | `local/etc/oidc-client-{id,secret}`        | `./fed.sh restart`              |
 | S3 credentials (`-p origin-s3v2`)                    | `local/etc/s3-{access,secret}-key`         | `./fed.sh restart`              |
 
 Pelican reads its configuration only at startup. `restart` recreates the
@@ -205,7 +205,8 @@ objects:
   take a token. Each has an issuer and a test key of its own.
 
 **Topology** (`topo-basic`, `topo-tiny`, or `topo-standalone`; the
-`topo-multi-*` and `topo-site-local-cache` presets add to `topo-basic`)
+`topo-multi-*`, `topo-site-local-cache`, and `topo-transfer-server`
+presets add to `topo-basic`, and `topo-no-cache` takes from it)
 
 | Preset                  | Effect                                                                                                                                            |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -216,6 +217,8 @@ objects:
 | `topo-multi-owner`      | adds origin-2, another owner: `/other`, and `/public/other` and `/public/secret` inside origin-0's `/public`, with a key and an issuer of its own; see `owners` |
 | `topo-multi-director`   | adds director-1, which shares director-0's key                                                                                                    |
 | `topo-site-local-cache` | adds cache-2, a site-local cache that the director does not know of; see `sitelocal`                                                              |
+| `topo-transfer-server`  | adds `transfer`, a transfer server of its own (`pelican-server serve --module transfer`), tested in place of origin-0's transfer API, which it refuses beside it; Pelican's main only, so build `IMAGE_ORIGIN` from it; see `transfer-api` |
+| `topo-no-cache`         | removes cache-0: a federation that serves straight from its origins, whose directors send every read to an origin; refuses every `cache-*` preset but `cache-v2`, every preset that adds a cache, and `origin-no-direct`; see `federation`'s `directors` and `redirects` |
 | `topo-standalone`       | origin-0 alone, as a standalone origin: no discovery host, director, registry, or cache; native origins only                                      |
 
 **Origin storage** (one of)
@@ -233,10 +236,11 @@ objects:
 
 **Caches** (one of)
 
-| Preset         | Effect                 |
-| -------------- | ---------------------- |
-| `cache-v2`     | the default: V2 caches |
-| `cache-xrootd` | XRootD caches          |
+| Preset         | Effect                                                                                                                                 |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `cache-v2`     | the default: V2 caches                                                                                                                 |
+| `cache-xrootd` | XRootD caches                                                                                                                          |
+| `cache-mixed`  | cache-1 is an XRootD cache beside the V2 ones (`CACHE_1_VARIANT`); needs `topo-multi-cache`; refuses `cache-xrootd`, `cache-tiered`, `cache-memory`, and `cache-small`; see `client`'s `failover` |
 
 **Cache features**
 
@@ -266,7 +270,7 @@ objects:
 
 | Preset                 | Effect                                                                            |
 | ---------------------- | --------------------------------------------------------------------------------- |
-| `auth-oidc`            | web UI login through an external identity provider                                |
+| `auth-oidc`            | web UI login, and the registry's `--with-identity`, through an identity provider of the framework's own, the `idp` service (`framework/idp/idp.py`), whose users are `framework/etc/idp-users.json`; see `oidc` |
 | `auth-external-issuer` | the exports trust `https://discovery:8444/issuer` instead of the origins' issuers |
 
 **Director and registry**
@@ -374,6 +378,8 @@ them.
 | `data/auth-test/`    | the responses the `auth` suite got                                                                              |
 | `data/owners-test/`  | the responses the `owners` suite got                                                                            |
 | `data/metadata/`     | every request the metadata recorder received                                                                    |
+| `data/webdav-gate/`  | the `Authorization` of every request an `https` or `httpsv2` origin sent its backend through the gate (`exports`) |
+| `data/idp/`          | every request the identity provider served (`-p auth-oidc`), one JSON object per line, without its secrets         |
 | `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                   |
 | `control/`           | the tests' requests to [control services](#service-control), and their configuration of a service (`config/<svc>/`) |
 | `issuer-keys/<svc>/` | each service's issuer keys (`/fed/issuer-keys`), and `issuer/`, the external issuer's                           |
@@ -389,7 +395,10 @@ them.
 
 The web UIs log in as `admin` / `asdf`. `framework/var/certs/ca.crt` signs
 the certificates. Under `-p auth-oidc`, each server's OIDC redirect URI is
-`https://localhost:<port>/api/v1.0/auth/oauth/callback`.
+`https://localhost:<port>/api/v1.0/auth/oauth/callback`, and its login
+page offers the identity provider, which the servers name as
+`https://idp:9007`: to log in from a browser, map `idp` to `127.0.0.1`
+in your hosts file, as any user of `framework/etc/idp-users.json`.
 
 | URL                      | Service                                                                               |
 | ------------------------ | ------------------------------------------------------------------------------------- |
@@ -398,6 +407,8 @@ the certificates. Under `-p auth-oidc`, each server's OIDC redirect URI is
 | <https://localhost:9000> | director-0 (`topo-tiny`: everything; director-1: 9004)                                |
 | <https://localhost:9001> | registry                                                                              |
 | <https://localhost:9005> | discovery (`/.well-known/pelican-configuration`), and the external issuer (`/issuer`) |
+| <https://localhost:9006> | transfer (`topo-transfer-server`)                                                     |
+| <https://localhost:9007> | idp, the identity provider (`auth-oidc`); `https://idp:9007` to the servers           |
 | <http://localhost:9002>  | dev container (serve on `0.0.0.0:8444` inside)                                        |
 | <http://localhost:9003>  | Grafana (`admin` / `admin`; see `framework/presets/with-grafana.sh`)                  |
 

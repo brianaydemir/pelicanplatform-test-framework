@@ -61,8 +61,8 @@ SERVE_WAIT = 180
 
 # The Pelican servers, each of which is the host of its name, with its
 # web port at 8444 (config.d/base/20-server.yaml); `fed` is the tiny
-# topology's.
-PELICAN_SERVER = re.compile(r"(?:director|origin|cache)-\d+|registry|fed")
+# topology's, and `transfer` a transfer server of its own.
+PELICAN_SERVER = re.compile(r"(?:director|origin|cache)-\d+|registry|transfer|fed")
 
 # What a file of restart_with() may be named.
 CONFIG_FILE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*\.yaml")

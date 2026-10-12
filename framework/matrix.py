@@ -36,14 +36,16 @@ TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Each factor's levels, its default first.
 FACTORS: dict[str, tuple[str, ...]] = {
     "topology": ("full", "tiny", "standalone"),
+    "caches": ("one", "none"),
     "origin": ("posixv2", "xrootd", "pstore", "ssh", "httpsv2", "s3v2", "s3", "https"),
-    "cache": ("v2", "xrootd"),
+    "cache": ("v2", "xrootd", "mixed"),
     "multi_origin": ("off", "on"),
     "multi_cache": ("off", "on"),
     "multi_owner": ("off", "on"),
     "multi_director": ("off", "on"),
     "site_local": ("off", "on"),
     "issuer": ("own", "external"),
+    "login": ("local", "oidc"),
     "direct": ("yes", "no"),
     "posc": ("off", "on"),
     "atomic": ("off", "on"),
@@ -51,7 +53,7 @@ FACTORS: dict[str, tuple[str, ...]] = {
     "max_age": ("off", "on"),
     "multiuser": ("off", "on"),
     "broker": ("off", "on"),
-    "transfer_api": ("off", "on"),
+    "transfer_api": ("off", "on", "server"),
     "tiering": ("off", "on"),
     "memory_cache": ("off", "on"),
     "store": ("unbounded", "bounded"),
@@ -69,6 +71,7 @@ PRESETS: dict[str, tuple[str, str]] = {
     "topo-basic": ("topology", "full"),
     "topo-tiny": ("topology", "tiny"),
     "topo-standalone": ("topology", "standalone"),
+    "topo-no-cache": ("caches", "none"),
     "origin-posixv2": ("origin", "posixv2"),
     "origin-xrootd": ("origin", "xrootd"),
     "origin-pstore": ("origin", "pstore"),
@@ -79,12 +82,14 @@ PRESETS: dict[str, tuple[str, str]] = {
     "origin-https": ("origin", "https"),
     "cache-v2": ("cache", "v2"),
     "cache-xrootd": ("cache", "xrootd"),
+    "cache-mixed": ("cache", "mixed"),
     "topo-multi-origin": ("multi_origin", "on"),
     "topo-multi-cache": ("multi_cache", "on"),
     "topo-multi-owner": ("multi_owner", "on"),
     "topo-multi-director": ("multi_director", "on"),
     "topo-site-local-cache": ("site_local", "on"),
     "auth-external-issuer": ("issuer", "external"),
+    "auth-oidc": ("login", "oidc"),
     "origin-no-direct": ("direct", "no"),
     "origin-posc": ("posc", "on"),
     "origin-atomic-uploads": ("atomic", "on"),
@@ -94,6 +99,7 @@ PRESETS: dict[str, tuple[str, str]] = {
     "origin-multiuser": ("multiuser", "on"),
     "origin-broker": ("broker", "on"),
     "origin-transfer-api": ("transfer_api", "on"),
+    "topo-transfer-server": ("transfer_api", "server"),
     "cache-tiered": ("tiering", "on"),
     "cache-memory": ("memory_cache", "on"),
     "cache-small": ("store", "bounded"),
@@ -111,8 +117,10 @@ EXTRAS: frozenset[str] = frozenset({"with-lab"})
 
 # Presets smoke.sh does not run, and why.
 NOT_RUN: dict[str, str] = {
-    "auth-oidc": "logging in needs a client registered with a real identity provider",
     "with-grafana": "Grafana has nothing provisioned to check",
+    "topo-transfer-server": (
+        "the transfer module is on Pelican's main only, which no released pelican-server has"
+    ),
 }
 
 # The origins that run XRootD, and those with a backend service.
@@ -120,6 +128,8 @@ XROOTD_ORIGINS = ("xrootd", "s3", "https")
 BACKED_ORIGINS = ("ssh", "httpsv2", "s3v2", "s3", "https")
 # The factors that add a server to the full topology.
 ADDED_SERVERS = ("multi_origin", "multi_cache", "multi_owner", "multi_director", "site_local")
+# The levels of other factors that add one.
+ADDED_LEVELS = (("transfer_api", "server"),)
 
 # How many factors besides a pair's completion() may change.
 SEARCH_DEPTH = 3
@@ -144,7 +154,9 @@ class Shape:
 
     def adds_server(self) -> bool:
         """Whether it adds a server to the full topology."""
-        return "on" in (self.levels[f] for f in ADDED_SERVERS)
+        return "on" in (self.levels[f] for f in ADDED_SERVERS) or any(
+            self.levels[f] == level for f, level in ADDED_LEVELS
+        )
 
 
 Rule = tuple[str, Callable[[Shape], bool]]
@@ -208,6 +220,27 @@ REFUSED: list[Rule] = [
         lambda s: s["topology"] == "standalone" and s["discovery"] == "director",
     ),
     (
+        "running no cache is the full topology's choice",
+        lambda s: s["caches"] == "none" and s["topology"] != "full",
+    ),
+    (
+        "running no cache leaves no room for another",
+        lambda s: s["caches"] == "none" and "on" in (s["multi_cache"], s["site_local"]),
+    ),
+    (
+        "running no cache makes the kind of cache moot",
+        lambda s: s["caches"] == "none" and s["cache"] != "v2",
+    ),
+    (
+        "running no cache leaves none to tier, to give a memory cache, or to bound",
+        lambda s: s["caches"] == "none"
+        and (s["tiering"] == "on" or s["memory_cache"] == "on" or s["store"] == "bounded"),
+    ),
+    (
+        "origins that serve only caches serve no one without a cache",
+        lambda s: s["caches"] == "none" and s["direct"] == "no",
+    ),
+    (
         "POSC and metadata publishing are posixv2's",
         lambda s: (s["posc"] == "on" or s["metadata"] != "off") and s["origin"] != "posixv2",
     ),
@@ -242,6 +275,10 @@ REFUSED: list[Rule] = [
         and (s["topology"] != "full" or "on" in (s["multi_origin"], s["multi_owner"])),
     ),
     (
+        "mixed kinds of cache put XRootD at cache-1, which needs topo-multi-cache",
+        lambda s: s["cache"] == "mixed" and s["multi_cache"] == "off",
+    ),
+    (
         "cache tiering is the V2 cache's, in the full topology",
         lambda s: s["tiering"] == "on" and (s["cache"] != "v2" or s["topology"] != "full"),
     ),
@@ -265,8 +302,27 @@ REFUSED: list[Rule] = [
 # The shapes fed.sh accepts that smoke.sh does not run.
 SMOKE_LIMITS: list[Rule] = [
     (
+        "a transfer server runs only from an image built from Pelican's main",
+        lambda s: s["transfer_api"] == "server",
+    ),
+    (
         "once the servers drop privileges, the host may not write their keys",
         lambda s: s["keys"] == "rotated" and s["privileges"] == "dropped",
+    ),
+    (
+        "mixed kinds of cache run over posixv2 and xrootd origins only: what they test is"
+        + " between the caches",
+        lambda s: s["cache"] == "mixed" and s["origin"] not in ("posixv2", "xrootd"),
+    ),
+    (
+        "a federation without caches runs over posixv2 and xrootd origins only: what it"
+        + " tests is the directors' and the clients' way around the missing cache",
+        lambda s: s["caches"] == "none" and s["origin"] not in ("posixv2", "xrootd"),
+    ),
+    (
+        "the identity provider runs over posixv2 and xrootd origins only: a login is the"
+        + " servers' web UI's, not their storage's",
+        lambda s: s["login"] == "oidc" and s["origin"] not in ("posixv2", "xrootd"),
     ),
 ]
 

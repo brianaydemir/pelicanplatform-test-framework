@@ -346,6 +346,19 @@ XROOTD_ORIGINS = ("posix", "https", "s3")
 
 
 @dataclass(frozen=True)
+class TransferApi:
+    """Where the transfer API is served: origin-0's
+    (`-p origin-transfer-api`), or a transfer server's own
+    (`-p topo-transfer-server`)."""
+
+    url: str  # its web URL
+    issuer: str  # the issuer of its tokens
+    key_dir: str  # the directory (under framework/var) of the key that signs them
+    svc: str  # the compose service that serves it
+    confined: bool  # whether it confines jobs to the origin's exports
+
+
+@dataclass(frozen=True)
 class TierTarget:
     """Where a V2 cache tiers objects (`-p cache-tiered`)."""
 
@@ -559,16 +572,14 @@ class Federation:
         return self._line("origin-broker") == "true"
 
     @cached_property
-    def transfer_api(self) -> Optional[tuple[str, str, str]]:
-        """Where origin-0 serves its transfer API, if it does
-        (`-p origin-transfer-api`): its URL, the issuer of its tokens, and
-        the directory (under framework/var) of the key that signs them.
-        `<URL> <issuer> <key dir>`, or `off`."""
+    def transfer_api(self) -> Optional[TransferApi]:
+        """Where the transfer API is served, if it is (see TransferApi):
+        `<URL> <issuer> <key dir> <service> <exports|none>`, or `off`."""
         fields = self._line("transfer-api").split()
         if fields == ["off"]:
             return None
-        url, issuer, key_dir = fields
-        return url, issuer, key_dir
+        url, issuer, key_dir, svc, confined = fields
+        return TransferApi(url, issuer, key_dir, svc, confined == "exports")
 
     @cached_property
     def tiering(self) -> dict[str, TierTarget]:
@@ -593,6 +604,14 @@ class Federation:
                 svc, high, low = line.split()
                 found[svc] = (int(high), int(low))
         return found
+
+    @cached_property
+    def oidc_issuer(self) -> Optional[str]:
+        """The identity provider that the servers send their users to log
+        in through (`-p auth-oidc`), its OIDC issuer URL; None if the
+        shape runs none (see presets/auth-oidc.sh)."""
+        found = self._line("oidc")
+        return None if found == "off" else found
 
     @cached_property
     def pelican_version(self) -> Optional[str]:

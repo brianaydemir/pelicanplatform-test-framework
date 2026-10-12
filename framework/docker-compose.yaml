@@ -103,6 +103,7 @@ x-needs-federation: &needs-federation
   discovery: { condition: service_healthy, required: false }
   director-0: { condition: service_healthy, required: false }
   registry: { condition: service_healthy, required: false }
+  idp: { condition: service_healthy, required: false }
 
 # A cache starts once origin-0 is up, so that it soon learns the
 # namespaces' issuers. The federation suite
@@ -142,6 +143,48 @@ x-needs-backends: &needs-backends
 #===========================================================================
 
 services:
+
+  # An identity provider of the framework's own (`-p auth-oidc`), which
+  # the servers send their users to log in through, and the registry
+  # asks for a user's identity (idp/idp.py). Its users are
+  # etc/idp-users.json; its client is the one the servers read from
+  # ./var/generated/oidc-client-{id,secret}. It logs every request in
+  # ./var/data/idp/requests.log. Its port is the same inside and out, so
+  # that https://idp:9007 serves a browser too, given a hosts entry.
+  idp:
+    hostname: idp
+    image: python:3-alpine
+    profiles: ["idp"]
+    command: ["python3", "-u", "/fed/bin/idp.py"]
+    environment:
+      IDP_ISSUER: https://idp:9007
+      IDP_PORT: "9007"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import ssl, urllib.request; c = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); c.check_hostname = False; c.verify_mode = ssl.CERT_NONE; urllib.request.urlopen('https://127.0.0.1:9007/healthz', context=c, timeout=5)"
+      start_period: 30s
+      start_interval: 1s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 64M }
+    ports:
+      - "9007:9007"
+    volumes:
+      - ./idp/idp.py:/fed/bin/idp.py:ro
+      - ./etc/idp-users.json:/fed/idp/users.json:ro
+      - ./var/generated:/fed/generated:ro
+      - ./var/data/idp:/var/log/idp
+    secrets:
+      - source: tls-crt
+        target: /certs/tls.crt
+      - source: tls-key
+        target: /certs/tls.key
 
   # Hosts the federation metadata outside any director, as the OSDF does,
   # where the directors are interchangeable. Under `-p director-discovery`,
@@ -186,6 +229,7 @@ services:
     healthcheck: *pelican-health
     depends_on:
       discovery: { condition: service_healthy, required: false }
+      idp: { condition: service_healthy, required: false }
     deploy:
       resources:
         limits: { memory: "${DIRECTOR_MEM:?run through ./fed.sh}" }
@@ -221,6 +265,7 @@ services:
     depends_on:
       discovery: { condition: service_healthy, required: false }
       director-0: { condition: service_healthy }
+      idp: { condition: service_healthy, required: false }
     deploy:
       resources:
         limits: { memory: "${DIRECTOR_MEM:?run through ./fed.sh}" }
@@ -254,6 +299,7 @@ services:
     depends_on:
       discovery: { condition: service_healthy, required: false }
       director-0: { condition: service_healthy }
+      idp: { condition: service_healthy, required: false }
     deploy:
       resources:
         limits: { memory: "${REGISTRY_MEM:?run through ./fed.sh}" }
@@ -381,10 +427,12 @@ services:
       - ./var/state/origin-2:/var/lib/pelican
     <<: *common-secrets
 
+  # fed.sh enables `cache` with `federation`, unless the shape runs no
+  # cache (`-p topo-no-cache`).
   cache-0:
     hostname: cache-0
     image: "${IMAGE_CACHE:?run through ./fed.sh}"
-    profiles: ["federation"]
+    profiles: ["cache"]
     healthcheck: *pelican-health
     depends_on:
       <<: [*needs-federation, *needs-origin]
@@ -433,7 +481,7 @@ services:
       - *vol-conf-root
       - *vol-conf-base
       - *vol-local-base
-      - "./config.d/cache/${CACHE_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
+      - "./config.d/cache/${CACHE_1_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
       - ./config.d/instance/cache-1:/fed/conf.instance:ro
       - ./var/generated/local/cache-1:/fed/local.instance:ro
       - ./var/control/config/cache-1:/fed/control.instance:ro
@@ -477,6 +525,43 @@ services:
       - ./var/issuer-keys/cache-2:/fed/issuer-keys
       - ./var/data/cache/2:/data
       - ./var/state/cache-2:/var/lib/pelican
+    <<: *common-secrets
+
+  # A transfer server of its own (`-p topo-transfer-server`): the transfer
+  # module alone, in a process of its own, from the origin image, whose
+  # pelican-server has every module, as the `tiny` topology runs it
+  # (docker-compose.tiny.yaml). It needs no storage. Pelican's main has
+  # the module, but no release yet: a released pelican-server refuses
+  # it, and the service never comes up.
+  transfer:
+    hostname: transfer
+    image: "${IMAGE_ORIGIN:?run through ./fed.sh}"
+    profiles: ["transfer"]
+    entrypoint: ["/entrypoint.sh", "pelican-server"]
+    command: ["serve", "--module", "transfer"]
+    healthcheck: *pelican-health
+    depends_on:
+      <<: *needs-federation
+    deploy:
+      resources:
+        limits: { memory: "${TRANSFER_MEM:?run through ./fed.sh}" }
+    environment:
+      <<: [*pelican-env, *server-env]
+    ports:
+      - "9006:8444"
+    volumes:
+      - *vol-health
+      - *vol-generated
+      - *vol-conf-root
+      - *vol-conf-base
+      - *vol-local-base
+      - ./config.d/none:/fed/conf.role:ro
+      - ./config.d/instance/transfer:/fed/conf.instance:ro
+      - ./var/generated/local/transfer:/fed/local.instance:ro
+      - ./var/control/config/transfer:/fed/control.instance:ro
+      - ./var/generated/instance/transfer:/fed/generated.instance:ro
+      - ./var/issuer-keys/transfer:/fed/issuer-keys
+      - ./var/state/transfer:/var/lib/pelican
     <<: *common-secrets
 
   # Build environment and test client. The image ships no Pelican binary;
@@ -544,7 +629,8 @@ services:
   # ./var/data/origin/<N>, as /origin-<N>, over WebDAV
   # (golang.org/x/net/webdav, as in Pelican's own tests). The tests read
   # and write the stores directly too, so it caches no directory
-  # listings. It asks for no credentials.
+  # listings. It asks for no credentials; `webdav-gate` records what the
+  # origins would send one.
   webdav:
     hostname: webdav
     image: rclone/rclone:1.75.1
@@ -572,6 +658,39 @@ services:
       - ./var/data/origin/1:/srv/origin-1
       - ./var/data/origin/2:/srv/origin-2
     secrets: &rclone-secrets
+      - source: tls-crt
+        target: /certs/tls.crt
+      - source: tls-key
+        target: /certs/tls.key
+
+  # A gate in front of the `webdav` service, which logs the Authorization
+  # of every request it relays (etc/nginx-webdav-gate.conf), in
+  # ./var/data/webdav-gate/access.log. The origins reach their backend
+  # through it only while the exports suite's backend-token and
+  # backend-passthrough scenarios have restarted them to, so that the
+  # tests can see what an origin sends its backend.
+  webdav-gate:
+    hostname: webdav-gate
+    image: nginx:alpine
+    profiles: ["webdav"]
+    depends_on:
+      webdav: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1/healthz"]
+      start_period: 10s
+      start_interval: 1s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 32M }
+    volumes:
+      - ./etc/nginx-webdav-gate.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./var/data/webdav-gate:/var/log/gate
+    secrets:
+      - source: ca-crt
+        target: /certs/ca.crt
       - source: tls-crt
         target: /certs/tls.crt
       - source: tls-key

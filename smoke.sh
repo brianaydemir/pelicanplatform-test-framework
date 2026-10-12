@@ -13,9 +13,11 @@
 #   ./smoke.sh --table      list them for framework/matrix.py
 #
 # Together, the shapes make every pair of choices that the presets offer,
-# but rotated keys with servers that drop privileges, whose keys the host
-# may not write (see framework/matrix.py, which checks that they do). Some
-# shapes also rotate every key, restart, and run every suite again.
+# but those that framework/matrix.py's SMOKE_LIMITS name, such as rotated
+# keys with servers that drop privileges, whose keys the host may not
+# write (`framework/matrix.py check` checks that they do; see
+# docs/configuration.md). Some shapes also rotate every key, restart, and
+# run every suite again.
 #
 # DESTRUCTIVE: runs ./reset.sh before each shape, keeping only
 # framework/var/bin/, and leaves the last shape's state and presets
@@ -48,6 +50,10 @@ all_shapes="${all_shapes} xrootd-xrootd posixv2-xrootd-no-direct s3-xrootd-broke
 all_shapes="${all_shapes} https-v2-broker https-xrootd xrootd-v2-broker pstore-v2"
 all_shapes="${all_shapes} posixv2-v2-metadata xrootd-v2 standalone-posixv2 standalone-pstore"
 all_shapes="${all_shapes} standalone-ssh standalone-httpsv2 standalone-s3v2"
+all_shapes="${all_shapes} posixv2-mixed posixv2-mixed-tx xrootd-mixed xrootd-mixed-broker"
+all_shapes="${all_shapes} nocache-posixv2 nocache-posixv2-posc nocache-xrootd nocache-xrootd-broker"
+all_shapes="${all_shapes} oidc-xrootd oidc-posixv2-xrootd oidc-posixv2-mixed oidc-nocache-broker"
+all_shapes="${all_shapes} oidc-tiny oidc-standalone"
 
 # Each shape's presets, one per word.
 shape_presets() {
@@ -160,6 +166,48 @@ shape_presets() {
       echo "topo-standalone origin-httpsv2 origin-transfer-api server-unprivileged" ;;
     standalone-s3v2)
       echo "topo-standalone origin-s3v2 origin-max-age origin-export-templates" ;;
+    posixv2-mixed)
+      echo "cache-mixed topo-multi-cache origin-posc origin-metadata" \
+           "server-unprivileged origin-short-tokens origin-export-templates" ;;
+    posixv2-mixed-tx)
+      echo "cache-mixed topo-multi-cache origin-metadata-tx" ;;
+    xrootd-mixed)
+      echo "origin-xrootd cache-mixed topo-multi-origin topo-multi-cache" \
+           "topo-multi-owner topo-multi-director topo-site-local-cache" \
+           "auth-external-issuer origin-no-direct origin-atomic-uploads" \
+           "origin-max-age origin-multiuser origin-transfer-api" \
+           "director-default-origin director-discovery registry-approval" ;;
+    xrootd-mixed-broker)
+      echo "origin-xrootd cache-mixed topo-multi-cache origin-broker" ;;
+    nocache-posixv2)
+      echo "topo-no-cache origin-metadata-tx" ;;
+    nocache-posixv2-posc)
+      echo "topo-no-cache auth-external-issuer origin-posc origin-metadata" \
+           "server-unprivileged" ;;
+    nocache-xrootd)
+      echo "topo-no-cache origin-xrootd topo-multi-origin topo-multi-owner" \
+           "topo-multi-director origin-atomic-uploads origin-max-age origin-multiuser" \
+           "origin-transfer-api director-default-origin director-discovery" \
+           "registry-approval origin-short-tokens origin-export-templates" ;;
+    nocache-xrootd-broker)
+      echo "topo-no-cache origin-xrootd origin-broker" ;;
+    oidc-xrootd)
+      echo "auth-oidc origin-xrootd topo-multi-origin topo-multi-owner topo-multi-director" \
+           "topo-site-local-cache auth-external-issuer origin-no-direct" \
+           "origin-atomic-uploads origin-max-age origin-multiuser origin-transfer-api" \
+           "cache-tiered cache-memory cache-small director-default-origin" \
+           "director-discovery registry-approval" ;;
+    oidc-posixv2-xrootd)
+      echo "auth-oidc cache-xrootd origin-posc origin-metadata server-unprivileged" \
+           "origin-short-tokens origin-export-templates" ;;
+    oidc-posixv2-mixed)
+      echo "auth-oidc cache-mixed topo-multi-cache origin-metadata-tx" ;;
+    oidc-nocache-broker)
+      echo "auth-oidc topo-no-cache origin-xrootd origin-broker" ;;
+    oidc-tiny)
+      echo "auth-oidc topo-tiny" ;;
+    oidc-standalone)
+      echo "auth-oidc topo-standalone" ;;
     *)
       return 1 ;;
   esac
@@ -172,6 +220,7 @@ shape_rotates() {
     default|ssh-xrootd|pstore-xrootd|s3v2-v2|tiny-posixv2-tx) return 0 ;;
     posixv2-xrootd-multiuser|httpsv2-xrootd|xrootd-xrootd)    return 0 ;;
     s3-v2|https-v2-broker|standalone-posixv2|standalone-ssh)  return 0 ;;
+    posixv2-mixed-tx|xrootd-mixed|nocache-xrootd|oidc-xrootd) return 0 ;;
   esac
   return 1
 }
@@ -313,7 +362,7 @@ check_ports() {
   checked=""
   for svc in ${services}; do
     case "${svc}" in
-      fed|director-*|registry|origin-*|cache-*) path=/api/v1.0/health ;;
+      fed|director-*|registry|origin-*|cache-*|transfer) path=/api/v1.0/health ;;
       discovery) path=/.well-known/pelican-configuration ;;
       *) continue ;;
     esac

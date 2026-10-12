@@ -241,11 +241,21 @@ def statuses_before_body(
     return tuple(found)
 
 
-def read_part(url: str, token: Optional[str], size: int, timeout: float = 60) -> Response:
-    """GET url, and hang up once size bytes of the body have come, as a
-    client that gives up does: the response, with those bytes."""
+def read_part(
+    url: str,
+    token: Optional[str],
+    size: int,
+    timeout: float = 60,
+    headers: Optional[Mapping[str, str]] = None,
+) -> Response:
+    """GET url, with headers, and hang up once size bytes of the body
+    have come, as a client that gives up does: the response, with those
+    bytes. Also how to ask for a range of an object too large to read
+    whole, from a server that might ignore Range and send it all."""
     conn, target = _connect(url, timeout)
-    sent = {} if token is None else {"Authorization": f"Bearer {token}"}
+    sent = dict(headers or {})
+    if token is not None:
+        sent["Authorization"] = f"Bearer {token}"
     try:
         conn.request("GET", target, headers=sent)
         answer = conn.getresponse()

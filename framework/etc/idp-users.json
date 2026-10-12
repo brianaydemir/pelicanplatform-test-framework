@@ -1,0 +1,33 @@
+{
+  "idp-member": {
+    "password": "member-pass",
+    "name": "IdP Member",
+    "email": "idp-member@idp.test",
+    "groups": ["test-project-a"]
+  },
+  "idp-admin": {
+    "password": "admin-pass",
+    "name": "IdP Admin",
+    "email": "idp-admin@idp.test",
+    "groups": ["test-server-admins", "test-project-b"]
+  },
+  "idp-owner": {
+    "password": "owner-pass",
+    "name": "IdP Owner",
+    "email": "idp-owner@idp.test",
+    "groups": []
+  },
+  "idp-outsider": {
+    "password": "outsider-pass",
+    "name": "IdP Outsider",
+    "email": "idp-outsider@idp.test",
+    "groups": []
+  },
+  "idp-collider": {
+    "password": "collider-pass",
+    "preferred_username": "admin",
+    "name": "IdP Collider",
+    "email": "idp-collider@idp.test",
+    "groups": []
+  }
+}

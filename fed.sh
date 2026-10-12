@@ -59,7 +59,8 @@ usage() {
 # own. The `directors` both sign as the federation, whose one JWKS is
 # director-0's.
 
-fed_services="director-0 director-1 registry origin-0 origin-1 origin-2 cache-0 cache-1 cache-2 fed"
+fed_services="director-0 director-1 registry origin-0 origin-1 origin-2 cache-0 cache-1 cache-2"
+fed_services="${fed_services} transfer fed"
 fed_groups="origins directors"
 fed_group_origins="origin-0 origin-1"
 fed_group_directors="director-0 director-1"
@@ -79,20 +80,23 @@ fed_certs="framework/var/certs/ca.crt framework/var/certs/tls.crt framework/var/
 #   multi-owner       origin-2, another owner
 #   multi-director    director-1
 #   site-local-cache  cache-2, a site-local cache
+#   transfer          transfer, a transfer server of its own
 #   lab               lab-server, the SSH host
+#   idp               idp, the identity provider (`auth-oidc`)
 #   metadata          metadata and metadata-verifier, the metadata receiver
 #   monitoring        grafana
 #   webdav            webdav, the backend of https and httpsv2 origins
 #   s3                s3, the backend of s3 and s3v2 origins
 #
-# fed.sh enables three more itself: `federation` (director-0, registry,
-# and cache-0) outside the `standalone` topology; `discovery` (the
+# fed.sh enables four more itself: `federation` (director-0 and the
+# registry) outside the `standalone` topology; `cache` (cache-0) with it,
+# unless the shape runs no cache (`topo-no-cache`); `discovery` (the
 # discovery host) there too, unless director-0 serves the federation's
 # metadata (`director-discovery`); and `external-issuer` (the discovery
 # host) for `auth-external-issuer`.
 
-fed_profiles="multi-origin multi-cache multi-owner multi-director site-local-cache lab"
-fed_profiles="${fed_profiles} metadata monitoring webdav s3"
+fed_profiles="multi-origin multi-cache multi-owner multi-director site-local-cache transfer"
+fed_profiles="${fed_profiles} lab idp metadata monitoring webdav s3"
 
 fed_has_profile() {
   case ",${COMPOSE_PROFILES}," in
@@ -168,7 +172,7 @@ fi
 
 fed_knobs="IMAGE_HUB PELICAN_TAG PELICAN_DEV_TAG PELICAN_SRC_DIR
            PELICAN_LOG_LEVEL TZ_SERVICES TZ_STORAGE
-           ORIGIN_MEM CACHE_MEM DIRECTOR_MEM REGISTRY_MEM DEV_MEM FED_MEM
+           ORIGIN_MEM CACHE_MEM DIRECTOR_MEM REGISTRY_MEM TRANSFER_MEM DEV_MEM FED_MEM
            IMAGE_ORIGIN IMAGE_CACHE IMAGE_DIRECTOR IMAGE_REGISTRY IMAGE_DEV"
 
 # Knobs that choose one of several things, which no two presets may both
@@ -227,6 +231,15 @@ done
 set +a
 export COMPOSE_PROFILES
 
+# cache-1's kind (`cache-mixed`): CACHE_1_VARIANT, or the other caches'.
+# Compose reads it for cache-1's role layer.
+fed_cache_mixed=false
+if [ -n "${CACHE_1_VARIANT}" ]; then
+  fed_cache_mixed=true
+fi
+CACHE_1_VARIANT=${CACHE_1_VARIANT:-${CACHE_VARIANT}}
+export CACHE_1_VARIANT
+
 # Naming the file also keeps Compose from picking up an override file.
 # `standalone` is docker-compose.yaml without the `federation` profile.
 case "${TOPOLOGY}" in
@@ -259,8 +272,8 @@ export IMAGE_DEV IMAGE_ORIGIN IMAGE_CACHE IMAGE_DIRECTOR IMAGE_REGISTRY
 
 for fed_knob in ORIGIN_ENABLE_ISSUER ENABLE_OIDC EXTERNAL_ISSUER \
     ORIGIN_DISABLE_DIRECT_CLIENTS ORIGIN_POSC ORIGIN_ATOMIC_UPLOADS ORIGIN_METADATA \
-    ORIGIN_MULTIUSER ORIGIN_BROKER ORIGIN_TRANSFER_API CACHE_TIERING \
-    SERVER_DROP_PRIVILEGES REGISTRY_REQUIRE_APPROVAL ISSUER_SHORT_TOKENS \
+    ORIGIN_MULTIUSER ORIGIN_BROKER ORIGIN_TRANSFER_API TRANSFER_SERVER CACHE_TIERING \
+    FEDERATED_CACHE SERVER_DROP_PRIVILEGES REGISTRY_REQUIRE_APPROVAL ISSUER_SHORT_TOKENS \
     ORIGIN_EXPORT_TEMPLATES DIRECTOR_DISCOVERY; do
   eval "fed_value=\${${fed_knob}}"
   # shellcheck disable=SC2154  # assigned by the eval above
@@ -282,6 +295,14 @@ esac
     || die "no such origin variant: ${ORIGIN_VARIANT}"
 [ -d "framework/config.d/cache/${CACHE_VARIANT}" ] \
     || die "no such cache variant: ${CACHE_VARIANT}"
+[ -d "framework/config.d/cache/${CACHE_1_VARIANT}" ] \
+    || die "no such cache variant: ${CACHE_1_VARIANT} (CACHE_1_VARIANT)"
+
+# Whether every cache is a V2 cache, which the settings that only it
+# reads, or that it alone reads rightly, need.
+fed_all_caches_v2() {
+  [ "${CACHE_VARIANT}" = v2 ] && [ "${CACHE_1_VARIANT}" = v2 ]
+}
 
 # fed_generate writes Origin.Exports for every variant. A role layer's
 # would lose to it anyway.
@@ -363,7 +384,9 @@ fed_profile_presets() {
     multi-owner)      echo "'topo-multi-owner'" ;;
     multi-director)   echo "'topo-multi-director'" ;;
     site-local-cache) echo "'topo-site-local-cache'" ;;
+    transfer)         echo "'topo-transfer-server'" ;;
     lab)              echo "'with-lab' or 'origin-ssh'" ;;
+    idp)              echo "'auth-oidc'" ;;
     metadata)         echo "'origin-metadata' or 'origin-metadata-tx'" ;;
     monitoring)       echo "'with-grafana'" ;;
     webdav)           echo "'origin-https' or 'origin-httpsv2'" ;;
@@ -381,10 +404,12 @@ fed_xrootd_origin() {
 
 # The tiny topology is one container, with no room for another service,
 # and its cache is always V2. Of the profiles, only the metadata receiver
-# works with it.
+# and the identity provider work with it.
 if [ "${fed_topology}" = tiny ]; then
   for fed_profile in ${fed_profiles}; do
-    [ "${fed_profile}" != metadata ] || continue
+    case "${fed_profile}" in
+      metadata|idp) continue ;;
+    esac
     if fed_has_profile "${fed_profile}"; then
       die "the 'tiny' topology is one container, so it cannot add profile" \
           "'${fed_profile}' ($(fed_profile_presets "${fed_profile}"))"
@@ -407,7 +432,7 @@ fi
 # verifier has no keys to check events against.
 if [ "${fed_topology}" = standalone ]; then
   for fed_profile in multi-origin multi-cache multi-owner multi-director \
-      site-local-cache metadata; do
+      site-local-cache transfer metadata; do
     if fed_has_profile "${fed_profile}"; then
       die "the 'standalone' topology is one origin and no federation, so it" \
           "cannot add profile '${fed_profile}' ($(fed_profile_presets "${fed_profile}"))"
@@ -473,6 +498,35 @@ if [ "${ORIGIN_BROKER}" = true ]; then
           "profile '${fed_profile}' ($(fed_profile_presets "${fed_profile}"))"
     fi
   done
+fi
+
+# The identity provider (`auth-oidc`) serves the servers' OIDC login, so
+# it is pointless with that off; with it on, fed.sh points the servers at
+# it (framework/var/generated/conf/60-oidc.yaml). A preset of its own may
+# turn OIDC on without it, for another provider.
+if fed_has_profile idp && [ "${ENABLE_OIDC}" = false ]; then
+  die "the identity provider ('auth-oidc') serves an OIDC login, which ENABLE_OIDC turns off"
+fi
+
+# A transfer server (`topo-transfer-server`) is the transfer API in a
+# process of its own (`pelican-server serve --module transfer`), which the
+# transfer-api suite tests in place of origin-0's: one of the two at a
+# time. Pelican's main has the module, but no release yet: a released
+# pelican-server refuses it, and the service never starts.
+if [ "${TRANSFER_SERVER}" = true ]; then
+  fed_has_profile transfer \
+      || die "TRANSFER_SERVER needs the transfer server; use '-p topo-transfer-server'"
+  [ "${fed_topology}" = full ] \
+      || die "TRANSFER_SERVER ('topo-transfer-server') needs the 'full' topology," \
+             "not '${fed_topology}'"
+  [ "${ORIGIN_TRANSFER_API}" = false ] \
+      || die "TRANSFER_SERVER ('topo-transfer-server') and ORIGIN_TRANSFER_API" \
+             "('origin-transfer-api') each serve a transfer API, of which the" \
+             "transfer-api suite tests one; choose one"
+  if [ "${IMAGE_ORIGIN}" = "${IMAGE_HUB}/origin:${PELICAN_TAG}" ]; then
+    warn "the transfer module is only on Pelican's main, so the released IMAGE_ORIGIN" \
+         "cannot serve it, and the transfer server will not start; build one from main"
+  fi
 fi
 
 # Both configure the origins' embedded issuer, which is off under the
@@ -572,12 +626,56 @@ if [ "${SERVER_DROP_PRIVILEGES}" = true ] && [ "${ORIGIN_VARIANT}" = ssh ]; then
       "('server-unprivileged') drops to the pelican user"
 fi
 
+# Mixed kinds of cache (`cache-mixed`): cache-1 is of another kind than
+# the rest, so it must run, which only the full topology's multi-cache
+# profile has it do.
+if [ "${fed_cache_mixed}" = true ]; then
+  [ "${CACHE_1_VARIANT}" != "${CACHE_VARIANT}" ] \
+      || die "CACHE_1_VARIANT ('cache-mixed') is '${CACHE_1_VARIANT}', the same as" \
+             "CACHE_VARIANT, so nothing is mixed; drop one of the presets"
+  if [ "${fed_topology}" != full ] || ! fed_has_profile multi-cache; then
+    die "CACHE_1_VARIANT ('cache-mixed') is cache-1's, which only the 'full'" \
+        "topology runs, with 'topo-multi-cache'"
+  fi
+fi
+
+# No cache at all (`topo-no-cache`): the full topology without cache-0,
+# so nothing that adds a cache, or configures one, and not the origins
+# that serve only caches, which would then serve no one. The kind of
+# cache is moot, so it must stay the default, as for a standalone origin.
+if [ "${FEDERATED_CACHE}" = false ]; then
+  [ "${fed_topology}" = full ] \
+      || die "FEDERATED_CACHE ('topo-no-cache') is the 'full' topology's cache-0, which" \
+             "the '${fed_topology}' topology does not run"
+  for fed_profile in multi-cache site-local-cache; do
+    if fed_has_profile "${fed_profile}"; then
+      die "FEDERATED_CACHE ('topo-no-cache') runs no cache, so it cannot add profile" \
+          "'${fed_profile}' ($(fed_profile_presets "${fed_profile}"))"
+    fi
+  done
+  [ "${CACHE_VARIANT}" = v2 ] \
+      || die "FEDERATED_CACHE ('topo-no-cache') runs no cache, so CACHE_VARIANT" \
+             "('cache-xrootd') must be 'v2', not '${CACHE_VARIANT}'"
+  [ "${fed_cache_mixed}" = false ] \
+      || die "FEDERATED_CACHE ('topo-no-cache') runs no cache, so none can be mixed" \
+             "('cache-mixed')"
+  [ "${CACHE_TIERING}" = false ] \
+      || die "FEDERATED_CACHE ('topo-no-cache') runs no cache to tier ('cache-tiered')"
+  [ -z "${CACHE_MEMORY_SIZE}${CACHE_HIGH_WATER_MIB}${CACHE_LOW_WATER_MIB}" ] \
+      || die "FEDERATED_CACHE ('topo-no-cache') runs no cache to give a memory cache" \
+             "('cache-memory') or a bounded store ('cache-small')"
+  [ "${ORIGIN_DISABLE_DIRECT_CLIENTS}" = false ] \
+      || die "FEDERATED_CACHE ('topo-no-cache') runs no cache, which is all that" \
+             "ORIGIN_DISABLE_DIRECT_CLIENTS ('origin-no-direct') lets the origins serve"
+fi
+
 # Cache tiering is the V2 cache's, here only in the full topology, where
 # the `s3` service holds the tiered objects. Pelican's main has it, but no
 # release yet, and an older cache ignores the setting.
 if [ "${CACHE_TIERING}" = true ]; then
-  [ "${CACHE_VARIANT}" = v2 ] \
-      || die "CACHE_TIERING ('cache-tiered') needs the V2 cache, not '${CACHE_VARIANT}'"
+  fed_all_caches_v2 \
+      || die "CACHE_TIERING ('cache-tiered') needs every cache V2, not" \
+             "'${CACHE_VARIANT}' ('cache-xrootd') or '${CACHE_1_VARIANT}' ('cache-mixed')"
   [ "${fed_topology}" = full ] \
       || die "CACHE_TIERING ('cache-tiered') needs the 'full' topology, not '${fed_topology}'"
   fed_has_profile s3 \
@@ -591,9 +689,10 @@ fi
 # The memory cache and the bounded store are the V2 cache's too, and a
 # standalone origin has no cache.
 if [ -n "${CACHE_MEMORY_SIZE}${CACHE_HIGH_WATER_MIB}${CACHE_LOW_WATER_MIB}" ]; then
-  [ "${CACHE_VARIANT}" = v2 ] \
+  fed_all_caches_v2 \
       || die "CACHE_MEMORY_SIZE ('cache-memory') and CACHE_HIGH_WATER_MIB ('cache-small')" \
-             "need the V2 cache, not '${CACHE_VARIANT}'"
+             "need every cache V2, not '${CACHE_VARIANT}' ('cache-xrootd') or" \
+             "'${CACHE_1_VARIANT}' ('cache-mixed')"
   [ "${fed_topology}" != standalone ] \
       || die "CACHE_MEMORY_SIZE ('cache-memory') and CACHE_HIGH_WATER_MIB ('cache-small')" \
              "need a cache, which the 'standalone' topology lacks"
@@ -619,11 +718,14 @@ fi
 
 # The profiles that fed.sh enables itself (see fed_profiles), which the
 # checks above leave out: the federation's servers, which a standalone
-# origin does without; the discovery host, unless director-0 serves the
-# federation's metadata; and the discovery host again, which serves the
-# external issuer.
+# origin does without; cache-0, unless the shape runs no cache; the
+# discovery host, unless director-0 serves the federation's metadata; and
+# the discovery host again, which serves the external issuer.
 if [ "${fed_topology}" = full ]; then
   COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}federation"
+  if [ "${FEDERATED_CACHE}" = true ]; then
+    COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}cache"
+  fi
   if [ "${DIRECTOR_DISCOVERY}" = false ]; then
     COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}discovery"
   fi
@@ -793,10 +895,14 @@ fed_origin_line() {
 # only under /api/v1.0/cache/data/<discovery host>.
 fed_cache_line() {
   role=${2:-federated}
+  variant=${CACHE_VARIANT}
+  if [ "$1" = cache-1 ]; then
+    variant=${CACHE_1_VARIANT}
+  fi
   if [ "${fed_topology}" = tiny ]; then
     printf '%s https://%s:8444/api/v1.0/cache/data/%s v2 %s\n' \
         "$1" "$1" "${fed_discovery_url#https://}" "${role}"
-  elif [ "${CACHE_VARIANT}" = xrootd ]; then
+  elif [ "${variant}" = xrootd ]; then
     printf '%s https://%s:8442 xrootd %s\n' "$1" "$1" "${role}"
   else
     printf '%s https://%s:8444 v2 %s\n' "$1" "$1" "${role}"
@@ -1002,6 +1108,24 @@ fed_generate() {
     done
   } | fed_write framework/var/generated/conf/50-knobs.yaml
 
+  # The identity provider (`auth-oidc`): every server finds its endpoints
+  # by discovery at OIDC.Issuer, and takes its users' groups from the
+  # `groups` claim where Issuer.GroupSource is `oidc`, which only the
+  # oidc suite sets, for a while. generated/oidc names the provider, or
+  # says `off`, for the tests.
+  if fed_has_profile idp; then
+    {
+      printf -- '---\n'
+      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
+      printf 'OIDC:\n  Issuer: https://idp:9007\n'
+      printf 'Issuer:\n  OIDCGroupClaim: groups\n'
+    } | fed_write framework/var/generated/conf/60-oidc.yaml
+    printf 'https://idp:9007\n' | fed_write framework/var/generated/oidc
+  else
+    rm -f framework/var/generated/conf/60-oidc.yaml
+    printf 'off\n' | fed_write framework/var/generated/oidc
+  fi
+
   # The `discovery` service's documents. `tiny` and `standalone` run no
   # such service, but test.py reads discovery.json there too, for the
   # directors (none in `standalone`, as the origin's own document says).
@@ -1054,13 +1178,23 @@ fed_generate() {
   printf '%s\n' "${REGISTRY_REQUIRE_APPROVAL}" \
       | fed_write framework/var/generated/registry-approval
 
-  # origin-0's transfer API (`origin-transfer-api`): its URL, the issuer of
-  # its tokens, and the directory of the key that signs them, which is
-  # origin-0's own even when the exports trust an external issuer.
-  if [ "${ORIGIN_TRANSFER_API}" = true ] && [ "${fed_topology}" = tiny ]; then
-    printf '%s %s/api/v1.0/origin %s\n' "${fed_origin_url}" "${fed_origin_url}" issuer-keys/fed
+  # The transfer API, origin-0's (`origin-transfer-api`) or a transfer
+  # server's own (`topo-transfer-server`): its URL; the issuer of its
+  # tokens, and the directory of the key that signs them, origin-0's own
+  # even when the exports trust an external issuer, or the transfer
+  # server's local issuer, which is its web URL; the service that serves
+  # it; and `exports` where it confines jobs to the origin's exports, or
+  # `none` for a transfer server, which confines them to nothing
+  # (transfer/transfer.go in Pelican).
+  if [ "${TRANSFER_SERVER}" = true ]; then
+    printf '%s %s %s %s %s\n' https://transfer:8444 https://transfer:8444 \
+        issuer-keys/transfer transfer none
+  elif [ "${ORIGIN_TRANSFER_API}" = true ] && [ "${fed_topology}" = tiny ]; then
+    printf '%s %s/api/v1.0/origin %s %s %s\n' "${fed_origin_url}" "${fed_origin_url}" \
+        issuer-keys/fed fed exports
   elif [ "${ORIGIN_TRANSFER_API}" = true ]; then
-    printf '%s %s %s\n' "${fed_origin_url}" "${fed_origin_url}" issuer-keys/origin-0
+    printf '%s %s %s %s %s\n' "${fed_origin_url}" "${fed_origin_url}" issuer-keys/origin-0 \
+        origin-0 exports
   else
     printf 'off\n'
   fi | fed_write framework/var/generated/transfer-api
@@ -1147,12 +1281,15 @@ fed_generate() {
   } | fed_write framework/var/generated/owner-exports
 
   # Likewise for each running cache: service, data URL, kind, and role.
-  # A standalone origin has no cache.
+  # A standalone origin has no cache, nor has the full topology under
+  # `topo-no-cache`.
   {
     if [ "${fed_topology}" = tiny ]; then
       fed_cache_line fed
     elif [ "${fed_topology}" = full ]; then
-      fed_cache_line cache-0
+      if [ "${FEDERATED_CACHE}" = true ]; then
+        fed_cache_line cache-0
+      fi
       if fed_has_profile multi-cache; then
         fed_cache_line cache-1
       fi
@@ -1496,15 +1633,35 @@ fed_generate() {
         "framework/var/generated/local/${svc}"
   done
 
-  # The OIDC client (see framework/presets/auth-oidc.sh), and the S3
-  # server's credentials (see framework/presets/origin-s3v2.sh).
-  for f in oidc-client-id oidc-client-secret s3-access-key s3-secret-key; do
+  # The S3 server's credentials (see framework/presets/origin-s3v2.sh).
+  for f in s3-access-key s3-secret-key; do
     if [ -f "local/etc/${f}" ]; then
       fed_write "framework/var/generated/${f}" <"local/etc/${f}"
     else
       fed_write "framework/var/generated/${f}" <"framework/etc/${f}"
     fi
   done
+  # The OIDC client that every server is (see framework/presets/
+  # auth-oidc.sh): yours, from local/etc/, for a provider of your own; or
+  # else one made at random, once, which the identity provider reads too,
+  # and takes as its one client.
+  for f in oidc-client-id oidc-client-secret; do
+    if [ -f "local/etc/${f}" ]; then
+      fed_write "framework/var/generated/${f}" <"local/etc/${f}"
+    elif [ ! -s "framework/var/generated/${f}" ]; then
+      openssl rand -hex 16 | fed_write "framework/var/generated/${f}"
+    fi
+  done
+
+  # The static token with which the exports suite has an https or httpsv2
+  # origin reach its backend (Origin.HttpAuthTokenFile, at
+  # /fed/generated/http-auth-token in the origin), through the
+  # `webdav-gate` service, which records what the origin sends. Made
+  # once, at random: the backend checks nothing, so nothing else needs
+  # it.
+  if [ ! -s framework/var/generated/http-auth-token ]; then
+    openssl rand -hex 24 | fed_write framework/var/generated/http-auth-token
+  fi
 }
 
 # Create every bind-mount source, so that Docker does not create them as
@@ -1528,7 +1685,8 @@ fed_prepare_dirs() {
       framework/var/data/cache/0 framework/var/data/cache/1 \
       framework/var/data/cache/2 framework/var/data/cache/fed \
       framework/var/data/lab-server \
-      framework/var/data/metadata framework/var/data/tier framework/var/grafana \
+      framework/var/data/metadata framework/var/data/tier \
+      framework/var/data/webdav-gate framework/var/data/idp framework/var/grafana \
       framework/var/issuer-jwks framework/var/test-keys
   # Written over SSH by `alice`, whose uid is unrelated to yours.
   chmod 0777 framework/var/data/lab-server
@@ -1976,7 +2134,10 @@ fed_running_services() {
     tiny)       printf '%s\n' fed; return 0 ;;
     standalone) printf '%s\n' origin-0; return 0 ;;
   esac
-  printf '%s\n' director-0 registry origin-0 cache-0
+  printf '%s\n' director-0 registry origin-0
+  if fed_has_profile cache; then
+    printf '%s\n' cache-0
+  fi
   if fed_has_profile multi-director; then
     printf '%s\n' director-1
   fi
@@ -1991,6 +2152,9 @@ fed_running_services() {
   fi
   if fed_has_profile site-local-cache; then
     printf '%s\n' cache-2
+  fi
+  if fed_has_profile transfer; then
+    printf '%s\n' transfer
   fi
 }
 

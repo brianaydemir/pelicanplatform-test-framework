@@ -90,7 +90,8 @@ SCENARIOS = {
     ),
     "directors": (
         "each director names every federated cache and origin, and for a direct read,"
-        " every origin if the namespace takes direct clients, and otherwise none"
+        " every origin if the namespace takes direct clients, and otherwise none; with no"
+        " cache, an origin in a cache's place"
     ),
     "discovery": "a Pelican server's discovery document names the federation's servers",
     "broker": "the directors name origin-0's connection broker, and no cache's",
@@ -360,7 +361,10 @@ def directors(probe: Probe) -> tuple[str, str]:
     director check DirectReads (originSupportsQuery() in Pelican's
     director/sort.go): then it must name every origin where the
     namespace takes direct clients, and elsewhere find none (405), and
-    name none."""
+    name none. Where the federation has no cache (`-p topo-no-cache`),
+    the `object` route must fall back to an origin, where the namespace
+    takes direct clients (redirectToCache in director/director.go), and
+    name only origins; and elsewhere find none (404)."""
     fed = probe.fed
     if fed.standalone:
         return SKIP, "a standalone origin has no director"
@@ -370,6 +374,7 @@ def directors(probe: Probe) -> tuple[str, str]:
     origin_hosts = [director.host(o.url) for o in fed.origins]
     site_local = [director.host(c.url) for c in fed.caches if c.site_local]
     direct = "DirectReads" in fed.exports[probe.protected]
+    cacheless = not fed.federated_caches
     # Each ask: its route, its query, and whom it must name.
     asks = [
         ("object", "", [director.host(c.url) for c in fed.federated_caches]),
@@ -397,6 +402,14 @@ def directors(probe: Probe) -> tuple[str, str]:
                     named = [h for h in origin_hosts if answer.names(h)]
                     if answer.status != 405 or named:
                         found.append(f"{what} should find no origin (405): {answer.describe()}")
+                if route == "object" and cacheless:
+                    named = [h for h in origin_hosts if answer.names(h)]
+                    if direct and (answer.status != 307 or not named):
+                        found.append(
+                            f"{what} should fall back to an origin (307): {answer.describe()}"
+                        )
+                    elif not direct and (answer.status != 404 or named):
+                        found.append(f"{what} should find no cache (404): {answer.describe()}")
         return found
 
     missing: list[str] = []
@@ -412,8 +425,11 @@ def directors(probe: Probe) -> tuple[str, str]:
         if direct
         else "none for direct reads (no direct clients)"
     )
+    caches_named = f"{len(fed.federated_caches)} cache(s)"
+    if cacheless:
+        caches_named = "no cache: an origin for a cache" if direct else "no cache (404)"
     return PASS, (
-        f"{len(fed.directors)} director(s): {len(fed.federated_caches)} cache(s),"
+        f"{len(fed.directors)} director(s): {caches_named},"
         f" {len(fed.origins)} origin(s), {direct_reads}"
     )
 
@@ -598,19 +614,26 @@ def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[s
     name = director.host(director_url)
     at_caches = [(c.svc, c.url) for c in fed.federated_caches]
     at_origins = [(o.svc, o.url) for o in fed.origins]
-    bare = at_origins if fed.director_default_response == "origin" else at_caches
-    # Each read: its method and path, the servers it must land at, and
-    # whether it asks for a direct read, which the director refuses (405)
-    # where the namespace takes no direct clients.
+    # With no cache, a read meant for one falls back to an origin, where
+    # the namespace takes direct clients, and otherwise finds none (404).
+    cacheless = not at_caches
+    if cacheless:
+        at_caches = at_origins
+    for_cache = fed.director_default_response == "cache"
+    bare = at_caches if for_cache else at_origins
+    # Each read: its method and path, the servers it must land at, whether
+    # it asks for a direct read, which the director refuses (405) where
+    # the namespace takes no direct clients, and whether it is meant for
+    # a cache.
     reads = [
-        ("GET", path, bare, False),
-        ("HEAD", path, bare, False),
-        ("GET", f"{path}{transfers.DIRECT_QUERY}", at_origins, True),
-        ("GET", f"/api/v1.0/director/object{path}", at_caches, False),
-        ("GET", f"/api/v1.0/director/origin{path}", at_origins, False),
+        ("GET", path, bare, False, for_cache),
+        ("HEAD", path, bare, False, for_cache),
+        ("GET", f"{path}{transfers.DIRECT_QUERY}", at_origins, True, False),
+        ("GET", f"/api/v1.0/director/object{path}", at_caches, False, True),
+        ("GET", f"/api/v1.0/director/origin{path}", at_origins, False, False),
     ]
     problems: list[str] = []
-    for method, target, where, asks_direct in reads:
+    for method, target, where, asks_direct, meant_for_cache in reads:
         answer = web.request(method, f"{director_url}{target}", token=token)
         what = f"{name}: {method} {target}"
         # What lands at an origin is served only to direct clients.
@@ -619,6 +642,13 @@ def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[s
             if answer.status == 307:
                 problems.append(
                     f"{what}: redirected, though /{namespace} takes no direct clients"
+                )
+            continue
+        if cacheless and meant_for_cache and not allowed:
+            if answer.status != 404:
+                problems.append(
+                    f"{what}: {answer.describe()}, not 404: no cache, and /{namespace}"
+                    + " takes no direct clients"
                 )
             continue
         if answer.status != 307:
@@ -685,9 +715,14 @@ def redirects(probe: Probe) -> tuple[str, str]:
             problems += redirect_problems(probe, url, namespace)
     if problems:
         return FAIL, common.first(problems)
+    where = "a cache"
+    if fed.director_default_response == "origin":
+        where = "an origin"
+    elif not fed.federated_caches:
+        where = "an origin, there being no cache"
     return PASS, (
         f"{len(fed.directors)} director(s), {len(probe.session.namespaces)} namespace(s):"
-        f" bare paths to {'an origin' if fed.director_default_response == 'origin' else 'a cache'}"
+        f" bare paths to {where}"
     )
 
 
@@ -843,10 +878,14 @@ def downtime(probe: Probe) -> tuple[str, str]:
         return SKIP, "a standalone origin has no director"
     if fed.tiny:
         return SKIP, "the tiny topology's servers and director are one process"
-    cache = fed.federated_caches[-1]
-    targets = [(cache.svc, cache.web_url, "object")]
+    targets: list[tuple[str, str, str]] = []
+    if fed.federated_caches:
+        cache = fed.federated_caches[-1]
+        targets.append((cache.svc, cache.web_url, "object"))
     if len(fed.origins) > 1:
         targets.append((fed.origins[-1].svc, fed.origins[-1].web_url, "origin"))
+    if not targets:
+        return SKIP, "no federated cache, and one origin, which nothing else could serve for"
     for svc, web_url, route in targets:
         why = down(probe, svc, web_url, route)
         if why:

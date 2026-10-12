@@ -14,23 +14,23 @@ The suites run in this order:
 
 | Suite        | Tests                                                                 |
 | ------------ | --------------------------------------------------------------------- |
-| `federation` | that the federation serves at all, and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients; what its redirects tell a client of a namespace, and where they lead a plain HTTP client, bare paths included ([redirects](#redirects)); a Pelican server's discovery document; under `-p origin-broker`, the connection broker; with several origins, that an object one of them alone holds is routed there, and comes back; under `-p registry-approval`, that nothing is routed to before its registration is approved; and that a server its admin declares down is routed to by no director until the downtime ends ([downtime](#downtime)) |
+| `federation` | that the federation serves at all, and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients, and with no cache (`-p topo-no-cache`) an origin in a cache's place; what its redirects tell a client of a namespace, and where they lead a plain HTTP client, bare paths included ([redirects](#redirects)); a Pelican server's discovery document; under `-p origin-broker`, the connection broker; with several origins, that an object one of them alone holds is routed there, and comes back; under `-p registry-approval`, that nothing is routed to before its registration is approved; and that a server its admin declares down is routed to by no director until the downtime ends ([downtime](#downtime)) |
 | `selftest`   | the tests' own helpers ([self-tests](#self-tests)): reading a V2 cache's `X-Transfer-Status` trailer, signing tokens of any claims and checking signatures, reading `/metrics`, and restarting a service mid-run |
 | `commands`   | `ls`, `stat`, `delete`, `copy`, `sync`, and `du`, and what `get` and `put` do with what already exists ([client commands](#client-commands)) |
-| `client`     | the contracts that only show through the clients: stash_plugin's result ads, failing over between caches partway through a download, the ETags the servers agree on, which token the client presents, how `pelican token create` finds an issuer, share URLs, the director's recorded decision, direct reads with `?skipstat`, several sources at once, and a preferred cache that is down ([client contracts](#client-contracts)) |
-| `transfer-api` | origin-0's transfer API, under `-p origin-transfer-api`: authentication, credentials, server-run copies, jobs, and confinement to the exports; and its edges: subjects that are no usernames, a finished job cancelled, the event stream, sources on its own network, `pelican transfer credential`, `Transfer.EnabledGroups`, OAuth2 clients and a bootstrapped credential, and a restart with a job under way ([transfer API](#transfer-api)) |
+| `client`     | the contracts that only show through the clients: stash_plugin's result ads, failing over between caches partway through a download, the ETags the servers agree on, which token the client presents, how `pelican token create` finds an issuer, share URLs, the director's recorded decision, direct reads with `?skipstat`, several sources at once, a preferred cache that is down, and transfers handed to the client agent (`--async`) ([client contracts](#client-contracts)) |
+| `transfer-api` | the transfer API, origin-0's under `-p origin-transfer-api`, or a transfer server's own under `-p topo-transfer-server`: authentication, credentials, server-run copies, jobs, and confinement to the exports, which only origin-0's has; and its edges: subjects that are no usernames, a finished job cancelled, the event stream, sources on its own network, `pelican transfer credential`, `Transfer.EnabledGroups`, OAuth2 clients and a bootstrapped credential, and a restart with a job under way ([transfer API](#transfer-api)) |
 | `listings`   | PROPFIND at each origin, director, and cache, of collections and of a plain object; a GET of a collection; and the links of an origin's HTML listing ([listings](#listings)) |
 | `names`      | objects whose [names](#names) a URL or a listing must encode, beside decoys |
-| `blocks`     | objects and ranges at pstore's and the caches' [block boundaries](#block-boundaries), through each server and both clients; digests, asked for one at a time, by default, several at once, or by q-values, and an upload the client must verify by one; conditional reads and writes, at their edges, and the `ETag` that each method must report alike; objects overwritten, given up on, corrupted in a cache's store, or written through a cache; the `X-Transfer-Status` trailer, by which a server reports a failure after its headers; the origins' digests that a V2 cache relays, and an object that fails them; that a cache fetches an object read by many clients at once from the origins once; and, under `-p cache-small`, objects evicted from a cache |
+| `blocks`     | objects and ranges at pstore's and the caches' [block boundaries](#block-boundaries), through each server and both clients; an object past 4 GiB, whose length and ranges across 2 GiB and 4 GiB every server must get right; digests, asked for one at a time, by default, several at once, or by q-values, and an upload the client must verify by one; conditional reads and writes, at their edges, and the `ETag` that each method must report alike; objects overwritten, given up on, corrupted in a cache's store, or written through a cache; the `X-Transfer-Status` trailer, by which a server reports a failure after its headers; the origins' digests that a V2 cache relays, and an object that fails them; that a cache fetches an object read by many clients at once from the origins once; and, under `-p cache-small`, objects evicted from a cache |
 | `freshness` | how long the caches keep their copies, by the `Cache-Control` the origins send, which it restarts them to vary: `only-if-cached`, 404s, what a V2 cache tells its clients, `no-store` and `private`, `max-age=0`, `no-cache`, `must-revalidate`, and `s-maxage`, and stale copies while the origins are down ([cache freshness](#cache-freshness)) |
 | `cache-api` | a V2 cache's own APIs: prestaging and evicting objects, by whoever may read or modify them, and through the client; purges and introspection, which only its admin may use; that it serves no other federation; its usage accounting; and its consistency checker ([cache APIs](#cache-apis)) |
 | `throttling` | how the servers and clients behave with the origins slowed, which it restarts them to be: a V2 cache's 429s when it sheds a burst, `X-Pelican-Timeout`, and streaming a cold object; the clients' errors for a shed attempt and for a transfer too slow ([throttling](#throttling)) |
-| `exports`    | what a native origin does with each export's capabilities, which it restarts the origins to vary: `Listings`, `DirectReads`, and copies (`Origin.DisableCopies`); a third-party COPY's progress, its failures, and what a failed one leaves; and a multipart PUT with metadata off ([exports and copies](#exports-and-copies)) |
-| `pstore`     | a pstore origin's own features, under `-p origin-pstore`: its storage API and `pelican-server origin introspect`, which only its admin may use; its scheduled index checks and data scans, and the reclamation of what is replaced; refusing writes once full, and backing up its catalog, which it restarts the first origin to check ([pstore](#pstore)); and elsewhere, that a native origin has no storage API |
-| `routing`    | how the directors choose where to send a client, and what they tell it: the order of the caches and of the origins by declared location, at random, by adaptive weights, and with a server filtered out; an object no origin holds; what `Location` and `Link` carry; tokens about to expire; their refusals and their status codes; and response hostnames; under `-p topo-multi-cache`, it restarts the directors to vary how they sort ([routing](#routing)) |
+| `exports`    | what a native origin does with each export's capabilities, which it restarts the origins to vary: `Listings`, `DirectReads`, and copies (`Origin.DisableCopies`); a third-party COPY's progress, its failures, and what a failed one leaves; a multipart PUT with metadata off; and, at an `https` or `httpsv2` origin, what it sends a backend that takes a token, which it restarts the origins to see: a static token on every request, or the client's own ([exports and copies](#exports-and-copies)) |
+| `pstore`     | a pstore origin's own features, under `-p origin-pstore`: its storage API and `pelican-server origin introspect`, which only its admin may use; its scheduled index checks and data scans, and the reclamation of what is replaced; refusing writes once full, and backing up its catalog, which it restarts the first origin to check; and a backup restored into its store offline, with the origin stopped, which must give back every object it held, byte for byte ([pstore](#pstore)); and elsewhere, that a native origin has no storage API |
+| `routing`    | how the directors choose where to send a client, and what they tell it: the order of the caches and of the origins by declared location, at random, by adaptive weights, and with a server filtered out; an object no origin holds; what `Location` and `Link` carry; tokens about to expire; their refusals and their status codes; and response hostnames; under `-p topo-multi-cache`, it restarts the directors to vary how they sort, and a cache restricted to a namespace (`Cache.PermittedNamespaces`) ([routing](#routing)) |
 | `director-api` | what the directors publish of the federation, against the shape: their lists of servers and of namespaces, and the namespace a path falls in; their health tests of each origin and cache, as they and the servers report them, and the test file they serve the caches; which origins hold an object, for their admin alone; their metrics; their comparison of the federation's metadata; and under `-p topo-multi-director`, the ads one forwards to another ([director APIs](#director-apis)) |
 | `registry`   | the registry, the federation's root of trust: registering and deleting prefixes, the prefixes it refuses, key chaining, a prefix with a LIKE wildcard, and `pelican namespace`; the keys it serves for each prefix, and no private key in any JWKS the federation serves; its web API for listing, approving, and denying registrations, and its servers; completing a server's registration with the server's key; who owns a registration: claiming one, an owner's edits of an approved one, a denied one resubmitted, and handing one on with an invite; each server's ID; and downtimes recorded at the registry, whose they are, and what the directors do with them ([registry](#registry)) |
-| `tiering`    | V2 caches' tiering of large objects to object storage, under `-p cache-tiered`, including a copy replaced in the bucket |
+| `tiering`    | V2 caches' tiering of large objects to object storage, under `-p cache-tiered`: what a plain HTTP client gets from the cache, and through a director, and what both clients get, from the cache named and through the director; including a copy replaced in the bucket |
 | `posc`       | interrupted and racing uploads, under `-p origin-posc`, `-p origin-atomic-uploads`, or `-p origin-pstore`; and the native POSC's reaping of abandoned staging files, which it restarts the first origin to hasten ([POSC and metadata](#posc-and-metadata)) |
 | `metadata`   | metadata events, under `-p origin-metadata`: the URLs by which an uploader follows or cancels its event; the events that a MOVE, a COPY, and a collection's DELETE send, and those the reconcile sweep must not; the first origin's admin APIs over its record of objects and its publish queue, and the CLI over the record; and refusing uploads while a namespace's queue is full; which it restarts the first origin to check; with publishing off, that the queue's admin API says so ([POSC and metadata](#posc-and-metadata)) |
 | `users`      | which Unix user the origins act as, under `-p origin-multiuser` or `-p server-unprivileged`: who owns what they write, and in which group; under multiuser, reads with no token, what a user learns of another's files, POSC's staging, users below `Origin.MultiuserMinID`, and the mapfile's rules, a username claim, and a mapfile edited while the origins run ([Unix users](#unix-users)) |
@@ -39,10 +39,11 @@ The suites run in this order:
 | `collections` | collections: prefixes with access control of their own, granted through the origins' embedded issuer ([collections](#collections)) |
 | `issuer`     | the origins' embedded issuer: what it grants of what a client asks for, through each flow, and its refresh tokens; and its boundaries: each namespace's issuer apart from another's, clients that register themselves, its verification page's CSRF tokens, its admin API for clients, cross-origin requests, PKCE, and codes' expiry ([issuer](#issuer)) |
 | `accounts`   | the life cycle of a server's users and groups, and who may act as whom because of it: deactivated and deleted users, at the web API and the embedded issuer; scopes granted to a user, and authority from configured groups; grants that go with a deleted user or group, and stay with a renamed one; group invites; and a new acceptable use policy ([accounts](#accounts)) |
+| `oidc`       | logging in through an identity provider, under `-p auth-oidc`: what each server does with a user the provider vouches for, by the code flow a browser follows; the username and groups it takes from the provider's claims, and the admin and the issuer's grants they earn; the registry's proof of a registrant by the provider's device flow; and the Pelican client acquiring a token approved by such a user ([OIDC login](#oidc-login)) |
 | `advertise`  | what the directors take from servers, and from anyone posing as one: forged and spoofed advertisements, federation tokens, service discovery, and the connection broker ([advertisements](#advertisements)) |
 | `webapi`     | who may use each server's web API: its admin routes, with no credentials, as an ordinary user, as the admin, and with tokens it must take for no one; a director's API tokens; logging in and out, and the login cookie; CSRF tokens and cross-origin requests; malformed paths; and the version each server reports ([web API](#web-api)) |
 | `observability` | what each server reports about itself, and who may see it: its health report, and the gauges that must agree with it; who may read its metrics and query its Prometheus, and its scrapes and the directors'; a native origin's request, byte, and storage counters; its log level, raised for a while through its admin API; tokens kept out of its log; and under XRootD, an XRootD log level, which restarts XRootD ([observability](#observability)) |
-| `webdav`     | the origins' WebDAV methods beyond GET, HEAD, PUT, DELETE, and PROPFIND, and how each is authorized: POST, COPY, MOVE, MKCOL, LOCK, PROPPATCH, and OPTIONS; writes through symbolic links that leave a store; and how an origin serves stored HTML ([WebDAV methods](#webdav-methods)) |
+| `webdav`     | the origins' WebDAV methods beyond GET, HEAD, PUT, DELETE, and PROPFIND, and how each is authorized: POST, COPY, MOVE, MKCOL, LOCK, PROPPATCH, and OPTIONS; writes through symbolic links that leave a store; how an origin serves stored HTML; and that a cache serves those methods for no one, and changes no origin ([WebDAV methods](#webdav-methods)) |
 | `auth`       | each [credential](#authorization) at each server, in each namespace; each issuer's keys; tokens of one storage scope, for another audience or one origin's, in the query string, and several at once; tokens whose times, claims, or signatures are wrong, one that expires while in use, SciTokens scopes, and a server's own web tokens ([token validation](#token-validation)); paths and symbolic links that climb out of a namespace or a token's scope; a protected prefix inside a public one; and what a refusal tells a client |
 | `transfers`  | gets and puts through `pelican object` and `stash_plugin`: gets through the cache the director picks, direct from an origin, and from a cache the client names, byte-checked ([test data](#test-data)) |
 | `restart`    | what survives a server's restart, and what a server does while another is gone: a cache's store, every server's identity and database, the directors' routing once a server is killed and once it is back, an origin whose storage service is stopped, the clients' failover from a cache that is paused or killed, and a director's view of its peer ([restarts](#restarts)) |
@@ -89,6 +90,12 @@ token (none for `/public`):
   `?directread` at an origin, where the namespace takes direct clients,
   and otherwise find none (405), as the Pelican client's `--direct`
   asks; and the object and origin routes at a cache and an origin.
+  Where the federation has no cache (`-p topo-no-cache`), whatever is
+  meant for a cache must land at an origin instead, where the namespace
+  takes direct clients (the director falls back to an origin with
+  `DirectReads`; `redirectToCache` in `director/director.go`), and
+  otherwise find none (404); `directors` checks the same of what the
+  object route names.
 - What lands at a cache must be served: the object's bytes, or for a
   HEAD its `Content-Length`. What lands at an origin must be served
   only where the namespace takes direct clients, and otherwise refused
@@ -114,7 +121,9 @@ it for the test object (the directors ask the registry every minute,
 `Director.RegistryQueryInterval`); then it ends the downtime, after
 which, as soon, every director must name it again. With several
 origins, it does the same for the last origin. The check is skipped in
-the `tiny` topology, whose servers and director are one process.
+the `tiny` topology, whose servers and director are one process, and
+with no cache and one origin (`-p topo-no-cache`), when nothing could
+be named instead.
 
 These are functional checks, not stress tests: each moves a few
 objects, the largest about 16 MiB, but for `blocks`'s `cache-evicted`,
@@ -224,7 +233,8 @@ object. Every scenario also has a plugin twin, `plugin-<scenario>`
 batches add `?directread` to each URL, and takes the named cache from
 `Client.PreferredCaches`. Only the plugin's uploads go elsewhere, to
 `put/plugin-put-<ns>-<cred>/`. A shape without a federated cache
-(`topo-standalone`) has no named scenarios.
+(`topo-standalone`, `topo-no-cache`) has no named scenarios, and its
+other gets, asking for a cache, must be sent to an origin.
 
 What each scenario should do follows the
 [authorization](#authorization) rules: every get of `/public` should
@@ -636,14 +646,20 @@ Under `-p origin-transfer-api`, origin-0 runs the transfer API
 (`Origin.EnableTransferAPI`; `transfer/` in Pelican), a service that
 runs transfer jobs on the server, such as third-party copies, with
 storage credentials it keeps for each user, and only where a job's
-source or destination is one of the origin's exports. It takes tokens
-with the `pelican.transfer` scope from the origin's own issuer, which
-the `transfer-api` suite mints with origin-0's key, for a subject of
-the tests' own; its storage credentials are the `server` tokens for
-`/protected-a`. The suite's objects go under
-`/protected-a/data/xfer/<run>/`, which it removes afterward, with the
-credentials it added. A scenario with several cases records a row per
-case, named `<scenario> <case>`.
+source or destination is one of the origin's exports. Under
+`-p topo-transfer-server`, a transfer server of its own, `transfer`,
+runs it instead (`pelican-server serve --module transfer`; on Pelican's
+main only, so `IMAGE_ORIGIN` must be built from it), which confines a
+job to no export, and authenticates its users through a local issuer
+of its own (`RegisterTransferAPI` and `RegisterLocalIssuer` in
+`transfer/transfer.go`). The API takes tokens with the
+`pelican.transfer` scope from its host's issuer, which the
+`transfer-api` suite mints with that host's key, origin-0's or the
+transfer server's, for a subject of the tests' own; its storage
+credentials are the `server` tokens for `/protected-a`. The suite's
+objects go under `/protected-a/data/xfer/<run>/`, which it removes
+afterward, with the credentials it added. A scenario with several
+cases records a row per case, named `<scenario> <case>`.
 
 - `ping`, `auth-none`, `auth-storage-token`, and `auth-unknown-key`:
   the public ping says that the service is the transfer service, and a
@@ -655,7 +671,12 @@ case, named `<scenario> <case>`.
 - `copy`, `job-status`, `bad-dest-credential`, `unknown-credential`,
   `other-user`, `path-not-allowed`, `cancel`, `local-get`, and
   `local-put`: `pelican object copy --transfer-server ... --wait` copies
-  an object byte for byte; a finished job reports `completed`, and is
+  an object byte for byte (`copy server`), and with `--dest-origin`
+  naming origin-0 instead, the client asks the origin whether it runs
+  the transfer API (`pingTransferService` in `cmd/object_copy.go`), and
+  copies through it where it does, or must fail, saying that the
+  service is not available there, and land nothing, where a transfer
+  server's is the API (`copy dest-origin`); a finished job reports `completed`, and is
   listed; a copy whose destination credential may only read fails, and
   writes nothing; a job naming a credential that does not exist is
   refused (400); another user can neither see a job nor use a
@@ -663,11 +684,19 @@ case, named `<scenario> <case>`.
   `PATH_NOT_ALLOWED`); cancelling an unknown job is not found, and a
   finished one must stay as it finished; and a job may neither download
   to the origin's own filesystem outside an export nor upload from it,
-  which Pelican's main does not confine, so those two fail there. For a
-  job that finished and is still in the manager's memory, Pelican's
-  `CancelJob` answers "job already completed", which the handler turns
-  into 500 (`client_agent/transfer_manager.go`, `transfer/handlers.go`),
-  so `cancel` fails, on v26.0.0-rc.3 and main alike.
+  which Pelican's main does not confine, so those two fail there. A
+  transfer server confines a job to nothing, by design: there, a job
+  outside the exports must be taken (201), and then fail, since nothing
+  serves what it names (`path-not-allowed`); and a job must download to
+  the server's own filesystem (`/var/lib/pelican`, its state, where the
+  suite then finds the source object, byte for byte; `local-get`) and
+  upload from it (`/etc/hostname`, which must land as the file,
+  `transfer` and a newline; `local-put`), so that what a user of such a
+  server may reach is on record. For a job that finished and is still
+  in the manager's memory, Pelican's `CancelJob` answers "job already
+  completed", which the handler turns into 500
+  (`client_agent/transfer_manager.go`, `transfer/handlers.go`), so
+  `cancel` fails, on v26.0.0-rc.3 and main alike.
 - `subjects`: `pelican.transfer` tokens whose subjects are a CILogon
   URL, one character, 65 characters, or `admin`, the built-in user's
   name: each must list its jobs (200), run a copy of its own, and see
@@ -697,24 +726,26 @@ case, named `<scenario> <case>`.
   `Server.SSRFProtection.AllowedCIDRs` do not cover, must be refused
   (403, `ENDPOINT_NOT_ALLOWED`); one whose source and destination are
   under `/protected-ab`, which merely begins like an export, 403
-  `PATH_NOT_ALLOWED`, since a prefix matches whole path segments; and
+  `PATH_NOT_ALLOWED`, since a prefix matches whole path segments (at a
+  transfer server, taken and then failed, as `path-not-allowed`); and
   no credential's token, nor the client secret that `oauth-clients`
-  registers, may lie in origin-0's database (`framework/var/state/`) in
-  plain, which keeps each encrypted (`transfer/encryption.go`).
+  registers, may lie in the API's host's database
+  (`framework/var/state/`) in plain, which keeps each encrypted
+  (`transfer/encryption.go`).
 - `credential-cli`: `pelican transfer credential add`, `list`, and
-  `delete`, with the user's token in a file, against origin-0: each
-  must agree with the API, and neither `add` nor `list` may print the
+  `delete`, with the user's token in a file, against the API: each
+  must agree with it, and neither `add` nor `list` may print the
   token.
 - `enabled-groups` and `oauth-clients` need configuration that no shape
   has: `Transfer.EnabledGroups`, naming a group of the run's own
   (`xfer-<run>`), and `Transfer.EnableOAuth2Clients`. The suite restarts
-  origin-0 once with both, as the last of its configuration layers
-  ([service control](../README.md#service-control)), runs them, and
-  restarts it without, waiting each time until the API answers and
+  the API's host once with both, as the last of its configuration
+  layers ([service control](../README.md#service-control)), runs them,
+  and restarts it without, waiting each time until the API answers and
   every director names origin-0 again. The restart needs a control
   helper and a topology other than `tiny`, whose origin is the whole
   federation's process; elsewhere both skip, and say why.
-  - `enabled-groups`: with the group named, the origin's local issuer
+  - `enabled-groups`: with the group named, the host's local issuer
     grants `pelican.transfer` to a member who asks for it through the
     device flow, approved with their login cookie, which carries their
     groups, and not to another user (`transferAccessAllowed` in
@@ -727,9 +758,9 @@ case, named `<scenario> <case>`.
     (I6), and the row fails, on v26.0.0-rc.3 and main alike.
   - `oauth-clients`: with the clients off, as by default, the routes
     refuse everyone (403, `DISABLED`; `disabled`). With them on, a
-    client of the namespace issuer's, which the admin creates for the
-    token exchange and the refresh grant (made-up credentials, under the
-    external issuer, whose clients the origin cannot make), is
+    client of the namespace issuer's, which origin-0's admin creates
+    for the token exchange and the refresh grant (made-up credentials,
+    under the external issuer, whose clients the origin cannot make), is
     registered with the API (`POST /oauth-clients`, 201), listed
     without its secret, refused a second time (409), and deleted
     afterward (`crud`); a token the
@@ -742,13 +773,14 @@ case, named `<scenario> <case>`.
     (`getDecryptedAccessToken` in `transfer/credentials.go`), and the
     credential's `token_expiry` must have moved on (`refresh`;
     elsewhere it skips, since the tokens last an hour).
-- `restart`: origin-0 restarted while a copy runs: the job must then be
-  `failed`, saying it was interrupted by a restart
+- `restart`: the API's host restarted while a copy runs: the job must
+  then be `failed`, saying it was interrupted by a restart
   (`reconcileInterruptedJobs` in `transfer/recovery.go`), or, if the
   copy finished first, the row is inconclusive (`interrupted`). A
-  `posixv2` origin is first restarted slowed (`Origin.TransferRateLimit`
-  256 KiB a second, which it alone honors), so that the copy of the
-  8 MiB source takes about a minute; afterward it is restored. A
+  `posixv2` origin-0 is first restarted slowed
+  (`Origin.TransferRateLimit` 256 KiB a second, which it alone honors),
+  so that the copy of the 8 MiB source takes about a minute; afterward
+  it is restored. A
   credential stored before the restart must still work (`credential`).
   And a job that finished before the restart, which the manager no
   longer holds, cancelled, must keep its status (`forgotten`): Pelican
@@ -792,8 +824,10 @@ several cases records a row per case, named `<scenario> <case>`.
   status must be 0 if every transfer succeeded, else 11 if any failure
   may be retried, else 1 (`writeOutfile`). It skips where there is no
   cache.
-- `failover`, with several federated V2 caches: both hold a 1 MiB
-  object whole, and the first's chaos API corrupts a block in the
+- `failover`, with a federated V2 cache beside another cache, of
+  either kind (`-p cache-mixed` makes cache-1 an XRootD cache, so that
+  the failover crosses kinds): both hold a 1 MiB object whole, and the
+  first's, a V2 cache's, chaos API corrupts a block in the
   middle of its copy, which it cannot repair once the object is removed
   from every origin's store (as `blocks`'s `transfer-status-failure`
   does). `pelican object get --cache <first>,<second>` must then
@@ -905,6 +939,22 @@ several cases records a row per case, named `<scenario> <case>`.
   one of them must serve, as the stats show (`plus`). Without `+`, the
   dead cache is the client's only one, and the get must fail to reach
   it, by something other than a refusal (`alone`).
+- `async-job`: `pelican object get --async --wait` hands a download to
+  the client agent (`pelican client-agent`, a daemon of the client's
+  own, which the command starts if none runs; `cmd/object_get.go` and
+  `client_agent/` in Pelican), and waits for it: the file must be the
+  object (`get`). `pelican job status --json` must then report the job
+  `completed`, with one transfer and the object's bytes (`status`), and
+  `pelican job list --json` list it (`list`). `pelican object copy
+  --async --wait` of a local file to `/protected-a`, where it takes
+  writes, must land it at an origin (`copy`). `pelican job cancel` of
+  the finished job must leave it `completed`, whether it refuses or
+  says that it cancelled it (`cancel-finished`). Last, whatever else
+  happened, `pelican client-agent stop` must stop the agent, so that
+  `client-agent status` says within 15 seconds that none runs (`stop`).
+  The agent's socket, PID file, and database are the run's own
+  (`ClientAgent.Socket`, `PidFile`, and `DbLocation`, by environment),
+  so that no agent of the user's, or of an earlier run's, is spoken to.
 
 
 ## Block boundaries
@@ -939,7 +989,13 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
 - How a V2 cache first sees an object decides how it fills (one stream,
   or block by block), so each cache reads one set of objects whole first,
   another in ranges first, and one each through `pelican object get`
-  and `stash_plugin` first.
+  and `stash_plugin` first. Each client reads its set the three ways a
+  client reaches an object, as the `transfers` suite does: through the
+  cache the director picks; direct from an origin (`--direct`, or
+  `?directread`), which must be refused where `/protected-a` takes no
+  direct clients; and from the first federated cache, named (`--cache`,
+  or `Client.PreferredCaches`), which alone may serve it, as the
+  client's transfer statistics and the plugin's result ads must say.
 - `cache-abandoned` starts a cold read of an object through each cache,
   and gives up after 50,000 bytes; those bytes, and the object's last
   block and the whole object afterward, must be the object's. A V2
@@ -1099,6 +1155,32 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   that starts at or past the end (`past-end`) must get 416, or, from a
   server that ignores `Range`, the whole object. In a set of ranges, one
   past the end is passed over, as RFC 9110 says.
+- `huge-ranges`: an object past 4 GiB, which no suite could move whole:
+  4 GiB and 128 KiB, rounded up to a block boundary, and a byte more
+  (4,295,101,681 bytes), so that 2^32 falls inside a block (no power of
+  two is a multiple of 4,080) and the last block is one byte, and a size
+  or an offset that a server keeps in 32 bits, signed or not, goes wrong
+  somewhere in it. The suite writes it as a sparse file in each origin's
+  store on disk: zeros, but for 64 KiB markers of bytes of their own at
+  its start, around 2 GiB and 4 GiB, and at its end, with holes between,
+  which cost nothing to keep, and which a cache fetches no more of than
+  a range reads. At each origin
+  that takes direct clients, through each director's object route,
+  which leads to a cache, and at each cache, a HEAD must give its
+  length, and nine ranges, each within a marker, must come back as 206,
+  with a `Content-Range` of the bytes asked for out of its size, and
+  exactly those bytes: 200 bytes across 2 GiB, and across 4 GiB; the
+  byte before each, and the byte at each; the last byte; the last 1,000
+  bytes, as a suffix; and from 1,000 bytes before the end on. A server
+  that ignored `Range` would send the whole object, so the suite reads
+  64 KiB of an answer and hangs up. A PROPFIND of Depth 0 at each origin
+  and cache must say its size, as must `pelican object stat --json`,
+  and `pelican object ls -l --json` of its collection, where
+  `/protected-a` has `Listings`. Afterward, it is evicted from each V2
+  cache, whose accounting may have charged its store the whole object.
+  It skips on a pstore origin, whose store is encrypted, so that the
+  object would have to go over HTTPS whole; and where a store keeps no
+  sparse files, so that the object would take 4 GiB on disk.
 - `conditional` sends each server conditional GETs of two objects (RFC
   9110): with `If-None-Match` naming the `ETag` the server sent, among
   others, weakened (`W/`), or as `*`, and with `If-Modified-Since` at
@@ -1673,6 +1755,21 @@ needs native origins that take direct clients, since Pelican refuses
 `tiny`, whose origin is the whole federation's process. Elsewhere, those
 rows skip, and say why.
 
+An `https` or `httpsv2` origin may have to present a token to its
+backend (`Origin.HttpAuthTokenFile`, a static one on every request;
+or, for `httpsv2`, `Origin.HttpAuthTokenPassthrough`, the client's own),
+and the `webdav` service asks for none, so nothing else would show
+what an origin sends. The `webdav-gate` service, nginx in front of it,
+relays every request and logs the `Authorization` it came with, in
+`framework/var/data/webdav-gate/access.log`, and checks nothing: the
+log is the evidence. `backend-token` and `backend-passthrough` restart
+every origin to reach its backend through the gate
+(`Origin.HttpServiceUrl`), so configured, in the tests' own layer, and
+restore them afterward; the static token is one `fed.sh init` made, in
+`framework/var/generated/http-auth-token`. They need `/protected-a` to
+take writes and direct clients, and a control helper; elsewhere they
+skip.
+
 - `multipart-put`: with metadata off, a PUT typed `multipart/form-data;
   boundary=...` must be stored as sent, as a PUT stores its body (RFC
   9110, section 9.3.4). At each origin that takes direct writes, a PUT
@@ -1755,6 +1852,29 @@ rows skip, and say why.
   every export at once (`origin_serve/handlers.go`), so the row fails
   there, on main and v26.0.0-rc.3 alike. It skips where `/public` is not
   exported.
+- `backend-token`: with the origins reaching their backend through the
+  gate, with the static token, everything must still work, straight at
+  each origin with the `server` token: a PUT of an object with a
+  `Content-Length` and one in chunks, which the store on disk, which
+  the backend serves, must then hold; a GET of the first whole, of a
+  range of it, and a HEAD; a PROPFIND of Depth 1 of the run's
+  collection, which must list both; and at a native origin, an MKCOL, a
+  MOVE of the second object, which the store must show, and a DELETE of
+  what it moved. Then, through the federation, `pelican object get` of
+  the first object, which a cache, or without one an origin, fetches
+  from an origin, and so through the gate; and `pelican object put` of
+  a new object. Every request the gate logged meanwhile, the origins'
+  own probes of the backend included, must have carried the static
+  token, and none a client's, which a backend has no business seeing;
+  and the gate must have seen a GET, a PUT, and a DELETE. It runs at
+  `https` and `httpsv2` origins.
+- `backend-passthrough`: the same with the client's token forwarded
+  (`Origin.HttpAuthTokenPassthrough`), at `httpsv2` origins alone, since
+  XRootD's HTTPS plugin forwards none. Each request the gate logged for
+  a path the test asked an origin for straight must have carried the
+  client's token, and none the static one; the rest, the origins' own
+  probes, which carry no client's token, and what they fetched for a
+  cache, are counted in the row's note.
 
 
 ## pstore
@@ -1845,9 +1965,9 @@ several cases records a row per case, named `<scenario> <case>`, or
   failed (`pstore/fsck.go`): a copy that failed in the `exports` suite
   may leave some.
 
-No shape bounds a store, or backs one up. So for `capacity` and
-`backups`, the suite restarts the first origin, once, as the last of its
-configuration layers ([service control](../README.md#service-control)).
+No shape bounds a store, or backs one up. So for `capacity`, `backups`,
+and `restore`, the suite restarts the first origin, once, as the last of
+its configuration layers ([service control](../README.md#service-control)).
 Its one storage directory, `/data/pstore`, is bounded at what the
 storage API says it holds and 8 MiB more (`Origin.PStoreStorageDirs`,
 with a `MaxSize`). It backs up its catalog every 20 seconds, keeping 3
@@ -1858,7 +1978,7 @@ the suite removes afterward. The suite then restores the origin, and
 waits, as `freshness` does, until every director names every origin and
 every cache answers. The restart needs a control helper, and skips the
 `tiny` topology, whose origin is the whole federation's process;
-otherwise both scenarios skip, and say why. `scheduled-passes` runs
+otherwise the three scenarios skip, and say why. `scheduled-passes` runs
 before it, since a restart starts the passes over.
 
 - `capacity`: straight at the origin, in order. A pstore never evicts:
@@ -1913,6 +2033,38 @@ before it, since a restart starts the passes over.
     (`pstore/backup_crypto.go`), and no `.partial` file, nor anything
     else; and `pelican_pstore_metadata_backup_last_size_bytes` must be
     the newest one's size.
+- `restore`, with the origin still backing up its catalog so: a backup
+  is only as good as what comes back out of it, and nothing but the
+  origin can read the store, so the scenario checks a restore through
+  the offline CLI, which reads the store on its own
+  (`pelican-server origin pstore`; `pstore/backup.go` and `recover.go`).
+  - `objects`: five objects of 100 bytes to 1 MiB and 5, held in the
+    catalog and in block files, written straight to the origin; the
+    first backup taken after them, copied out of its directory; and
+    then one more object, written after that backup, which the origin
+    must serve.
+  - `cli`: with the origin stopped, the store's catalog (`db/`) is set
+    aside, leaving its block files (`objects/`) and master key
+    (`masterkey.json`), as a recovery is laid out, and
+    `metadata-restore` must restore the copied backup into it, opened
+    with a copy of the origin's issuer keys, to which the catalog's
+    master key and every backup are sealed.
+  - `export`: `export --verify` of the scenario's collection, from the
+    restored store, must write out every object the backup held, byte
+    for byte, each verified against the checksums the catalog records,
+    and not the object written after the backup.
+  - `served`: the origin, started again on the restored catalog, given
+    back to whoever owns the master key, must serve the five objects,
+    byte for byte, and answer 404 for the one written after the backup.
+    If it does not, the catalog set aside is put back, so that the rest
+    of the run finds the store as it was.
+
+  The scenario needs the `pelican-server` that has the CLI, and skips
+  without it; the block files that the late object left behind are the
+  janitor's to reclaim. It runs between `backups`'s `startup` and its
+  later cases, which wait for the schedule to run on past the stop and
+  the start, and before `capacity`, which would leave the store too
+  full for its objects.
 
 
 ## Routing
@@ -2078,6 +2230,26 @@ skip, and say why, so that other shapes are not slowed.
     kind of server that the director sends a bare path to by default
     passes only for that reason, and the other fails, on v26.0.0-rc.3
     and main alike.
+- `permitted-namespaces`: a cache may be restricted to namespaces
+  (`Cache.PermittedNamespaces`), which it then alone advertises to the
+  directors (`filterAdsBasedOnNamespace` in `cache/advertise.go`), so
+  that they send it clients for those alone. The suite restarts the
+  last cache with the setting naming `/public` (or, where `/public` is
+  not exported, another protected namespace), as the last of its
+  configuration layers, and waits up to 150 seconds until the directors
+  route as it says; afterward it restores the cache, and waits again.
+  `routing`: each director, asked five times at the object route, must
+  name the cache for an object in the permitted namespace, and not for
+  the probe in the suite's own, for which it must still name every
+  other cache. `listing`: each director's
+  `/api/v1.0/director_ui/servers` must list the cache with
+  `namespacePrefixes` of the permitted namespace, and any under it, and
+  no other. `direct`: asked straight, the cache must serve the object
+  in the permitted namespace; what it does with the probe in the
+  suite's own is not settled, since the setting narrows what the cache
+  advertises, so the row's note says, but it must never serve other
+  bytes. It needs several caches and a control helper, as the other
+  restarts do, and a shape that exports two namespaces.
 
 
 ## Director APIs
@@ -2602,7 +2774,8 @@ POST, MKCOL, LOCK, UNLOCK, PROPPATCH, and COPY create; DELETE and MOVE
 modify), and of a COPY's or MOVE's `Destination`
 (`checkCopyMoveDestination`). The `webdav` suite sends the methods that
 no other suite does, straight to each origin in `/protected-a`, under
-`/protected-a/data/webdav/<run>/<origin>/`, and removes what it wrote
+`/protected-a/data/webdav/<run>/<origin>/`, and to each cache, under
+`.../caches/`, and removes what it wrote
 afterward. It needs `/protected-a` to take writes and direct clients.
 The scenarios that send WebDAV's other methods ask only native origins,
 and skip an XRootD origin; `symlink-writes` and `stored-html` ask every
@@ -2696,6 +2869,19 @@ found. Its tokens are the origins' own, of the scopes each names.
   403 or 405, and remove nothing. If an origin honored it, it would
   take `/protected-a`'s storage with it, and `init`'s objects, so
   `webdav` runs after every other suite but `auth` and `transfers`.
+- `cache-methods`: a cache serves objects and listings (GET, HEAD, and
+  PROPFIND), and relays a PUT or a DELETE to an origin (`blocks`'s
+  `write-through`), and that is all a V2 cache routes
+  (`local_cache/persistent_cache_api.go`), so Gin answers every other
+  method 405 (`HandleMethodNotAllowed` in `web_ui/ui.go`). Each cache
+  is sent POST, COPY, MOVE, PROPPATCH, and LOCK of an object of the
+  run's own, which every origin holds, and MKCOL of a new path beside
+  it, with the `server` token, which would let an origin honor each: so
+  a cache that relayed one would show. A V2 cache must answer 405; an
+  XRootD cache must refuse (4xx or 5xx), as its HTTP server sees fit,
+  and the row's note says how. Whatever the answer, no origin's store
+  may change: the object must keep its bytes, and nothing may appear at
+  the new path or at a COPY's or MOVE's `Destination`.
 
 
 ## Names
@@ -2719,8 +2905,12 @@ percent-encodes every character of a name but letters, digits, and
 - Every origin and federated cache must list each name once, decoded,
   with its size, as must `pelican object ls`.
 - `pelican object get` of every object must write a file of each one's
-  name, with its bytes, and nothing else; `pelican object put` of a file
-  of each name must land as the object of that name.
+  name, with its bytes, and nothing else: through the cache the director
+  picks, direct from an origin (`--direct`) where `/protected-a` takes
+  direct clients, and from the first federated cache, named (`--cache`),
+  which alone may serve it, since the client builds that cache's URL of
+  each name itself; `pelican object put` of a file of each name must
+  land as the object of that name.
 
 
 ## POSC and metadata
@@ -3662,6 +3852,108 @@ deleted user or group deleted, and frees its name. `test-user-admin`
 stays.
 
 
+## OIDC login
+
+Under `-p auth-oidc`, every server lets its users log in through an
+identity provider (`Origin.EnableOIDC` and the other modules' flags),
+and the registry has one prove who registers a prefix from the command
+line. The provider is the `idp` service, an OpenID Connect provider of
+the framework's own (`framework/idp/idp.py`), at `https://idp:9007`
+(`OIDC.Issuer`), standing in for CILogon: its users, their passwords,
+and their groups are `framework/etc/idp-users.json`, and its one client
+is the ID and secret that `fed.sh` makes at random for the servers
+(`framework/var/generated/oidc-client-{id,secret}`). It serves
+discovery, a JWKS, the authorization code flow, the device flow, and
+userinfo, signs its ID tokens itself (RS256, with a key it makes as it
+starts), and logs every request in `framework/var/data/idp/requests.log`,
+one JSON object per line, never a secret. `framework/testlib/oidc.py`
+plays the browser.
+
+A server begins a login by sending the user to the provider's
+authorization endpoint (`/api/v1.0/auth/oauth/login`; `handleOAuthLogin`
+in `web_ui/oauth2_client.go`), naming its client, its callback, and a
+state, which it keeps in a session cookie too. The user logs in at the
+provider, which sends them back to the callback with a code; the server
+checks the state against its cookie, trades the code for tokens at the
+provider, asks its userinfo endpoint who the user is, finds or makes its
+record of them, and sets its login cookie (`handleOAuthCallback`). The
+callback is on `OIDC.ClientRedirectHostname`, `localhost` and the
+server's published port, for a browser on the host; the suite follows it
+to the server's own host instead. The suite skips without the provider.
+A scenario with several cases records a row per case, named `<scenario>
+<case>`; the first four ask every server of the shape, by web URL.
+
+- `enabled`: each server's `/api/v1.0/auth/oauth` must list each module
+  it runs (`listOIDCEnabledServersHandler`), and its login route answer
+  307 to the provider's authorization endpoint, asking for a code
+  (`response_type`) for the servers' client, to be sent back to
+  `https://localhost:<port>/api/v1.0/auth/oauth/callback`, with a state,
+  and set the session cookie.
+- `login`: `idp-member` logs in at each server. `whoami` must then name
+  them by their `preferred_username`, as no admin (`role` `user`); a
+  second login must find the same user; the server's admin must list one
+  user of that name, whose record links to the provider's subject and
+  issuer; and the provider's log must show the server trading each
+  login's code at the token endpoint, as the servers' client, and
+  asking userinfo who the user is.
+- `callback`: at the issuer origin, a login's callback sent without its
+  session cookie must be refused (400), as must one whose state is not
+  the cookie's; with the cookie it must log the user in; and sent again,
+  its code used, it must fail (the provider refuses the code), and log
+  no one in.
+- `collision`: `idp-collider`, whose `preferred_username` is `admin`,
+  the built-in administrator's, logs in at the issuer origin. The server
+  must walk to the next claim of `Server.AutoEnrollUsernameClaims`, the
+  email, for the username (`LookupOrBootstrapUser` in
+  `database/collection.go`), and give them no admin role, nor the
+  admin's routes (403 for `GET /api/v1.0/users`).
+- `registry-identity`: `pelican namespace register --with-identity` of
+  a prefix of the run's. The registry starts the provider's device flow
+  (`cliRegisterNamespace` in `registry/registry.go`) and hands the
+  client the verification URL, which the suite approves at the
+  provider as `idp-member`; the client polls the registry, which polls
+  the provider's token endpoint, and once it has an access token asks
+  userinfo who the user is, and registers the prefix with that identity.
+  The registration must hold the client's key and `idp-member`'s
+  identity (the provider's userinfo: their subject and
+  `preferred_username`), and name the registry's user of that identity
+  as its owner, whom `login` made. Then `pelican namespace delete` must
+  remove it. It skips for a standalone origin, which has no registry.
+- The last three restart origin-0 with `Server.UIAdminUsers` naming
+  `idp-owner`, and `Issuer.GroupSource` `oidc`, in the tests' own layer
+  ([service control](../README.md#service-control)), and restore it
+  afterward. The shape itself keeps `internal`, since under `oidc` a
+  password login carries no groups (`GroupsForLogin`), which the
+  `issuer`, `collections`, and `accounts` suites need. They need a
+  control helper, and skip in the `tiny` topology, whose origin is the
+  whole federation's process; `groups` and `client` also need the
+  embedded issuer and a protected namespace that takes direct writes,
+  which hold their objects, in each group's project prefix
+  (`/data/issuer/projects/<group>/`, where the templates grant the
+  group), at every origin, removed afterward.
+  - `admin`: with origin-0 restarted, `idp-owner` must be its admin by
+    `whoami`, and may list its users; so must `idp-admin`, whose claimed
+    group `test-server-admins` is in `Server.AdminGroups`
+    (`RecordAssertedGroups`); `idp-member` must be no admin, and refused
+    the users. Once restored, `idp-owner` must be no admin.
+  - `groups`: through a client of origin-0's issuer that the admin
+    creates, `idp-member`, logged in through the provider, must be
+    granted by the device flow exactly what the templates give
+    `test-project-a` (`framework/config.d/base/40-origin.yaml`): read and
+    create in its project, and read in the archive; and the token must
+    name the group (`wlcg.groups`). `idp-admin`, in `test-project-b`,
+    likewise for that group alone; `idp-outsider`, in no group, must be
+    granted no data scope, or refused. Then `idp-member`'s token must
+    read `test-project-a`'s object straight at origin-0 and by `pelican
+    object get` through the federation, and be refused
+    `test-project-b`'s.
+  - `client`: `pelican object get` of `test-project-a`'s object with no
+    token: the client registers itself with the issuer and starts a
+    device flow, which the suite approves as `idp-member`, logged in
+    through the provider (as the `issuer` suite's `client` does with a
+    password login); the client must then get the object.
+
+
 ## Advertisements
 
 Every origin and cache tells the directors what it serves by posting an
@@ -4267,9 +4559,6 @@ Shapes that Pelican offers and this framework does not, and why:
 
 - `globus` and `globusv2` origins, which need Globus credentials, and
   the `xroot` origin, which fronts another XRootD server.
-- `Cache.PermittedNamespaces`, which only narrows what a cache
-  advertises to the director; the V2 cache serves any namespace a
-  client asks it for.
 - Sorting by GeoIP, which needs a MaxMind database, and the adaptive
   sort's status and I/O load weights, which change too slowly to
   observe; the `routing` suite sorts by declared locations
@@ -4286,25 +4575,24 @@ Shapes that Pelican offers and this framework does not, and why:
   `localcache` module, a client-side cache over a Unix socket; and
   `Client.FileRedirectRoots`, by which a cache sends a client that
   shares its filesystem to a file instead of bytes.
-- Restoring a pstore's catalog from a backup, and the rest of
-  `pelican-server origin pstore`, which need the origin stopped; the
-  `pstore` suite checks the backups it writes, and the storage API that
-  `origin introspect` calls ([pstore](#pstore)).
+- Of `pelican-server origin pstore`, which needs the origin stopped:
+  `fsck --repair`, a `metadata-backup` taken by hand, and a restore
+  opened with an escrowed backup key (`metadata-backup-key`,
+  `--key-file`, and `--file-key`) rather than the origin's issuer keys;
+  the `pstore` suite restores a scheduled backup with those keys, and
+  exports from it ([pstore](#pstore)).
 - `pelican cache evict`, `purge`, `introspect`, and `chaos`, which read
   the cache's own configuration and address file, and so run only
   beside it; `cache-api` calls the APIs they call
   ([cache APIs](#cache-apis)).
-- Of the embedded issuer: groups from a file or an identity provider
-  (`Issuer.GroupSource`), which the suite's users get from the server's
-  own database. The issuer origin would need restarting with another
-  group source, which mirrors the memberships it learns, and sweeps
-  them when the source changes, so it could disturb the groups that
-  `issuer` and `collections` rely on. Also `pelican.transfer` granted
+- Of the embedded issuer: groups from a file (`Issuer.GroupSource`
+  `file`), which the suite's users get from the server's own database,
+  and the `oidc` suite's from the identity provider, for a while. Also
+  `pelican.transfer` granted
   through a scope grant (`Transfer.EnabledGroups` the `transfer-api`
   suite checks); and the limit on registrations, five from an address,
   then one a minute.
-- Of the registry: registering with an identity (`pelican namespace
-  register --with-identity`), which needs an identity provider; the
+- Of the registry: the
   OSDF topology's namespaces, `Registry.InstitutionsUrl`, and the
   cleanup of inactive registrations ([registry](#registry)); the `keys`
   suite covers the keys a server adds or rotates while it runs, and
@@ -4339,14 +4627,25 @@ Shapes that Pelican offers and this framework does not, and why:
   ([client contracts](#client-contracts)); `?pack`, by which `pelican
   object get` and `put` move a collection as one archive, which the
   native origin does not serve, and which no suite asks an XRootD
-  origin for; and `pelican object get --async` with `pelican job`,
-  which run a transfer through the client agent (`pelican
-  client-agent`), a daemon of the client's own, rather than in the
-  command.
+  origin for; and of the client agent, a job cancelled while it runs,
+  and the agent's wallet, which `pelican client-agent warm` fills with
+  tokens acquired interactively ([client contracts](#client-contracts)).
+- Of a transfer server (`-p topo-transfer-server`): its web API, health,
+  metrics, restarts, and keys, which the `webapi`, `observability`,
+  `restart`, and `keys` suites check only of the federation's origins,
+  caches, directors, and registry; the `transfer-api` suite checks its
+  API, its local issuer's grants, and its restart with a job under way
+  ([transfer API](#transfer-api)).
 - Reloading a server's certificate without a restart: the servers mount
   the certificate files as Docker secrets, which a file written anew on
   the host does not replace, so a reissued certificate needs a restart
   here ([keys](#keys)).
-- `auth-oidc` and `with-grafana`, which need an identity provider and a
-  data source the framework lacks
+- Of logging in through an identity provider (`-p auth-oidc`): GitHub
+  as the provider (`Issuer.GroupSource` `github`, whose organizations
+  are the groups), CILogon's own claims, and any provider but the
+  framework's own; `Issuer.OIDCAuthenticationRequirements`, which only
+  the retired OA4MP issuer read; `Issuer.UserStripDomain`; a login at
+  a transfer server (`-p topo-transfer-server`); and the browser's own
+  part, which the tests play ([OIDC login](#oidc-login)).
+- `with-grafana`, which needs a data source the framework lacks
   ([Configuration](configuration.md#presets)).

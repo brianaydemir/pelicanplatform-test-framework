@@ -26,7 +26,8 @@ with a small scheduler, and restores them before the next suite.
 `exports` follows: it restarts the origins with exports of other
 capabilities, and copies off, and restores them before the next suite.
 `pstore` follows: it restarts the first origin with its store bounded,
-and its catalog backed up, and restores it before the next suite.
+and its catalog backed up, stops it to restore a backup into its store,
+and restores it before the next suite.
 `routing` follows: under `-p topo-multi-cache`, it restarts the
 directors with other ways to sort and filter the servers, and restores
 them before the next suite. `director-api` follows: it waits for the
@@ -46,8 +47,12 @@ each restores it before the next suite. Under multiuser, `users`
 restarts the origins with a username claim, and restores them before
 the next suite. `accounts` ends by putting up a new AUP at the issuer
 origin, which for a moment gates its every user, and restores the old.
-`advertise` posts ads as the servers, which briefly change where the
-directors send clients, until it has seen them restored. `webapi` tries
+`oidc` follows: under `-p auth-oidc`, it logs the identity provider's
+users in at every server, and restarts the first origin to take their
+groups from the provider and name one of them its admin, and restores
+it before the next suite. `advertise` posts ads as the servers, which
+briefly change where the directors send clients, until it has seen them
+restored. `webapi` tries
 the servers' admin routes, as no one and as an ordinary user, which
 must refuse them, among them one that restarts a server. `observability`
 follows: it raises the servers' log levels for a minute at most, and
@@ -87,6 +92,7 @@ from . import (
     metadata,
     names,
     observability,
+    oidc,
     owners,
     posc,
     pstore,
@@ -130,6 +136,7 @@ SUITES = {
     "collections": collections,
     "issuer": issuer,
     "accounts": accounts,
+    "oidc": oidc,
     "advertise": advertise,
     "webapi": webapi,
     "observability": observability,

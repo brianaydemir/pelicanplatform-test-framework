@@ -20,19 +20,21 @@ it so too. A listing's hrefs are decoded before they are compared.
   origin-list  each origin lists every name, once, with its size
   cache-list   each federated cache does, as it relays the listing
   client-get   `pelican object get` of every object into a directory
-               writes a file of each one's name, with its bytes
+               writes a file of each one's name, with its bytes:
+               through a cache, direct, and from a cache it names
   client-put   `pelican object put` of a file of each name into a
                collection lands as the object of that name
   client-ls    `pelican object ls` lists every name
 """
 
+import json
 import os
 import traceback
 from typing import Optional
 from urllib.parse import quote
 
 from suites.commands import json_objects
-from testlib import common, stores, web, webdav
+from testlib import common, director, stores, transfers, web, webdav
 from testlib.common import die, first
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
@@ -43,7 +45,10 @@ SCENARIOS = {
     "cache-get": "each cache serves each object by its name, cold, and no decoy",
     "origin-list": "each origin lists every name once, decoded, with its size",
     "cache-list": "each federated cache lists every name once, decoded, with its size",
-    "client-get": "`pelican object get` writes a file of each object's name, with its bytes",
+    "client-get": (
+        "`pelican object get` writes a file of each object's name, with its bytes: through a"
+        " cache, direct, and from a cache it names"
+    ),
     "client-put": "`pelican object put` of a file of each name lands as that object",
     "client-ls": "`pelican object ls` lists every name",
 }
@@ -226,26 +231,75 @@ def cache_list(test: Test) -> tuple[str, str]:
     return listed(test, [(c.svc, c.url) for c in test.fed.federated_caches])
 
 
-def client_get(test: Test) -> tuple[str, str]:
-    """`pelican object get` of every object, into a directory: a file of
-    each one's name, with its bytes, and nothing else."""
-    target = os.path.join(test.tmp, "client-get")
-    os.makedirs(target)
-    urls = [f"{test.fed.url}/protected-a/{quote(test.rel(name))}" for name in NAMES]
-    code, out, err = test.session.pelican_cmd(
-        "object", "get", "--token", test.token_file, *urls, target
-    )
-    if code != 0:
-        return FAIL, f"exit {code}: {last_line(err or out)}"
+def fetched(test: Test, target: str) -> Optional[str]:
+    """Why directory target does not hold a file of each object's name,
+    with its bytes, and nothing else; None if it does."""
     found = set(os.listdir(target))
     if found != set(NAMES):
-        return FAIL, f"wrote {sorted(found - set(NAMES))}, lacking {sorted(set(NAMES) - found)}"
+        return f"wrote {sorted(found - set(NAMES))}, lacking {sorted(set(NAMES) - found)}"
     for name in NAMES:
         with open(os.path.join(target, name), "rb") as f:
             why = test.wrong(name, f.read())
         if why:
-            return FAIL, why
-    return PASS, f"{len(NAMES)} files"
+            return why
+    return None
+
+
+def client_get(test: Test) -> tuple[str, str]:
+    """`pelican object get` of every object, into a directory: a file of
+    each one's name, with its bytes, and nothing else; the three ways a
+    client reaches an object: through the cache the director picks,
+    direct from an origin (--direct), where /protected-a takes direct
+    clients, and from the first federated cache, named (--cache), which
+    alone may serve it, since the client builds that cache's URL of each
+    name itself."""
+    urls = [f"{test.fed.url}/protected-a/{quote(test.rel(name))}" for name in NAMES]
+    # Each way: its key, the client's flags, and the cache it names.
+    ways: list[tuple[str, list[str], Optional[common.Cache]]] = [("cache", [], None)]
+    notes: list[str] = []
+    if "DirectReads" in test.caps:
+        ways.append(("direct", ["--direct"], None))
+    else:
+        notes.append("direct: skipped, /protected-a takes no direct clients")
+    if test.fed.federated_caches:
+        named = test.fed.federated_caches[0]
+        ways.append(("named", ["--cache", named.url], named))
+    else:
+        notes.append("named: skipped, no federated cache")
+    for key, flags, cache in ways:
+        target = os.path.join(test.tmp, f"client-get-{key}")
+        os.makedirs(target)
+        stats = os.path.join(test.tmp, f"client-get-{key}.stats.json")
+        code, out, err = test.session.pelican_cmd(
+            "object",
+            "get",
+            "--token",
+            test.token_file,
+            "--transfer-stats",
+            stats,
+            *flags,
+            *urls,
+            target,
+        )
+        if code != 0:
+            return FAIL, f"{key}: exit {code}: {last_line(err or out)}"
+        why = fetched(test, target)
+        if why:
+            return FAIL, f"{key}: {why}"
+        if cache is not None:
+            try:
+                with open(stats, encoding="utf-8") as f:
+                    hosts = transfers.stats_endpoints(json.load(f))
+            except (OSError, ValueError):
+                hosts = []
+            others = sorted({h for h in hosts if h != director.host(cache.url)})
+            if not hosts or others:
+                return FAIL, (
+                    f"{key}: served by {', '.join(others) or 'no server recorded'},"
+                    f" not {cache.svc}"
+                )
+        notes.append(f"{key}: {len(NAMES)} files")
+    return PASS, "; ".join(notes)
 
 
 def client_put(test: Test) -> tuple[str, str]:

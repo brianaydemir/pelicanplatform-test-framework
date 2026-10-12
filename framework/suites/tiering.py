@@ -21,10 +21,15 @@ and its scenarios skip.
                pre-signed URL in the bucket, without the token, which
                serves the object, and with the object's Digest, by which
                a client checks what the bucket sends; or, where the
-               cache proxies, the object
+               cache proxies, the object; and the same through each
+               director, where the cache is the only one the directors
+               know of
   ranges       ranges of a tiered object, through the redirect or the
                proxy
-  client-get   `pelican object get --cache` of a tiered object
+  client-get   `pelican object get` of a tiered object, from the cache,
+               named, and through the director where the cache is the
+               only federated one; and stash_plugin's, preferring the
+               cache
   tampered     a tiered object whose copy in the bucket is replaced by
                other bytes of its size: a proxying cache must not serve
                them, and fetch the object afresh; through a redirecting
@@ -36,23 +41,31 @@ and its scenarios skip.
 
 import hashlib
 import os
+import shutil
+import subprocess  # nosec B404
 import time
 import traceback
 from collections.abc import Callable
 from typing import Optional
 from urllib.parse import urlsplit
 
-from testlib import blocks, common, digests, metrics, stores, web
+from testlib import blocks, common, digests, director, metrics, stores, transfers, web
 from testlib.common import die, first
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
-from testlib.session import Session, last_line
+from testlib.session import CLIENT_TIMEOUT, Session, last_line
 
 SCENARIOS = {
     "tiered": "an object over the threshold, read whole, lands in the bucket",
     "threshold": "an object of exactly the threshold is tiered; one a byte smaller is not",
-    "redirect": "a tiered object: a redirect to a pre-signed URL, or the object, if proxied",
+    "redirect": (
+        "a tiered object: a redirect to a pre-signed URL, or the object, if proxied; through"
+        " a director too"
+    ),
     "ranges": "ranges of a tiered object, through the redirect or the proxy",
-    "client-get": "`pelican object get --cache` of a tiered object",
+    "client-get": (
+        "`pelican object get` of a tiered object, from the cache named and through the"
+        " director; stash_plugin's, preferring the cache"
+    ),
     "tampered": "a tiered object replaced in the bucket: never served, nor kept by the client",
     "overwritten": "a tiered object overwritten at the origins: each read all one version",
 }
@@ -203,6 +216,50 @@ class Test:
                 raise NotTiered(f"it did not tier an object: {why}")
         return name, self.tiered[cache.svc][name]
 
+    def sole(self, cache: common.Cache) -> bool:
+        """Whether cache is the only cache the directors know of, so that
+        a read through a director reaches it."""
+        return [c.svc for c in self.fed.federated_caches] == [cache.svc]
+
+    def plugin(self, cache: common.Cache, name: str) -> tuple[bool, str, str]:
+        """Run stash_plugin on cache's object name, preferring cache alone
+        (Client.PreferredCaches), with the server's token: whether it says
+        the transfer succeeded, the file it wrote, and its result ads (or,
+        where it wrote none, its output)."""
+        work = os.path.join(self.tmp, f"plugin-{cache.svc}-{name}")
+        creds = os.path.join(work, "creds")
+        os.makedirs(creds)
+        shutil.copyfile(
+            self.session.token_file("protected-a"), os.path.join(creds, "server.use")
+        )
+        url = f"{self.fed.url}/protected-a/{self.rel(cache, name)}"
+        infile, outfile = (os.path.join(work, f"plugin.{ext}") for ext in ("in", "ad"))
+        with open(infile, "w", encoding="utf-8") as f:
+            f.write(f'[ Url="{url}"; LocalFileName="{transfers.local_name(url)}" ]\n')
+        env = dict(self.session.env)
+        env["_CONDOR_CREDS"] = creds
+        env["PELICAN_CLIENT_PREFERREDCACHES"] = cache.url
+        target = os.path.join(work, transfers.local_name(url))
+        try:
+            done = subprocess.run(  # nosec B603
+                [self.session.plugin, "-infile", infile, "-outfile", outfile],
+                cwd=work,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=CLIENT_TIMEOUT,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return False, target, f"timed out after {CLIENT_TIMEOUT:.0f}s"
+        try:
+            with open(outfile, encoding="utf-8") as f:
+                ads = f.read()
+        except FileNotFoundError:
+            ads = ""
+        return transfers.plugin_passed(ads), target, ads or done.stderr or done.stdout
+
     def get_tiered(
         self, cache: common.Cache, name: str, headers: dict[str, str]
     ) -> web.Response:
@@ -270,39 +327,72 @@ def threshold(test: Test) -> tuple[str, str]:
     return each_cache(test, check)
 
 
+def redirect_problem(
+    test: Test, cache: common.Cache, data: bytes, answer: web.Response
+) -> Optional[str]:
+    """Why answer, a cache's answer to a GET of a tiered object whose
+    bytes are data, is not the object from a proxying cache, or, from a
+    redirecting one, a 307 to a pre-signed URL in the bucket, without
+    the token and with the object's Digest, which serves the object to
+    anyone holding it; None if it is."""
+    if test.target(cache).mode == "proxy":
+        if answer.status != 200 or answer.body != data:
+            return f"proxied: {answer.describe()}, {len(answer.body)} bytes"
+        return None
+    if answer.status != 307:
+        return f"{answer.describe()}, not a redirect (307)"
+    location = answer.header("Location")
+    parts = urlsplit(location)
+    if parts.netloc != "s3:8444" or not parts.path.startswith("/tier/"):
+        return f"redirected to {parts.netloc}{parts.path}, not bucket tier at s3:8444"
+    if "X-Amz-Signature=" not in parts.query:
+        return "redirected to a URL that is not pre-signed"
+    if test.token in location:
+        return "redirected to a URL that holds the token"
+    wrong, right = digests.check(answer.header("Digest"), data)
+    if wrong:
+        return f"the redirect's Digest: {first(wrong)}"
+    if not right:
+        return "the redirect has no Digest by which a client could check the bucket's bytes"
+    fetched = web.request("GET", location)
+    if fetched.status != 200 or fetched.body != data:
+        return f"the pre-signed URL: {fetched.describe()}, {len(fetched.body)} bytes"
+    return None
+
+
 def redirect(test: Test) -> tuple[str, str]:
     """A read of a tiered object: from a redirecting cache, a 307 to a
     pre-signed URL in the bucket, without the token, which serves the
-    object to anyone holding it; from a proxying cache, the object."""
+    object to anyone holding it; from a proxying cache, the object (see
+    redirect_problem()). Then the same through each director's object
+    route, as a plain HTTP client that follows redirects, presenting the
+    token at the cache: where the cache is the only one the directors
+    know of, each must send the client there, and the cache answer as
+    before."""
+    notes: list[str] = []
 
     def check(cache: common.Cache) -> Optional[str]:
         name, data = test.tiered_object(cache)
-        answer = test.get_tiered(cache, name, {})
-        if test.target(cache).mode == "proxy":
-            if answer.status != 200 or answer.body != data:
-                return f"proxied: {answer.describe()}, {len(answer.body)} bytes"
+        why = redirect_problem(test, cache, data, test.get_tiered(cache, name, {}))
+        if why:
+            return why
+        if not test.sole(cache):
+            notes.append(f"{cache.svc}: not through a director, which knows other caches")
             return None
-        if answer.status != 307:
-            return f"{answer.describe()}, not a redirect (307)"
-        location = answer.header("Location")
-        parts = urlsplit(location)
-        if parts.netloc != "s3:8444" or not parts.path.startswith("/tier/"):
-            return f"redirected to {parts.netloc}{parts.path}, not bucket tier at s3:8444"
-        if "X-Amz-Signature=" not in parts.query:
-            return "redirected to a URL that is not pre-signed"
-        if test.token in location:
-            return "redirected to a URL that holds the token"
-        wrong, right = digests.check(answer.header("Digest"), data)
-        if wrong:
-            return f"the redirect's Digest: {first(wrong)}"
-        if not right:
-            return "the redirect has no Digest by which a client could check the bucket's bytes"
-        fetched = web.request("GET", location)
-        if fetched.status != 200 or fetched.body != data:
-            return f"the pre-signed URL: {fetched.describe()}, {len(fetched.body)} bytes"
+        for url in test.fed.directors:
+            sent = director.ask(url, "object", f"/protected-a/{test.rel(cache, name)}")
+            if sent.status != 307 or sent.location != director.host(cache.url):
+                return f"{director.host(url)}: {sent.describe()}, not 307 to {cache.svc}"
+            why = redirect_problem(test, cache, data, test.get_tiered(cache, name, {}))
+            if why:
+                return f"through {director.host(url)}: {why}"
+        notes.append(f"{cache.svc}: through {len(test.fed.directors)} director(s) too")
         return None
 
-    return each_cache(test, check)
+    status, note = each_cache(test, check)
+    if status == PASS and notes:
+        note = "; ".join(notes)
+    return status, note
 
 
 def ranges(test: Test) -> tuple[str, str]:
@@ -338,29 +428,47 @@ def ranges(test: Test) -> tuple[str, str]:
 
 
 def client_get(test: Test) -> tuple[str, str]:
-    """`pelican object get --cache` of a tiered object, which the client
-    follows wherever the cache sends it."""
+    """`pelican object get` of a tiered object, which the client follows
+    wherever the cache sends it: from the cache, named (--cache), and
+    through the director, where the cache is the only one the directors
+    know of; and stash_plugin's, preferring the cache
+    (Client.PreferredCaches)."""
+    notes: list[str] = []
 
     def check(cache: common.Cache) -> Optional[str]:
         name, data = test.tiered_object(cache)
-        target = os.path.join(test.tmp, f"{cache.svc}-{name}")
-        code, out, err = test.session.pelican_cmd(
-            "object",
-            "get",
-            "--cache",
-            cache.url,
-            "--token",
-            test.session.token_file("protected-a"),
-            f"{test.fed.url}/protected-a/{test.rel(cache, name)}",
-            target,
-        )
-        if code != 0:
-            return f"exit {code}: {last_line(err or out)}"
+        url = f"{test.fed.url}/protected-a/{test.rel(cache, name)}"
+        ways = [("named", ["--cache", cache.url])]
+        if test.sole(cache):
+            ways.append(("director", []))
+        else:
+            notes.append(f"{cache.svc}: not through a director, which knows other caches")
+        for key, flags in ways:
+            target = os.path.join(test.tmp, f"{cache.svc}-{name}-{key}")
+            code, out, err = test.session.pelican_cmd(
+                "object",
+                "get",
+                *flags,
+                "--token",
+                test.session.token_file("protected-a"),
+                url,
+                target,
+            )
+            if code != 0:
+                return f"{key}: exit {code}: {last_line(err or out)}"
+            if common.sha256(target) != common.digest(data):
+                return f"{key}: the file is not the object"
+        passed, target, said = test.plugin(cache, name)
+        if not passed:
+            return f"stash_plugin: {last_line(said)}"
         if common.sha256(target) != common.digest(data):
-            return "the file is not the object"
+            return "stash_plugin: the file is not the object"
         return None
 
-    return each_cache(test, check)
+    status, note = each_cache(test, check)
+    if status == PASS and notes:
+        note = f"{note}; {'; '.join(notes)}"
+    return status, note
 
 
 def client_get_file(test: Test, cache: common.Cache, name: str) -> tuple[int, str, str]:

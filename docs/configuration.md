@@ -65,20 +65,28 @@ EOF
   (`Origin.DisableCopies`). The `exports` suite restarts the origins
   so for a while, in the tests' own layer, with `fed.sh`'s
   `Origin.Exports` restated, which then also replaces any of yours
-  ([exports and copies](tests.md#exports-and-copies)).
+  ([exports and copies](tests.md#exports-and-copies)). Nor does one
+  have an `https` or `httpsv2` origin present a token to its backend
+  (`Origin.HttpAuthTokenFile`, `Origin.HttpAuthTokenPassthrough`),
+  which asks for none: the same suite restarts the origins so for a
+  while, reaching the backend through the `webdav-gate` service, which
+  records what they send (`Origin.HttpServiceUrl`).
 - No preset bounds a pstore origin's store (`Origin.PStoreStorageDirs`),
   which would bound every suite's writes, or backs up its catalog
   (`Origin.PStoreMetadataBackup*`). The `pstore` suite restarts the
-  first origin so for a while, in the tests' own layer
+  first origin so for a while, in the tests' own layer, and stops it
+  meanwhile to restore one of the backups into its store
   ([pstore](tests.md#pstore)).
 - `framework/config.d/instance/` declares where cache-0, cache-1,
   origin-0, and origin-1 are (`GeoLocation`), which the directors sort
   by, and the `routing` suite checks. No preset changes how the
   directors sort or filter the servers (`Director.CacheSortMethod`,
   `CheckCachePresence`, `FilteredServers`,
-  `AssumePresenceAtSingleOrigin`, and the response hostnames). Under
+  `AssumePresenceAtSingleOrigin`, and the response hostnames), or
+  restricts a cache to namespaces (`Cache.PermittedNamespaces`). Under
   `-p topo-multi-cache`, the `routing` suite restarts the directors so
-  for a while, in the tests' own layer ([routing](tests.md#routing)).
+  for a while, in the tests' own layer, and then the last cache so
+  restricted ([routing](tests.md#routing)).
 - `framework/config.d/director/default/` (and `instance/fed/`, in
   `tiny`) names a support contact (`Director.SupportContactEmail` and
   `SupportContactUrl`), which the `director-api` suite checks
@@ -91,7 +99,10 @@ EOF
   `Origin.ScitokensUsernameClaim` set and no default user, in the
   tests' own layer ([Unix users](tests.md#unix-users)).
 - `fed.sh` generates `Logging.Level` (from `PELICAN_LOG_LEVEL`), every
-  server's `EnableOIDC` (from `-p auth-oidc`), the caches'
+  server's `EnableOIDC` and, with it, `OIDC.Issuer`, the identity
+  provider's URL (from `-p auth-oidc`; `Issuer.GroupSource` stays
+  `internal`, and the `oidc` suite restarts origin-0 with `oidc`, and
+  with `Server.UIAdminUsers`, for a while), the caches'
   `Cache.MemoryCacheSize` and water marks (from `-p cache-memory` and
   `-p cache-small`), `Director.DefaultResponse` (from
   `-p director-default-origin`), the registry's
@@ -107,11 +118,11 @@ EOF
   templates of its own.
 - No preset names a group in `Transfer.EnabledGroups`, or turns on the
   transfer API's OAuth2 clients (`Transfer.EnableOAuth2Clients`). Under
-  `-p origin-transfer-api`, the `transfer-api` suite restarts origin-0
-  so for a while, with a group of the run's own, in the tests' own
-  layer, and once more slowed (`Origin.TransferRateLimit`) while it
-  restarts it again with a job under way
-  ([transfer API](tests.md#transfer-api)).
+  `-p origin-transfer-api` or `-p topo-transfer-server`, the
+  `transfer-api` suite restarts the API's host so for a while, with a
+  group of the run's own, in the tests' own layer, and restarts it
+  again with a job under way, origin-0 slowed meanwhile
+  (`Origin.TransferRateLimit`) ([transfer API](tests.md#transfer-api)).
 - Under `-p topo-multi-origin`, an origin override usually belongs in
   both `origin-0/` and `origin-1/`.
 - `framework/config.d/base/40-origin.yaml` sets the embedded issuer's
@@ -173,9 +184,17 @@ name. It can set any knob in `framework/presets/default.sh`, or call
 - **Coverage.** The shapes that `smoke.sh` runs (`./smoke.sh -l`) make,
   together, every pair of choices that the presets offer, and rotating every
   key, which some shapes do before running every suite again. The
-  exceptions: `auth-oidc` and `with-grafana`, which need an identity
-  provider and a data source that the framework lacks; and rotated keys with
-  `server-unprivileged`, whose servers' keys the host may not write. Under
+  exceptions: `with-grafana`, which needs a data source that the
+  framework lacks; rotated keys with `server-unprivileged`, whose
+  servers' keys the host may not write; `cache-mixed`, `topo-no-cache`,
+  and `auth-oidc` with origins other than `posixv2` and `xrootd`, since
+  what the first tests is between the caches, the second how the
+  directors and the clients do without one, and the third the servers'
+  web login, which their storage does not change; and
+  `topo-transfer-server`, whose transfer module is on Pelican's main
+  only, which no released `pelican-server` has, so it runs only from
+  images built from main.
+  Under
   `origin-no-direct`, `/protected-a` takes no writes, so the `posc`,
   `metadata`, and `users` suites skip; its pairs with `origin-posc`,
   `origin-atomic-uploads`, `origin-metadata`, `origin-metadata-tx`, and

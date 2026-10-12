@@ -20,6 +20,12 @@ passes, refusing writes once it is full, and backing up its catalog.
                     after a DELETE, it fits
   backups           the first origin backs up its catalog at startup,
                     then once an interval, keeping only the newest
+  restore           with the first origin stopped, one of those backups
+                    is restored into its store by the offline CLI
+                    (`pelican-server origin pstore metadata-restore`),
+                    which must then export every object the backup
+                    held, byte for byte, and none written after it; and
+                    the origin, started again, must serve them so
 
 A pstore is an encrypted store that only the running origin can read
 (origin_serve/backend_pstore.go and pstore/ in Pelican). The suite
@@ -27,20 +33,23 @@ writes under /<ns>/data/pstore/<run>/, in the first protected namespace
 that takes writes, at every pstore origin, and removes it afterward.
 
 Nothing bounds a store, or backs one up, as the shape is: a bound would
-bound every suite's writes. So for `capacity` and `backups` the suite
-restarts the first origin, once, with its one storage directory
-(Origin.PStoreLocation) bounded at what it holds and a few MiB more
-(Origin.PStoreStorageDirs), and with metadata backups every
+bound every suite's writes. So for `capacity`, `backups`, and `restore`
+the suite restarts the first origin, once, with its one storage
+directory (Origin.PStoreLocation) bounded at what it holds and a few MiB
+more (Origin.PStoreStorageDirs), and with metadata backups every
 BACKUP_INTERVAL to a directory of the run's own in its state
 (Origin.PStoreMetadataBackup*), as the last of its configuration layers
 (control.restart_with()); and afterward restores it, and waits until the
-federation serves again. That needs a control helper, and a topology
-other than `tiny`, whose origin is the whole federation's process;
-otherwise the two skip, and say why. The scheduled passes run as the
-shape is (config.d/origin/pstore/50-origin.yaml shortens their
-intervals), before the restart, which would start them over.
+federation serves again. `restore` also stops the origin for a while,
+and starts it again on the restored catalog. That needs a control
+helper, and a topology other than `tiny`, whose origin is the whole
+federation's process; otherwise the three skip, and say why. The
+scheduled passes run as the shape is
+(config.d/origin/pstore/50-origin.yaml shortens their intervals), before
+the restart, which would start them over.
 """
 
+import glob
 import json
 import math
 import os
@@ -76,6 +85,10 @@ SCENARIOS = {
     "scheduled-passes": "the index check and data scan run clean, and reclaim old versions",
     "capacity": "a full store refuses a PUT with 507 before its body, and takes it once freed",
     "backups": "catalog backups at startup and every interval, keeping only the newest",
+    "restore": (
+        "a backup restored offline into the store serves what it held, byte for byte, and"
+        " nothing written after it"
+    ),
 }
 
 # The protected namespaces, of which the suite writes in the first that
@@ -169,6 +182,26 @@ INTERVAL_SLACK = 10
 # (snapshotOnce in pstore/backup.go; backupMagic in backup_crypto.go).
 BACKUP_NAME = re.compile(r"pstore-metadata-(\d{8}T\d{6}Z)\.pmb")
 BACKUP_MAGIC = b"PELICAN-PSTORE-BACKUP\x00\x01"
+
+# restore: the objects it writes before the backup that it restores, of
+# sizes the store keeps in its catalog (up to blocks.INLINE) and in block
+# files, one past the spill threshold (blocks.SPILL); how long after them
+# a backup taken after them may take to come, an interval, its slack,
+# and the pass itself; and the object written after that backup, which
+# the restored catalog must lack. The store's parts, which the CLI needs
+# beside each other (pstore/recover.go in Pelican): the catalog, the
+# block files, and the master key (local_cache/database.go, storage.go,
+# and encryption.go).
+RESTORE_SIZES = (100, blocks.INLINE, blocks.INLINE + 1, 100000, blocks.SPILL + 5)
+RESTORE_WAIT = BACKUP_INTERVAL + INTERVAL_SLACK + 30
+LATE = "late"
+CATALOG_DIR = "db"
+OBJECTS_DIR = "objects"
+MASTER_KEY = "masterkey.json"
+# How long a CLI command on the store may take, and what a successful
+# restore prints (runPStoreRestore in Pelican's cmd/origin_pstore.go).
+CLI_TIMEOUT = 300
+RESTORED = "Restored the catalog from"
 
 # How long, after the restore, every director may take to name every
 # origin, and every cache to reach them.
@@ -1296,6 +1329,272 @@ class Backups:
 
 
 # --------------------------------------------------------------------------
+# restore
+
+
+def keys_env(test: Test, origin: common.Origin) -> dict[str, str]:
+    """The environment in which the pstore CLI opens origin's store: a
+    copy of every key in origin's issuer key directory as its own, since
+    the catalog's master key and each backup are sealed to them
+    (openPStoreForCLI in Pelican's cmd/origin_pstore.go). A copy, as
+    minting_env() makes one, so that Pelican never writes a key of its
+    own among the origin's."""
+    keys = os.path.join(test.tmp, f"restore-keys-{origin.svc}")
+    os.makedirs(keys, exist_ok=True)
+    for path in sorted(glob.glob(f"issuer-keys/{origin.svc}/*.pem")):
+        copy = os.path.join(keys, os.path.basename(path))
+        shutil.copyfile(path, copy)
+        os.chmod(copy, 0o600)
+    return {"PELICAN_ISSUERKEYSDIRECTORY": os.path.abspath(keys)}
+
+
+def give_back(path: str, uid: int, gid: int) -> Optional[str]:
+    """Make path, and everything under it, belong to uid and gid, as what
+    the origin wrote does, so that an origin that dropped privileges can
+    still open what the tests wrote as root; why that failed, or None."""
+    try:
+        for root, dirs, files in os.walk(path):
+            for name in [*dirs, *files]:
+                os.chown(os.path.join(root, name), uid, gid)
+        os.chown(path, uid, gid)
+    except OSError as e:
+        return f"giving framework/var/{path} back to {uid}:{gid}: {e.strerror}"
+    return None
+
+
+def exported_files(directory: str) -> dict[str, bytes]:
+    """Every file under directory, by name, with its bytes."""
+    found: dict[str, bytes] = {}
+    for root, _, files in os.walk(directory):
+        for name in files:
+            with open(os.path.join(root, name), "rb") as f:
+                found[name] = f.read()
+    return found
+
+
+@dataclass
+class Restore:
+    """restore's state at the first origin: the backup copied for it, the
+    objects it wrote before and after, and the store's catalog set aside
+    while the restored one is tried."""
+
+    test: Test
+    origin: common.Origin
+    backups: Backups
+    server: str  # pelican-server
+    data: dict[str, bytes] = field(default_factory=dict[str, bytes])  # by object name
+    copied: str = ""  # the backup restored, copied under test.tmp
+    aside: str = ""  # where the catalog that the restore replaces is set aside
+    swapped: bool = False  # whether the restored catalog is in place
+
+    @property
+    def store(self) -> str:
+        """The store, under framework/var: STORE (/data/pstore) in the
+        origin, whose /data is origin.store."""
+        return f"{self.origin.store}/{STORE[len('/data/') :]}"
+
+    @property
+    def catalog(self) -> str:
+        """The store's catalog directory, under framework/var."""
+        return f"{self.store}/{CATALOG_DIR}"
+
+    def rel(self, name: str) -> str:
+        """Where object name of the scenario's is in the namespace."""
+        return self.test.rel("restore", name)
+
+    def cli(self, *args: str) -> tuple[int, str, str]:
+        """Run `pelican-server origin pstore <args>` on the store, with
+        the origin's keys: its exit status, stdout, and stderr."""
+        command = [self.server, "origin", "pstore", *args]
+        command += ["--location", os.path.abspath(self.store)]
+        try:
+            done = subprocess.run(  # nosec B603
+                command,
+                env={**self.test.session.env, **keys_env(self.test, self.origin)},
+                cwd=self.test.tmp,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=CLI_TIMEOUT,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return -1, "", f"timed out after {CLI_TIMEOUT}s"
+        return done.returncode, done.stdout, done.stderr
+
+    def written(self) -> Row:
+        """`objects`: write an object of each of RESTORE_SIZES, with its
+        length, straight to the origin, and wait for a backup taken after
+        them, which is copied under test.tmp before anything else is
+        written; then write LATE, which the origin must serve."""
+        for size in RESTORE_SIZES:
+            data = os.urandom(size)
+            why = self.test.put(self.origin, self.rel(str(size)), data)
+            if why:
+                return FAIL, why
+            self.data[str(size)] = data
+        # A backup's name is its UTC second; one begun a full second after
+        # the last write ended holds every object.
+        after = int(time.time()) + 2
+        if not common.wait_for(
+            lambda: any((backup_time(n) or 0) >= after for n in self.backups.snapshots()),
+            RESTORE_WAIT,
+            interval=1,
+        ):
+            return FAIL, f"no backup taken after the objects within {RESTORE_WAIT}s"
+        name = next(n for n in self.backups.snapshots() if (backup_time(n) or 0) >= after)
+        self.copied = os.path.join(self.test.tmp, f"restore-{name}")
+        shutil.copyfile(os.path.join(self.backups.outside, name), self.copied)
+        late = os.urandom(5000)
+        why = self.test.put(self.origin, self.rel(LATE), late)
+        if why:
+            return FAIL, why
+        answer = web.request(
+            "GET", self.test.url(self.origin, self.rel(LATE)), token=self.test.token
+        )
+        if answer.status != 200 or answer.body != late:
+            return FAIL, f"{LATE}, written after the backup, {answer.describe()}"
+        return PASS, f"{len(RESTORE_SIZES)} objects, backup {name}, then {LATE}"
+
+    def set_aside(self) -> Optional[str]:
+        """With the origin stopped, set its catalog aside, so that the
+        store holds its block files and master key alone, as a restore
+        wants; why that failed, or None."""
+        for part in (CATALOG_DIR, OBJECTS_DIR, MASTER_KEY):
+            if not os.path.exists(f"{self.store}/{part}"):
+                return f"framework/var/{self.store} has no {part}"
+        self.aside = f"{self.store}/{CATALOG_DIR}.{self.test.session.run}.before-restore"
+        try:
+            os.rename(self.catalog, self.aside)
+        except OSError as e:
+            self.aside = ""
+            return f"setting framework/var/{self.catalog} aside: {e.strerror}"
+        return None
+
+    def put_back(self) -> None:
+        """Put the catalog set aside back, discarding the restored one."""
+        if not self.aside:
+            return
+        try:
+            if os.path.exists(self.catalog):
+                shutil.rmtree(self.catalog)
+            os.rename(self.aside, self.catalog)
+            self.aside = ""
+        except OSError as e:
+            warn(f"putting framework/var/{self.aside} back: {e.strerror}")
+
+    def restored(self) -> Row:
+        """`cli`: `metadata-restore` of the copied backup into the store
+        must succeed, and say so."""
+        status, out, err = self.cli("metadata-restore", self.copied)
+        if status != 0:
+            return FAIL, f"exit {status}: {last_line(err or out)}"
+        if RESTORED not in out:
+            return FAIL, f"exit 0, but did not say that it restored: {last_line(out)}"
+        self.swapped = True
+        return PASS, last_line(out)
+
+    def exported(self) -> Row:
+        """`export`: `export --verify` of the scenario's collection, from
+        the restored store, must write every object the backup held, byte
+        for byte, verified against its recorded checksums, and not LATE."""
+        directory = os.path.join(self.test.tmp, "restore-export")
+        shutil.rmtree(directory, ignore_errors=True)
+        root = self.test.catalog(self.origin, self.test.rel("restore"))
+        status, out, err = self.cli("export", "--to", directory, "--verify", root)
+        if status != 0:
+            return FAIL, f"exit {status}: {last_line(err or out)}"
+        found = exported_files(directory)
+        problems: list[str] = []
+        for name, data in self.data.items():
+            if name not in found:
+                problems.append(f"{name} was not exported")
+            elif found[name] != data:
+                problems.append(f"{name} was exported with other bytes")
+        if LATE in found:
+            problems.append(f"{LATE}, written after the backup, was exported")
+        extra = sorted(set(found) - set(self.data) - {LATE})
+        if extra:
+            problems.append(f"exported besides: {', '.join(extra)}")
+        return outcome(problems, f"{len(self.data)} objects, verified, and no {LATE}")
+
+    def served(self) -> Row:
+        """`served`: the origin, started on the restored catalog, must
+        serve every object the backup held, byte for byte, and answer 404
+        for LATE."""
+        why = settle(self.test)
+        if why:
+            return FAIL, f"once the origin started on the restored catalog, {why}"
+        problems: list[str] = []
+        for name, data in self.data.items():
+            answer = web.request(
+                "GET", self.test.url(self.origin, self.rel(name)), token=self.test.token
+            )
+            if answer.status != 200:
+                problems.append(f"{name}: {answer.describe()}")
+            elif answer.body != data:
+                problems.append(f"{name}: not its bytes")
+        answer = web.request(
+            "GET", self.test.url(self.origin, self.rel(LATE)), token=self.test.token
+        )
+        if answer.status != 404:
+            problems.append(f"{LATE}, written after the backup: {answer.describe()}, not 404")
+        return outcome(problems, f"{len(self.data)} objects served; {LATE} gone")
+
+    def run(self) -> dict[str, Row]:
+        """Every case, in order: the objects and the backup, with the
+        origin running; the restore and the export, with it stopped; and
+        what it serves once started again. Whatever happens, the origin
+        is started again, on the catalog set aside unless the restored
+        one served."""
+        rows: dict[str, Row] = {"objects": guarded(self.written)}
+        if rows["objects"][0] != PASS:
+            return rows
+        stopped = False
+        try:
+            control.stop(self.origin.svc)
+            stopped = True
+            why = self.set_aside()
+            if why:
+                rows["cli"] = (FAIL, why)
+                return rows
+            rows["cli"] = guarded(self.restored)
+            if rows["cli"][0] != PASS:
+                return rows
+            rows["export"] = guarded(self.exported)
+        except control.ControlError as e:
+            rows["cli"] = (FAIL, str(e))
+            return rows
+        finally:
+            if stopped:
+                if not self.swapped:
+                    self.put_back()
+                else:
+                    found = os.stat(f"{self.store}/{MASTER_KEY}")
+                    why = give_back(self.catalog, found.st_uid, found.st_gid)
+                    if why:
+                        warn(why)
+                try:
+                    control.start(self.origin.svc)
+                except control.ControlError as e:
+                    warn(f"starting {self.origin.svc} again: {e}")
+        rows["served"] = guarded(self.served)
+        if rows["served"][0] != PASS:
+            # Leave the rest of the run the catalog that served before.
+            try:
+                control.stop(self.origin.svc)
+                self.put_back()
+                control.start(self.origin.svc)
+            except control.ControlError as e:
+                warn(f"putting {self.origin.svc}'s catalog back: {e}")
+        elif self.aside:
+            shutil.rmtree(self.aside, ignore_errors=True)
+            self.aside = ""
+        return rows
+
+
+# --------------------------------------------------------------------------
 # Running the restart's scenarios.
 
 
@@ -1309,15 +1608,23 @@ def unrestartable(test: Test) -> Optional[str]:
 
 def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], None]) -> None:
     """Restart the first origin for the scenarios in wanted (`capacity`,
-    `backups`, or both), run them, restore it, and wait until the
+    `backups`, and `restore`), run them, restore it, and wait until the
     federation serves again. add() records a row: its scenario, case,
-    and result."""
+    and result. `restore` needs the backups that `backups` configures,
+    and the `pelican-server` that has the CLI."""
     origin = test.fed.origins[0]
     why = unrestartable(test)
     if why:
         for scenario in wanted:
             add(scenario, "", (SKIP, why))
         return
+    if "restore" in wanted and test.session.pelican_server is None:
+        add(
+            "restore",
+            "",
+            (SKIP, "no pelican-server, which has `origin pstore`; run ./fed.sh init"),
+        )
+        wanted = [s for s in wanted if s != "restore"]
     bound: Optional[int] = None
     if "capacity" in wanted:
         found, why = usage(test, origin)
@@ -1328,18 +1635,30 @@ def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], 
             bound = int(found["usedBytes"]) + HEADROOM
     if not wanted:
         return
-    backups = Backups(test, origin, time.time()) if "backups" in wanted else None
+    backups = (
+        Backups(test, origin, time.time())
+        if "backups" in wanted or "restore" in wanted
+        else None
+    )
     text = config_text(bound, backups.inside if backups else None)
     print(f"\nRestarting {origin.svc} with:\n{text}")
     done: set[str] = set()
     try:
         with control.restart_with(origin.svc, {CONFIG_FILE: text}):
             startup = guarded(backups.started) if backups else None
+            # restore comes before capacity, which would leave the store
+            # too full for its objects, and backups' later cases last,
+            # once the schedule has run on past restore's stop and start.
+            if backups and "restore" in wanted:
+                server = test.session.pelican_server or ""
+                for case, row in Restore(test, origin, backups, server).run().items():
+                    add("restore", case, row)
+                done.add("restore")
             if bound is not None:
                 for case, row in Capacity(test, origin, bound).run().items():
                     add("capacity", case, row)
                 done.add("capacity")
-            if backups and startup:
+            if backups and startup and "backups" in wanted:
                 add("backups", "startup", startup)
                 try:
                     rows = backups.finished()
@@ -1409,7 +1728,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         clean("before the run")
     print(f"pstore test against {fed.url}, objects under /{namespace}/{test.base}/")
     try:
-        later = [s for s in selected if s in ("capacity", "backups")]
+        later = [s for s in selected if s in ("capacity", "backups", "restore")]
         for scenario in selected:
             if scenario in later:
                 continue

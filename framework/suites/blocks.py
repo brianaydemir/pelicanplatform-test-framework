@@ -7,8 +7,10 @@ several at once, and an upload the client must verify by one;
 conditional reads and writes, and the ETags they name, which every
 method must report alike; and objects that caches read in overlapping
 pieces or give up on, that are overwritten once cached, that are
-corrupted in a cache's store, or that are written through a cache. Also the signals by which a client trusts what a cache
-gives it: the X-Transfer-Status trailer, which reports a failure after
+corrupted in a cache's store, or that are written through a cache; and
+an object past 4 GiB, as a sparse file, whose length and whose ranges
+across 2 GiB and 4 GiB every server must get right. Also the signals by
+which a client trusts what a cache gives it: the X-Transfer-Status trailer, which reports a failure after
 the headers; the digests a V2 cache relays from the origins, and its
 refusal to keep an object whose bytes fail them; and that a cache
 fetches an object that many clients read at once from the origins once.
@@ -35,6 +37,7 @@ and a direct read must be refused.
 import base64
 import binascii
 import functools
+import hashlib
 import json
 import os
 import random
@@ -51,12 +54,14 @@ from email.utils import formatdate
 from typing import Optional
 from urllib.parse import urlencode, urlsplit
 
+from suites import commands
 from testlib import (
     blocks,
     cacheapi,
     common,
     credentials,
     digests,
+    director,
     metrics,
     stores,
     transfers,
@@ -74,8 +79,14 @@ SCENARIOS = {
     "put-plugin": "stash_plugin's upload of every size",
     "put-checksum": "`pelican object put --require-checksum` succeeds only where the origin reports a digest",
     "origin-read": "each origin returns every object whole and every range",
-    "client-get": "`pelican object get` of every size, through a cache and with --direct",
-    "plugin-get": "stash_plugin's download of every size, through a cache and direct",
+    "client-get": (
+        "`pelican object get` of every size, through a cache, with --direct, and from a"
+        " cache it names"
+    ),
+    "plugin-get": (
+        "stash_plugin's download of every size, through a cache, direct, and from a cache"
+        " it prefers"
+    ),
     "cache-whole-first": "each cache: a cold whole read, a warm one, then every range",
     "cache-range-first": "each cache: a cold range first, then every range, then the whole",
     "cache-overlap": "each cache: ranges that overlap what it holds, in turn and at once",
@@ -94,6 +105,7 @@ SCENARIOS = {
     "stale-origin-digest": "each federated V2 cache keeps and passes on nothing whose bytes fail the origins' digest",
     "past-end": "a range that starts at or past an object's end: 416, not bytes",
     "empty": "a 0-byte object: 200 with no body; a range of it gets no bytes",
+    "huge-ranges": "an object past 4 GiB: its length, and ranges across 2 GiB and 4 GiB, at every server and by the client",
     "conditional": "a GET with If-None-Match or If-Modified-Since: 304 only when the condition holds",
     "conditional-put": "a PUT with If-Match or If-None-Match: refused (412) unless the condition holds",
     "etag-agreement": "each origin gives one version one ETag, by every method, and honors it in conditions",
@@ -607,21 +619,83 @@ def downloaded(test: Test, set_name: str, directory: str) -> Optional[str]:
     return None
 
 
+def named_cache(test: Test) -> Optional[common.Cache]:
+    """The cache that a client's named reads name: the first federated
+    one, as the transfers suite names it; None where there is none."""
+    return test.fed.federated_caches[0] if test.fed.federated_caches else None
+
+
+def served_elsewhere(hosts: list[str], cache: common.Cache) -> Optional[str]:
+    """Why hosts, which served a named read's objects, are not all the
+    named cache's; None if they are. A client that fell back to the
+    director's choice would otherwise pass."""
+    if not hosts:
+        return "no server recorded"
+    want = director.host(cache.url)
+    others = sorted({h for h in hosts if h != want})
+    if others:
+        return f"served by {', '.join(others)}, not {want}"
+    return None
+
+
+def stats_hosts(path: str) -> list[str]:
+    """The host that served each object in the pelican client's transfer
+    stats at path (--transfer-stats); none if it wrote none."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return transfers.stats_endpoints(json.load(f))
+    except (OSError, ValueError):
+        return []
+
+
+def ad_hosts(ads: str) -> list[str]:
+    """The host that served each transfer that stash_plugin's result ads
+    call a success: the highest-numbered EndpointN of each."""
+    hosts: list[str] = []
+    for ad in ads.splitlines():
+        if "TransferSuccess = true" not in ad:
+            continue
+        endpoints = re.findall(r'Endpoint(\d+) = "([^":]*)', ad)
+        if endpoints:
+            hosts.append(max(endpoints, key=lambda e: int(e[0]))[1])
+    return hosts
+
+
 def client_get(test: Test) -> tuple[str, str]:
-    """`pelican object get` of every size, through a cache and with
-    --direct."""
+    """`pelican object get` of every size, three ways: through the cache
+    the director picks, with --direct, which must be refused where
+    /protected-a takes no direct clients, and from the first federated
+    cache, named (--cache), which alone may serve it."""
     if why := test.not_uploaded(True):
         return FAIL, why
     urls = [f"{test.fed.url}/protected-a/{test.rel('client', size)}" for size in blocks.SIZES]
     notes: list[str] = []
     routed = "through a cache" if test.caches else "without --direct"
-    for label, flags in ((routed, []), ("direct", ["--direct"])):
-        target = os.path.join(test.tmp, f"client-get-{'direct' if flags else 'cache'}")
+    # Each way: its key, its label, the client's flags, and the cache it
+    # names, if any.
+    ways: list[tuple[str, str, list[str], Optional[common.Cache]]] = [
+        ("cache", routed, [], None),
+        ("direct", "direct", ["--direct"], None),
+    ]
+    named = named_cache(test)
+    if named is not None:
+        ways.append(("named", f"named ({named.svc})", ["--cache", named.url], named))
+    for key, label, flags, cache in ways:
+        target = os.path.join(test.tmp, f"client-get-{key}")
         os.makedirs(target)
+        stats = os.path.join(test.tmp, f"client-get-{key}.stats.json")
         code, out, err = test.session.pelican_cmd(
-            "object", "get", "--token", test.token_file, *flags, *urls, target
+            "object",
+            "get",
+            "--token",
+            test.token_file,
+            "--transfer-stats",
+            stats,
+            *flags,
+            *urls,
+            target,
         )
-        if flags and not test.direct:
+        if "--direct" in flags and not test.direct:
             if code == 0:
                 return FAIL, f"{label}: succeeded, but /protected-a takes no direct clients"
             why = transfers.refused(out + err)
@@ -636,27 +710,44 @@ def client_get(test: Test) -> tuple[str, str]:
         why = downloaded(test, "client", target)
         if why:
             return FAIL, f"{label}: {why}"
+        if cache is not None:
+            why = served_elsewhere(stats_hosts(stats), cache)
+            if why:
+                return FAIL, f"{label}: {why}"
         notes.append(label)
     return PASS, ", ".join(notes)
 
 
 def plugin_get(test: Test) -> tuple[str, str]:
-    """stash_plugin's download of every size, through a cache, then
-    direct (?directread, the plugin's only way to ask for it); where
-    /protected-a takes no direct clients, that must be refused."""
+    """stash_plugin's download of every size, three ways: through the
+    cache the director picks; direct (?directread, the plugin's only way
+    to ask for it), which must be refused where /protected-a takes no
+    direct clients; and from the first federated cache, preferred
+    (Client.PreferredCaches), which alone may serve it."""
     if why := test.not_uploaded(True):
         return FAIL, why
     notes: list[str] = []
     routed = "through a cache" if test.caches else "without ?directread"
-    for label, query in ((routed, ""), ("direct", transfers.DIRECT_QUERY)):
-        name = f"plugin-get-{'direct' if query else 'cache'}"
+    # Each way: its key, its label, the query of each URL, and the cache
+    # it prefers, if any.
+    ways: list[tuple[str, str, str, Optional[common.Cache]]] = [
+        ("cache", routed, "", None),
+        ("direct", "direct", transfers.DIRECT_QUERY, None),
+    ]
+    named = named_cache(test)
+    if named is not None:
+        ways.append(("named", f"preferred ({named.svc})", "", named))
+    for key, label, query, cache in ways:
+        name = f"plugin-get-{key}"
         directory = os.path.join(test.tmp, name)
         os.makedirs(directory)
         urls = [
             f"{test.fed.url}/protected-a/{test.rel('plugin', size)}{query}"
             for size in blocks.SIZES
         ]
-        passed, said = plugin(test, name, urls, directory, upload=False)
+        passed, said = plugin(
+            test, name, urls, directory, upload=False, cache=cache.url if cache else None
+        )
         if query and not test.direct:
             if passed:
                 return FAIL, f"{label}: succeeded, but /protected-a takes no direct clients"
@@ -673,6 +764,10 @@ def plugin_get(test: Test) -> tuple[str, str]:
         why = downloaded(test, "plugin", directory)
         if why:
             return FAIL, f"{label}: {why}"
+        if cache is not None:
+            why = served_elsewhere(ad_hosts(said), cache)
+            if why:
+                return FAIL, f"{label}: {why}"
         notes.append(label)
     return PASS, ", ".join(notes)
 
@@ -2512,6 +2607,298 @@ def empty(test: Test) -> tuple[str, str]:
     return PASS, ", ".join(notes)
 
 
+# --------------------------------------------------------------------------
+# huge-ranges: an object past 4 GiB.
+
+# The object is zeros, but for MARKER bytes of a pattern of their own at
+# its start, around 2 GiB and 4 GiB, and at its end (huge_pattern()); the
+# rest is holes in a sparse file, which costs little to keep, and which
+# a cache fetches no more of than a range reads.
+MARKER = 1 << 16
+# Its size: two markers past 4 GiB, rounded up to a block boundary, and a
+# byte more, so that 2^32 falls inside a block (no power of two is a
+# multiple of BLOCK), the last block is one byte, and the end marker
+# clears the 4 GiB one: a size or an offset kept in 32 bits, signed or
+# not, goes wrong somewhere in it.
+HUGE_SIZE = -(-((1 << 32) + 2 * MARKER) // blocks.BLOCK) * blocks.BLOCK + 1
+HUGE_MARKERS = (0, (1 << 31) - MARKER // 2, (1 << 32) - MARKER // 2, HUGE_SIZE - MARKER)
+# The ranges asked for, each within a marker: across, just before, and
+# at each power of two; the last byte; a suffix; and an open-ended tail.
+HUGE_RANGES: tuple[blocks.Range, ...] = (
+    ((1 << 31) - 100, (1 << 31) + 99),
+    ((1 << 31) - 1, 1 << 31),
+    (1 << 31, 1 << 31),
+    ((1 << 32) - 100, (1 << 32) + 99),
+    ((1 << 32) - 1, (1 << 32) - 1),
+    (1 << 32, 1 << 32),
+    (HUGE_SIZE - 1, HUGE_SIZE - 1),
+    (None, 1000),
+    (HUGE_SIZE - 1000, None),
+)
+# How much of the body of an answer to one of them is read before hanging
+# up: more than any range, so that a server that ignores Range and sends
+# the whole object is caught without the whole object being read.
+HUGE_READ = 1 << 16
+# How much of the object its file may take on disk and still be sparse.
+SPARSE_LIMIT = 16 << 20
+# How long a server may take to answer about it: a backend may hash the
+# whole object for an ETag before it answers a HEAD.
+HUGE_TIMEOUT = 300
+
+
+def huge_pattern(run_id: str, offset: int) -> bytes:
+    """The marker at offset: MARKER bytes from a digest of the run and the
+    offset, so that no two markers, and no two runs', are alike."""
+    seed = hashlib.sha256(f"huge:{run_id}:{offset}".encode()).digest()
+    return (seed * (MARKER // len(seed) + 1))[:MARKER]
+
+
+def huge_expected(run_id: str, low: int, high: int) -> bytes:
+    """Bytes low through high of the object."""
+    found = bytearray(high - low + 1)
+    for offset in HUGE_MARKERS:
+        start, end = max(low, offset), min(high, offset + MARKER - 1)
+        if start <= end:
+            marker = huge_pattern(run_id, offset)
+            found[start - low : end - low + 1] = marker[start - offset : end - offset + 1]
+    return bytes(found)
+
+
+def huge_file(run_id: str, path: str) -> tuple[Optional[str], bool]:
+    """Write the object to path (under framework/var) as a sparse file,
+    the markers written and the rest left as holes: why that failed, if
+    it did, and whether the file is sparse there, which a store on a
+    filesystem without holes cannot keep it."""
+    try:
+        with open(path, "wb") as f:
+            for offset in HUGE_MARKERS:
+                f.seek(offset)
+                f.write(huge_pattern(run_id, offset))
+            f.truncate(HUGE_SIZE)
+        os.chmod(path, 0o644)
+        found = os.stat(path)
+    except OSError as e:
+        return f"writing framework/var/{path}: {e.strerror}", False
+    if found.st_size != HUGE_SIZE:
+        return f"framework/var/{path} is {found.st_size} bytes, not {HUGE_SIZE}", False
+    return None, found.st_blocks * 512 <= SPARSE_LIMIT
+
+
+def huge_range_problem(run_id: str, answer: web.Response, r: blocks.Range) -> Optional[str]:
+    """What is wrong with an answer to a request for range r of the
+    object, or None: 206, a Content-Range of the bytes asked for out of
+    the object's size, and exactly those bytes."""
+    low, high = blocks.resolve(HUGE_SIZE, r)
+    if answer.status != 206:
+        return f"{answer.describe()}, not 206"
+    said = answer.header("Content-Range")
+    if blocks.content_range(said) != (low, high, HUGE_SIZE):
+        return f"Content-Range '{said}', not 'bytes {low}-{high}/{HUGE_SIZE}'"
+    if answer.body != huge_expected(run_id, low, high):
+        return f"{len(answer.body)} bytes came, not bytes {low}-{high}"
+    return None
+
+
+def huge_at(
+    test: Test,
+    what: str,
+    head: Callable[[], web.Response],
+    get: Callable[[str], web.Response],
+    size_of: Optional[Callable[[], tuple[Optional[int], str]]] = None,
+) -> list[str]:
+    """What is wrong with how a server serves the object, asked through
+    head() (a HEAD), get(range header) (a GET of a range, read only in
+    part), and size_of() (what it says the object's size is, and why not,
+    if it says none): the HEAD must give the object's length, each range
+    must come back right, and the size must be the object's."""
+    problems: list[str] = []
+    answer = head()
+    if answer.status != 200:
+        problems.append(f"{what}: HEAD got {answer.describe()}")
+    elif answer.header("Content-Length").strip() != str(HUGE_SIZE):
+        length = answer.header("Content-Length")
+        problems.append(f"{what}: HEAD gave Content-Length '{length}', not {HUGE_SIZE}")
+    for r in HUGE_RANGES:
+        header = blocks.header((r,))
+        why = huge_range_problem(test.run, get(header), r)
+        if why:
+            problems.append(f"{what}: {header}: {why}")
+    if size_of is not None:
+        size, why = size_of()
+        if size != HUGE_SIZE:
+            problems.append(f"{what}: {why or f'size {size}, not {HUGE_SIZE}'}")
+    return problems
+
+
+def huge_propfind(target: str, token: str) -> tuple[Optional[int], str]:
+    """What a PROPFIND of Depth 0 of target says the object's size is."""
+    answer = webdav.propfind(target, "0", token)
+    if answer.status != 207:
+        return None, f"PROPFIND got {answer.describe()}"
+    try:
+        entries = webdav.parse(answer.body)
+    except ValueError as e:
+        return None, f"PROPFIND: {e}"
+    sizes = [e.size for e in entries if not e.collection]
+    if len(sizes) != 1:
+        return None, f"PROPFIND listed {len(entries)} entries"
+    return sizes[0], f"PROPFIND said getcontentlength {sizes[0]}"
+
+
+def huge_server(test: Test, svc: str, url: str, rel: str) -> list[str]:
+    """huge_at() for a server, asked straight."""
+    target = f"{url}/protected-a/{rel}"
+    return huge_at(
+        test,
+        svc,
+        lambda: web.request("HEAD", target, token=test.token, timeout=HUGE_TIMEOUT),
+        lambda header: web.read_part(
+            target, test.token, HUGE_READ, timeout=HUGE_TIMEOUT, headers={"Range": header}
+        ),
+        lambda: huge_propfind(target, test.token),
+    )
+
+
+def huge_through_director(test: Test, director_url: str, rel: str) -> list[str]:
+    """huge_at() through the director's object route, which sends a
+    client to a cache: each request is sent there, and then again to
+    wherever the redirect leads, with the token, as a client does."""
+    route = f"{director_url}/api/v1.0/director/object/protected-a/{rel}"
+    name = f"{director.host(director_url)} (object route)"
+
+    def follow(method: str, headers: dict[str, str]) -> web.Response:
+        answer = web.request(method, route, token=test.token, headers=headers)
+        if answer.status != 307 or not answer.header("Location"):
+            return answer
+        where = answer.header("Location")
+        if method == "HEAD":
+            return web.request("HEAD", where, token=test.token, timeout=HUGE_TIMEOUT)
+        return web.read_part(
+            where, test.token, HUGE_READ, timeout=HUGE_TIMEOUT, headers=headers
+        )
+
+    return huge_at(
+        test,
+        name,
+        lambda: follow("HEAD", {}),
+        lambda header: follow("GET", {"Range": header}),
+    )
+
+
+def huge_client_sizes(test: Test, rel: str) -> list[str]:
+    """What is wrong with what the client says the object's size is, by
+    `pelican object stat --json`, and, where /protected-a has Listings,
+    `pelican object ls -l --json` of its collection."""
+    problems: list[str] = []
+    url = f"{test.fed.url}/protected-a/{rel}"
+    code, out, err = test.session.pelican_cmd(
+        "object", "stat", "--json", "--token", test.token_file, url
+    )
+    if code != 0:
+        problems.append(f"`object stat`: exit {code}: {last_line(err or out)}")
+    else:
+        try:
+            info = commands.json_object(out)
+        except ValueError as e:
+            problems.append(f"`object stat`: unreadable output ({e}): {last_line(out)}")
+        else:
+            if info.get("Size") != HUGE_SIZE:
+                problems.append(f"`object stat` said Size {info.get('Size')}, not {HUGE_SIZE}")
+    if "Listings" not in test.caps:
+        return problems
+    code, out, err = test.session.pelican_cmd(
+        "object", "ls", "-l", "--json", "--token", test.token_file, url.rsplit("/", 1)[0]
+    )
+    if code != 0:
+        problems.append(f"`object ls`: exit {code}: {last_line(err or out)}")
+        return problems
+    try:
+        sizes = [e.get("Size") for e in commands.json_objects(out) if not e.get("IsCollection")]
+    except ValueError as e:
+        problems.append(f"`object ls`: unreadable output ({e}): {last_line(out)}")
+        return problems
+    if sizes != [HUGE_SIZE]:
+        problems.append(f"`object ls` listed sizes {sizes}, not [{HUGE_SIZE}]")
+    return problems
+
+
+def huge_evict(test: Test, rel: str) -> list[str]:
+    """Evict the object from each V2 cache, which may have charged its
+    store the whole of it: what went wrong."""
+    path = f"/protected-a/{rel}"
+    problems: list[str] = []
+    for cache in test.caches:
+        if cache.kind != "v2":
+            continue
+        query = urlencode({"path": path, "immediate": "true"})
+        answer = web.request(
+            "DELETE", f"{cache.web_url}{cacheapi.EVICT}?{query}", token=test.token
+        )
+        if answer.status != 200:
+            problems.append(f"evicting it from {cache.svc}: {answer.describe()}")
+    return problems
+
+
+def huge_ranges(test: Test) -> tuple[str, str]:
+    """An object past 4 GiB, as a sparse file in each origin's store on
+    disk: at each origin that takes direct clients, through each
+    director's object route (a cache), and at each cache, a HEAD must
+    give its length, and each of HUGE_RANGES come back right, with its
+    Content-Range; a PROPFIND at each origin and cache must say its size,
+    as must `pelican object stat` and `ls`. A pstore origin's store is
+    encrypted, so the object would have to go over HTTPS, whole: the
+    scenario skips there. Afterward, the object is evicted from each V2
+    cache."""
+    if any(o.pstore for o in test.origins):
+        return (
+            SKIP,
+            "a pstore origin's store is encrypted: the object would go over HTTPS whole",
+        )
+    collection = f"{test.base}/huge"
+    rel = f"{collection}/{HUGE_SIZE}"
+    errors = stores.make_dirs(test.origins, "protected-a", collection, test.token)
+    if errors:
+        return FAIL, first(errors)
+    for origin in test.origins:
+        path = f"{origin.store_of('protected-a')}/{rel}"
+        why, sparse = huge_file(test.run, path)
+        if why:
+            return FAIL, why
+        if not sparse:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return SKIP, (
+                f"{origin.svc}'s store keeps no sparse files, so the object would take"
+                f" {HUGE_SIZE >> 30} GiB on disk"
+            )
+    problems: list[str] = []
+    asked: list[str] = []
+    try:
+        if test.direct:
+            for origin in test.origins:
+                problems += huge_server(test, origin.svc, origin.url, rel)
+                asked.append(origin.svc)
+        if test.fed.federated_caches:
+            for url in test.fed.directors:
+                problems += huge_through_director(test, url, rel)
+                asked.append(f"{director.host(url)} (object route)")
+        for cache in test.caches:
+            problems += huge_server(test, cache.svc, cache.url, rel)
+            asked.append(cache.svc)
+        problems += huge_client_sizes(test, rel)
+    finally:
+        for why in huge_evict(test, rel):
+            warn(why)
+    if problems:
+        return FAIL, first(problems)
+    return (
+        PASS,
+        f"{HUGE_SIZE} bytes, {len(HUGE_RANGES)} ranges, at {', '.join(asked)}, and the client",
+    )
+
+
 # The sizes whose conditional requests `conditional` sends: within a block,
 # and past an XRootD block.
 CONDITIONAL_SIZES = (blocks.BLOCK + 1, blocks.XROOTD_BLOCK + 1)
@@ -3604,6 +3991,7 @@ RUN = {
     "stale-origin-digest": stale_origin_digest,
     "past-end": past_end,
     "empty": empty,
+    "huge-ranges": huge_ranges,
     "conditional": conditional,
     "conditional-put": conditional_put,
     "etag-agreement": etag_agreement,
