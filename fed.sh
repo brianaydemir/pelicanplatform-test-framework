@@ -81,6 +81,7 @@ fed_certs="framework/var/certs/ca.crt framework/var/certs/tls.crt framework/var/
 #   multi-director    director-1
 #   site-local-cache  cache-2, a site-local cache
 #   transfer          transfer, a transfer server of its own
+#   director-ha       director, a load balancer in front of the directors
 #   lab               lab-server, the SSH host
 #   idp               idp, the identity provider (`auth-oidc`)
 #   metadata          metadata and metadata-verifier, the metadata receiver
@@ -96,7 +97,7 @@ fed_certs="framework/var/certs/ca.crt framework/var/certs/tls.crt framework/var/
 # host) for `auth-external-issuer`.
 
 fed_profiles="multi-origin multi-cache multi-owner multi-director site-local-cache transfer"
-fed_profiles="${fed_profiles} lab idp metadata monitoring webdav s3"
+fed_profiles="${fed_profiles} director-ha lab idp metadata monitoring webdav s3"
 
 fed_has_profile() {
   case ",${COMPOSE_PROFILES}," in
@@ -177,11 +178,13 @@ fed_knobs="IMAGE_HUB PELICAN_TAG PELICAN_DEV_TAG PELICAN_SRC_DIR
 
 # Knobs that choose one of several things, which no two presets may both
 # choose: `-p origin-pstore -p origin-ssh` would otherwise quietly be
-# `origin-ssh`, and `-p origin-metadata -p origin-metadata-tx` quietly
-# transactional. So that choosing the default (`-p origin-posixv2`)
+# `origin-ssh`, `-p origin-metadata -p origin-metadata-tx` quietly
+# transactional, and `-p auth-no-issuer -p auth-external-issuer` quietly
+# the external issuer. So that choosing the default (`-p origin-posixv2`)
 # counts too, each of these knobs is `fed-unchosen` while a preset is
 # sourced, which is what a preset that reads one sees.
 fed_exclusive_knobs="TOPOLOGY ORIGIN_VARIANT CACHE_VARIANT ORIGIN_METADATA_MODE"
+fed_exclusive_knobs="${fed_exclusive_knobs} ORIGIN_ENABLE_ISSUER"
 
 # One variable per knob, so that a path with spaces survives.
 for fed_knob in ${fed_knobs}; do
@@ -231,6 +234,13 @@ done
 set +a
 export COMPOSE_PROFILES
 
+# The origins export only /public (`origin-public`), whatever else chose
+# the namespaces: the presets that export one namespace pick
+# /protected-a, and this picks /public instead.
+if [ "${ORIGIN_PUBLIC_ONLY}" = true ]; then
+  ORIGIN_NAMESPACES=public
+fi
+
 # cache-1's kind (`cache-mixed`): CACHE_1_VARIANT, or the other caches'.
 # Compose reads it for cache-1's role layer.
 fed_cache_mixed=false
@@ -274,7 +284,8 @@ for fed_knob in ORIGIN_ENABLE_ISSUER ENABLE_OIDC EXTERNAL_ISSUER \
     ORIGIN_DISABLE_DIRECT_CLIENTS ORIGIN_POSC ORIGIN_ATOMIC_UPLOADS ORIGIN_METADATA \
     ORIGIN_MULTIUSER ORIGIN_BROKER ORIGIN_TRANSFER_API TRANSFER_SERVER CACHE_TIERING \
     FEDERATED_CACHE SERVER_DROP_PRIVILEGES REGISTRY_REQUIRE_APPROVAL ISSUER_SHORT_TOKENS \
-    ORIGIN_EXPORT_TEMPLATES DIRECTOR_DISCOVERY; do
+    ORIGIN_EXPORT_TEMPLATES DIRECTOR_DISCOVERY ORIGIN_PUBLIC_ONLY DIRECTOR_HA \
+    ORIGIN_SSH_TUNNEL; do
   eval "fed_value=\${${fed_knob}}"
   # shellcheck disable=SC2154  # assigned by the eval above
   case "${fed_value}" in
@@ -339,11 +350,10 @@ fed_exports_namespace() {
   return 1
 }
 
-# The tests probe the federation through a namespace that takes a token
-# (framework/suites/federation.py), so one must be exported.
-fed_exports_namespace protected-a || fed_exports_namespace protected-b \
-    || die "ORIGIN_NAMESPACES ('${fed_namespaces}') has no protected namespace," \
-           "which the tests need; add 'protected-a' or 'protected-b'"
+# The tests probe the federation through the first protected namespace
+# exported, or, where there is none (`origin-public`), through /public
+# (probe_namespace() in framework/testlib/credentials.py); the suites
+# that need /protected-a skip.
 
 # Set fed_caps to the capabilities the origins give namespace $1 (one of
 # those above). /public takes no writes, and so has no issuer. Without
@@ -385,6 +395,7 @@ fed_profile_presets() {
     multi-director)   echo "'topo-multi-director'" ;;
     site-local-cache) echo "'topo-site-local-cache'" ;;
     transfer)         echo "'topo-transfer-server'" ;;
+    director-ha)      echo "'director-ha'" ;;
     lab)              echo "'with-lab' or 'origin-ssh'" ;;
     idp)              echo "'auth-oidc'" ;;
     metadata)         echo "'origin-metadata' or 'origin-metadata-tx'" ;;
@@ -511,8 +522,7 @@ fi
 # A transfer server (`topo-transfer-server`) is the transfer API in a
 # process of its own (`pelican-server serve --module transfer`), which the
 # transfer-api suite tests in place of origin-0's: one of the two at a
-# time. Pelican's main has the module, but no release yet: a released
-# pelican-server refuses it, and the service never starts.
+# time.
 if [ "${TRANSFER_SERVER}" = true ]; then
   fed_has_profile transfer \
       || die "TRANSFER_SERVER needs the transfer server; use '-p topo-transfer-server'"
@@ -523,22 +533,38 @@ if [ "${TRANSFER_SERVER}" = true ]; then
       || die "TRANSFER_SERVER ('topo-transfer-server') and ORIGIN_TRANSFER_API" \
              "('origin-transfer-api') each serve a transfer API, of which the" \
              "transfer-api suite tests one; choose one"
-  if [ "${IMAGE_ORIGIN}" = "${IMAGE_HUB}/origin:${PELICAN_TAG}" ]; then
-    warn "the transfer module is only on Pelican's main, so the released IMAGE_ORIGIN" \
-         "cannot serve it, and the transfer server will not start; build one from main"
-  fi
 fi
 
-# Both configure the origins' embedded issuer, which is off under the
-# external issuer; and the per-export templates go on /protected-b.
+# A load balancer in front of the directors (`director-ha`) balances two
+# of them, in the full topology, and hides which one a request reaches,
+# which the connection broker cannot abide: an origin polls one
+# director's broker, and a request for a brokered connection must reach
+# that same director.
+if [ "${DIRECTOR_HA}" = true ]; then
+  fed_has_profile director-ha \
+      || die "DIRECTOR_HA needs the load balancer; use '-p director-ha'"
+  [ "${fed_topology}" = full ] \
+      || die "DIRECTOR_HA ('director-ha') needs the 'full' topology, not '${fed_topology}'"
+  fed_has_profile multi-director \
+      || die "DIRECTOR_HA ('director-ha') balances two directors, so it needs" \
+             "'topo-multi-director'"
+  [ "${ORIGIN_BROKER}" = false ] \
+      || die "DIRECTOR_HA ('director-ha') hides which director a request reaches, which" \
+             "the connection broker ('origin-broker') needs to know; choose one"
+fi
+
+# Both configure the origins' embedded issuer, which `auth-no-issuer`
+# turns off, as does the external issuer; and the per-export templates
+# go on /protected-b.
 if [ "${ORIGIN_ENABLE_ISSUER}" = false ]; then
   [ "${ISSUER_SHORT_TOKENS}" = false ] \
       || die "ISSUER_SHORT_TOKENS ('origin-short-tokens') shortens the origins' issuer's" \
-             "tokens, but the issuer is off (ORIGIN_ENABLE_ISSUER, 'auth-external-issuer')"
+             "tokens, but the issuer is off (ORIGIN_ENABLE_ISSUER, 'auth-no-issuer' or" \
+             "'auth-external-issuer')"
   [ "${ORIGIN_EXPORT_TEMPLATES}" = false ] \
       || die "ORIGIN_EXPORT_TEMPLATES ('origin-export-templates') gives the origins'" \
              "issuer templates, but the issuer is off (ORIGIN_ENABLE_ISSUER," \
-             "'auth-external-issuer')"
+             "'auth-no-issuer' or 'auth-external-issuer')"
 fi
 if [ "${ORIGIN_EXPORT_TEMPLATES}" = true ]; then
   fed_exports_namespace protected-b \
@@ -564,6 +590,13 @@ if [ "${ORIGIN_METADATA}" = true ]; then
       || die "ORIGIN_METADATA needs the metadata receiver; use '-p origin-metadata'"
 fi
 
+# The SSH tunnel carries an ssh origin's requests to its helper.
+if [ "${ORIGIN_SSH_TUNNEL}" = true ]; then
+  [ "${ORIGIN_VARIANT}" = ssh ] \
+      || die "ORIGIN_SSH_TUNNEL ('origin-ssh-tunnel') tunnels an ssh origin's requests to" \
+             "its helper, so it needs the 'ssh' origin ('origin-ssh'), not '${ORIGIN_VARIANT}'"
+fi
+
 # Pelican refuses DisableDirectClients with exports that mix public and
 # token-protected reads.
 if [ "${ORIGIN_DISABLE_DIRECT_CLIENTS}" = true ]; then
@@ -587,7 +620,7 @@ if [ "${ORIGIN_VARIANT}" = pstore ]; then
   done
   if fed_exports_namespace public && ! fed_exports_namespace protected-a; then
     die "a 'pstore' origin's /public reads /protected-a's storage, but" \
-        "ORIGIN_NAMESPACES ('${fed_namespaces}') has no /protected-a"
+        "ORIGIN_NAMESPACES ('${fed_namespaces}') has no /protected-a ('origin-public')"
   fi
 fi
 
@@ -603,6 +636,14 @@ if fed_has_profile multi-owner; then
   fed_exports_namespace public || fed_exports_namespace protected-a \
       || die "a second owner ('topo-multi-owner') mirrors /public and" \
              "/protected-a, but ORIGIN_NAMESPACES ('${fed_namespaces}') has neither"
+  # Its /public/secret takes a token beside its public exports, which
+  # Pelican refuses once the origins serve only caches; with /protected-a
+  # exported too, it exports only /other, and no mix.
+  if [ "${ORIGIN_DISABLE_DIRECT_CLIENTS}" = true ] && fed_exports_namespace public; then
+    die "a second owner ('topo-multi-owner') exports /public/secret, which takes a token," \
+        "beside its public exports, which Pelican refuses once the origins serve only" \
+        "caches ('origin-no-direct'); drop 'origin-public'"
+  fi
 fi
 
 # Multiuser switches to each user's IDs, which needs root and a POSIX
@@ -737,7 +778,8 @@ fi
 # The federation's discovery URL, which fed_generate builds everything
 # else from, and the metadata verifier takes from the environment
 # (docker-compose.yaml): the `discovery` service's, or director-0's
-# (`director-discovery`); in `tiny`, the one host's; for a standalone
+# (`director-discovery`), or the directors' shared name
+# (`director-ha` too); in `tiny`, the one host's; for a standalone
 # origin, its own.
 case "${fed_topology}" in
   tiny)       FED_DISCOVERY_URL=https://fed:8444 ;;
@@ -745,6 +787,9 @@ case "${fed_topology}" in
   *)          FED_DISCOVERY_URL=https://discovery:8444
               if [ "${DIRECTOR_DISCOVERY}" = true ]; then
                 FED_DISCOVERY_URL=https://director-0:8444
+                if [ "${DIRECTOR_HA}" = true ]; then
+                  FED_DISCOVERY_URL=https://director:8444
+                fi
               fi ;;
 esac
 export FED_DISCOVERY_URL
@@ -1058,7 +1103,12 @@ fed_generate() {
       fed_origin_url=https://origin-0:8444
       fed_origin_key_dir=issuer-keys/origin-0 ;;
     *)
+      # Clients use the directors' shared name (`director-ha`), where
+      # there is one; the servers advertise to each director by its own.
       fed_director_url=https://director-0:8444
+      if [ "${DIRECTOR_HA}" = true ]; then
+        fed_director_url=https://director:8444
+      fi
       fed_registry_url=https://registry:8444
       directors=https://director-0:8444
       if fed_has_profile multi-director; then
@@ -1382,18 +1432,45 @@ fed_generate() {
     printf 'Director:\n  DefaultResponse: %s\n' "${DIRECTOR_DEFAULT_RESPONSE}"
   } | fed_write framework/var/generated/conf/60-director.yaml
 
-  # director-0 alone serves the federation's metadata
+  # The directors that serve the federation's metadata
   # (`director-discovery`), which framework/config.d/director/default/
-  # turns off: another director must still answer 410 there.
-  if [ "${DIRECTOR_DISCOVERY}" = true ]; then
-    {
-      printf -- '---\n'
-      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-      printf 'Director:\n  EnableFederationMetadataHosting: true\n'
-    } | fed_instance_write director-0 60-discovery.yaml
-  else
-    fed_instance_rm director-0 60-discovery.yaml
-  fi
+  # turns off: director-0 alone, so that another director must still
+  # answer 410 there; but under `director-ha`, every director, since any
+  # may answer at the shared name.
+  for svc in ${fed_group_directors}; do
+    if [ "${DIRECTOR_DISCOVERY}" = true ] \
+        && { [ "${svc}" = director-0 ] || [ "${DIRECTOR_HA}" = true ]; }; then
+      {
+        printf -- '---\n'
+        printf '# Generated by %s. Do not edit.\n\n' "${progname}"
+        printf 'Director:\n  EnableFederationMetadataHosting: true\n'
+      } | fed_instance_write "${svc}" 60-discovery.yaml
+    else
+      fed_instance_rm "${svc}" 60-discovery.yaml
+    fi
+  done
+
+  # The load balancer in front of the directors (`director-ha`): each
+  # director's external URL is the shared name, which the tokens its web
+  # API takes name, its advertise URL its own, where the servers reach
+  # it, and its name its own too, which Pelican would otherwise take from
+  # the external URL (GetServerMetadata in server_utils/sitename.go),
+  # and so give both directors one. generated/director-ha tells the
+  # tests.
+  for svc in ${fed_group_directors}; do
+    if [ "${DIRECTOR_HA}" = true ]; then
+      {
+        printf -- '---\n'
+        printf '# Generated by %s. Do not edit.\n\n' "${progname}"
+        printf 'Server:\n  ExternalWebUrl: %s\n\n' "${fed_director_url}"
+        printf 'Director:\n  AdvertiseUrl: https://%s:8444\n\n' "${svc}"
+        printf 'Xrootd:\n  Sitename: %s\n' "${svc}"
+      } | fed_instance_write "${svc}" 60-ha.yaml
+    else
+      fed_instance_rm "${svc}" 60-ha.yaml
+    fi
+  done
+  printf '%s\n' "${DIRECTOR_HA}" | fed_write framework/var/generated/director-ha
 
   # How long the origins' embedded issuer's tokens last
   # (`origin-short-tokens`): Pelican's defaults otherwise. issuer-lifetimes
@@ -1495,6 +1572,19 @@ fed_generate() {
     } | fed_write framework/var/generated/conf/60-atomic-uploads.yaml
   else
     rm -f framework/var/generated/conf/60-atomic-uploads.yaml
+  fi
+
+  # The ssh origin's tunnel (`origin-ssh-tunnel`): the origin dials its
+  # helper through the SSH connection, instead of the helper connecting
+  # back to the origin's web URL.
+  if [ "${ORIGIN_SSH_TUNNEL}" = true ]; then
+    {
+      printf -- '---\n'
+      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
+      printf 'Origin:\n  SSH:\n    TunnelCallback: true\n'
+    } | fed_write framework/var/generated/conf/60-ssh-tunnel.yaml
+  else
+    rm -f framework/var/generated/conf/60-ssh-tunnel.yaml
   fi
 
   # The connection broker (`origin-broker`): origin-0 advertises the

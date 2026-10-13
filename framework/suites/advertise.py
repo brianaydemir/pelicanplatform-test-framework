@@ -37,8 +37,9 @@ every director must name each server it touched again, within 150
 seconds, or the scenario's `restored` row fails.
 
 It puts an object of its own at every origin, in the first protected
-namespace, at data/advertise/<run>-probe, about which it asks the
-directors, and removes it afterward.
+namespace, or in /public where the origins export only that
+(`-p origin-public`), at data/advertise/<run>-probe, about which it asks
+the directors, and removes it afterward.
 """
 
 import glob
@@ -146,9 +147,11 @@ class Test:
         self.fed = session.fed
         self.run = session.run
         self.director = self.fed.directors[0]
-        self.protected = next(ns for ns in credentials.PROTECTED if ns in self.fed.exports)
+        # The first protected namespace, or /public where the origins
+        # export only that (`-p origin-public`).
+        self.namespace = credentials.probe_namespace(self.fed)
         self.rel = f"data/advertise/{self.run}-probe"
-        self.path = f"/{self.protected}/{self.rel}"
+        self.path = f"/{self.namespace}/{self.rel}"
         self.data = os.urandom(4096)
         self._servers: dict[tuple[str, str], Server] = {}
         self._keys: dict[str, tuple[str, str]] = {}
@@ -472,7 +475,7 @@ def forged_ads(test: Test) -> list[Row]:
             (
                 f"{kind}-ns-prefix",
                 server.kind,
-                ad(server, **{"registry-prefix": f"/{test.protected}"}),
+                ad(server, **{"registry-prefix": f"/{test.namespace}"}),
                 genuine,
                 None,
             ),
@@ -497,7 +500,7 @@ def forged_ads(test: Test) -> list[Row]:
     owner = next(iter(fed.owners), None)
     if owner is not None:
         other = test.server("Origin", host_of(owner.origin.url))
-        theirs = [n for n in ad(origin)["namespaces"] if n.get("path") == f"/{test.protected}"]
+        theirs = [n for n in ad(origin)["namespaces"] if n.get("path") == f"/{test.namespace}"]
         claim = ad(other)
         claim["namespaces"] = claim["namespaces"] + theirs
         variants.append(
@@ -506,14 +509,14 @@ def forged_ads(test: Test) -> list[Row]:
                 "Origin",
                 claim,
                 test.advertise_token(other),
-                (f"/{test.protected}", other),
+                (f"/{test.namespace}", other),
             )
         )
     for name, kind, body, token, nowhere in variants:
         problems, seen = forged(test, kind, body, token)
         if nowhere is not None:
             prefix, server = nowhere
-            path = test.path if prefix == f"/{test.protected}" else f"{prefix}/probe"
+            path = test.path if prefix == f"/{test.namespace}" else f"{prefix}/probe"
             for url in fed.directors:
                 if director.ask(url, route(server), path).names(server.host):
                     problems.append(f"{director.host(url)} now names {server.host} for {path}")
@@ -880,9 +883,10 @@ def fed_token_at_origin(test: Test) -> list[Row]:
     the `server` token and the first cache's federation token in one
     header, must get it; with the `server` token alone, 401; and with the
     federation token alone, which grants nothing in a protected
-    namespace, a refusal (401 or 403)."""
+    namespace, a refusal (401 or 403), but in /public (`-p origin-public`),
+    which anyone may read, the probe."""
     fed = test.fed
-    if "DirectReads" in fed.exports[test.protected]:
+    if "DirectReads" in fed.exports[test.namespace]:
         return [("", SKIP, "the origins take direct clients ('-p origin-no-direct')")]
     if not fed.native_origins:
         return [("", SKIP, f"XRootD serves the origins ({fed.origin_variant}), not Pelican")]
@@ -895,14 +899,15 @@ def fed_token_at_origin(test: Test) -> list[Row]:
     federation = str((common.as_object(parse(answer)) or {}).get("access_token") or "")
     if not federation:
         return [("", FAIL, f"no federation token for {cache.host}: {answer.describe()}")]
-    user = test.session.token(test.protected)
+    user = test.session.token(test.namespace)
+    fed_only = (200,) if test.namespace == "public" else (401, 403)
     rows: list[Row] = []
     for origin in stores.unique(fed.origins):
-        url = stores.url(origin, test.protected, test.rel)
+        url = stores.url(origin, test.namespace, test.rel)
         cases = (
             ("both", {"Authorization": f"Bearer {user}, Bearer {federation}"}, (200,)),
             ("user-only", {"Authorization": f"Bearer {user}"}, (401,)),
-            ("fed-only", {"Authorization": f"Bearer {federation}"}, (401, 403)),
+            ("fed-only", {"Authorization": f"Bearer {federation}"}, fed_only),
         )
         for name, headers, statuses in cases:
             got = web.request("GET", url, headers=headers)
@@ -1128,15 +1133,15 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 
 def put_probe(test: Test) -> None:
-    """Put the probe at every origin, in the first protected namespace."""
+    """Put the probe at every origin, in the suite's namespace."""
     fed = test.fed
-    token = test.session.token(test.protected)
-    errors = stores.make_dirs(fed.origins, test.protected, "data/advertise", token)
+    token = test.session.token(test.namespace)
+    errors = stores.make_dirs(fed.origins, test.namespace, "data/advertise", token)
     for origin in stores.unique(fed.origins):
         if errors:
             break
         error = stores.seed(
-            origin, test.protected, test.rel, test.data, token, fed.exports[test.protected]
+            origin, test.namespace, test.rel, test.data, token, fed.exports[test.namespace]
         )
         if error:
             errors.append(error)
@@ -1164,9 +1169,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 results.add(f"{name} {case}" if case else name, status, note)
     finally:
         fed = session.fed
-        tokens = {test.protected: session.token(test.protected)}
+        tokens = {test.namespace: session.token(test.namespace)}
         errors = stores.empty_tree_everywhere(
-            fed.origins, {test.protected: fed.exports[test.protected]}, "data/advertise", tokens
+            fed.origins, {test.namespace: fed.exports[test.namespace]}, "data/advertise", tokens
         )
         if errors:
             common.warn(f"could not remove the probe: {first(errors)}")

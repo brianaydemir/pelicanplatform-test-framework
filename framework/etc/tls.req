@@ -13,6 +13,7 @@ DNS.10 = discovery
 DNS.20 = director-0
 DNS.21 = director-1
 DNS.22 = director-2
+DNS.23 = director
 DNS.30 = registry
 DNS.40 = cache-0
 DNS.41 = cache-1

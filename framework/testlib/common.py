@@ -526,6 +526,20 @@ class Federation:
         ]
         return [str(url) for url in urls if url]
 
+    @cached_property
+    def director_url(self) -> str:
+        """The director's URL that clients use, from the federation's
+        discovery document: under `-p director-ha`, the load balancer's;
+        "" for a standalone origin."""
+        return str(self.discovery.get("director_endpoint") or "")
+
+    @cached_property
+    def director_ha(self) -> bool:
+        """DIRECTOR_HA: whether the directors sit behind a load balancer,
+        at director_url, each with the shared name as its external URL
+        (see presets/director-ha.sh)."""
+        return self._line("director-ha") == "true"
+
     @property
     def registry_url(self) -> str:
         """The registry's web URL, from the federation's discovery

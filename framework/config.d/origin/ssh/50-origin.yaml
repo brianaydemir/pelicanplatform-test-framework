@@ -1,7 +1,10 @@
 ---
 # An origin whose storage is the `lab-server` container, over SSH. The
 # origin copies its own pelican-server binary there and runs it as
-# `ssh-helper`. fed.sh generates the exports (see
+# `ssh-helper`, which connects back to the origin's web URL for its
+# requests (Pelican's "broker mode"); `origin-ssh-tunnel` has the origin
+# dial it through the SSH connection instead (Origin.SSH.TunnelCallback,
+# in framework/var/generated/conf/). fed.sh generates the exports (see
 # config.d/base/40-origin.yaml), and each StoragePrefix is a directory of
 # the lab server's /data.
 

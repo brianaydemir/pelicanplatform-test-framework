@@ -17,6 +17,8 @@ it so too. A listing's hrefs are decoded before they are compared.
                of that name (where /protected-a takes writes)
   origin-get   each origin serves each object by its name
   cache-get    each cache does, cold
+  director-get each director's redirect, followed as a plain HTTP client
+               follows it, leads to each object by its name
   origin-list  each origin lists every name, once, with its size
   cache-list   each federated cache does, as it relays the listing
   client-get   `pelican object get` of every object into a directory
@@ -43,6 +45,10 @@ SCENARIOS = {
     "origin-put": "a PUT of each name lands in each store on disk under that name",
     "origin-get": "each origin serves each object by its name, and no decoy",
     "cache-get": "each cache serves each object by its name, cold, and no decoy",
+    "director-get": (
+        "each director's redirect, followed as a plain HTTP client, leads to each object by"
+        " its name, and no decoy"
+    ),
     "origin-list": "each origin lists every name once, decoded, with its size",
     "cache-list": "each federated cache lists every name once, decoded, with its size",
     "client-get": (
@@ -188,6 +194,43 @@ def cache_get(test: Test) -> tuple[str, str]:
     if not test.fed.caches:
         return SKIP, "this shape has no cache"
     return served(test, [(c.svc, c.url) for c in test.fed.caches])
+
+
+def director_get(test: Test) -> tuple[str, str]:
+    """Each director's object route, asked for each object by its name,
+    sends a plain HTTP client to a federated cache, or, with no cache, to
+    an origin, by a redirect whose Location names the object again: the
+    director takes the name decoded and encodes it anew (getRedirectURL
+    in Pelican's director/director.go), so a name it mangled on the way
+    would fetch a decoy, or nothing. The client follows the Location as
+    it is, as curl -L does, and must get the object's bytes."""
+    if not test.fed.directors:
+        return SKIP, "a standalone origin has no director"
+    urls = [c.url for c in test.fed.federated_caches] or [o.url for o in test.fed.origins]
+    kind = "a cache" if test.fed.federated_caches else "an origin"
+    problems: list[str] = []
+    for url in test.fed.directors:
+        svc = director.host(url)
+        for name in NAMES:
+            route = test.url(f"{url}/api/v1.0/director/object", name)
+            answer = web.request("GET", route, token=test.token)
+            where = answer.header("Location")
+            if answer.status != 307 or not where:
+                problems.append(f"{svc}: {name!r}: {answer.describe()}, not a redirect")
+                continue
+            if not any(where.startswith(u + "/") for u in urls):
+                problems.append(f"{svc}: {name!r}: redirected to {where}, not {kind}")
+                continue
+            answer = web.request("GET", where, token=test.token)
+            if answer.status != 200:
+                problems.append(f"{svc}: {name!r}: {answer.describe()} at {where}")
+                continue
+            why = test.wrong(name, answer.body)
+            if why:
+                problems.append(f"{svc}: {why}")
+    if problems:
+        return FAIL, first(problems)
+    return PASS, f"{len(test.fed.directors)} director(s), each leading to {kind}"
 
 
 def listed(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
@@ -376,6 +419,7 @@ RUN = {
     "origin-put": origin_put,
     "origin-get": origin_get,
     "cache-get": cache_get,
+    "director-get": director_get,
     "origin-list": origin_list,
     "cache-list": cache_list,
     "client-get": client_get,

@@ -1,7 +1,8 @@
 """The origins' embedded OAuth2 issuer: what it grants of what a client
 asks for, through each of its flows, and how its refresh tokens behave.
 The suite needs the embedded issuer (ORIGIN_ENABLE_ISSUER, on by
-default) and a protected namespace, and skips with the external issuer.
+default) and a protected namespace, and skips with the issuer off or the
+external one.
 
 What a user may be granted comes from three places, which the suite
 sets up so that each user gets something different: the issuer's

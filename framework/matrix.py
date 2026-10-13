@@ -37,6 +37,7 @@ TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FACTORS: dict[str, tuple[str, ...]] = {
     "topology": ("full", "tiny", "standalone"),
     "caches": ("one", "none"),
+    "namespaces": ("all", "public"),
     "origin": ("posixv2", "xrootd", "pstore", "ssh", "httpsv2", "s3v2", "s3", "https"),
     "cache": ("v2", "xrootd", "mixed"),
     "multi_origin": ("off", "on"),
@@ -44,7 +45,7 @@ FACTORS: dict[str, tuple[str, ...]] = {
     "multi_owner": ("off", "on"),
     "multi_director": ("off", "on"),
     "site_local": ("off", "on"),
-    "issuer": ("own", "external"),
+    "issuer": ("own", "external", "none"),
     "login": ("local", "oidc"),
     "direct": ("yes", "no"),
     "posc": ("off", "on"),
@@ -53,6 +54,7 @@ FACTORS: dict[str, tuple[str, ...]] = {
     "max_age": ("off", "on"),
     "multiuser": ("off", "on"),
     "broker": ("off", "on"),
+    "ssh_tunnel": ("off", "on"),
     "transfer_api": ("off", "on", "server"),
     "tiering": ("off", "on"),
     "memory_cache": ("off", "on"),
@@ -60,6 +62,7 @@ FACTORS: dict[str, tuple[str, ...]] = {
     "privileges": ("root", "dropped"),
     "default_response": ("cache", "origin"),
     "discovery": ("host", "director"),
+    "director_ha": ("off", "on"),
     "approval": ("off", "on"),
     "tokens": ("long", "short"),
     "templates": ("global", "export"),
@@ -72,6 +75,7 @@ PRESETS: dict[str, tuple[str, str]] = {
     "topo-tiny": ("topology", "tiny"),
     "topo-standalone": ("topology", "standalone"),
     "topo-no-cache": ("caches", "none"),
+    "origin-public": ("namespaces", "public"),
     "origin-posixv2": ("origin", "posixv2"),
     "origin-xrootd": ("origin", "xrootd"),
     "origin-pstore": ("origin", "pstore"),
@@ -89,6 +93,7 @@ PRESETS: dict[str, tuple[str, str]] = {
     "topo-multi-director": ("multi_director", "on"),
     "topo-site-local-cache": ("site_local", "on"),
     "auth-external-issuer": ("issuer", "external"),
+    "auth-no-issuer": ("issuer", "none"),
     "auth-oidc": ("login", "oidc"),
     "origin-no-direct": ("direct", "no"),
     "origin-posc": ("posc", "on"),
@@ -98,6 +103,7 @@ PRESETS: dict[str, tuple[str, str]] = {
     "origin-max-age": ("max_age", "on"),
     "origin-multiuser": ("multiuser", "on"),
     "origin-broker": ("broker", "on"),
+    "origin-ssh-tunnel": ("ssh_tunnel", "on"),
     "origin-transfer-api": ("transfer_api", "on"),
     "topo-transfer-server": ("transfer_api", "server"),
     "cache-tiered": ("tiering", "on"),
@@ -106,6 +112,7 @@ PRESETS: dict[str, tuple[str, str]] = {
     "server-unprivileged": ("privileges", "dropped"),
     "director-default-origin": ("default_response", "origin"),
     "director-discovery": ("discovery", "director"),
+    "director-ha": ("director_ha", "on"),
     "registry-approval": ("approval", "on"),
     "origin-short-tokens": ("tokens", "short"),
     "origin-export-templates": ("templates", "export"),
@@ -118,9 +125,6 @@ EXTRAS: frozenset[str] = frozenset({"with-lab"})
 # Presets smoke.sh does not run, and why.
 NOT_RUN: dict[str, str] = {
     "with-grafana": "Grafana has nothing provisioned to check",
-    "topo-transfer-server": (
-        "the transfer module is on Pelican's main only, which no released pelican-server has"
-    ),
 }
 
 # The origins that run XRootD, and those with a backend service.
@@ -270,6 +274,10 @@ REFUSED: list[Rule] = [
         lambda s: s["broker"] == "on" and s["origin"] not in XROOTD_ORIGINS,
     ),
     (
+        "the SSH tunnel is the ssh origin's",
+        lambda s: s["ssh_tunnel"] == "on" and s["origin"] != "ssh",
+    ),
+    (
         "the connection broker needs origin-0 alone, in the full topology",
         lambda s: s["broker"] == "on"
         and (s["topology"] != "full" or "on" in (s["multi_origin"], s["multi_owner"])),
@@ -288,22 +296,47 @@ REFUSED: list[Rule] = [
         and (s["cache"] != "v2" or s["topology"] == "standalone"),
     ),
     (
-        "short tokens and export templates are the origins' issuer's, not the external's",
-        lambda s: s["issuer"] == "external"
+        "short tokens and export templates are the origins' issuer's, which is off",
+        lambda s: s["issuer"] != "own"
         and (s["tokens"] == "short" or s["templates"] == "export"),
     ),
     (
         "per-export templates go on /protected-b, which the shape does not export",
         lambda s: s["templates"] == "export"
-        and (s["origin"] in ("https", "httpsv2") or s["direct"] == "no" or s["broker"] == "on"),
+        and (
+            s["origin"] in ("https", "httpsv2")
+            or s["direct"] == "no"
+            or s["broker"] == "on"
+            or s["namespaces"] == "public"
+        ),
+    ),
+    (
+        "a pstore origin's /public reads /protected-a's storage, which the shape does not export",
+        lambda s: s["namespaces"] == "public" and s["origin"] == "pstore",
+    ),
+    (
+        "another owner's /public/secret takes a token beside its public exports, which Pelican"
+        + " refuses once the origins serve only caches",
+        lambda s: s["namespaces"] == "public"
+        and s["multi_owner"] == "on"
+        and s["direct"] == "no",
+    ),
+    (
+        "a load balancer balances two directors",
+        lambda s: s["director_ha"] == "on" and s["multi_director"] == "off",
+    ),
+    (
+        "the connection broker's state is one director's, which a load balancer hides",
+        lambda s: s["director_ha"] == "on" and s["broker"] == "on",
     ),
 ]
 
 # The shapes fed.sh accepts that smoke.sh does not run.
 SMOKE_LIMITS: list[Rule] = [
     (
-        "a transfer server runs only from an image built from Pelican's main",
-        lambda s: s["transfer_api"] == "server",
+        "a transfer server runs over posixv2 and xrootd origins only: what it tests beyond"
+        + " origin-0's API is the server's own confinement and issuer, not the origins' storage",
+        lambda s: s["transfer_api"] == "server" and s["origin"] not in ("posixv2", "xrootd"),
     ),
     (
         "once the servers drop privileges, the host may not write their keys",
@@ -323,6 +356,16 @@ SMOKE_LIMITS: list[Rule] = [
         "the identity provider runs over posixv2 and xrootd origins only: a login is the"
         + " servers' web UI's, not their storage's",
         lambda s: s["login"] == "oidc" and s["origin"] not in ("posixv2", "xrootd"),
+    ),
+    (
+        "origins of public data alone run over posixv2 and xrootd only: what they test is"
+        + " the federation's way with a namespace that has no issuer, not their storage",
+        lambda s: s["namespaces"] == "public" and s["origin"] not in ("posixv2", "xrootd"),
+    ),
+    (
+        "the directors' load balancer runs over posixv2 and xrootd origins only: what it"
+        + " tests is the directors, not the origins' storage",
+        lambda s: s["director_ha"] == "on" and s["origin"] not in ("posixv2", "xrootd"),
     ),
 ]
 

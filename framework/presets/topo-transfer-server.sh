@@ -13,12 +13,9 @@
 # server's key (framework/var/issuer-keys/transfer/). The transfer-api
 # suite tests it in place of origin-0's, with that key, so fed.sh refuses
 # `origin-transfer-api` beside it; and the full topology alone has room
-# for the service.
-#
-# Pelican's main has the module, but no release yet: a released
-# pelican-server refuses `--module transfer`, so build IMAGE_ORIGIN from
-# main (see the README's Server images), from which the service runs.
-# Until a release has it, smoke.sh runs no shape with this preset.
+# for the service. The module is in every release since v26.0.0-rc.0
+# (`transfer` in SetString, server_structs/generic_server.go), so the
+# released origin image serves it.
 
 TRANSFER_SERVER=true
 

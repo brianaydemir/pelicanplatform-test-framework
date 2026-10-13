@@ -54,6 +54,11 @@ all_shapes="${all_shapes} posixv2-mixed posixv2-mixed-tx xrootd-mixed xrootd-mix
 all_shapes="${all_shapes} nocache-posixv2 nocache-posixv2-posc nocache-xrootd nocache-xrootd-broker"
 all_shapes="${all_shapes} oidc-xrootd oidc-posixv2-xrootd oidc-posixv2-mixed oidc-nocache-broker"
 all_shapes="${all_shapes} oidc-tiny oidc-standalone"
+all_shapes="${all_shapes} noissuer-xrootd-xrootd noissuer-posixv2-v2 noissuer-s3-xrootd"
+all_shapes="${all_shapes} noissuer-s3v2-v2 noissuer-https-v2 transfer-posixv2-v2"
+all_shapes="${all_shapes} transfer-xrootd-xrootd transfer-posixv2-mixed transfer-nocache-broker"
+all_shapes="${all_shapes} ha-posixv2-v2 ha-nocache-xrootd public-posixv2-v2 public-xrootd-xrootd"
+all_shapes="${all_shapes} public-nocache-broker public-posixv2-mixed standalone-ssh-tunnel"
 
 # Each shape's presets, one per word.
 shape_presets() {
@@ -71,10 +76,10 @@ shape_presets() {
            "registry-approval director-default-origin origin-short-tokens" \
            "origin-export-templates" ;;
     ssh-xrootd)
-      echo "origin-ssh cache-xrootd topo-multi-cache topo-multi-director" \
-           "topo-site-local-cache origin-transfer-api director-default-origin" \
-           "registry-approval origin-short-tokens origin-export-templates" \
-           "director-discovery" ;;
+      echo "origin-ssh origin-ssh-tunnel cache-xrootd topo-multi-cache" \
+           "topo-multi-director topo-site-local-cache origin-transfer-api" \
+           "director-default-origin registry-approval origin-short-tokens" \
+           "origin-export-templates director-discovery" ;;
     s3v2-xrootd)
       echo "origin-s3v2 cache-xrootd topo-multi-owner origin-no-direct" \
            "server-unprivileged topo-site-local-cache topo-multi-director" \
@@ -103,30 +108,31 @@ shape_presets() {
            "topo-multi-director topo-site-local-cache" \
            "registry-approval director-default-origin" ;;
     tiny-pstore)
-      echo "topo-tiny origin-pstore origin-max-age server-unprivileged cache-memory" \
-           "cache-small registry-approval" ;;
+      echo "topo-tiny origin-pstore auth-no-issuer origin-max-age server-unprivileged" \
+           "cache-memory cache-small registry-approval" ;;
     posixv2-no-direct)
       echo "topo-multi-origin topo-multi-cache origin-no-direct origin-posc" \
            "origin-metadata-tx origin-multiuser topo-site-local-cache cache-tiered" \
-           "topo-multi-director cache-memory cache-small registry-approval" \
+           "topo-multi-director director-ha cache-memory cache-small registry-approval" \
            "origin-short-tokens director-discovery" ;;
     posixv2-xrootd-posc)
       echo "cache-xrootd topo-multi-origin topo-multi-cache topo-multi-owner" \
            "auth-external-issuer origin-posc origin-multiuser" ;;
     ssh-v2)
-      echo "origin-ssh topo-multi-origin auth-external-issuer origin-no-direct" \
-           "origin-max-age cache-tiered cache-memory cache-small" ;;
+      echo "origin-ssh origin-ssh-tunnel topo-multi-origin auth-external-issuer" \
+           "origin-no-direct origin-max-age cache-tiered cache-memory cache-small" ;;
     httpsv2-v2)
       echo "origin-httpsv2 topo-multi-origin topo-multi-cache topo-multi-owner" \
            "origin-max-age server-unprivileged with-lab cache-tiered cache-memory cache-small" \
            "origin-short-tokens director-discovery" ;;
     xrootd-xrootd)
       echo "origin-xrootd cache-xrootd topo-multi-origin topo-multi-cache" \
-           "topo-multi-owner origin-export-templates topo-multi-director" \
+           "topo-multi-owner origin-export-templates topo-multi-director director-ha" \
            "topo-site-local-cache origin-atomic-uploads origin-multiuser" \
            "registry-approval director-default-origin director-discovery" ;;
     posixv2-xrootd-no-direct)
-      echo "cache-xrootd origin-no-direct origin-metadata server-unprivileged" ;;
+      echo "cache-xrootd auth-no-issuer origin-no-direct origin-metadata" \
+           "server-unprivileged" ;;
     s3-xrootd-broker)
       echo "origin-s3 cache-xrootd origin-broker topo-multi-cache" \
            "topo-multi-director topo-site-local-cache auth-external-issuer" \
@@ -162,8 +168,11 @@ shape_presets() {
            "origin-export-templates" ;;
     standalone-ssh)
       echo "topo-standalone origin-ssh" ;;
+    standalone-ssh-tunnel)
+      echo "topo-standalone origin-ssh origin-ssh-tunnel auth-no-issuer" ;;
     standalone-httpsv2)
-      echo "topo-standalone origin-httpsv2 origin-transfer-api server-unprivileged" ;;
+      echo "topo-standalone origin-httpsv2 auth-no-issuer origin-transfer-api" \
+           "server-unprivileged" ;;
     standalone-s3v2)
       echo "topo-standalone origin-s3v2 origin-max-age origin-export-templates" ;;
     posixv2-mixed)
@@ -173,14 +182,14 @@ shape_presets() {
       echo "cache-mixed topo-multi-cache origin-metadata-tx" ;;
     xrootd-mixed)
       echo "origin-xrootd cache-mixed topo-multi-origin topo-multi-cache" \
-           "topo-multi-owner topo-multi-director topo-site-local-cache" \
+           "topo-multi-owner topo-multi-director director-ha topo-site-local-cache" \
            "auth-external-issuer origin-no-direct origin-atomic-uploads" \
            "origin-max-age origin-multiuser origin-transfer-api" \
            "director-default-origin director-discovery registry-approval" ;;
     xrootd-mixed-broker)
-      echo "origin-xrootd cache-mixed topo-multi-cache origin-broker" ;;
+      echo "origin-xrootd cache-mixed topo-multi-cache auth-no-issuer origin-broker" ;;
     nocache-posixv2)
-      echo "topo-no-cache origin-metadata-tx" ;;
+      echo "topo-no-cache auth-no-issuer origin-metadata-tx" ;;
     nocache-posixv2-posc)
       echo "topo-no-cache auth-external-issuer origin-posc origin-metadata" \
            "server-unprivileged" ;;
@@ -193,7 +202,7 @@ shape_presets() {
       echo "topo-no-cache origin-xrootd origin-broker" ;;
     oidc-xrootd)
       echo "auth-oidc origin-xrootd topo-multi-origin topo-multi-owner topo-multi-director" \
-           "topo-site-local-cache auth-external-issuer origin-no-direct" \
+           "director-ha topo-site-local-cache auth-external-issuer origin-no-direct" \
            "origin-atomic-uploads origin-max-age origin-multiuser origin-transfer-api" \
            "cache-tiered cache-memory cache-small director-default-origin" \
            "director-discovery registry-approval" ;;
@@ -205,9 +214,58 @@ shape_presets() {
     oidc-nocache-broker)
       echo "auth-oidc topo-no-cache origin-xrootd origin-broker" ;;
     oidc-tiny)
-      echo "auth-oidc topo-tiny" ;;
+      echo "auth-oidc topo-tiny auth-no-issuer origin-public" ;;
     oidc-standalone)
-      echo "auth-oidc topo-standalone" ;;
+      echo "auth-oidc topo-standalone origin-public" ;;
+    noissuer-xrootd-xrootd)
+      echo "auth-no-issuer origin-xrootd cache-xrootd topo-multi-origin topo-multi-cache" \
+           "topo-multi-owner topo-multi-director topo-site-local-cache" \
+           "origin-atomic-uploads origin-max-age origin-multiuser origin-transfer-api" \
+           "director-default-origin director-discovery registry-approval" ;;
+    noissuer-posixv2-v2)
+      echo "auth-no-issuer origin-posc origin-metadata cache-tiered cache-memory" \
+           "cache-small server-unprivileged" ;;
+    noissuer-s3-xrootd)
+      echo "auth-no-issuer origin-s3 cache-xrootd topo-multi-cache origin-max-age" ;;
+    noissuer-s3v2-v2)
+      echo "auth-no-issuer origin-s3v2 topo-multi-origin origin-transfer-api cache-tiered" ;;
+    noissuer-https-v2)
+      echo "auth-no-issuer origin-https topo-site-local-cache registry-approval" ;;
+    transfer-posixv2-v2)
+      echo "topo-transfer-server topo-multi-origin topo-multi-cache origin-posc" \
+           "origin-metadata origin-max-age cache-tiered cache-memory cache-small" \
+           "origin-short-tokens origin-export-templates director-discovery" \
+           "registry-approval" ;;
+    transfer-xrootd-xrootd)
+      echo "topo-transfer-server origin-xrootd cache-xrootd topo-multi-owner" \
+           "topo-multi-director topo-site-local-cache auth-external-issuer" \
+           "origin-no-direct origin-atomic-uploads origin-multiuser" \
+           "director-default-origin" ;;
+    transfer-posixv2-mixed)
+      echo "topo-transfer-server cache-mixed topo-multi-cache origin-metadata-tx" \
+           "auth-no-issuer auth-oidc server-unprivileged" ;;
+    transfer-nocache-broker)
+      echo "topo-transfer-server topo-no-cache origin-xrootd origin-broker" ;;
+    ha-posixv2-v2)
+      echo "director-ha topo-multi-director origin-metadata server-unprivileged" \
+           "auth-no-issuer cache-tiered" ;;
+    ha-nocache-xrootd)
+      echo "director-ha topo-multi-director topo-no-cache origin-xrootd" \
+           "topo-transfer-server origin-short-tokens origin-export-templates" ;;
+    public-posixv2-v2)
+      echo "origin-public topo-multi-director director-ha topo-multi-cache" \
+           "topo-multi-owner topo-site-local-cache origin-metadata origin-max-age" \
+           "cache-tiered cache-memory cache-small registry-approval" \
+           "director-default-origin director-discovery server-unprivileged auth-oidc" ;;
+    public-xrootd-xrootd)
+      echo "origin-public origin-xrootd cache-xrootd topo-multi-origin topo-multi-cache" \
+           "topo-multi-director auth-external-issuer origin-no-direct" \
+           "origin-atomic-uploads origin-multiuser origin-transfer-api" ;;
+    public-nocache-broker)
+      echo "origin-public topo-no-cache origin-xrootd origin-broker auth-no-issuer" ;;
+    public-posixv2-mixed)
+      echo "origin-public cache-mixed topo-multi-cache origin-posc origin-metadata-tx" \
+           "topo-transfer-server origin-short-tokens" ;;
     *)
       return 1 ;;
   esac
@@ -221,6 +279,7 @@ shape_rotates() {
     posixv2-xrootd-multiuser|httpsv2-xrootd|xrootd-xrootd)    return 0 ;;
     s3-v2|https-v2-broker|standalone-posixv2|standalone-ssh)  return 0 ;;
     posixv2-mixed-tx|xrootd-mixed|nocache-xrootd|oidc-xrootd) return 0 ;;
+    noissuer-xrootd-xrootd|transfer-posixv2-v2|public-xrootd-xrootd) return 0 ;;
   esac
   return 1
 }
@@ -362,7 +421,7 @@ check_ports() {
   checked=""
   for svc in ${services}; do
     case "${svc}" in
-      fed|director-*|registry|origin-*|cache-*|transfer) path=/api/v1.0/health ;;
+      fed|director|director-*|registry|origin-*|cache-*|transfer) path=/api/v1.0/health ;;
       discovery) path=/.well-known/pelican-configuration ;;
       *) continue ;;
     esac

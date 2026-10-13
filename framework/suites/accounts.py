@@ -7,7 +7,7 @@ groups are deleted, renamed, or recreated; group invites; and the
 acceptable use policy (AUP). A mistake in any of these is a privilege
 escalation, or a grant that outlives its owner. The suite needs the
 embedded issuer and a protected namespace, as the collections suite
-does, and skips with the external issuer.
+does, and skips with the issuer off or the external one.
 
 Every user and group the suite makes is the run's own, named
 acct-<role>-<run>, and acts through a bearer token that the origin's

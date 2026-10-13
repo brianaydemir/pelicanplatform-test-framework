@@ -170,6 +170,13 @@ def exported(fed: common.Federation) -> list[str]:
     return [ns for ns in NAMESPACES if ns in fed.exports]
 
 
+def probe_namespace(fed: common.Federation) -> str:
+    """The namespace that a suite probes the federation through, where
+    any will do: the first exported protected namespace, or, where the
+    origins export only /public (`-p origin-public`), /public."""
+    return next((ns for ns in PROTECTED if ns in fed.exports), exported(fed)[0])
+
+
 def applies(cred: Credential, namespace: str) -> bool:
     """Whether the tests present cred in namespace. A namespace without
     an issuer of its own (/public) has no own key and no other namespace,
@@ -456,7 +463,11 @@ def local_issuer(fed: common.Federation, web_url: str) -> str:
     """The issuer that the server at web_url names in the tokens it mints
     for its own web API (GetLocalIssuerUrl in Pelican's config/config.go):
     its web URL, or <web URL>/api/v1.0/origin where an origin and a
-    director share a process (`tiny`)."""
+    director share a process (`tiny`); and for a director behind the
+    load balancer (`-p director-ha`), the shared name that is its
+    Server.ExternalWebUrl."""
+    if fed.director_ha and web_url in fed.directors:
+        return fed.director_url
     return f"{web_url}/api/v1.0/origin" if fed.tiny else web_url
 
 
@@ -497,12 +508,17 @@ QUERY_SCOPE = "monitoring.query"
 
 def key_dir_of(fed: common.Federation, web_url: str) -> str:
     """The directory (under framework/var) of the keys of the server at
-    web_url: another owner's own, or issuer-keys/<its host>, where
-    fed.sh puts every other server's (`fed` in `tiny`)."""
+    web_url: another owner's own; the directors' load balancer's
+    (`-p director-ha`), director-0's, which every director shares; or
+    issuer-keys/<its host>, where fed.sh puts every other server's
+    (`fed` in `tiny`)."""
     for owner in fed.owners:
         if owner.web_url == web_url:
             return owner.key_dir
-    return f"issuer-keys/{urlsplit(web_url).hostname}"
+    host = urlsplit(web_url).hostname
+    if fed.director_ha and host == urlsplit(fed.director_url).hostname:
+        return "issuer-keys/director-0"
+    return f"issuer-keys/{host}"
 
 
 def web_token(

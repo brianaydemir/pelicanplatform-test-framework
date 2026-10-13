@@ -13,6 +13,7 @@
 # Pelican client refresh a token it holds, and codes expire unredeemed.
 # Every suite that mints tokens from the issuer uses them within the
 # minute, and approves each flow within it. fed.sh refuses
-# `auth-external-issuer`, under which the origins mint no tokens.
+# `auth-no-issuer` and `auth-external-issuer`, under which the origins
+# mint no tokens.
 
 ISSUER_SHORT_TOKENS=true

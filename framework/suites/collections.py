@@ -2,7 +2,7 @@
 their own, kept in an origin's database and granted through its embedded
 OAuth2 issuer (Pelican's docs/collections-design.md). The suite needs
 the embedded issuer (ORIGIN_ENABLE_ISSUER, on by default) and a
-protected namespace, and skips with the external issuer.
+protected namespace, and skips with the issuer off or the external one.
 
 Its users are records of the issuer origin (origin-0, or `fed`), which
 its admin creates once and later runs reuse: test-curator, a collection

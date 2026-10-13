@@ -189,7 +189,10 @@ class Test:
         self.session = session
         self.fed = session.fed
         self.run = session.run
-        self.namespace = next(ns for ns in credentials.PROTECTED if ns in self.fed.exports)
+        # The first protected namespace, or /public where the origins
+        # export only that (`-p origin-public`), whose token every server
+        # ignores.
+        self.namespace = credentials.probe_namespace(self.fed)
         self.caps = self.fed.exports[self.namespace]
         self.token = session.token(self.namespace)
         self.base = f"data/routing/{self.run}"
@@ -1354,11 +1357,14 @@ PERMITTED_ASKS = FILTERED_ASKS
 def permitted_namespace(test: Test) -> Optional[str]:
     """The namespace that `permitted-namespaces` leaves the last cache:
     /public, if exported, else another protected namespace; None if the
-    shape exports only the suite's own."""
-    if "public" in test.fed.exports:
-        return "public"
-    others = [ns for ns in credentials.PROTECTED if ns in test.fed.exports]
-    return next((ns for ns in others if ns != test.namespace), None)
+    shape exports only the suite's own (`-p origin-public` too, whose
+    /public is the suite's own)."""
+    others = [
+        ns
+        for ns in ("public", *credentials.PROTECTED)
+        if ns in test.fed.exports and ns != test.namespace
+    ]
+    return others[0] if others else None
 
 
 def names_cache(answer: web.Response, cache: Server) -> bool:

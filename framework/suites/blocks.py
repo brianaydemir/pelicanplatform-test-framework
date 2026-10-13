@@ -1,7 +1,8 @@
 """Objects and byte ranges at the block boundaries of pstore (an origin's
 encrypted store), the V2 cache, and the XRootD cache: write objects of
 sizes on either side of each boundary, then read them back, whole and in
-ranges, from each origin, through each cache, and through both clients;
+ranges, from each origin, through each cache, through each director's
+redirect as a plain HTTP client follows it, and through both clients;
 the digests that each server reports of them, asked for by default or
 several at once, and an upload the client must verify by one;
 conditional reads and writes, and the ETags they name, which every
@@ -88,6 +89,10 @@ SCENARIOS = {
         " it prefers"
     ),
     "cache-whole-first": "each cache: a cold whole read, a warm one, then every range",
+    "director-read": (
+        "each director's object route, followed as a plain HTTP client: every object whole,"
+        " and every range, from the cache (or, with none, the origin) it leads to"
+    ),
     "cache-range-first": "each cache: a cold range first, then every range, then the whole",
     "cache-overlap": "each cache: ranges that overlap what it holds, in turn and at once",
     "coalescing": "each federated cache: concurrent cold reads of an object fetch it from the origins once",
@@ -279,6 +284,20 @@ class Test:
                 return f"the upload failed: {note}"
         return None
 
+    @staticmethod
+    def judge(
+        answer: web.Response, data: bytes, request: Optional[blocks.Request]
+    ) -> Optional[str]:
+        """What is wrong with answer, to a GET of an object that should
+        hold data, or of a range of it; None if nothing."""
+        if request is None:
+            if answer.status != 200:
+                return f"{answer.describe()}, not 200"
+            if answer.body != data:
+                return f"{len(answer.body)} bytes, not the object"
+            return None
+        return blocks.check(data, request, answer.status, answer.headers, answer.body)
+
     def get(
         self, base_url: str, rel: str, data: bytes, request: Optional[blocks.Request]
     ) -> Optional[str]:
@@ -292,30 +311,53 @@ class Test:
             headers=headers,
             timeout=120,
         )
-        if request is None:
-            if answer.status != 200:
-                return f"{answer.describe()}, not 200"
-            if answer.body != data:
-                return f"{len(answer.body)} bytes, not the object"
-            return None
-        return blocks.check(data, request, answer.status, answer.headers, answer.body)
+        return self.judge(answer, data, request)
+
+    def get_through(
+        self, director_url: str, rel: str, data: bytes, request: Optional[blocks.Request]
+    ) -> Optional[str]:
+        """get(), through the object route of the director at
+        director_url, as a plain HTTP client reads: the director's
+        redirect (307) must lead to a federated cache, or, with no cache,
+        to an origin, and the same request, token and Range and all, is
+        then sent there, as curl -L sends it."""
+        headers = {"Range": blocks.header(request)} if request else {}
+        route = f"{director_url}/api/v1.0/director/object/protected-a/{rel}"
+        answer = web.request("GET", route, token=self.token, headers=headers)
+        where = answer.header("Location")
+        if answer.status != 307 or not where:
+            return f"{answer.describe()} from the director, not a redirect"
+        urls = [c.url for c in self.fed.federated_caches] or [o.url for o in self.fed.origins]
+        if not any(where.startswith(url + "/") for url in urls):
+            kind = "a cache" if self.fed.federated_caches else "an origin"
+            return f"redirected to {where}, not {kind}"
+        answer = web.request("GET", where, token=self.token, headers=headers, timeout=120)
+        why = self.judge(answer, data, request)
+        return f"at {director.host(where)}: {why}" if why else None
 
     def read(
-        self, base_url: str, set_name: str, size: int, request: Optional[blocks.Request]
+        self,
+        base_url: str,
+        set_name: str,
+        size: int,
+        request: Optional[blocks.Request],
+        through: bool = False,
     ) -> Optional[str]:
-        """Read an object of a set (or a range of it); what went wrong, or
-        None."""
-        why = self.get(base_url, self.rel(set_name, size), self.data[(set_name, size)], request)
+        """Read an object of a set (or a range of it), straight from the
+        server at base_url, or, with through, through the director there
+        (see get_through()); what went wrong, or None."""
+        reader = self.get_through if through else self.get
+        why = reader(base_url, self.rel(set_name, size), self.data[(set_name, size)], request)
         if not why:
             return None
         return f"{set_name}/{size}{' ' + blocks.header(request) if request else ''}: {why}"
 
-    def read_all(self, base_url: str, set_name: str) -> list[str]:
-        """Every range of every size in a set, 8 at a time."""
+    def read_all(self, base_url: str, set_name: str, through: bool = False) -> list[str]:
+        """Every range of every size in a set, 8 at a time (see read())."""
         jobs = [(size, r) for size in blocks.SIZES for r in blocks.requests(size)]
 
         def one(job: tuple[int, blocks.Request]) -> Optional[str]:
-            return self.read(base_url, set_name, *job)
+            return self.read(base_url, set_name, *job, through=through)
 
         with ThreadPoolExecutor(8) as pool:
             found = pool.map(one, jobs)
@@ -787,6 +829,32 @@ def cache_whole_first(test: Test) -> tuple[str, str]:
     if problems:
         return FAIL, first(problems)
     return PASS, f"{len(test.caches)} cache(s)"
+
+
+def director_read(test: Test) -> tuple[str, str]:
+    """Each director's object route, followed as a plain HTTP client
+    follows it (see Test.get_through()), returns every object of the set
+    read whole first, whole and in every range, from the federated cache
+    the redirect leads to, or, with no cache, the origin."""
+    if not test.fed.directors:
+        return SKIP, "a standalone origin has no director"
+    if why := test.not_uploaded(True):
+        return FAIL, why
+    problems: list[str] = []
+    for url in test.fed.directors:
+        name = director.host(url)
+        problems += [
+            f"{name}: {p}"
+            for p in (
+                test.read(url, "whole", size, None, through=True) for size in blocks.SIZES
+            )
+            if p
+        ]
+        problems += [f"{name}: {p}" for p in test.read_all(url, "whole", through=True)]
+    if problems:
+        return FAIL, first(problems)
+    where = "a cache" if test.fed.federated_caches else "an origin, there being no cache"
+    return PASS, f"{len(test.fed.directors)} director(s), each leading to {where}"
 
 
 def cache_range_first(test: Test) -> tuple[str, str]:
@@ -3974,6 +4042,7 @@ RUN = {
     "client-get": client_get,
     "plugin-get": plugin_get,
     "cache-whole-first": cache_whole_first,
+    "director-read": director_read,
     "cache-range-first": cache_range_first,
     "cache-overlap": cache_overlap,
     "coalescing": coalescing,

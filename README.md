@@ -196,8 +196,9 @@ knob, and `fed.sh` refuses two of them together, even when one of them
 names the default.
 
 With none, the federation has one director, registry, `posixv2` origin,
-and V2 cache. The origins export three namespaces, which hold the same
-objects:
+and V2 cache, and the origins run Pelican's embedded issuer, which
+Pelican itself leaves off (`auth-no-issuer`). The origins export three
+namespaces, which hold the same objects:
 
 - `/public`: anyone may read and list it, and no one may write it, so it
   has no issuer.
@@ -217,7 +218,7 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | `topo-multi-owner`      | adds origin-2, another owner: `/other`, and `/public/other` and `/public/secret` inside origin-0's `/public`, with a key and an issuer of its own; see `owners` |
 | `topo-multi-director`   | adds director-1, which shares director-0's key                                                                                                    |
 | `topo-site-local-cache` | adds cache-2, a site-local cache that the director does not know of; see `sitelocal`                                                              |
-| `topo-transfer-server`  | adds `transfer`, a transfer server of its own (`pelican-server serve --module transfer`), tested in place of origin-0's transfer API, which it refuses beside it; Pelican's main only, so build `IMAGE_ORIGIN` from it; see `transfer-api` |
+| `topo-transfer-server`  | adds `transfer`, a transfer server of its own (`pelican-server serve --module transfer`), tested in place of origin-0's transfer API, which it refuses beside it; see `transfer-api` |
 | `topo-no-cache`         | removes cache-0: a federation that serves straight from its origins, whose directors send every read to an origin; refuses every `cache-*` preset but `cache-v2`, every preset that adds a cache, and `origin-no-direct`; see `federation`'s `directors` and `redirects` |
 | `topo-standalone`       | origin-0 alone, as a standalone origin: no discovery host, director, registry, or cache; native origins only                                      |
 
@@ -262,9 +263,11 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | `origin-no-direct`      | origins serve only caches (`Origin.DisableDirectClients`); `/protected-a` only, and only reads            |
 | `origin-multiuser`      | the origin reads and writes as each token's user (`Origin.Multiuser`); `posixv2` and `origin-xrootd` only |
 | `origin-broker`         | origin-0 uses director-0 as its connection broker; XRootD origins only, `/protected-a` only               |
+| `origin-ssh-tunnel`     | the origin dials its helper on the lab server through the SSH connection (`Origin.SSH.TunnelCallback`), as it must where the storage host cannot reach the origin; `origin-ssh` only |
 | `origin-transfer-api`   | the origins run the transfer API (`Origin.EnableTransferAPI`); see `transfer-api`                         |
 | `origin-short-tokens`   | the origins' issuer mints access tokens and codes that last a minute and refresh tokens four (`Issuer.*Lifetime`); see `issuer` |
 | `origin-export-templates` | `/protected-b` has authorization templates of its own, replacing the global ones there; see `issuer`'s `templates` |
+| `origin-public`         | the origins export only `/public`, as an origin of public data does: no writes, and no issuer; the suites that need `/protected-a` skip; refuses `origin-pstore`, `origin-export-templates`, and `topo-multi-owner` with `origin-no-direct` |
 
 **Authorization**
 
@@ -272,6 +275,7 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | ---------------------- | --------------------------------------------------------------------------------- |
 | `auth-oidc`            | web UI login, and the registry's `--with-identity`, through an identity provider of the framework's own, the `idp` service (`framework/idp/idp.py`), whose users are `framework/etc/idp-users.json`; see `oidc` |
 | `auth-external-issuer` | the exports trust `https://discovery:8444/issuer` instead of the origins' issuers |
+| `auth-no-issuer`       | the origins run no issuer (`Origin.EnableIssuer`, Pelican's default): each namespace's issuer is the origin itself, whose own key signs its tokens out of band, as `pelican token create` does; the `collections`, `issuer`, and `accounts` suites skip |
 
 **Director and registry**
 
@@ -279,6 +283,7 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `director-default-origin` | the directors send a GET of a bare path to an origin, not a cache (`Director.DefaultResponse`); see `federation`'s `redirects` |
 | `director-discovery`      | director-0 serves the federation's metadata (`Director.EnableFederationMetadataHosting`), as its discovery host, so the federation is `pelican://director-0:8444`, and the nginx host runs only for `auth-external-issuer`; see `federation`'s `discovery` |
+| `director-ha`             | adds `director`, a load balancer in front of director-0 and director-1, which the federation names as its director; each director's `Server.ExternalWebUrl` is that name, and its `Director.AdvertiseUrl` its own; needs `topo-multi-director`; refuses `origin-broker` |
 | `registry-approval`       | nothing serves until an administrator approves its registration (`Registry.Require{Origin,Cache}Approval`), which the `federation` suite does |
 
 **Every server**
@@ -409,6 +414,7 @@ in your hosts file, as any user of `framework/etc/idp-users.json`.
 | <https://localhost:9005> | discovery (`/.well-known/pelican-configuration`), and the external issuer (`/issuer`) |
 | <https://localhost:9006> | transfer (`topo-transfer-server`)                                                     |
 | <https://localhost:9007> | idp, the identity provider (`auth-oidc`); `https://idp:9007` to the servers           |
+| <https://localhost:9008> | director, the directors' load balancer (`director-ha`)                                |
 | <http://localhost:9002>  | dev container (serve on `0.0.0.0:8444` inside)                                        |
 | <http://localhost:9003>  | Grafana (`admin` / `admin`; see `framework/presets/with-grafana.sh`)                  |
 

@@ -33,7 +33,8 @@ CACHE_1_VARIANT=
 # `standalone` topology's lack of one are not this knob's.
 FEDERATED_CACHE=true
 
-# Origin.EnableIssuer.
+# Origin.EnableIssuer: whether the origins run Pelican's embedded issuer,
+# which is off in Pelican by default (see presets/auth-no-issuer.sh).
 ORIGIN_ENABLE_ISSUER=true
 
 # Whether the origins' exports trust an external issuer rather than their
@@ -58,6 +59,10 @@ ORIGIN_EXPORT_TEMPLATES=false
 # either, and each has an issuer and keys of its own; the tests need
 # at least one of them.
 ORIGIN_NAMESPACES="public protected-a protected-b"
+
+# Whether the origins export only /public, whatever ORIGIN_NAMESPACES
+# says (see presets/origin-public.sh).
+ORIGIN_PUBLIC_ONLY=false
 
 # Origin.DisableDirectClients, which also leaves the exports only reads
 # (see presets/origin-no-direct.sh).
@@ -89,6 +94,11 @@ ORIGIN_MULTIUSER=false
 # Origin.EnableBroker, with director-0 as the connection broker (see
 # presets/origin-broker.sh).
 ORIGIN_BROKER=false
+
+# Origin.SSH.TunnelCallback: whether an ssh origin dials its helper
+# through the SSH connection, rather than the helper connecting back to
+# the origin's web URL (see presets/origin-ssh-tunnel.sh).
+ORIGIN_SSH_TUNNEL=false
 
 # Origin.EnableTransferAPI (see presets/origin-transfer-api.sh).
 ORIGIN_TRANSFER_API=false
@@ -125,6 +135,10 @@ DIRECTOR_DEFAULT_RESPONSE=cache
 # place of the `discovery` service, which then does not run (see
 # presets/director-discovery.sh).
 DIRECTOR_DISCOVERY=false
+
+# Whether the directors sit behind a load balancer, `director`, which the
+# federation names as its director (see presets/director-ha.sh).
+DIRECTOR_HA=false
 
 # Registry.RequireOriginApproval and Registry.RequireCacheApproval: whether
 # a registration serves nothing until an administrator approves it (see

@@ -1152,9 +1152,13 @@ def metrics_scenario(test: Test) -> list[Row]:
 
 def hosts_metadata(test: Test, url: str) -> bool:
     """Whether the director at url is the federation's discovery host:
-    `tiny`'s is, and director-0 under `-p director-discovery`; elsewhere
-    the discovery service is."""
-    return director.host(url) == director.host(str(test.fed.discovery["discovery_endpoint"]))
+    `tiny`'s is, director-0 under `-p director-discovery`, and every
+    director where the discovery host is the directors' load balancer
+    (`-p director-ha` too); elsewhere the discovery service is."""
+    discovery_host = director.host(str(test.fed.discovery["discovery_endpoint"]))
+    if test.fed.director_ha and discovery_host == director.host(test.fed.director_url):
+        return True
+    return director.host(url) == discovery_host
 
 
 def metadata_hosting(test: Test) -> list[Row]:

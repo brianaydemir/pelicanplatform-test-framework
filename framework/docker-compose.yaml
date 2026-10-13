@@ -288,6 +288,36 @@ services:
       - ./var/state/director-1:/var/lib/pelican
     <<: *common-secrets
 
+  # A load balancer in front of the directors (`-p director-ha`): nginx,
+  # passing TLS through to director-0 and director-1 in turn
+  # (etc/nginx-director.conf), at the name the federation's metadata
+  # gives its director, which clients and every server's configuration
+  # use. It resolves the directors' names again as it runs, so a
+  # director that `up` or a test recreates is found again. The directors
+  # present the framework's certificate, which names `director`
+  # (etc/tls.req).
+  director:
+    hostname: director
+    image: nginx:alpine
+    profiles: ["director-ha"]
+    depends_on:
+      director-0: { condition: service_healthy }
+      director-1: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8444"]
+      start_period: 10s
+      start_interval: 1s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits: { memory: 32M }
+    ports:
+      - "9008:8444"
+    volumes:
+      - ./etc/nginx-director.conf:/etc/nginx/nginx.conf:ro
+
   # It starts after director-0, which under `-p director-discovery` it
   # discovers the federation through; a director needs no registry to
   # start.
@@ -530,9 +560,7 @@ services:
   # A transfer server of its own (`-p topo-transfer-server`): the transfer
   # module alone, in a process of its own, from the origin image, whose
   # pelican-server has every module, as the `tiny` topology runs it
-  # (docker-compose.tiny.yaml). It needs no storage. Pelican's main has
-  # the module, but no release yet: a released pelican-server refuses
-  # it, and the service never comes up.
+  # (docker-compose.tiny.yaml). It needs no storage.
   transfer:
     hostname: transfer
     image: "${IMAGE_ORIGIN:?run through ./fed.sh}"

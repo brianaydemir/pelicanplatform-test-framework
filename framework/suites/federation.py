@@ -125,10 +125,8 @@ PENDING_STATUSES = ("Incomplete", "Pending")
 # A server's downtimes, through its web API.
 DOWNTIME = "/api/v1.0/downtime"
 
-# The connection broker's path, and the one namespace a brokered origin
-# exports (see presets/origin-broker.sh).
+# The connection broker's path.
 BROKER_PATH = "/api/v1.0/broker/reverse"
-PROTECTED_A = "protected-a"
 
 # What a discovery document must agree on with fed.sh's.
 DISCOVERY_FIELDS = (
@@ -168,10 +166,11 @@ class Probe:
         # /public's is /protected-a's, whose storage it reads.
         own = {ns: os.urandom(4096) for ns in session.namespaces}
         self.data = {ns: own[self.fed.storage_namespace(ns)] for ns in own}
-        # The protected namespace that caches and directors are asked about,
-        # and the namespace `ready` reads: /public, with no token, where
-        # there is one.
-        self.protected = next(ns for ns in credentials.PROTECTED if ns in self.fed.exports)
+        # The namespace that caches and directors are asked about: the
+        # first protected one, or /public where the origins export only
+        # that (`-p origin-public`); and the namespace `ready` reads:
+        # /public, with no token, where there is one.
+        self.namespace = credentials.probe_namespace(self.fed)
         self.read_ns = session.namespaces[0]
         self.uploaded = False
         self.approval = Approval()
@@ -264,7 +263,7 @@ def approve_pending(probe: Probe) -> None:
             for start in SERVER_PREFIXES
             if prefix.startswith(start)
         )
-        path = f"/{probe.protected}/{probe.rel}"
+        path = f"/{probe.namespace}/{probe.rel}"
         for url in fed.directors:
             for route in ("object", "origin"):
                 answer = director.ask(url, route, path)
@@ -312,10 +311,10 @@ def caches(probe: Probe) -> tuple[str, str]:
     """Each cache serves the object with the server's token."""
     if not probe.fed.caches:
         return SKIP, "this shape has no cache"
-    token = probe.session.token(probe.protected)
+    token = probe.session.token(probe.namespace)
     problems: list[str] = []
     for cache in probe.fed.caches:
-        url = f"{cache.url}/{probe.protected}/{probe.rel}"
+        url = f"{cache.url}/{probe.namespace}/{probe.rel}"
         answer = web.request("GET", url, token=token)
         # A new cache refuses the token (403) until it has learned the
         # namespace's issuers, and may fail otherwise, or not answer,
@@ -329,7 +328,7 @@ def caches(probe: Probe) -> tuple[str, str]:
             answer = web.request("GET", url, token=token)
         if answer.status != 200:
             problems.append(f"{cache.svc}: {answer.describe()}")
-        elif answer.body != probe.data[probe.protected]:
+        elif answer.body != probe.data[probe.namespace]:
             problems.append(f"{cache.svc}: the body is not the object")
     if problems:
         return FAIL, common.first(problems)
@@ -370,10 +369,10 @@ def directors(probe: Probe) -> tuple[str, str]:
         return SKIP, "a standalone origin has no director"
     if fed.tiny:
         return SKIP, "the tiny topology's director, cache, and origin are one server"
-    path = f"/{probe.protected}/{probe.rel}"
+    path = f"/{probe.namespace}/{probe.rel}"
     origin_hosts = [director.host(o.url) for o in fed.origins]
     site_local = [director.host(c.url) for c in fed.caches if c.site_local]
-    direct = "DirectReads" in fed.exports[probe.protected]
+    direct = "DirectReads" in fed.exports[probe.namespace]
     cacheless = not fed.federated_caches
     # Each ask: its route, its query, and whom it must name.
     asks = [
@@ -437,8 +436,9 @@ def directors(probe: Probe) -> tuple[str, str]:
 def discovery(probe: Probe) -> tuple[str, str]:
     """The discovery document that a Pelican server serves, where one is
     the discovery host: director-0 under `-p director-discovery`
-    (Director.EnableFederationMetadataHosting), the tiny topology's one
-    server, or a standalone origin. Each of DISCOVERY_FIELDS must be as
+    (Director.EnableFederationMetadataHosting), or the directors' load
+    balancer under `-p director-ha` too, the tiny topology's one server,
+    or a standalone origin. Each of DISCOVERY_FIELDS must be as
     fed.sh has it (an empty one may be missing), and the jwks_uri serve
     the server's own keys, by which the federation's tokens are checked.
     Elsewhere, the discovery host serves fed.sh's own document."""
@@ -446,7 +446,8 @@ def discovery(probe: Probe) -> tuple[str, str]:
     host = director.host(str(fed.discovery["discovery_endpoint"]))
     if host == "discovery":
         return SKIP, "the discovery host serves fed.sh's own document"
-    key_dir = f"issuer-keys/{host}"
+    # The load balancer's keys (`-p director-ha`) are director-0's.
+    key_dir = credentials.key_dir_of(fed, str(fed.discovery["discovery_endpoint"]))
     url = f"{fed.discovery['discovery_endpoint']}/.well-known/pelican-configuration"
     answer = web.request("GET", url)
     if answer.status != 200:
@@ -476,10 +477,11 @@ def discovery(probe: Probe) -> tuple[str, str]:
     return PASS, url
 
 
-def broker_problems(fed: common.Federation, path: str) -> list[str]:
+def broker_problems(fed: common.Federation, path: str, namespace: str) -> list[str]:
     """What is wrong with what each director says of the connection
-    broker: for an origin's read of path, the X-Pelican-Broker header;
-    and in its list of servers, each one's broker URL."""
+    broker: for an origin's read of path, in namespace, the one the
+    brokered origin exports, the X-Pelican-Broker header; and in its
+    list of servers, each one's broker URL."""
     want = urlsplit(str(fed.discovery["broker_endpoint"]))
     origin = director.host(fed.origins[0].url)
     problems: list[str] = []
@@ -489,8 +491,8 @@ def broker_problems(fed: common.Federation, path: str) -> list[str]:
         query = parse_qs(got.query)
         if (got.scheme, got.netloc, got.path) != (want.scheme, want.netloc, BROKER_PATH):
             return f"'{advertised}' is not the broker at {want.netloc}{BROKER_PATH}"
-        if query.get("origin") != [origin] or query.get("prefix") != [f"/{PROTECTED_A}"]:
-            return f"'{advertised}' is not for {origin}'s /{PROTECTED_A}"
+        if query.get("origin") != [origin] or query.get("prefix") != [f"/{namespace}"]:
+            return f"'{advertised}' is not for {origin}'s /{namespace}"
         return None
 
     for url in fed.directors:
@@ -525,11 +527,11 @@ def broker(probe: Probe) -> tuple[str, str]:
     fed = probe.fed
     if not fed.broker:
         return SKIP, "the origins use no connection broker ('-p origin-broker')"
-    path = f"/{probe.protected}/{probe.rel}"
+    path = f"/{probe.namespace}/{probe.rel}"
     found: list[str] = []
 
     def named() -> bool:
-        found[:] = broker_problems(fed, path)
+        found[:] = broker_problems(fed, path, probe.namespace)
         return not found
 
     if not common.wait_for(named, DIRECTORS_WAIT, interval=5):
@@ -831,7 +833,7 @@ def down(probe: Probe, svc: str, web_url: str, route: str) -> Optional[str]:
     name it for route; then end the downtime, after which, as soon, every
     director must name it again. What went wrong, or None."""
     fed = probe.fed
-    path = f"/{probe.protected}/{probe.rel}"
+    path = f"/{probe.namespace}/{probe.rel}"
     host = director.host(web_url)
     before = routed_to(fed, route, path, host)
     if len(before) != len(fed.directors):

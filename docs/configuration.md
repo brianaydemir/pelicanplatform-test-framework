@@ -108,14 +108,21 @@ EOF
   `-p director-default-origin`), the registry's
   `RequireOriginApproval`, `RequireCacheApproval` (from
   `-p registry-approval`), and `RequireKeyChaining` (off under
-  `-p topo-multi-owner`), and the embedded issuer's token and code
-  lifetimes (from `-p origin-short-tokens`) in `/fed/generated/conf`, and
+  `-p topo-multi-owner`), the embedded issuer's token and code
+  lifetimes (from `-p origin-short-tokens`), and an ssh origin's
+  `Origin.SSH.TunnelCallback` (from `-p origin-ssh-tunnel`) in
+  `/fed/generated/conf`, and
   director-0's `Director.EnableFederationMetadataHosting` (from
-  `-p director-discovery`) in its `/fed/generated.instance`, so a file
+  `-p director-discovery`; every director's under `-p director-ha` too)
+  and, under `-p director-ha`, each director's `Server.ExternalWebUrl`
+  (the shared name), `Director.AdvertiseUrl` (its own), and
+  `Xrootd.Sitename` (its own name, which Pelican would otherwise take
+  from the shared name) in its `/fed/generated.instance`, so a file
   of yours can override them, e.g. for one service; but the tests
   expect what the presets say. Under `-p origin-export-templates`, the
   generated `Origin.Exports` gives `/protected-b` authorization
-  templates of its own.
+  templates of its own; under `-p origin-public`, it has `/public`
+  alone, whatever `ORIGIN_NAMESPACES` says.
 - No preset names a group in `Transfer.EnabledGroups`, or turns on the
   transfer API's OAuth2 clients (`Transfer.EnableOAuth2Clients`). Under
   `-p origin-transfer-api` or `-p topo-transfer-server`, the
@@ -186,14 +193,16 @@ name. It can set any knob in `framework/presets/default.sh`, or call
   key, which some shapes do before running every suite again. The
   exceptions: `with-grafana`, which needs a data source that the
   framework lacks; rotated keys with `server-unprivileged`, whose
-  servers' keys the host may not write; `cache-mixed`, `topo-no-cache`,
-  and `auth-oidc` with origins other than `posixv2` and `xrootd`, since
-  what the first tests is between the caches, the second how the
-  directors and the clients do without one, and the third the servers'
-  web login, which their storage does not change; and
-  `topo-transfer-server`, whose transfer module is on Pelican's main
-  only, which no released `pelican-server` has, so it runs only from
-  images built from main.
+  servers' keys the host may not write; and `cache-mixed`,
+  `topo-no-cache`, `auth-oidc`, and `topo-transfer-server` with origins
+  other than `posixv2` and `xrootd`, since what the first tests is
+  between the caches, the second how the directors and the clients do
+  without one, the third the servers' web login, which their storage
+  does not change, and the fourth a transfer server's own confinement
+  and issuer, beyond origin-0's API, which runs over every origin;
+  likewise `origin-public` and `director-ha`, which test the
+  federation's way with a namespace that has no issuer, and the
+  directors behind one name, not the origins' storage.
   Under
   `origin-no-direct`, `/protected-a` takes no writes, so the `posc`,
   `metadata`, and `users` suites skip; its pairs with `origin-posc`,
