@@ -38,17 +38,18 @@ The suite uploads an object straight to every origin, under
              headers), by which the client picks a token
   redirects  a plain HTTP client, which follows a director's redirect
              and presents its token again where it lands, as curl does:
-             in each namespace, at each director, a GET and a HEAD of
+             in each namespace, at each director (and at the load
+             balancer, under `-p director-ha`), a GET and a HEAD of
              the object's bare path must land at a cache, or at an
              origin under `-p director-default-origin`
              (Director.DefaultResponse); one with ?directread at an
              origin, where the namespace takes direct clients, and
              otherwise find none; the object and origin routes at a
-             cache and an origin; and a bare-path PUT at an origin,
-             where the namespace takes writes, and otherwise nowhere
-             that takes it. What lands at a cache must be served, and
-             what lands at an origin only where the namespace takes
-             direct clients
+             cache and an origin; and a bare-path PUT, with the
+             namespace's token, at an origin, where the namespace
+             takes writes, and otherwise nowhere that takes it. What
+             lands at a cache must be served, and what lands at an
+             origin only where the namespace takes direct clients
   presence   with several origins, an object that one of them alone
              holds: each director must send an origin's read of it,
              plain and for a client's direct read, to that origin alone,
@@ -675,20 +676,23 @@ def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[s
         elif method == "HEAD" and length != str(len(data)):
             problems.append(f"{what} -> {at}: Content-Length '{length}', not {len(data)}")
 
-    # A bare-path PUT goes to an origin, where the namespace takes writes.
+    # A bare-path PUT goes to an origin, where the namespace takes writes,
+    # with the namespace's token: a write takes one even where reads do
+    # not (`-p origin-public-writes`).
     rel = f"{probe.rel}-put-{name}"
     payload = os.urandom(4096)
+    writes = "Writes" in caps
+    put_token = probe.session.token(namespace) if writes else token
     answer = web.request(
-        "PUT", f"{director_url}/{namespace}/{rel}", token=token, upload=payload
+        "PUT", f"{director_url}/{namespace}/{rel}", token=put_token, upload=payload
     )
     what = f"{name}: PUT /{namespace}/{rel}"
-    writes = "Writes" in caps
     if writes and answer.status != 307:
         problems.append(f"{what}: {answer.describe()}, not 307")
     elif writes and landed(answer, at_origins) is None:
         problems.append(f"{what}: redirected to {answer.header('Location')}, not an origin")
     elif answer.status == 307:
-        served = follow(answer, "PUT", token, payload)
+        served = follow(answer, "PUT", put_token, payload)
         if writes and not served.ok:
             problems.append(f"{what} -> {landed(answer, at_origins)}: {served.describe()}")
         elif not writes and served.ok:
@@ -705,14 +709,26 @@ def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[s
     return problems
 
 
+def client_directors(fed: common.Federation) -> list[str]:
+    """The directors a plain HTTP client may ask: each by its own name,
+    and, under `-p director-ha`, the load balancer's, which the
+    federation names as its director, and so which curl is given."""
+    found = list(fed.directors)
+    if fed.director_ha and fed.director_url not in found:
+        found.append(fed.director_url)
+    return found
+
+
 def redirects(probe: Probe) -> tuple[str, str]:
     """Each director's redirects, followed by a plain HTTP client (see
-    redirect_problems()), in each exported namespace."""
+    redirect_problems()), in each exported namespace; under
+    `-p director-ha`, the load balancer's too."""
     fed = probe.fed
     if fed.standalone:
         return SKIP, "a standalone origin has no director"
     problems: list[str] = []
-    for url in fed.directors:
+    asked = client_directors(fed)
+    for url in asked:
         for namespace in probe.session.namespaces:
             problems += redirect_problems(probe, url, namespace)
     if problems:
@@ -722,9 +738,10 @@ def redirects(probe: Probe) -> tuple[str, str]:
         where = "an origin"
     elif not fed.federated_caches:
         where = "an origin, there being no cache"
+    balanced = " (the load balancer among them)" if len(asked) > len(fed.directors) else ""
     return PASS, (
-        f"{len(fed.directors)} director(s), {len(probe.session.namespaces)} namespace(s):"
-        f" bare paths to {where}"
+        f"{len(asked)} director(s){balanced}, {len(probe.session.namespaces)}"
+        f" namespace(s): bare paths to {where}"
     )
 
 

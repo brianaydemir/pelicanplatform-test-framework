@@ -508,8 +508,9 @@ def fill_all(
 def evict_refused(test: Test) -> Row:
     """At each V2 cache, an object it holds: an immediate eviction with no
     token, a read-only token, or one scoped elsewhere must get 403, and
-    leave it held; as must one of an object in /public, which takes no
-    writes, and has no issuer, with no token and with /protected-a's."""
+    leave it held; as must one of an object in /public, with no token,
+    and with /protected-a's, which is for another namespace, whether or
+    not /public takes writes (`-p origin-public-writes`)."""
     problems: list[str] = []
     rels = {c.svc: test.rel("evict", f"refused-{c.svc}") for c in test.v2}
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
@@ -556,8 +557,9 @@ def evict_refused(test: Test) -> Row:
 
 
 def public_object(test: Test) -> tuple[Optional[tuple[str, bytes]], str]:
-    """An object of the run's own in /public, put at every origin: its
-    path in the federation, and its bytes; or None, and why not."""
+    """An object of the run's own in /public, put at every origin (with
+    /public's own token, where it takes writes): its path in the
+    federation, and its bytes; or None, and why not."""
     caps = test.fed.exports.get("public")
     if caps is None:
         return None, "/public is not exported"
@@ -565,8 +567,9 @@ def public_object(test: Test) -> tuple[Optional[tuple[str, bytes]], str]:
         return None, "/public takes no writes, and a pstore origin's store is encrypted"
     rel = test.rel("public-object")
     data = os.urandom(OBJECT_SIZE)
-    errors = stores.make_dirs(test.origins, "public", rel.rsplit("/", 1)[0], test.token)
-    errors += stores.seed_everywhere(test.origins, "public", rel, data, test.token, caps)
+    token = test.session.token("public")
+    errors = stores.make_dirs(test.origins, "public", rel.rsplit("/", 1)[0], token)
+    errors += stores.seed_everywhere(test.origins, "public", rel, data, token, caps)
     if errors:
         return None, f"could not put an object in /public: {errors[0]}"
     return (f"/public/{rel}", data), ""

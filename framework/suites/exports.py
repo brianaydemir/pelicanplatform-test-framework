@@ -17,10 +17,10 @@ configuration allows.
                            no such object, or that fails partway, writes
                            nothing, and leaves an object it was to
                            replace intact where uploads are staged
-  disable-copies           a COPY to /public, which takes no writes, is
-                           refused; under Origin.DisableCopies, a COPY to
-                           a writable export too, and OPTIONS / names no
-                           COPY
+  disable-copies           a COPY to /public, where it takes no writes,
+                           is refused; under Origin.DisableCopies, a COPY
+                           to a writable export too, and OPTIONS / names
+                           no COPY
   listings-capability      an export without Listings refuses a PROPFIND
                            of Depth 1 and an HTML listing, but not a
                            Depth 0 one
@@ -720,6 +720,8 @@ def copies_to_public(test: Test) -> Row:
     An XRootD origin is asked too, as a control."""
     if "public" not in test.fed.exports:
         return SKIP, "this shape does not export /public"
+    if "Writes" in test.fed.exports["public"]:
+        return SKIP, "/public takes writes ('-p origin-public-writes'), and so copies"
     why = test.writable()
     if why:
         return SKIP, why

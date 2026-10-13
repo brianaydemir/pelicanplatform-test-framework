@@ -201,7 +201,7 @@ Pelican itself leaves off (`auth-no-issuer`). The origins export three
 namespaces, which hold the same objects:
 
 - `/public`: anyone may read and list it, and no one may write it, so it
-  has no issuer.
+  has no issuer (but see `origin-public-writes`).
 - `/protected-a` and `/protected-b`: reading, listing, and writing each
   take a token. Each has an issuer and a test key of its own.
 
@@ -268,6 +268,7 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | `origin-short-tokens`   | the origins' issuer mints access tokens and codes that last a minute and refresh tokens four (`Issuer.*Lifetime`); see `issuer` |
 | `origin-export-templates` | `/protected-b` has authorization templates of its own, replacing the global ones there; see `issuer`'s `templates` |
 | `origin-public`         | the origins export only `/public`, as an origin of public data does: no writes, and no issuer; the suites that need `/protected-a` skip; refuses `origin-pstore`, `origin-export-templates`, and `topo-multi-owner` with `origin-no-direct` |
+| `origin-public-writes`  | `/public` takes writes too, with an issuer, as an origin of public data that a project writes to does (`PublicReads` and `Writes`, the example in Pelican's documentation of exports): its reads still take no token, its writes one; the `transfers`, `auth`, `federation`, `commands`, and `owners` suites write there too; refuses `origin-no-direct`, `origin-pstore`, and a shape that does not export `/public` |
 
 **Authorization**
 

@@ -82,8 +82,10 @@ lands; the Pelican client asks for a cache or an origin by name
 for the bare path, which the director sends to a cache, or under
 `-p director-default-origin` (`Director.DefaultResponse`) to an origin.
 The `federation` suite's `redirects` check follows each director's
-redirects for each exported namespace, with the namespace's `server`
-token (none for `/public`):
+redirects (and, under `-p director-ha`, the load balancer's, which the
+federation names as its director, and so which curl is given) for each
+exported namespace, with the namespace's `server` token (none for a
+read of `/public`):
 
 - A GET and a HEAD of the object's bare path must land at a cache, or
   under `-p director-default-origin` at an origin; one with
@@ -100,10 +102,10 @@ token (none for `/public`):
   HEAD its `Content-Length`. What lands at an origin must be served
   only where the namespace takes direct clients, and otherwise refused
   (401 or 403), as the origin refuses every direct client there.
-- A bare-path PUT of a new object must land at an origin, where the
-  namespace takes writes, which must then store it; where it takes
-  none, the director must find no origin, or the one it names refuse,
-  and no origin may hold the object.
+- A bare-path PUT of a new object, with the namespace's token, must
+  land at an origin, where the namespace takes writes, which must then
+  store it; where it takes none, the director must find no origin, or
+  the one it names refuse, and no origin may hold the object.
 
 `hints` checks what the same redirects tell the client about the
 namespace ([authorization](#authorization)).
@@ -238,7 +240,10 @@ other gets, asking for a cache, must be sent to an origin.
 
 What each scenario should do follows the
 [authorization](#authorization) rules: every get of `/public` should
-pass, and every put to it should be refused. A shape that exports one
+pass, and every put to it should be refused, unless
+`-p origin-public-writes` gives it writes, when the puts with the
+`server` and `jwks` tokens should pass, as in the protected namespaces,
+and the rest be refused. A shape that exports one
 namespace (`origin-httpsv2`, `origin-no-direct`, `origin-public`) has
 only that namespace's scenarios, and `dne`, which gets from that
 namespace instead. Without `DirectReads` (`origin-no-direct`),
@@ -296,10 +301,11 @@ from disk.
 
 The `transfers` and `auth` suites present the same credentials, defined
 in one table in `framework/testlib/credentials.py`. Each is for
-one namespace. `/public` has no issuer, and so no key of its own, so it
-gets only the credentials that need neither its own key or issuer nor
-another namespace's. The "other namespace" of `/protected-a` is
-`/protected-b`, and the reverse:
+one namespace. `/public` has no key of its own, and no issuer unless it
+takes writes (`-p origin-public-writes`), so it gets only the
+credentials that need neither its own key or issuer nor another
+namespace's. The "other namespace" of `/protected-a` is `/protected-b`,
+and the reverse:
 
 | Credential   | Token                                                                  |
 | ------------ | ---------------------------------------------------------------------- |
@@ -339,7 +345,11 @@ decide:
 - **Writes to a namespace without `Writes`** should be refused whatever
   the token. That is `/public`, and every namespace under
   `origin-no-direct`. `/public` has no issuer at all, so a token claiming
-  its issuer URL is trusted by nothing.
+  its issuer URL is trusted by nothing. Under `-p origin-public-writes`,
+  `/public` takes writes, and so has an issuer, which a write there must
+  name, as in the protected namespaces, while its reads still take no
+  token: the write path of an export that anyone reads, which Pelican's
+  own documentation of exports gives as its example.
 - **Requests straight to an origin**, and direct reads through the
   clients, should be refused whatever the token in a namespace without
   `DirectReads`: every namespace under `origin-no-direct`, whose origins
@@ -378,8 +388,11 @@ namespace.
   must be the namespace's own JWKS. That JWKS must hold every key in the
   origin's server-wide JWKS (`/.well-known/issuer.jwks`), plus the
   namespace's own `ns-<ns>.pem`, and nothing else. The server-wide JWKS
-  must hold `jwks.pem`'s key, and neither namespace's. `./fed.sh test
-  auth/keys` runs only this check.
+  must hold `jwks.pem`'s key, and neither namespace's. Where `/public`
+  has an issuer (`-p origin-public-writes`), its JWKS must hold the
+  server-wide keys, and neither protected namespace's own, with which a
+  token for that namespace alone could otherwise write `/public`.
+  `./fed.sh test auth/keys` runs only this check.
 - **After a server has seen a token**, the `auth` suite's `narrow` check
   presents one like `server`'s but scoped to the test object alone, at
   every origin and cache in `/protected-a`. A GET of the object must
@@ -890,9 +903,11 @@ several cases records a row per case, named `<scenario> <case>`.
   `IssuerJwks`, the issuer must be found through that JWKS
   (`namespace-key`); with `unknown.pem`, it must fail, saying that no
   issuer matches the key (`unknown-key`); for `/public`, which has no
-  issuer, it must fail, asking whether a token is needed at all
-  (`public`); and under `-p topo-multi-owner`, with origin-2's key for
-  `/other`, the issuer must be origin-2's (`other-owner`).
+  issuer, it must fail, asking whether a token is needed at all, but
+  under `-p origin-public-writes`, where it has one, the token's issuer
+  must be `/public`'s (`public`); and under `-p topo-multi-owner`, with
+  origin-2's key for `/other`, the issuer must be origin-2's
+  (`other-owner`).
 - `share-url`: `pelican object share` of a collection in
   `/protected-a`, its device flow approved as the admin, whom the issuer
   grants the namespace (`client/sharing_url.go`, `cmd/object_share.go`):
@@ -997,9 +1012,11 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   client reaches an object, as the `transfers` suite does: through the
   cache the director picks; direct from an origin (`--direct`, or
   `?directread`), which must be refused where `/protected-a` takes no
-  direct clients; and from the first federated cache, named (`--cache`,
-  or `Client.PreferredCaches`), which alone may serve it, as the
-  client's transfer statistics and the plugin's result ads must say.
+  direct clients; and from each federated cache in turn, named
+  (`--cache`, or `Client.PreferredCaches`), which alone may serve it, as
+  the client's transfer statistics and the plugin's result ads must say,
+  so that each kind of cache the shape has (`-p cache-mixed`) serves a
+  client that names it.
 - `director-read`: a plain HTTP client that asks a director for a cache
   (`/api/v1.0/director/object/`) and sends the same request, token and
   `Range` and all, to wherever the redirect (307) leads, as `curl -L`
@@ -1527,8 +1544,9 @@ client` asks them. A scenario records a row per case, named `<scenario>
   next evicts; it takes a token with `storage.modify` for the path.
   `refused`: an immediate eviction of an object the cache holds, with no
   token, a read-only one, or one scoped elsewhere, must get 403, and
-  leave it held; as must one of an object in `/public`, which takes no
-  writes and has no issuer, with no token and with `/protected-a`'s.
+  leave it held; as must one of an object in `/public`, with no token
+  and with `/protected-a`'s, which is for another namespace, whether or
+  not `/public` takes writes (`-p origin-public-writes`).
   `immediate`: by each method, with the `server` token, 200 and
   `Evicted 1 objects under <path>`, after which the cache must not hold
   the object, and a GET must fetch it again. `marked`: without
@@ -1833,7 +1851,9 @@ skip.
   `/public`, which takes no writes, and so has no `Copies`, from the
   probe at the origin itself, must be refused (404 or 405, as a native
   origin routes no COPY there, or 401 or 403), and write nothing. Every
-  origin is asked, an XRootD one too. `disabled`, under
+  origin is asked, an XRootD one too; where `/public` takes writes
+  (`-p origin-public-writes`), and so copies, the row skips. `disabled`,
+  under
   `Origin.DisableCopies`: at each native origin, a COPY to
   `/protected-a` must get 404 or 405, since no export then has
   `Copies`, and a native origin routes COPY only for an export with it
@@ -2929,10 +2949,10 @@ percent-encodes every character of a name but letters, digits, and
 - `pelican object get` of every object must write a file of each one's
   name, with its bytes, and nothing else: through the cache the director
   picks, direct from an origin (`--direct`) where `/protected-a` takes
-  direct clients, and from the first federated cache, named (`--cache`),
-  which alone may serve it, since the client builds that cache's URL of
-  each name itself; `pelican object put` of a file of each name must
-  land as the object of that name.
+  direct clients, and from each federated cache in turn, named
+  (`--cache`), which alone may serve it, since the client builds that
+  cache's URL of each name itself; `pelican object put` of a file of
+  each name must land as the object of that name.
 
 
 ## POSC and metadata
@@ -3357,12 +3377,16 @@ suites test only the origins' namespaces. The `owners` suite checks:
   Where a token decides, only `owner` on origin-2's side and `origins`
   on the origins' should be allowed; the capabilities then apply as in
   [authorization](#authorization). The `/public` pair gets only `owner`,
-  `origins`, and `none`.
+  `origins`, and `none`, unless `/public` takes writes
+  (`-p origin-public-writes`), when each side has an issuer that decides
+  a write there, and it gets every credential but `ns-jwks`, since no
+  public namespace has keys of its own.
 - `get`, `direct-get`, `put`, `cross-get`, and `cross-put`: the client
   moves origin-2's objects through a cache (served by one) and from
-  origin-2 (served by it), uploads with origin-2's token, and presents
-  each owner's token in the other's namespace, which must be refused
-  with nothing stored.
+  origin-2 (served by it), uploads with origin-2's token to each of its
+  exports that takes writes (`/other`, and `/public/other` under
+  `-p origin-public-writes`), and presents each owner's token in the
+  other's namespace, which must be refused with nothing stored.
 
 
 ## Collections
@@ -4292,7 +4316,10 @@ scrapes itself (`framework/testlib/metrics.py`).
     the federation's issuer (`configDirectorPromScraper`) to pass
     theirs.
 - `http-metrics`, at the first origin, where Pelican serves it (not
-  XRootD), in the first namespace that takes direct writes and reads
+  XRootD), in the first protected namespace that takes direct writes
+  and reads, or, where only `/public` does (`-p origin-public` with
+  `-p origin-public-writes`), in `/public`, where `refused` then skips,
+  since its reads take no token to refuse
   (`httpMetricsMiddleware` in `origin_serve/handlers.go`). Straight to
   the origin, it sends a PUT of 64 KiB, a GET of it, a GET of an object
   that does not exist, and a GET with a token signed by `unknown.pem`,
@@ -4590,11 +4617,11 @@ Shapes that Pelican offers and this framework does not, and why:
   a key alone. Both of its connection modes run: the helper connecting
   back to the origin by default, and the origin dialing the helper
   through the SSH connection under `-p origin-ssh-tunnel`.
-- An export that anyone may read and a token may write
-  (`Capabilities: ["PublicReads", "Writes"]`, the example in Pelican's
-  own documentation of exports): `/public` takes no writes, and the
-  protected namespaces take a token to read, and the suites assume both
-  (`framework/testlib/credentials.py`).
+- Of an export that anyone may read and a token may write
+  (`-p origin-public-writes`), a key of its own beside the origins'
+  (`IssuerJwks`): `/public` trusts the origins' keys alone, so the
+  `ns-jwks`, `ns-other`, and `ns-cross` credentials stay the protected
+  namespaces' ([authorization](#authorization)).
 - Of an origin of public data alone (`-p origin-public`), the data
   path beyond the clients' reads and every credential's: the suites
   that write, or need `/protected-a`, skip there, and say so.

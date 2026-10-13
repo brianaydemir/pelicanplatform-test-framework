@@ -121,7 +121,8 @@ EOF
   of yours can override them, e.g. for one service; but the tests
   expect what the presets say. Under `-p origin-export-templates`, the
   generated `Origin.Exports` gives `/protected-b` authorization
-  templates of its own; under `-p origin-public`, it has `/public`
+  templates of its own; under `-p origin-public-writes`, `/public`
+  takes writes, and so an issuer; under `-p origin-public`, it has `/public`
   alone, whatever `ORIGIN_NAMESPACES` says.
 - No preset names a group in `Transfer.EnabledGroups`, or turns on the
   transfer API's OAuth2 clients (`Transfer.EnableOAuth2Clients`). Under
@@ -200,9 +201,10 @@ name. It can set any knob in `framework/presets/default.sh`, or call
   without one, the third the servers' web login, which their storage
   does not change, and the fourth a transfer server's own confinement
   and issuer, beyond origin-0's API, which runs over every origin;
-  likewise `origin-public` and `director-ha`, which test the
-  federation's way with a namespace that has no issuer, and the
-  directors behind one name, not the origins' storage.
+  likewise `origin-public`, `origin-public-writes`, and `director-ha`,
+  which test the federation's way with a namespace that has no issuer,
+  or one that anyone reads and a token writes, and the directors behind
+  one name, not the origins' storage.
   Under
   `origin-no-direct`, `/protected-a` takes no writes, so the `posc`,
   `metadata`, and `users` suites skip; its pairs with `origin-posc`,

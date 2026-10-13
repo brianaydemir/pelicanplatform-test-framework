@@ -52,7 +52,7 @@ OUT = "data/owners-test"
 CLIENT = {
     "get": "`pelican object get` of each of origin-2's exports, through a cache",
     "direct-get": "the same with --direct, from origin-2, where the export allows it",
-    "put": "`pelican object put` to /other with origin-2's token, where it takes writes",
+    "put": "`pelican object put` to each of origin-2's exports with its token, where it takes writes",
     "cross-get": "`pelican object get` with each owner's token in the other's namespace: refused",
     "cross-put": "`pelican object put` likewise: refused, and nothing stored",
 }
@@ -377,7 +377,7 @@ def check_credential(test: Test, cred: OwnerCredential, report: Report) -> None:
     """Present cred on both sides of each pair, at every server."""
     fed = test.fed
     for pair in test.pairs:
-        if not owners.applies(cred, pair):
+        if not owners.applies(fed, cred, pair):
             continue
         for side in owners.SIDES:
             ns, name = pair.namespace(side), pair.name(side)
@@ -600,31 +600,37 @@ def client_put(
 
 
 def client(test: Test, name: str) -> tuple[str, str]:
-    """The client scenario name, for each pair."""
+    """The client scenario name, for each pair: the reads of every pair;
+    the cross-owner reads of the pairs that take a token to read; and
+    the puts of those that take writes (/other, and /public/other under
+    `-p origin-public-writes`)."""
     owner, theirs = owners.BY_NAME["owner"], owners.BY_NAME["origins"]
     problems: list[str] = []
     done = 0
     for pair in test.pairs:
         tag = f"{name}-{pair.export.name}"
         found: list[Optional[str]] = []
+        writes = "Writes" in pair.export.caps and "Writes" in test.fed.exports[pair.like]
         if name in ("get", "direct-get"):
             found.append(
                 client_get(test, pair, "owner", reader(pair), name == "direct-get", tag)
             )
-        elif pair.like not in credentials.PROTECTED:
+        elif name == "cross-get":
+            if pair.like not in credentials.PROTECTED:
+                continue
+            found.append(client_get(test, pair, "owner", theirs, False, f"{tag}-owner"))
+            found.append(client_get(test, pair, "origins", owner, False, f"{tag}-origins"))
+        elif not writes:
             continue
         elif name == "put":
             found.append(client_put(test, pair, "owner", owner, tag))
-        elif name == "cross-get":
-            found.append(client_get(test, pair, "owner", theirs, False, f"{tag}-owner"))
-            found.append(client_get(test, pair, "origins", owner, False, f"{tag}-origins"))
         else:
             found.append(client_put(test, pair, "owner", theirs, f"{tag}-owner"))
             found.append(client_put(test, pair, "origins", owner, f"{tag}-origins"))
         done += len(found)
         problems += [p for p in found if p]
     if not done:
-        return SKIP, "origin-2 exports no namespace that takes a token"
+        return SKIP, "origin-2 exports no namespace that takes a token, or writes"
     if problems:
         return FAIL, first(problems)
     return PASS, f"{done} command(s)"

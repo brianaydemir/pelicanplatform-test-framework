@@ -285,7 +285,7 @@ for fed_knob in ORIGIN_ENABLE_ISSUER ENABLE_OIDC EXTERNAL_ISSUER \
     ORIGIN_MULTIUSER ORIGIN_BROKER ORIGIN_TRANSFER_API TRANSFER_SERVER CACHE_TIERING \
     FEDERATED_CACHE SERVER_DROP_PRIVILEGES REGISTRY_REQUIRE_APPROVAL ISSUER_SHORT_TOKENS \
     ORIGIN_EXPORT_TEMPLATES DIRECTOR_DISCOVERY ORIGIN_PUBLIC_ONLY DIRECTOR_HA \
-    ORIGIN_SSH_TUNNEL; do
+    ORIGIN_SSH_TUNNEL ORIGIN_PUBLIC_WRITES; do
   eval "fed_value=\${${fed_knob}}"
   # shellcheck disable=SC2154  # assigned by the eval above
   case "${fed_value}" in
@@ -356,13 +356,18 @@ fed_exports_namespace() {
 # that need /protected-a skip.
 
 # Set fed_caps to the capabilities the origins give namespace $1 (one of
-# those above). /public takes no writes, and so has no issuer. Without
-# direct clients, Pelican allows only reads.
+# those above). /public takes no writes, and so has no issuer, unless
+# ORIGIN_PUBLIC_WRITES (`origin-public-writes`) gives it writes, and so
+# an issuer, while its reads still take no token. Without direct
+# clients, Pelican allows only reads.
 fed_namespace_caps() {
   case "$1" in
     public)
       fed_caps=PublicReads
       if [ "${ORIGIN_DISABLE_DIRECT_CLIENTS}" = false ]; then
+        if [ "${ORIGIN_PUBLIC_WRITES}" = true ]; then
+          fed_caps="${fed_caps} Writes"
+        fi
         fed_caps="${fed_caps} Listings DirectReads"
       fi ;;
     protected-*)
@@ -603,6 +608,22 @@ if [ "${ORIGIN_DISABLE_DIRECT_CLIENTS}" = true ]; then
   [ "$(fed_count_namespaces)" -eq 1 ] \
       || die "ORIGIN_DISABLE_DIRECT_CLIENTS ('origin-no-direct') takes one" \
              "namespace, but ORIGIN_NAMESPACES is '${fed_namespaces}'"
+fi
+
+# /public takes writes (`origin-public-writes`) only where it is exported,
+# and where the origins take direct clients, since Pelican allows only
+# reads without them. A pstore origin's /public reads /protected-a's
+# storage (see fed_storage_dir), where a write to it would then land.
+if [ "${ORIGIN_PUBLIC_WRITES}" = true ]; then
+  fed_exports_namespace public \
+      || die "ORIGIN_PUBLIC_WRITES ('origin-public-writes') gives /public writes, but" \
+             "ORIGIN_NAMESPACES ('${fed_namespaces}') has no /public; add 'origin-public'"
+  [ "${ORIGIN_DISABLE_DIRECT_CLIENTS}" = false ] \
+      || die "ORIGIN_PUBLIC_WRITES ('origin-public-writes') gives /public writes, which" \
+             "ORIGIN_DISABLE_DIRECT_CLIENTS ('origin-no-direct') takes away"
+  [ "${ORIGIN_VARIANT}" != pstore ] \
+      || die "ORIGIN_PUBLIC_WRITES ('origin-public-writes') gives /public writes, but a" \
+             "'pstore' origin's /public reads /protected-a's storage"
 fi
 
 # Nothing but the running origin can write a pstore, so the transfers
@@ -1051,8 +1072,11 @@ fed_origin_exports() {
     if [ "$2" = true ]; then
       pinned=$(fed_issuer_url "/${ns}")
     fi
+    # Only the protected namespaces have keys of their own (fed_key_init):
+    # /public, where it takes writes (`origin-public-writes`), trusts the
+    # origins' alone.
     jwks="/fed/issuer-jwks/ns-${ns}.jwks"
-    if [ "${EXTERNAL_ISSUER}" = true ]; then
+    if [ "${EXTERNAL_ISSUER}" = true ] || [ "${ns}" = public ]; then
       jwks=""
     fi
     bucket=""
@@ -1208,8 +1232,9 @@ fed_generate() {
 
   # Read by test.py and init-data.py, which run in framework/var
   # (hence the relative paths). issuer-urls has the issuer URL the origins
-  # give each namespace, or would give it: /public, which has no issuer,
-  # and any namespace the shape does not export.
+  # give each namespace, or would give it: /public, which has none unless
+  # it takes writes (`origin-public-writes`), and any namespace the shape
+  # does not export.
   for ns in public protected-a protected-b; do
     printf '%s %s\n' "${ns}" "$(fed_issuer_url "/${ns}")"
   done | fed_write framework/var/generated/issuer-urls
@@ -1311,7 +1336,8 @@ fed_generate() {
   # one line per export of theirs: service, federation prefix, the
   # namespace it mirrors (`-` for none; see fed_owner_exports), its
   # capabilities, and the issuer URL it gives the prefix, or would give it
-  # (/public/other has no issuer). origin-2 always runs its own issuer
+  # (/public/other has none, unless /public takes writes). origin-2 always
+  # runs its own issuer
   # (see docker-compose.yaml). Both are empty without another owner.
   {
     if fed_has_profile multi-owner; then
@@ -2081,7 +2107,7 @@ fed_key_publish() {
 #   test-keys/ns-<ns>.pem     its public key is issuer-jwks/ns-<ns>.jwks,
 #                             which the origins name in the IssuerJwks of
 #                             the /<ns> export alone; only /protected-a
-#                             and /protected-b have issuers, and so keys
+#                             and /protected-b have keys of their own
 #
 # The origins mount issuer-jwks/ but not test-keys/, so no server holds
 # any of the private keys.

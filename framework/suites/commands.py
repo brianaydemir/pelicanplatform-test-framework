@@ -13,7 +13,8 @@ but bytes of its own; `stat`'s modification time must be the file's.
 The rest go through the director like any
 client. Under `topo-multi-origin` their effects land on one origin, so
 a success must show in some store, and a refusal in none. /public takes
-no writes (see testlib/credentials.py), so writes to it must be refused.
+no writes (see testlib/credentials.py), so writes to it must be refused,
+unless `-p origin-public-writes` gives it writes, when they must land.
 Likewise, a command that needs a capability its namespace lacks (see
 NEEDS), e.g. every write under `-p origin-no-direct`, must be refused,
 and change nothing.
@@ -63,7 +64,10 @@ SCENARIOS = {
     "delete-no-token": (
         "`delete` with no token: the client refuses (Error code 4010), nothing removed"
     ),
-    "delete-public": "`delete` in /public, which takes no writes: refused, nothing removed",
+    "delete-public": (
+        "`delete` in /public: refused, nothing removed; or, where it takes writes"
+        " (`-p origin-public-writes`), removed"
+    ),
     "get-existing-file": (
         "`get` over a larger local file leaves only the object; a failed one, the file"
     ),
@@ -79,7 +83,10 @@ SCENARIOS = {
     "copy-tpc": "`copy` from /protected-a to /protected-a: a third-party copy",
     "copy-tpc-public": "`copy` from /public to /protected-a: a third-party copy",
     "copy-tpc-direct": "`copy --direct`: a third-party copy from an origin",
-    "copy-to-public": "`copy` to /public, which takes no writes: refused",
+    "copy-to-public": (
+        "`copy` to /public: refused; or, where it takes writes (`-p origin-public-writes`),"
+        " stored"
+    ),
     "sync-upload": "`sync` of a local tree to a new collection",
     "sync-unchanged": "`sync --dry-run` of a tree the origins already hold lists nothing",
     "sync-changed": "a local file whose size changed is the one `sync` uploads again",
@@ -762,13 +769,21 @@ def delete_no_token(test: Test) -> tuple[str, str]:
 
 
 def delete_public(test: Test) -> tuple[str, str]:
-    """`delete` in /public, which takes no writes: refused."""
+    """`delete` in /public, with its `server` token: refused, since it
+    takes no writes; or, where it does (`-p origin-public-writes`), the
+    object removed, as in /protected-a."""
     rel = f"{test.base}/del/public"
     data = os.urandom(1000)
     test.seed("public", rel, data)
     code, out, err = test.pelican_cmd(
         "object", "delete", *test.token_args("public"), test.url("public", rel)
     )
+    if "Writes" in test.fed.exports["public"]:
+        if code != 0:
+            return FAIL, f"exit {code}: {last_line(err or out)}"
+        if not test.gone_somewhere("public", rel):
+            return FAIL, "every origin still holds the object"
+        return PASS, "removed: /public takes writes"
     if why := test.expect_refusal(code, out, err):
         return FAIL, why
     if not test.everywhere("public", rel, data):
@@ -1112,7 +1127,10 @@ def copy_tpc_direct(test: Test) -> tuple[str, str]:
 
 
 def copy_to_public(test: Test) -> tuple[str, str]:
-    """`copy` to /public, which takes no writes: refused."""
+    """`copy` of a local file to /public, with its `server` token:
+    refused, since it takes no writes; or, where it does
+    (`-p origin-public-writes`), stored at an origin, as in
+    /protected-a."""
     test.make_dirs(f"{test.base}/copy")
     data = os.urandom(1234)
     source = test.local("copy-public", data)
@@ -1120,6 +1138,12 @@ def copy_to_public(test: Test) -> tuple[str, str]:
     code, out, err = test.pelican_cmd(
         "object", "copy", *test.token_args("public"), source, test.url("public", rel)
     )
+    if "Writes" in test.fed.exports["public"]:
+        if code != 0:
+            return FAIL, f"exit {code}: {last_line(err or out)}"
+        if not test.somewhere("public", rel, data):
+            return FAIL, "no origin holds the upload"
+        return PASS, "stored: /public takes writes"
     if why := test.expect_refusal(code, out, err):
         return FAIL, why
     if not test.nowhere("public", rel):

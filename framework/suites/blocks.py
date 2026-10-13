@@ -81,12 +81,12 @@ SCENARIOS = {
     "put-checksum": "`pelican object put --require-checksum` succeeds only where the origin reports a digest",
     "origin-read": "each origin returns every object whole and every range",
     "client-get": (
-        "`pelican object get` of every size, through a cache, with --direct, and from a"
-        " cache it names"
+        "`pelican object get` of every size, through a cache, with --direct, and from each"
+        " federated cache, named"
     ),
     "plugin-get": (
-        "stash_plugin's download of every size, through a cache, direct, and from a cache"
-        " it prefers"
+        "stash_plugin's download of every size, through a cache, direct, and from each"
+        " federated cache, preferred"
     ),
     "cache-whole-first": "each cache: a cold whole read, a warm one, then every range",
     "director-read": (
@@ -661,10 +661,12 @@ def downloaded(test: Test, set_name: str, directory: str) -> Optional[str]:
     return None
 
 
-def named_cache(test: Test) -> Optional[common.Cache]:
-    """The cache that a client's named reads name: the first federated
-    one, as the transfers suite names it; None where there is none."""
-    return test.fed.federated_caches[0] if test.fed.federated_caches else None
+def named_caches(test: Test) -> list[common.Cache]:
+    """The caches that a client's named reads name, each in turn: every
+    federated one, so that each kind of cache the shape has
+    (`-p cache-mixed`) serves a client that names it; the transfers
+    suite names the first alone."""
+    return list(test.fed.federated_caches)
 
 
 def served_elsewhere(hosts: list[str], cache: common.Cache) -> Optional[str]:
@@ -706,8 +708,8 @@ def ad_hosts(ads: str) -> list[str]:
 def client_get(test: Test) -> tuple[str, str]:
     """`pelican object get` of every size, three ways: through the cache
     the director picks, with --direct, which must be refused where
-    /protected-a takes no direct clients, and from the first federated
-    cache, named (--cache), which alone may serve it."""
+    /protected-a takes no direct clients, and from each federated cache
+    in turn, named (--cache), which alone may serve it."""
     if why := test.not_uploaded(True):
         return FAIL, why
     urls = [f"{test.fed.url}/protected-a/{test.rel('client', size)}" for size in blocks.SIZES]
@@ -719,9 +721,10 @@ def client_get(test: Test) -> tuple[str, str]:
         ("cache", routed, [], None),
         ("direct", "direct", ["--direct"], None),
     ]
-    named = named_cache(test)
-    if named is not None:
-        ways.append(("named", f"named ({named.svc})", ["--cache", named.url], named))
+    for named in named_caches(test):
+        ways.append(
+            (f"named-{named.svc}", f"named ({named.svc})", ["--cache", named.url], named)
+        )
     for key, label, flags, cache in ways:
         target = os.path.join(test.tmp, f"client-get-{key}")
         os.makedirs(target)
@@ -764,7 +767,7 @@ def plugin_get(test: Test) -> tuple[str, str]:
     """stash_plugin's download of every size, three ways: through the
     cache the director picks; direct (?directread, the plugin's only way
     to ask for it), which must be refused where /protected-a takes no
-    direct clients; and from the first federated cache, preferred
+    direct clients; and from each federated cache in turn, preferred
     (Client.PreferredCaches), which alone may serve it."""
     if why := test.not_uploaded(True):
         return FAIL, why
@@ -776,9 +779,8 @@ def plugin_get(test: Test) -> tuple[str, str]:
         ("cache", routed, "", None),
         ("direct", "direct", transfers.DIRECT_QUERY, None),
     ]
-    named = named_cache(test)
-    if named is not None:
-        ways.append(("named", f"preferred ({named.svc})", "", named))
+    for named in named_caches(test):
+        ways.append((f"named-{named.svc}", f"preferred ({named.svc})", "", named))
     for key, label, query, cache in ways:
         name = f"plugin-get-{key}"
         directory = os.path.join(test.tmp, name)

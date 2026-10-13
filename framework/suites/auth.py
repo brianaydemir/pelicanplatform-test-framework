@@ -43,9 +43,9 @@ server that answers from another namespace's is caught.
 
 What each namespace should allow comes from credentials.expected(): a
 read of /public is allowed whatever the token, a write to a namespace
-without Writes (/public) is refused whatever the token, and so is every
-request straight to an origin in a namespace without DirectReads
-(`-p origin-no-direct`). The test objects are put in place with
+without Writes (/public, unless `-p origin-public-writes` gives it
+writes) is refused whatever the token, and so is every request straight
+to an origin in a namespace without DirectReads (`-p origin-no-direct`). The test objects are put in place with
 stores.seed(), so the last needs no writes. The transfers suite
 presents the same credentials through the clients, which refuse some
 of them themselves. Responses go to framework/var/data/auth-test/, and
@@ -450,7 +450,10 @@ def get_jwks(url: str, name: str) -> tuple[web.Response, Optional[frozenset[str]
 
 def check_keys(fed: common.Federation, report: Report) -> None:
     """The server-wide JWKS, then each exported protected namespace's
-    discovery document and JWKS. /public has no issuer."""
+    discovery document and JWKS. /public has no issuer, unless it takes
+    writes (`-p origin-public-writes`): then its JWKS must hold the
+    server-wide keys, and neither protected namespace's own, which would
+    otherwise write it."""
     if not credentials.namespace_issuers(fed):
         why = (
             "every namespace trusts the external issuer"
@@ -504,6 +507,19 @@ def check_keys(fed: common.Federation, report: Report) -> None:
             problems = credentials.namespace_jwks_problems(ns, kids, server, own)
         record(
             report, f"{ns:<11} {'jwks':<10}", f"{KEYS} {ns} jwks", answer, "; ".join(problems)
+        )
+
+    if "public" in fed.exports and credentials.has_issuer(fed.exports["public"]):
+        jwks_uri = f"{fed.issuer_of('public')}/.well-known/issuer.jwks"
+        answer, kids, problems = get_jwks(jwks_uri, "keys-public-jwks")
+        if kids is not None:
+            problems = credentials.public_jwks_problems(kids, server, own)
+        record(
+            report,
+            f"{'public':<11} {'jwks':<10}",
+            f"{KEYS} public jwks",
+            answer,
+            "; ".join(problems),
         )
 
 

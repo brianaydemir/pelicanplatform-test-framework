@@ -16,8 +16,8 @@ many objects as the next of LOAD's sizes (see make_batches() and
 batch_count()).
 
 What a scenario should do depends on the namespace's capabilities in
-the shape (see outcome()). /public, which has no issuer, gets only the
-credentials that apply to it (see credentials.applies()). A shape that
+the shape (see outcome()). /public, which has no keys of its own, gets
+only the credentials that apply to it (see credentials.applies()). A shape that
 exports one namespace has batches only for its scenarios (see
 exported()), except `dne` and its twins, which move to a protected
 namespace where /public isn't exported (see placed()).

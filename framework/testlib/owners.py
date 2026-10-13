@@ -113,11 +113,16 @@ def expected(
     return credentials.decide(verdict(cred, side), caps(fed, pair, side), op, direct)
 
 
-def applies(cred: OwnerCredential, pair: Pair) -> bool:
+def applies(fed: common.Federation, cred: OwnerCredential, pair: Pair) -> bool:
     """Whether the suite presents cred in pair. /public and /public/other
     have no issuer, and a token decides nothing there: only a token of
-    each owner, and none, are presented."""
-    return pair.like in credentials.PROTECTED or cred.name in ("owner", "origins", "none")
+    each owner, and none, are presented. Where /public takes writes
+    (`-p origin-public-writes`), each has an issuer, which decides a
+    write, so every credential is presented but `ns-jwks`: no public
+    namespace has keys of its own."""
+    if pair.like in credentials.PROTECTED or cred.name in ("owner", "origins", "none"):
+        return True
+    return credentials.has_issuer(fed.exports[pair.like]) and cred.key != "ns-jwks"
 
 
 def key_path(fed: common.Federation, cred: OwnerCredential, pair: Pair) -> str:

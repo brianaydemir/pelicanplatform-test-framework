@@ -18,9 +18,11 @@ A token doesn't always decide (see expected()):
   the token.
 
 /public takes no writes, so it has no issuer at all (see has_issuer()),
-and no keys of its own. The credentials that need a namespace's own key
-or issuer, or another namespace's, are only for /protected-a and
-/protected-b, each the other's other namespace (see applies()). Where
+unless `-p origin-public-writes` gives it writes, and so an issuer,
+which a write there must then name; either way it has no keys of its
+own. The credentials that need a namespace's own key or issuer, or
+another namespace's, are only for /protected-a and /protected-b, each
+the other's other namespace (see applies()). Where
 only one of them is exported, no export lists the other's own key, so
 `ns-other` and `ns-cross` are skipped. With the origins' issuer off,
 every namespace has one issuer URL, and no namespace has keys of its
@@ -178,9 +180,10 @@ def probe_namespace(fed: common.Federation) -> str:
 
 
 def applies(cred: Credential, namespace: str) -> bool:
-    """Whether the tests present cred in namespace. A namespace without
-    an issuer of its own (/public) has no own key and no other namespace,
-    and a token never decides there anyway."""
+    """Whether the tests present cred in namespace. /public has no key of
+    its own and no other namespace, so it gets only the credentials that
+    need neither (a token decides nothing there, unless it takes writes,
+    which only its issuer's tokens may: `-p origin-public-writes`)."""
     return namespace in PROTECTED or (cred.key not in NAMESPACE_KEYS and cred.issuer == "own")
 
 
@@ -290,6 +293,32 @@ def server_jwks_problems(
     for namespace in PROTECTED:
         if own[namespace] & have:
             problems.append(f"holds /{namespace}'s own key")
+    return problems
+
+
+def public_jwks_problems(
+    have: AbstractSet[str],
+    server: Optional[AbstractSet[str]],
+    own: Mapping[str, AbstractSet[str]],
+) -> list[str]:
+    """What is wrong with /public's JWKS, whose kids are have, where
+    /public has an issuer (`-p origin-public-writes`): it should hold the
+    server-wide JWKS's (server; None if that was unreadable), and no
+    protected namespace's own (own, by protected namespace), with which a
+    token for that namespace alone would otherwise write /public."""
+    problems: list[str] = []
+    for namespace in PROTECTED:
+        if own[namespace] & have:
+            problems.append(f"holds /{namespace}'s own key")
+    if server is None:
+        problems.append("could not compare it with the server-wide JWKS")
+        return problems
+    missing = server - have
+    if missing:
+        problems.append(f"lacks the server-wide keys {', '.join(sorted(missing))}")
+    extra = have - server - set().union(*own.values())
+    if extra:
+        problems.append(f"holds other keys {', '.join(sorted(extra))}")
     return problems
 
 

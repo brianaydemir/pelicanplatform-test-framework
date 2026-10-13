@@ -704,16 +704,20 @@ def http_metrics(test: Test) -> list[Row]:
     if not fed.native_origins:
         why = f"XRootD serves the origins ({fed.origin_variant}), and keeps no such counters"
         return [(c, SKIP, why) for c in cases]
+    # A namespace that takes direct writes, and a token to read, so that
+    # `refused` can be refused: the protected namespaces first, since
+    # /public may take writes (`-p origin-public-writes`) but reads
+    # without a token.
+    writable = [
+        ns for ns in credentials.exported(fed) if {"Writes", "DirectReads"} <= fed.exports[ns]
+    ]
     namespace = next(
-        (
-            ns
-            for ns in credentials.exported(fed)
-            if {"Writes", "DirectReads"} <= fed.exports[ns]
-        ),
-        None,
+        (ns for ns in writable if credentials.has_issuer(fed.exports[ns]) and ns != "public"),
+        writable[0] if writable else None,
     )
     if namespace is None:
         return [(c, SKIP, "no namespace takes direct writes and reads") for c in cases]
+    public_reads = "PublicReads" in fed.exports[namespace]
     origin = fed.origins[0]
     exact = not fed.multiuser
     username = test.subject if exact else ""
@@ -784,6 +788,9 @@ def http_metrics(test: Test) -> list[Row]:
     count("the GET of nothing", "GET", "404", problems)
     rows.append(outcome("missing", problems, "counted as 404"))
 
+    if public_reads:
+        rows.append(("refused", SKIP, f"reads of /{namespace} take no token to refuse"))
+        return rows
     problems = []
     code = str(refused.status)
     if refused.status not in (401, 403):

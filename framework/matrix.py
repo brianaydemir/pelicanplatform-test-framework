@@ -38,6 +38,7 @@ FACTORS: dict[str, tuple[str, ...]] = {
     "topology": ("full", "tiny", "standalone"),
     "caches": ("one", "none"),
     "namespaces": ("all", "public"),
+    "public_writes": ("off", "on"),
     "origin": ("posixv2", "xrootd", "pstore", "ssh", "httpsv2", "s3v2", "s3", "https"),
     "cache": ("v2", "xrootd", "mixed"),
     "multi_origin": ("off", "on"),
@@ -76,6 +77,7 @@ PRESETS: dict[str, tuple[str, str]] = {
     "topo-standalone": ("topology", "standalone"),
     "topo-no-cache": ("caches", "none"),
     "origin-public": ("namespaces", "public"),
+    "origin-public-writes": ("public_writes", "on"),
     "origin-posixv2": ("origin", "posixv2"),
     "origin-xrootd": ("origin", "xrootd"),
     "origin-pstore": ("origin", "pstore"),
@@ -326,6 +328,20 @@ REFUSED: list[Rule] = [
         lambda s: s["director_ha"] == "on" and s["multi_director"] == "off",
     ),
     (
+        "writes to /public are given where it is exported: not beside /protected-a alone",
+        lambda s: s["public_writes"] == "on"
+        and s["namespaces"] == "all"
+        and (s["origin"] in ("https", "httpsv2") or s["broker"] == "on"),
+    ),
+    (
+        "writes to /public need direct clients, without which Pelican allows only reads",
+        lambda s: s["public_writes"] == "on" and s["direct"] == "no",
+    ),
+    (
+        "a pstore origin's /public reads /protected-a's storage, where a write would land",
+        lambda s: s["public_writes"] == "on" and s["origin"] == "pstore",
+    ),
+    (
         "the connection broker's state is one director's, which a load balancer hides",
         lambda s: s["director_ha"] == "on" and s["broker"] == "on",
     ),
@@ -366,6 +382,12 @@ SMOKE_LIMITS: list[Rule] = [
         "the directors' load balancer runs over posixv2 and xrootd origins only: what it"
         + " tests is the directors, not the origins' storage",
         lambda s: s["director_ha"] == "on" and s["origin"] not in ("posixv2", "xrootd"),
+    ),
+    (
+        "writes to /public run over posixv2 and xrootd origins only: what they test is the"
+        + " federation's way with a namespace that anyone reads and a token writes, not the"
+        + " origins' storage",
+        lambda s: s["public_writes"] == "on" and s["origin"] not in ("posixv2", "xrootd"),
     ),
 ]
 

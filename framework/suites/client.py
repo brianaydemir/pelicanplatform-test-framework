@@ -1142,9 +1142,11 @@ def token_create_discovery(test: Test) -> list[Row]:
     export's IssuerJwks, the issuer is found through that JWKS
     (`namespace-key`); with a key no server knows, it fails, saying that
     no issuer matches the key (`unknown-key`); for /public, which has no
-    issuer, it fails, asking whether a token is needed at all (`public`);
-    and under `-p topo-multi-owner`, with origin-2's key for /other, the
-    issuer is origin-2's (`other-owner`)."""
+    issuer, it fails, asking whether a token is needed at all, but where
+    /public takes writes (`-p origin-public-writes`), and so has an
+    issuer, the token's issuer is /public's (`public`); and under
+    `-p topo-multi-owner`, with origin-2's key for /other, the issuer is
+    origin-2's (`other-owner`)."""
     rows: list[Row] = []
     name = "token-create/obj"
     data = os.urandom(OBJECT_SIZE)
@@ -1202,7 +1204,22 @@ def token_create_discovery(test: Test) -> list[Row]:
         )
     else:
         rows.append(("unknown-key", PASS, "no issuer matches the key"))
-    if "public" in test.fed.exports:
+    if "public" not in test.fed.exports:
+        rows.append(("public", SKIP, "this shape does not export /public"))
+    elif credentials.has_issuer(test.fed.exports["public"]):
+        claims, token, fetch = create_token(
+            test, "create-public", test.url("token-create", "public") + "/", test.fed.origin_key
+        )
+        want_issuer = test.fed.issuer_of("public")
+        if claims is None:
+            rows.append(("public", FAIL, f"exit {fetch.status}: {last_line(fetch.said)}"))
+        elif claims.get("iss") != want_issuer:
+            rows.append(
+                ("public", FAIL, f"issuer {claims.get('iss')!r}, not /public's {want_issuer!r}")
+            )
+        else:
+            rows.append(("public", PASS, "/public takes writes, so its issuer is found"))
+    else:
         claims, token, fetch = create_token(
             test, "create-public", test.url("token-create", "public") + "/", test.fed.origin_key
         )
@@ -1214,8 +1231,6 @@ def token_create_discovery(test: Test) -> list[Row]:
             )
         else:
             rows.append(("public", PASS, "asks whether a token is needed"))
-    else:
-        rows.append(("public", SKIP, "this shape does not export /public"))
     owners = [o for o in test.fed.owners if any(e.prefix == "/other" for e in o.exports)]
     if not owners:
         rows.append(("other-owner", SKIP, "no other owner ('-p topo-multi-owner')"))

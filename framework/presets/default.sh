@@ -55,14 +55,19 @@ ORIGIN_EXPORT_TEMPLATES=false
 # The namespaces the origins export, of `public`, `protected-a`, and
 # `protected-b` (see presets/origin-httpsv2.sh and
 # presets/origin-no-direct.sh). /public is read without a token, and
-# takes no writes, so it has no issuer. The others take a token for
-# either, and each has an issuer and keys of its own; the tests need
-# at least one of them.
+# takes no writes, so it has no issuer (but see ORIGIN_PUBLIC_WRITES
+# below). The others take a token for either, and each has an issuer
+# and keys of its own; the tests need at least one of them.
 ORIGIN_NAMESPACES="public protected-a protected-b"
 
 # Whether the origins export only /public, whatever ORIGIN_NAMESPACES
 # says (see presets/origin-public.sh).
 ORIGIN_PUBLIC_ONLY=false
+
+# Whether /public also takes writes, with an issuer of its own, as an
+# origin of public data that a project writes to does (see
+# presets/origin-public-writes.sh).
+ORIGIN_PUBLIC_WRITES=false
 
 # Origin.DisableDirectClients, which also leaves the exports only reads
 # (see presets/origin-no-direct.sh).
