@@ -7,8 +7,10 @@
 #
 # The cache is always V2 here, so fed.sh refuses `cache-xrootd`. It also
 # refuses `auth-external-issuer`, since no discovery host serves the
-# issuer, and every preset that adds a service but `origin-metadata` and
-# `origin-metadata-tx`. `-p topo-tiny -p origin-xrootd` gives an XRootD
-# origin in front of a V2 cache, which no other shape produces.
+# issuer; `director-discovery`, since its director is the discovery host
+# already; and every preset that adds a service but `origin-metadata`,
+# `origin-metadata-tx`, and `auth-oidc`. `-p topo-tiny -p origin-xrootd`
+# gives an XRootD origin in front of a V2 cache, which no other shape
+# produces.
 
 TOPOLOGY=tiny

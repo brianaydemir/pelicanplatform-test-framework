@@ -43,13 +43,13 @@ Server:
     AllowedCIDRs: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 
   # The collections suite's collection administrator, a user it creates,
-  # who is not a server administrator (see docs/tests.md).
+  # who is not a server administrator (see docs/tests/collections.md).
   CollectionAdminUsers: [test-curator]
 
   # The accounts suite's authorities by group and its user administrator
-  # by name (see docs/tests.md). Each server reserves the groups' names
-  # as it starts, so that no user may create a group of either name; the
-  # suite adds its users to them, for a while.
+  # by name (see docs/tests/accounts.md). Each server reserves the
+  # groups' names as it starts, so that no user may create a group of
+  # either name; the suite adds its users to them, for a while.
   AdminGroups: [test-server-admins]
   CollectionAdminGroups: [test-collection-admins]
   UserAdminUsers: [test-user-admin]
@@ -65,7 +65,7 @@ Issuer:
   # it, as its tokens' scopes are, so the built-in admin may do anything
   # in each namespace with an issuer (/public has none), and the issuer
   # suite's users and groups get the prefixes under /data/issuer that
-  # docs/tests.md#issuer lists. The collections suite's users get
+  # docs/tests/issuer.md lists. The collections suite's users get
   # nothing, so that their tokens carry only what collections grant.
   # Under -p origin-export-templates, /protected-b's export has
   # templates of its own, which replace these there (fed.sh).

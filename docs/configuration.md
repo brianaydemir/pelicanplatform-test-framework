@@ -54,18 +54,18 @@ EOF
   the tests won't know: the `blocks` suite checks what the origins send
   only when `ORIGIN_CACHE_CONTROL` is set. The `freshness` suite sets it
   this way itself, for a while, in the tests' own layer
-  ([cache freshness](tests.md#cache-freshness)).
+  ([cache freshness](tests/cache-freshness.md)).
 - No preset slows a server, since every suite would crawl. The
   `throttling` suite slows the origins (`Origin.TransferRateLimit`) and
   shrinks the V2 caches' scheduler (`Cache.WorkerCount`,
   `Cache.Throttle.*`) itself, for as long as it runs, in the tests' own
-  layer ([throttling](tests.md#throttling)).
+  layer ([throttling](tests/throttling.md)).
 - No preset gives an export without `Listings`, or one without
   `DirectReads` beside others with them, or turns copies off
   (`Origin.DisableCopies`). The `exports` suite restarts the origins
   so for a while, in the tests' own layer, with `fed.sh`'s
   `Origin.Exports` restated, which then also replaces any of yours
-  ([exports and copies](tests.md#exports-and-copies)). Nor does one
+  ([exports and copies](tests/exports-and-copies.md)). Nor does one
   have an `https` or `httpsv2` origin present a token to its backend
   (`Origin.HttpAuthTokenFile`, `Origin.HttpAuthTokenPassthrough`),
   which asks for none: the same suite restarts the origins so for a
@@ -76,7 +76,7 @@ EOF
   (`Origin.PStoreMetadataBackup*`). The `pstore` suite restarts the
   first origin so for a while, in the tests' own layer, and stops it
   meanwhile to restore one of the backups into its store
-  ([pstore](tests.md#pstore)).
+  ([pstore](tests/pstore.md)).
 - `framework/config.d/instance/` declares where cache-0, cache-1,
   origin-0, and origin-1 are (`GeoLocation`), which the directors sort
   by, and the `routing` suite checks. No preset changes how the
@@ -86,18 +86,18 @@ EOF
   restricts a cache to namespaces (`Cache.PermittedNamespaces`). Under
   `-p topo-multi-cache`, the `routing` suite restarts the directors so
   for a while, in the tests' own layer, and then the last cache so
-  restricted ([routing](tests.md#routing)).
+  restricted ([routing](tests/routing.md)).
 - `framework/config.d/director/default/` (and `instance/fed/`, in
   `tiny`) names a support contact (`Director.SupportContactEmail` and
   `SupportContactUrl`), which the `director-api` suite checks
-  ([director APIs](tests.md#director-apis)).
+  ([director APIs](tests/director-apis.md)).
 - Under `-p origin-multiuser`, `fed.sh` generates the mapfile,
   `framework/var/generated/multiuser-mapfile.json`, and sets
   `Origin.ScitokensNameMapFile` and `Origin.ScitokensDefaultUser` in
   `/fed/generated/conf`. The `users` suite adds a rule to the mapfile
   for a while, in place, and restarts the origins with
   `Origin.ScitokensUsernameClaim` set and no default user, in the
-  tests' own layer ([Unix users](tests.md#unix-users)).
+  tests' own layer ([Unix users](tests/unix-users.md)).
 - `fed.sh` generates `Logging.Level` (from `PELICAN_LOG_LEVEL`), every
   server's `EnableOIDC` and, with it, `OIDC.Issuer`, the identity
   provider's URL (from `-p auth-oidc`; `Issuer.GroupSource` stays
@@ -130,21 +130,21 @@ EOF
   `transfer-api` suite restarts the API's host so for a while, with a
   group of the run's own, in the tests' own layer, and restarts it
   again with a job under way, origin-0 slowed meanwhile
-  (`Origin.TransferRateLimit`) ([transfer API](tests.md#transfer-api)).
+  (`Origin.TransferRateLimit`) ([transfer API](tests/transfer-api.md)).
 - Under `-p topo-multi-origin`, an origin override usually belongs in
   both `origin-0/` and `origin-1/`.
 - `framework/config.d/base/40-origin.yaml` sets the embedded issuer's
   `Issuer.AuthorizationTemplates`, which grant the built-in `admin` and
-  the `issuer` suite's users and groups ([issuer](tests.md#issuer)),
+  the `issuer` suite's users and groups ([issuer](tests/issuer.md)),
   takes a web login's groups from the server's own database
   (`Issuer.GroupSource`), and names `test-curator` in
   `Server.CollectionAdminUsers`; the `collections` and `issuer` suites
-  depend on these ([collections](tests.md#collections)). It also names
+  depend on these ([collections](tests/collections.md)). It also names
   the `accounts` suite's authorities: the groups `test-server-admins`
   in `Server.AdminGroups` and `test-collection-admins` in
   `Server.CollectionAdminGroups`, whose names each server reserves as
   it starts, and `test-user-admin` in `Server.UserAdminUsers`
-  ([accounts](tests.md#accounts)).
+  ([accounts](tests/accounts.md)).
 
 
 ## Knobs
@@ -209,11 +209,8 @@ name. It can set any knob in `framework/presets/default.sh`, or call
   `origin-no-direct`, `/protected-a` takes no writes, so the `posc`,
   `metadata`, and `users` suites skip; its pairs with `origin-posc`,
   `origin-atomic-uploads`, `origin-metadata`, `origin-metadata-tx`, and
-  `origin-multiuser` test reads with those features on.
-  `framework/matrix.py` lists the choices, and which combinations
-  `fed.sh` refuses, which must agree with `fed.sh`'s checks;
-  `framework/matrix.py check` checks that the shapes cover every pair. A
-  preset of your own is in no shape.
+  `origin-multiuser` test reads with those features on. A preset of
+  your own is in no shape, so `smoke.sh` never runs it.
 - **The connection broker** (`origin-broker`) is on, but the origin stays
   reachable, so only the director always goes through it: Pelican's
   brokered path to an unreachable origin does not work end to end.
@@ -246,12 +243,12 @@ with.
   store. `fed.sh` never replaces a key.
 - An empty key directory doesn't simulate a missing key, because Pelican
   generates its own.
-- `keys` also lists the four [test keys](tests.md#authorization), which
+- `keys` also lists the four [test keys](tests/authorization.md), which
   `keys init` creates. They are never rotated.
 - The `keys` suite adds and rotates keys itself, as `keys add` and
   `keys rotate` do, while the federation runs, and puts them back: a key
   it added is removed, and one it made the signer is renamed to sort
   last, so it stays as a verify-only key, since a V2 cache must keep the
-  keys that sealed its store ([keys](tests.md#keys)). Its `master-key`
+  keys that sealed its store ([keys](tests/keys.md)). Its `master-key`
   scenario also retires a cache's keys for a moment, and restores them
   with the cache's master key file.

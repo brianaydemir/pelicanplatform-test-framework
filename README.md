@@ -50,7 +50,7 @@ suites (`framework/suites/`): `federation`, `selftest`, `commands`,
 `advertise`, `webapi`, `observability`, `webdav`, `auth`,
 `transfers`, `restart`, and `keys`.
 A suite that doesn't apply to the shape is skipped, and says why.
-[What the tests check](docs/tests.md) describes each one.
+[What the tests check](docs/tests/README.md) describes each one.
 
 ```sh
 ./fed.sh test -l                        # list the suites and their scenarios
@@ -212,7 +212,7 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | Preset                  | Effect                                                                                                                                            |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `topo-basic`            | the default: each server in a container of its own                                                                                                |
-| `topo-tiny`             | the whole federation in one container; refuses `cache-xrootd`, `auth-external-issuer`, and every preset that adds a service but the metadata ones |
+| `topo-tiny`             | the whole federation in one container; refuses `cache-xrootd`, `auth-external-issuer`, `director-discovery`, and every preset that adds a service but `origin-metadata`, `origin-metadata-tx`, and `auth-oidc` |
 | `topo-multi-origin`     | adds origin-1, a replica: origin-0's prefixes and key                                                                                             |
 | `topo-multi-cache`      | adds cache-1                                                                                                                                      |
 | `topo-multi-owner`      | adds origin-2, another owner: `/other`, and `/public/other` and `/public/secret` inside origin-0's `/public`, with a key and an issuer of its own; see `owners` |
@@ -316,6 +316,7 @@ details, including what it refuses. To write your own, see
 | `./fed.sh control`                | [service control](#service-control) for a `test.py` run by hand |
 | `./fed.sh dev [CMD]...`           | a shell (or `CMD`) in the dev container                  |
 | `./fed.sh status`                 | containers, presets, and images                          |
+| `./fed.sh [-p PRESET]... check`   | exit 0 if it accepts the presets                         |
 | `./fed.sh keys [...]`             | [issuer keys](docs/configuration.md#issuer-keys)         |
 | `./fed.sh <other>`                | passed to `docker compose`, e.g. `logs -f cache-0`       |
 | `./test.py [SUITE[/SCENARIO]]...` | the tests (in the dev container); `-l` lists them        |
@@ -348,13 +349,6 @@ tests leave behind, the helper puts back when it stops, and again when
 the next one starts: it removes their configuration, restarting the
 services that had it, and starts or unpauses what they left stopped,
 killed, or paused.
-
-For test code, `framework/testlib/control.py` has a function for each
-action, each of which returns once the action is done, and for a
-restart, once the server answers again; `restart_with()`, which
-configures a service for the length of a `with` block; and
-`unavailable()`, which says why the tests can't control services here,
-if they can't.
 
 
 ## Where things live
@@ -389,7 +383,7 @@ them.
 | `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                   |
 | `control/`           | the tests' requests to [control services](#service-control), and their configuration of a service (`config/<svc>/`) |
 | `issuer-keys/<svc>/` | each service's issuer keys (`/fed/issuer-keys`), and `issuer/`, the external issuer's                           |
-| `test-keys/`         | private keys for the [authorization tests](docs/tests.md#authorization)                                         |
+| `test-keys/`         | private keys for the [authorization tests](docs/tests/authorization.md)                                         |
 | `issuer-jwks/`       | the public keys the origins add with `Server.IssuerJwks` and each export's `IssuerJwks`                         |
 | `generated/`         | files that `fed.sh` derives from the shape and `local/`, e.g. each service's own layer in `instance/<service>/` |
 | `bin/`               | binaries; the dev container uses `linux/`                                                                       |
@@ -441,18 +435,20 @@ in your hosts file, as any user of `framework/etc/idp-users.json`.
 - **Your Pelican checkout.** The dev image's entrypoint runs
   `pre-commit install` in `/app`, which installs Pelican's Git hook in
   the checkout that `PELICAN_SRC_DIR` names.
-- **`-p topo-tiny`** refuses `cache-xrootd`, `auth-external-issuer`, and
-  every preset that adds a service but `origin-metadata` and
-  `origin-metadata-tx`.
+- **`-p topo-tiny`** refuses `cache-xrootd`, `auth-external-issuer`,
+  `director-discovery`, and every preset that adds a service but
+  `origin-metadata`, `origin-metadata-tx`, and `auth-oidc`.
 - **`-p origin-metadata`** builds the verifier's image from GitHub on the
   first `up`, which needs network access and takes a few minutes.
 
 
 ## More documentation
 
-- [What the tests check](docs/tests.md): each suite, the test data, and
-  the credentials.
+- [What the tests check](docs/tests/README.md): each suite, the test
+  data, and the credentials.
 - [Configuration](docs/configuration.md): configuration layering, knobs,
   writing presets, and issuer keys.
 - [CI and results](docs/ci.md): running the smoke tests in CI, and the
   results format.
+- [Developing the framework](docs/development.md): its layout, what a
+  suite is made of, and the checks that keep it consistent.
