@@ -1,9 +1,9 @@
-"""What the metadata recorder (framework/metadata-server/recorder.py)
-keeps of the deliveries the origins make to it, in
-framework/var/data/metadata/ (CAPTURES), by the ID it gives each,
-which is when the delivery arrived (time.time_ns(), by the recorder's
-clock, which is the dev container's too: both are containers on one
-host):
+"""What the metadata recorder keeps of the origins' deliveries to it.
+
+The recorder (framework/metadata-server/recorder.py) keeps them in
+framework/var/data/metadata/ (CAPTURES), by the ID it gives each, which
+is when the delivery arrived (time.time_ns(), by the recorder's clock,
+which is the dev container's too: both are containers on one host):
 
   index.tsv        a row per delivery, `<id> <status> <type> <path>
                    <event id>`, with the status the recorder answered
@@ -21,8 +21,12 @@ CAPTURES = "data/metadata"
 
 
 def index() -> list[list[str]]:
-    """The recorder's index.tsv, whose columns are <id> <status> <type>
-    <path> <event id>."""
+    """Return the rows of the recorder's index.tsv, split into columns.
+
+    Returns:
+        Each row's columns, <id> <status> <type> <path> <event id>; none
+        if there is no index yet.
+    """
     try:
         with open(f"{CAPTURES}/index.tsv", encoding="utf-8") as f:
             return [line.rstrip("\n").split("\t") for line in f]
@@ -31,15 +35,18 @@ def index() -> list[list[str]]:
 
 
 def since(after: int) -> list[list[str]]:
-    """index()'s rows for the deliveries that arrived after after, a
-    time.time_ns()."""
+    """Return index()'s rows for the deliveries that arrived after after.
+
+    Args:
+        after: A time.time_ns().
+    """
     return [
         row for row in index() if len(row) >= 5 and row[0].isdigit() and int(row[0]) > after
     ]
 
 
 def deliveries(after: int, path: str = "", event_id: str = "") -> list[list[str]]:
-    """since(after)'s rows for object path, or for event event_id."""
+    """Return since(after)'s rows for object path, or for event event_id."""
     return [
         row
         for row in since(after)
@@ -48,16 +55,24 @@ def deliveries(after: int, path: str = "", event_id: str = "") -> list[list[str]
 
 
 def event(capture: str, part: str) -> dict[str, Any]:
-    """A part of the captured event (e.g. "object"), or {} if it has
-    none."""
+    """Return a part of the captured event, or {} if it has none.
+
+    Args:
+        capture: The delivery's ID.
+        part: The part's key, e.g. "object".
+    """
     with open(f"{CAPTURES}/{capture}.event.json", encoding="utf-8") as f:
         whole = common.as_object(json.load(f)) or {}
     return common.as_object(whole.get(part)) or {}
 
 
 def last_delivery(row: list[str]) -> str:
-    """How the delivery that index() row records went: the status and
-    answer in its <id>.json, or, if that can't be read, the row's."""
+    """Return how the delivery that index() row records went.
+
+    Returns:
+        The status and answer in its <id>.json, or, if that can't be
+        read, the row's.
+    """
     try:
         with open(f"{CAPTURES}/{row[0]}.json", encoding="utf-8") as f:
             capture = json.load(f)
@@ -68,6 +83,10 @@ def last_delivery(row: list[str]) -> str:
 
 
 def delivered(path: str, code: str) -> bool:
-    """Whether index() records a delivery for object path that the
-    recorder answered with code."""
+    """Return whether the recorder answered a delivery for path with code.
+
+    Args:
+        path: The object's path.
+        code: An HTTP status, e.g. "422".
+    """
     return any(row[1:2] == [code] and row[3:4] == [path] for row in index())

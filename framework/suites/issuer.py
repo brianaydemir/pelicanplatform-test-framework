@@ -1,8 +1,9 @@
-"""The origins' embedded OAuth2 issuer: what it grants of what a client
-asks for, through each of its flows, and how its refresh tokens behave.
-The suite needs the embedded issuer (ORIGIN_ENABLE_ISSUER, on by
-default) and a protected namespace, and skips with the issuer off or the
-external one.
+"""The origins' embedded OAuth2 issuer: its grants and refresh tokens.
+
+What it grants of what a client asks for, through each of its flows,
+and how its refresh tokens behave. The suite needs the embedded issuer
+(ORIGIN_ENABLE_ISSUER, on by default) and a protected namespace, and
+skips with the issuer off or the external one.
 
 What a user may be granted comes from three places, which the suite
 sets up so that each user gets something different: the issuer's
@@ -212,34 +213,58 @@ REGISTRATION_WAIT = 61
 
 
 def username(role: str) -> str:
-    """The user who plays role."""
+    """Return the user who plays role."""
     return USERS.get(role, f"test-{role}")
 
 
 def personal(role: str) -> str:
-    """The ACL target that grants to role's user alone."""
+    """Return the ACL target that grants to role's user alone."""
     return f"user-{username(role)}"
 
 
 def home(role: str) -> str:
-    """role's user's home prefix, within the namespace."""
+    """Return role's user's home prefix, within the namespace."""
     return f"{BASE}/home/{username(role)}"
 
 
 def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
-    """A row: the first problem, or note if there were none."""
+    """Return a row: FAIL with the first problem, or PASS with note."""
     return (FAIL, common.first(problems)) if problems else (PASS, note)
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no embedded issuer, or no protected
-    namespace."""
+    """Return why there is nothing to test, or None.
+
+    There is nothing without an embedded issuer, or without a protected
+    namespace.
+    """
     return collections.missing(fed)
 
 
 class Test:
-    """The issuer origin and its namespace, the run's users, logins,
-    groups, collection, share, clients, and objects."""
+    """The issuer origin and its namespace, and what the run makes there.
+
+    The run makes users, logins, groups, a collection, a share, clients,
+    and objects.
+
+    Attributes:
+        origin: The issuer origin.
+        web: The issuer origin's web URL.
+        namespace: The first protected namespace exported, the suite's.
+        server_token: A `server` token for the namespace.
+        gamma_rel: The collection's path within the namespace.
+        shared_rel: The share's path within the namespace.
+        ids: The users' IDs, by role.
+        groups: The groups' IDs, by name.
+        logins: Each user's login, by role.
+        gamma: The collection's ID.
+        share: The share's ID, or "" if the origin refuses shares.
+        data: The objects' bytes, by path within the namespace.
+        seeded: The namespaces the objects went in.
+        doomed: The tokens that `expiry` leaves to expire, and when they
+            were minted; or None.
+        clients: The suite's clients, by kind and namespace.
+    """
 
     def __init__(self, session: Session):
         fed = session.fed
@@ -255,20 +280,20 @@ class Test:
         self.server_token = session.token(self.namespace)
         self.gamma_rel = f"{BASE}/collections/{self.run}/gamma"
         self.shared_rel = f"{self.gamma_rel}/shared"
-        self.ids: dict[str, str] = {}  # the users' IDs, by role
-        self.groups: dict[str, str] = {}  # the groups' IDs, by name
-        self.logins: dict[str, User] = {}  # each user's login, by role
-        self.gamma = ""  # the collection's ID
-        self.share = ""  # the share's ID, or "" if the origin refuses shares
-        self.data: dict[str, bytes] = {}  # the objects' bytes, by path within the namespace
-        self.seeded: list[str] = []  # the namespaces the objects went in
-        self.doomed: Optional[tuple[Tokens, float]] = None  # tokens left to expire, and when
+        self.ids: dict[str, str] = {}
+        self.groups: dict[str, str] = {}
+        self.logins: dict[str, User] = {}
+        self.gamma = ""
+        self.share = ""
+        self.data: dict[str, bytes] = {}
+        self.seeded: list[str] = []
+        self.doomed: Optional[tuple[Tokens, float]] = None
         self._web_tokens: dict[str, str] = {}
-        self.clients: dict[tuple[str, str], issuer.Client] = {}  # by kind and namespace
+        self.clients: dict[tuple[str, str], issuer.Client] = {}
         self._minted = 0
 
     def web_token(self, role: str) -> str:
-        """A token that the issuer origin's web API takes as role's user."""
+        """Return a token for the issuer origin's web API as role's user."""
         if role not in self._web_tokens:
             self._web_tokens[role] = credentials.mint_user(
                 self.fed,
@@ -281,17 +306,27 @@ class Test:
         return self._web_tokens[role]
 
     def api(self, role: str) -> Api:
-        """The issuer origin's web API, as role's user, by bearer token."""
+        """Return the issuer origin's web API, as role's user.
+
+        It authenticates by bearer token.
+        """
         return Api(self.web, self.web_token(role))
 
     def user(self, role: str) -> User:
-        """role's user, as the issuer knows them: by their login, if they
-        have one, else by a bearer token."""
+        """Return role's user, as the issuer knows them.
+
+        The issuer knows them by their login, if they have one, else by a
+        bearer token.
+        """
         return self.logins.get(role) or User(token=self.web_token(role))
 
     def client(self, kind: str, namespace: Optional[str] = None) -> issuer.Client:
-        """The suite's client of kind (see CLIENTS) of the issuer origin's
-        issuer of namespace (the suite's by default)."""
+        """Return the suite's client of kind (see CLIENTS).
+
+        The client is of the issuer origin's issuer of namespace (the
+        suite's by default), made once. Kind `public` is the client the
+        issuer seeds for browsers.
+        """
         namespace = namespace or self.namespace
         key = (kind, namespace)
         if key not in self.clients:
@@ -323,13 +358,18 @@ class Test:
         kind: str = "device",
         namespace: Optional[str] = None,
     ) -> Tokens:
-        """Tokens for namespace (the suite's by default) from its issuer
-        through the device flow, as role's user, asking for wanted."""
+        """Return tokens from namespace's issuer, through the device flow.
+
+        role's user asks for wanted, through the suite's client of kind;
+        namespace is the suite's by default.
+        """
         return issuer.device_tokens(self.client(kind, namespace), self.user(role), wanted)
 
     def token_file(self, role: str) -> str:
-        """A fresh token for role's user, of everything they may have, in
-        a file for `--token`."""
+        """Return the path of a fresh token for role's user, for `--token`.
+
+        The file holds a token of everything they may have.
+        """
         self._minted += 1
         path = self.session.path(f"tokens/issuer.{role}.{self._minted}")
         with open(path, "w", encoding="utf-8") as f:
@@ -337,8 +377,11 @@ class Test:
         return path
 
     def allowed(self, role: str) -> frozenset[str]:
-        """The data scopes role's user may be granted in the namespace:
-        the templates', their collection's, and their share's."""
+        """Return the data scopes that role's user may be granted.
+
+        They are the templates', their collection's, and their share's,
+        in the namespace.
+        """
         found: set[str] = set()
         if role in ("analyst", "member"):
             found |= {scope(k, home(role)) for k in RWC}
@@ -354,15 +397,15 @@ class Test:
         return frozenset(found)
 
     def object_url(self, origin: common.Origin, rel: str) -> str:
-        """Where origin serves the object at rel within the namespace."""
+        """Return where origin serves the object at rel in the namespace."""
         return stores.url(origin, self.namespace, rel)
 
     def cache_url(self, cache: common.Cache, rel: str) -> str:
-        """Where cache serves the object at rel within the namespace."""
+        """Return where cache serves the object at rel in the namespace."""
         return f"{cache.url}/{self.namespace}/{quote(rel)}"
 
     def federation_url(self, rel: str) -> str:
-        """The object at rel's URL through the federation."""
+        """Return the object at rel's URL through the federation."""
         return f"{self.fed.url}/{self.namespace}/{rel}"
 
 
@@ -389,8 +432,11 @@ CLIENTS: dict[str, tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = {
 
 
 def sweep(test: Test) -> None:
-    """Remove what earlier runs left: their collections under the suite's
-    directory, and their rogue groups."""
+    """Remove what earlier runs left.
+
+    Remove their collections under the suite's directory, and their
+    rogue groups.
+    """
     admin = test.api("admin")
     directory = f"/{test.namespace}/{BASE}/collections/"
     for row in common.objects(admin.call("GET", collections.COLLECTIONS).array):
@@ -410,8 +456,13 @@ def sweep(test: Test) -> None:
 
 
 def log_in(test: Test, role: str) -> User:
-    """Log role's user in, with a password of this run's that they set
-    through an invite the admin mints: their login."""
+    """Log role's user in, with a password of this run's.
+
+    They set the password through an invite the admin mints.
+
+    Returns:
+        Their login.
+    """
     invite = accounts.password_invite(test.api("admin"), test.ids[role])
     password = secrets.token_urlsafe(12)
     accounts.set_password(test.web, invite, password)
@@ -419,10 +470,13 @@ def log_in(test: Test, role: str) -> User:
 
 
 def prepare(test: Test) -> None:
-    """Make the run's users and groups (once), logins, collection, share,
-    objects, and the tokens that `expiry` leaves to expire. The admin,
-    and each user, agree to the origin's AUP first, without which it
-    refuses them its user and group routes."""
+    """Make the run's users, groups, logins, collection, share, and objects.
+
+    The users and groups are made once, and later runs reuse them. Make
+    the tokens that `expiry` leaves to expire, too. The admin, and each
+    user, agree to the origin's AUP first, without which it refuses them
+    its user and group routes.
+    """
     admin = test.api("admin")
     accounts.agree_to_aup(admin)
     sweep(test)
@@ -478,8 +532,10 @@ def prepare(test: Test) -> None:
 
 
 def seed(test: Test, namespace: str, prefixes: Sequence[str]) -> None:
-    """Put an object of its own bytes, obj, in each prefix within
-    namespace, at every origin."""
+    """Put an object, obj, in each prefix within namespace, at every origin.
+
+    Each object has bytes of its own.
+    """
     caps = test.fed.exports[namespace]
     token = test.session.token(namespace)
     for prefix in prefixes:
@@ -494,8 +550,7 @@ def seed(test: Test, namespace: str, prefixes: Sequence[str]) -> None:
 
 
 def finish(test: Test) -> None:
-    """Remove the run's share, collection, rogue group, clients, and
-    objects."""
+    """Remove the run's share, collection, group, clients, and objects."""
     admin = test.api("admin")
     if test.share:
         gone = collections.delete(admin, test.share)
@@ -530,9 +585,11 @@ def finish(test: Test) -> None:
 
 
 def claim_problems(tok: str, role: str, issuer_url: str, groups: frozenset[str]) -> list[str]:
-    """What is wrong with the token's claims: it should name issuer_url,
-    role's user, the WLCG "any" audience, and the groups that earned it
-    something."""
+    """Return what is wrong with the claims of tok.
+
+    It should name issuer_url, role's user, the WLCG "any" audience and
+    version 1.0, and groups, the groups that earned it something.
+    """
     problems: list[str] = []
     claims = issuer.claims(tok)
     who = username(role)
@@ -556,8 +613,12 @@ def claim_problems(tok: str, role: str, issuer_url: str, groups: frozenset[str])
 
 
 def discovery(test: Test) -> tuple[str, str]:
-    """Each issuer's discovery document names itself and its endpoints,
-    and its JWKS holds the key that signs its tokens."""
+    """Check that each issuer's discovery document and JWKS describe it.
+
+    Each issuer's discovery document names itself, its endpoints, and the
+    grants the suite uses, and its JWKS holds the key that signs its
+    tokens. The local issuer's discovery document names it too.
+    """
     problems: list[str] = []
     endpoints = (
         "token_endpoint",
@@ -616,11 +677,13 @@ def discovery(test: Test) -> tuple[str, str]:
 
 
 def templates(test: Test) -> tuple[str, str]:
-    """What each user is granted of everything: the templates' scopes,
-    their collection's, and their share's, no more; the groups that
-    earned them; a group that may match a template only once the admin
-    makes it eligible; and under `-p origin-export-templates`,
-    /protected-b's own templates alone."""
+    """Check what each user is granted of everything.
+
+    Each gets the templates' scopes, their collection's, and their
+    share's, no more; the groups that earned them; a group that may
+    match a template only once the admin makes it eligible; and under
+    `-p origin-export-templates`, /protected-b's own templates alone.
+    """
     problems: list[str] = []
     earned = {"member": frozenset(GROUPS)}
     for role in ROLES:
@@ -668,7 +731,11 @@ def templates(test: Test) -> tuple[str, str]:
 
 @dataclass(frozen=True)
 class Request:
-    """A request for scopes, and what it should get."""
+    """A request for scopes, and what it should get.
+
+    Attributes:
+        why: What kind of request it is, as a problem names it.
+    """
 
     role: str
     asks: tuple[str, ...]
@@ -682,7 +749,10 @@ class Request:
 
 
 def carried(wanted: str) -> bool:
-    """Whether a client allowed issuer.CLIENT_SCOPES may carry wanted."""
+    """Return whether a client may carry wanted.
+
+    The client is allowed issuer.CLIENT_SCOPES.
+    """
     if wanted in issuer.STANDARD_SCOPES or wanted in issuer.CLIENT_SCOPES:
         return True
     action = wanted.split(":", 1)[0]
@@ -690,7 +760,7 @@ def carried(wanted: str) -> bool:
 
 
 def requests_table(test: Test) -> list[Request]:
-    """What the issuer should grant of each request."""
+    """Return what the issuer should grant of each request."""
     reads = {s for s in test.allowed("member") if s.startswith(R)}
     writes = {s for s in test.allowed("member") if s.startswith(M)}
     rows = [
@@ -756,8 +826,10 @@ def requests_table(test: Test) -> list[Request]:
 
 
 def requests(test: Test) -> tuple[str, str]:
-    """What the issuer grants of each request, through the device flow;
-    and a refresh token only with offline_access."""
+    """Check what the issuer grants of each request through the device flow.
+
+    It must grant a refresh token only with offline_access.
+    """
     problems: list[str] = []
     rows = requests_table(test)
     for row in rows:
@@ -783,10 +855,13 @@ def requests(test: Test) -> tuple[str, str]:
 
 
 def code(test: Test) -> tuple[str, str]:
-    """The same through the authorization code flow, with PKCE, which
-    refuses a scope the client may not carry; a wrong verifier, a
-    replayed code, and a wrong redirect URI; and the browsers' public
-    client, which gets no refresh token."""
+    """Check what the issuer grants through the authorization code flow.
+
+    The same requests as `requests`, with PKCE; the flow refuses a scope
+    the client may not carry. Also a wrong verifier, a replayed code,
+    and a wrong redirect URI; and the browsers' public client, which
+    gets no refresh token.
+    """
     problems: list[str] = []
     client = test.client("code")
     rows = requests_table(test)
@@ -859,9 +934,11 @@ def code(test: Test) -> tuple[str, str]:
 
 
 def clients(test: Test) -> tuple[str, str]:
-    """A client gets no more than it may carry, and no refresh token
-    without the grant; a client without the device grant, a wrong
-    secret, and an unknown client get nothing."""
+    """Check that a client gets no more than it may carry.
+
+    It gets no refresh token without the grant; a client without the
+    device grant, a wrong secret, and an unknown client get nothing.
+    """
     problems: list[str] = []
     narrow = test.client("narrow")
     toks = test.tokens("member", ("openid", "offline_access", *DATA_SCOPES), kind="narrow")
@@ -915,7 +992,7 @@ def clients(test: Test) -> tuple[str, str]:
 
 
 def device(test: Test) -> tuple[str, str]:
-    """The device flow's own rules."""
+    """Check the device flow's own rules."""
     problems: list[str] = []
     client, member = test.client("device"), test.user("member")
     flow = issuer.started(issuer.start_device(client, (f"{R}:/{ARCHIVE}",)), client)
@@ -973,8 +1050,11 @@ def device(test: Test) -> tuple[str, str]:
 
 
 def data(test: Test) -> tuple[str, str]:
-    """What the tokens allow: reads and writes straight at every origin,
-    and reads through the federation and at each cache."""
+    """Check what the tokens allow.
+
+    Read and write straight at every origin, and read through the
+    federation and at each cache.
+    """
     problems: list[str] = []
     tokens = {role: test.tokens(role, DATA_SCOPES).access for role in ROLES}
     reads: list[tuple[str, str, bool]] = [
@@ -1018,8 +1098,11 @@ def data(test: Test) -> tuple[str, str]:
 
 
 def write_problems(test: Test, origin: common.Origin, tokens: dict[str, str]) -> list[str]:
-    """What is wrong with PUT straight to origin with the tokens: within
-    a prefix with create or modify, and nowhere else."""
+    """Return what is wrong with PUT straight to origin with the tokens.
+
+    A PUT must succeed within a prefix with create or modify, and
+    nowhere else.
+    """
     problems: list[str] = []
     payload = os.urandom(OBJECT_SIZE)
     refused = [
@@ -1052,9 +1135,11 @@ def write_problems(test: Test, origin: common.Origin, tokens: dict[str, str]) ->
 
 
 def federation_problems(test: Test, tokens: dict[str, str]) -> list[str]:
-    """What is wrong with the tokens through the federation: a `pelican
-    object get` through a cache, and a GET at each cache, as test-member
-    and as test-stranger."""
+    """Return what is wrong with the tokens through the federation.
+
+    Try a `pelican object get` through a cache, and a GET at each cache,
+    as test-member and as test-stranger.
+    """
     problems: list[str] = []
     rel = f"{ARCHIVE}/obj"
     for role, allowed in (("member", True), ("stranger", False)):
@@ -1078,9 +1163,11 @@ def federation_problems(test: Test, tokens: dict[str, str]) -> list[str]:
 
 
 def reads_archive(test: Test, access: str) -> Optional[str]:
-    """Why the access token does not read archive/obj at the issuer
-    origin, or None if it does; None too where the origin takes no
-    direct clients."""
+    """Return why access does not read archive/obj at the issuer origin.
+
+    Return None if it does, and where the origin takes no direct
+    clients.
+    """
     if "DirectReads" not in test.caps:
         return None
     target = test.object_url(test.origin, f"{ARCHIVE}/obj")
@@ -1091,8 +1178,11 @@ def reads_archive(test: Test, access: str) -> Optional[str]:
 
 
 def refresh(test: Test) -> tuple[str, str]:
-    """A refresh token works, once (but again within its grace period),
-    for the client it was issued to, and the tokens it gives work."""
+    """Check that a refresh token works, once, and the tokens it gives work.
+
+    It works again within its grace period, and only for the client it
+    was issued to.
+    """
     problems: list[str] = []
     client = test.client("device")
     wanted = ("offline_access", f"{R}:/{ARCHIVE}")
@@ -1150,9 +1240,12 @@ def refresh(test: Test) -> tuple[str, str]:
 
 
 def revoked(test: Test) -> tuple[str, str]:
-    """What a refresh gives once a grant is revoked: nothing of it; a
-    revoked refresh token, and the access token issued with it; and a
-    refresh token reused past its grace period, which ends its chain."""
+    """Check revoked grants and tokens, and a refresh token reused late.
+
+    A refresh gives nothing of a grant once it is revoked. The issuer
+    refuses a revoked refresh token, and the access token issued with
+    it; and a refresh token reused past its grace period ends its chain.
+    """
     problems: list[str] = []
     client, curator = test.client("device"), test.api("curator")
     gamma = scope("read", test.gamma_rel)
@@ -1213,9 +1306,12 @@ def revoked(test: Test) -> tuple[str, str]:
 
 
 def exchange(test: Test) -> tuple[str, str]:
-    """Token exchange narrows a token to what is asked and the client may
-    carry, inherits the token's scopes if nothing is asked, and refuses
-    another audience, another client, and a token that never was."""
+    """Check that token exchange narrows a token, and refuses what it must.
+
+    It narrows a token to what is asked and the client may carry,
+    inherits the token's scopes if nothing is asked, and refuses another
+    audience, another client, and a token that never was.
+    """
     problems: list[str] = []
     client = test.client("exchange")
     subject = test.tokens("member", ("offline_access", f"{R}:/", f"{M}:/")).access
@@ -1271,8 +1367,11 @@ def exchange(test: Test) -> tuple[str, str]:
 
 
 def expiry(test: Test) -> tuple[str, str]:
-    """An expired access token is refused by the issuer and the origin,
-    a refresh token renews it, and the refresh token expires itself."""
+    """Check that an expired access token is refused, and can be renewed.
+
+    The issuer and the origin refuse it, a refresh token renews it, and
+    the refresh token expires itself.
+    """
     lifetimes = test.lifetimes
     if lifetimes.access > SHORT:
         return (
@@ -1335,9 +1434,12 @@ def expiry(test: Test) -> tuple[str, str]:
 
 
 def client_scenario(test: Test) -> tuple[str, str]:
-    """`pelican object get` acquires a token from the issuer, approved as
+    """Check that the client acquires a token, reuses it, and refreshes it.
+
+    `pelican object get` acquires a token from the issuer, approved as
     test-member, reuses it for a second get, and, once it has expired,
-    refreshes it, approved by nobody."""
+    refreshes it, approved by nobody.
+    """
     if test.fed.standalone:
         return SKIP, "a standalone origin has no director to find the issuer through"
     problems: list[str] = []
@@ -1388,16 +1490,18 @@ def client_scenario(test: Test) -> tuple[str, str]:
 
 
 def refused_with(answer: web.Response, status: int, error: str) -> bool:
-    """Whether answer is an OAuth2 error of status and error."""
+    """Return whether answer is an OAuth2 error of status and error."""
     return answer.status == status and issuer.error_of(answer) == error
 
 
 def isolation(test: Test) -> tuple[str, str]:
-    """Each namespace's issuer is a trust domain of its own: a client, a
-    refresh token, or an access token of one is nothing to another, a
-    revocation at one is nothing to the other, a namespace that merely
-    begins like another has no issuer, and a collection in one is not
-    granted by the other."""
+    """Check that each namespace's issuer is a trust domain of its own.
+
+    A client, a refresh token, or an access token of one is nothing to
+    another, a revocation at one is nothing to the other, a namespace
+    that merely begins like another has no issuer, and a collection in
+    one is not granted by the other.
+    """
     problems: list[str] = []
     stray = f"{test.web}{issuer.ROUTE}/{test.namespace}x/.well-known/openid-configuration"
     found = web.request("GET", stray)
@@ -1447,9 +1551,12 @@ def isolation(test: Test) -> tuple[str, str]:
 
 
 def collection_isolation(test: Test, other: str) -> list[str]:
-    """What is wrong with what other's issuer grants of gamma, which is a
-    collection of the suite's namespace alone, though other holds an
-    object at the same path: it should grant nothing of it."""
+    """Return what is wrong with what other's issuer grants of gamma.
+
+    gamma is a collection of the suite's namespace alone: other's issuer
+    should grant nothing of it, though an object is put at the same path
+    in other.
+    """
     problems: list[str] = []
     rel = f"{test.gamma_rel}/obj"
     errors = stores.seed_everywhere(
@@ -1481,9 +1588,12 @@ def collection_isolation(test: Test, other: str) -> list[str]:
 
 
 def device_csrf(test: Test) -> tuple[str, str]:
-    """The verification page refuses an approval, and a denial, whose CSRF
-    token is not both in its cookie and in the body, alike; the flow is
-    still pending after them, and an approval with it still works."""
+    """Check that the verification page refuses forged CSRF tokens.
+
+    It refuses an approval, and a denial, whose CSRF token is not both
+    in its cookie and in the body, alike; the flow is still pending
+    after them, and an approval with it still works.
+    """
     problems: list[str] = []
     client, member = test.client("device"), test.user("member")
     flow = issuer.started(issuer.start_device(client, (f"{R}:/{ARCHIVE}",)), client)
@@ -1512,10 +1622,12 @@ def device_csrf(test: Test) -> tuple[str, str]:
 
 
 def admin_clients(test: Test) -> tuple[str, str]:
-    """The admin API for the issuer's clients: only the admin may use it;
-    it never shows a secret; it creates clients only of the grants it
-    knows; and a client it narrows, or deletes, can do only as much as it
-    now says."""
+    """Check the admin API for the issuer's clients.
+
+    Only the admin may use it; it never shows a secret; it creates
+    clients only of the grants it knows; and a client it narrows, or
+    deletes, can do only as much as it now says.
+    """
     problems: list[str] = []
     namespace, admin = f"/{test.namespace}", test.web_token("admin")
     for who, tok, status in (
@@ -1591,7 +1703,7 @@ def admin_clients(test: Test) -> tuple[str, str]:
 
 
 def json_of(answer: web.Response) -> object:
-    """The JSON value in answer's body, or None."""
+    """Return the JSON value in answer's body, or None if it holds none."""
     try:
         return json.loads(answer.body)
     except ValueError:
@@ -1599,9 +1711,12 @@ def json_of(answer: web.Response) -> object:
 
 
 def narrowed_client_problems(test: Test, made: issuer.Client, refresh_token: str) -> list[str]:
-    """What is wrong with a client the admin narrows: once it may no
-    longer refresh, refresh_token, which it was issued, is refused; once
-    it may carry only archive's read, its tokens carry no more."""
+    """Return what is wrong with made, a client the admin narrows.
+
+    Once it may no longer refresh, refresh_token, which it was issued,
+    is refused; once it may carry only archive's read, its tokens carry
+    no more.
+    """
     problems: list[str] = []
     namespace, admin = f"/{test.namespace}", test.web_token("admin")
     grants = [issuer.DEVICE_GRANT]
@@ -1632,10 +1747,13 @@ def narrowed_client_problems(test: Test, made: issuer.Client, refresh_token: str
 
 
 def cors_and_pkce(test: Test) -> tuple[str, str]:
-    """A site the issuer does not know may read its discovery document,
+    """Check the issuer's CORS, and that the public client needs PKCE.
+
+    A site the issuer does not know may read its discovery document,
     which is public, but its endpoints that take credentials do not let
     it read their answers; and the public client may not run the code
-    flow without PKCE."""
+    flow without PKCE.
+    """
     problems: list[str] = []
     evil = {"Origin": "https://evil.invalid"}
     target = f"{test.issuer_url}/.well-known/openid-configuration"
@@ -1672,8 +1790,11 @@ def cors_and_pkce(test: Test) -> tuple[str, str]:
 
 
 def code_expiry(test: Test) -> tuple[str, str]:
-    """A device code and an authorization code expire unredeemed once
-    their lifetime is over, and a device code may then not be approved."""
+    """Check that device and authorization codes expire unredeemed.
+
+    Each expires once its lifetime is over, and a device code may then
+    not be approved.
+    """
     lifetime = test.lifetimes.code
     if lifetime > SHORT:
         return SKIP, f"codes last {lifetime}s ('-p origin-short-tokens' shortens them)"
@@ -1714,9 +1835,14 @@ def code_expiry(test: Test) -> tuple[str, str]:
 
 
 def registered(test: Test, metadata: dict[str, Any]) -> web.Response:
-    """Register a client at the suite's issuer with metadata, waiting
-    out the rate limit once if the issuer's other registrations have used
-    it up."""
+    """Register a client at the suite's issuer with metadata.
+
+    Wait out the rate limit once if the issuer's other registrations
+    have used it up.
+
+    Returns:
+        The issuer's answer to the last attempt.
+    """
     answer = issuer.register(test.issuer_url, metadata)
     if answer.status == 429:
         time.sleep(REGISTRATION_WAIT)
@@ -1725,11 +1851,14 @@ def registered(test: Test, metadata: dict[str, Any]) -> web.Response:
 
 
 def registration(test: Test) -> tuple[str, str]:
-    """A client that registers itself (RFC 7591) gets the device and
+    """Check that a client that registers itself gets only what it may.
+
+    A client that registers itself (RFC 7591) gets the device and
     refresh grants alone, whatever it asks; may not name a redirect URI
     off this host, or a long name; is bound to the first user who
     approves a flow for it; and manages its registration (RFC 7592) only
-    with its registration access token, which cannot widen its grants."""
+    with its registration access token, which cannot widen its grants.
+    """
     problems: list[str] = []
     name = f"pelican-test-framework registration {test.run}"
     grants = {issuer.DEVICE_GRANT, issuer.REFRESH_GRANT}
@@ -1776,9 +1905,11 @@ def registration(test: Test) -> tuple[str, str]:
 
 
 def binding_problems(test: Test, client: issuer.Client) -> list[str]:
-    """What is wrong with a client that registered itself: test-member,
-    the first to approve a flow for it, should get tokens through it, and
-    test-analyst should then be refused it."""
+    """Return what is wrong with a client that registered itself.
+
+    test-member, the first to approve a flow for it, should get tokens
+    through it, and test-analyst should then be refused it.
+    """
     problems: list[str] = []
     try:
         toks = issuer.device_tokens(client, test.user("member"), (f"{R}:/{ARCHIVE}",))
@@ -1802,10 +1933,13 @@ def binding_problems(test: Test, client: issuer.Client) -> list[str]:
 def configuration_problems(
     test: Test, client_id: str, access: str, grants: set[str]
 ) -> list[str]:
-    """What is wrong with a registered client's configuration endpoint
-    (RFC 7592): it should refuse no registration access token and a wrong
-    one; with the right one (access), read the client, rename it but not
-    widen its grants, and delete it, after which the token is nothing."""
+    """Return what is wrong with client_id's configuration endpoint.
+
+    The endpoint (RFC 7592) should refuse no registration access token
+    and a wrong one; with the right one (access), read the client,
+    rename it but not widen its grants from grants, and delete it, after
+    which the token is nothing.
+    """
     problems: list[str] = []
     url = test.issuer_url
     for method in ("GET", "PUT", "DELETE"):
@@ -1836,6 +1970,8 @@ def configuration_problems(
     return problems
 
 
+# The scenarios, by name: each takes the Test, and returns its row's
+# status and note.
 RUN = {
     "discovery": discovery,
     "templates": templates,
@@ -1859,8 +1995,10 @@ RUN = {
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Make the run's users, logins, groups, collection, and objects; run
-    the selected scenarios; and remove what the run made."""
+    """Run the selected scenarios, and remove what the run made.
+
+    Make the run's users, logins, groups, collection, and objects first.
+    """
     test = Test(session)
     try:
         prepare(test)

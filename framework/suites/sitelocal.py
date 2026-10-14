@@ -1,8 +1,9 @@
-"""A site-local cache (`-p topo-site-local-cache`): cache-2, which the
-director does not know of, and so serves only clients that name it
-(Client.PreferredCaches). It fetches objects through a federated cache,
-presenting the client's token, as a client would, and asks an origin
-for listings.
+"""A site-local cache (`-p topo-site-local-cache`).
+
+It is cache-2, which the director does not know of, and so serves only
+clients that name it (Client.PreferredCaches). It fetches objects
+through a federated cache, presenting the client's token, as a client
+would, and asks an origin for listings.
 
 Objects go under /<namespace>/data/sitelocal/<run>/ in every origin's
 store, in the storage of the namespace they are read in (see
@@ -49,14 +50,17 @@ SCENARIOS = {
 
 # What every object is: its size.
 SIZE = 10000
-# A key that no server knows (see credentials.keys()).
+# A key that no server knows.
 UNKNOWN_KEY = "test-keys/unknown.pem"
 # The collection that `list` lists, and what it holds.
 LISTED = {"a": 1000, "b": 2000}
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no site-local cache."""
+    """Return why there is nothing to test, or None if there is something.
+
+    There is nothing without a site-local cache, or without /protected-a.
+    """
     if not any(c.site_local for c in fed.caches):
         return "there is no site-local cache ('-p topo-site-local-cache')"
     if "protected-a" not in fed.exports:
@@ -65,7 +69,16 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 
 class Test:
-    """The site-local cache, the run's objects, and the tokens."""
+    """The site-local cache, the run's objects, and the tokens.
+
+    Attributes:
+        origins: The origins, each store once.
+        base: The run's collection, in each namespace.
+        tmp: The scratch directory for the client's files.
+        token_files: The `server` token's file of each exported protected
+            namespace, by namespace.
+        objects: Each object put, by name: its bytes.
+    """
 
     def __init__(self, session: Session):
         self.session = session
@@ -81,8 +94,10 @@ class Test:
         self.objects: dict[str, bytes] = {}
 
     def put(self, namespace: str, name: str, data: bytes) -> None:
-        """Put object name, holding data, in namespace's storage at every
-        origin: on a pstore origin, /public's is /protected-a's."""
+        """Put data as object name in namespace's storage at every origin.
+
+        On a pstore origin, /public's storage is /protected-a's.
+        """
         target = self.fed.storage_namespace(namespace)
         token = self.session.token(target)
         caps = self.fed.exports[target]
@@ -98,20 +113,25 @@ class Test:
         self.objects[name] = data
 
     def url(self, namespace: str, name: str) -> str:
-        """The federation URL of object name in namespace."""
+        """Return the federation URL of object name in namespace."""
         return f"{self.fed.url}/{namespace}/{self.base}/{name}"
 
     def token_args(self, namespace: str) -> list[str]:
-        """The client's arguments for the server's token, where the
-        namespace takes one."""
+        """Return the client's arguments for the server's token.
+
+        There are none where the namespace takes no token.
+        """
         if namespace not in self.token_files:
             return []
         return ["--token", self.token_files[namespace]]
 
 
 def served_by_stats(path: str) -> list[str]:
-    """The hosts in a `--transfer-stats` file (see
-    transfers.stats_endpoints()), or none if it is unreadable."""
+    """Return the hosts in a `--transfer-stats` file.
+
+    See transfers.stats_endpoints(). There are none if the file is
+    unreadable.
+    """
     try:
         with open(path, encoding="utf-8") as f:
             return transfers.stats_endpoints(json.load(f))
@@ -120,8 +140,11 @@ def served_by_stats(path: str) -> list[str]:
 
 
 def client_get(test: Test, namespace: str, name: str, caches: str) -> tuple[str, str]:
-    """`pelican object get --cache caches` of object name in namespace, to
-    a file, so that the client asks no server before it transfers."""
+    """Run `pelican object get --cache caches` of object name in namespace.
+
+    The object is new, and goes to a file, so that the client asks no
+    server before it transfers. The site-local cache alone must serve it.
+    """
     data = os.urandom(SIZE)
     test.put(namespace, name, data)
     target = os.path.join(test.tmp, name)
@@ -148,15 +171,16 @@ def client_get(test: Test, namespace: str, name: str, caches: str) -> tuple[str,
 
 
 def get(test: Test, namespace: str) -> tuple[str, str]:
-    """client_get() of a new object, preferring the site-local cache
-    alone."""
+    """Run client_get(), preferring the site-local cache alone."""
     return client_get(test, namespace, f"get-{namespace}", test.cache.url)
 
 
 def plugin_get(test: Test, namespace: str) -> tuple[str, str]:
-    """stash_plugin's download of a new object, with the site-local cache
-    as its preferred cache, and the server's token in its credentials
-    directory where the namespace takes one."""
+    """Run stash_plugin's download of a new object.
+
+    The site-local cache is its preferred cache, and the server's token
+    is in its credentials directory where the namespace takes one.
+    """
     name = f"plugin-get-{namespace}"
     data = os.urandom(SIZE)
     test.put(namespace, name, data)
@@ -200,14 +224,18 @@ def plugin_get(test: Test, namespace: str) -> tuple[str, str]:
 
 
 def get_plus(test: Test) -> tuple[str, str]:
-    """`--cache <site-local>,+`: the client may fall back to the
-    director's caches, but need not."""
+    """Run client_get() with `--cache <site-local>,+`.
+
+    The client may fall back to the director's caches, but need not.
+    """
     return client_get(test, "protected-a", "get-plus", f"{test.cache.url},+")
 
 
 def refused(test: Test) -> tuple[str, str]:
-    """A token that no server accepts, through the site-local cache, which
-    must pass the refusal on, and write nothing."""
+    """Check a token that no server accepts, through the site-local cache.
+
+    The cache must pass the refusal on, and the client write nothing.
+    """
     name = "refused"
     test.put("protected-a", name, os.urandom(SIZE))
     token = test.session.path("tokens/sitelocal-unknown")
@@ -244,9 +272,11 @@ def refused(test: Test) -> tuple[str, str]:
 
 
 def cached_upstream(cache: common.Cache, path: str, token: str) -> Optional[bool]:
-    """Whether a federated V2 cache holds path (a HEAD with
-    Cache-Control: only-if-cached answers 200, or 504 if not); None if it
-    answers otherwise."""
+    """Return whether cache, a federated V2 cache, holds path.
+
+    A HEAD with Cache-Control: only-if-cached answers 200 if it does, or
+    504 if not. Return None if it answers otherwise.
+    """
     answer = web.request(
         "HEAD", f"{cache.url}{path}", token=token, headers={"Cache-Control": "only-if-cached"}
     )
@@ -254,10 +284,12 @@ def cached_upstream(cache: common.Cache, path: str, token: str) -> Optional[bool
 
 
 def upstream(test: Test) -> tuple[str, str]:
-    """A cold read through the site-local cache leaves the object in a
-    federated V2 cache, which held none of it before: the site-local
-    cache fetched it through one. An XRootD cache cannot be asked
-    whether it holds an object without fetching it."""
+    """Check that the site-local cache fetches through a federated V2 cache.
+
+    A cold read through it must leave the object in a federated V2
+    cache, which held none of it before. An XRootD cache cannot be asked
+    whether it holds an object without fetching it.
+    """
     feds = [c for c in test.fed.federated_caches if c.kind == "v2"]
     if not feds:
         return INCONCLUSIVE, "no federated V2 cache to ask what it holds"
@@ -279,9 +311,12 @@ def upstream(test: Test) -> tuple[str, str]:
 
 
 def listing(test: Test) -> tuple[str, str]:
-    """Depth 1 of a collection through the site-local cache, which asks an
-    origin: listed, where /protected-a may be listed straight from one
-    (Listings and DirectReads); refused (401, 403, or 405) otherwise."""
+    """Check Depth 1 of a collection through the site-local cache.
+
+    The cache asks an origin. The collection must be listed where
+    /protected-a may be listed straight from one (Listings and
+    DirectReads), and the listing refused (401, 403, or 405) otherwise.
+    """
     for name, size in LISTED.items():
         test.put("protected-a", f"listed/{name}", os.urandom(size))
     path = f"/protected-a/{test.base}/listed"

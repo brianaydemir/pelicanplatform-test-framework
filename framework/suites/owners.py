@@ -1,7 +1,9 @@
-"""Another owner beside the origins (`-p topo-multi-owner`): origin-2,
-with a key and an issuer of its own, exporting /other (like /protected-a)
-and /public/other (like /public, and nested in it), as far as the shape
-exports those (see framework/testlib/owners.py).
+"""Another owner beside the origins (`-p topo-multi-owner`).
+
+The owner is origin-2, with a key and an issuer of its own, exporting
+/other (like /protected-a) and /public/other (like /public, and nested
+in it), as far as the shape exports those (see
+framework/testlib/owners.py).
 
   ready       origin-2's objects come back through the federation, and
               from each cache: 20 tries, 15 seconds apart, while the
@@ -70,7 +72,10 @@ TRIES, INTERVAL = 20, 15
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no other owner, or no pair."""
+    """Return why there is nothing to test, or None.
+
+    There is nothing without another owner, or without a pair.
+    """
     if not fed.owners:
         return "there is no other owner ('-p topo-multi-owner')"
     if not owners.pairs(fed):
@@ -79,15 +84,21 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 
 class Test:
-    """The pairs, the stores, and the credentials' tokens."""
+    """The pairs, the stores, and the credentials' tokens.
+
+    Attributes:
+        origins: The origins, each store once.
+        storages: The storage of every namespace on either side of a
+            pair, which the suite writes in: the other owners', then the
+            origins'.
+        base: Where the suite's objects go, in each namespace's storage.
+    """
 
     def __init__(self, session: Session):
         self.session = session
         self.fed = session.fed
         self.pairs = owners.pairs(self.fed)
         self.origins = stores.unique(self.fed.origins)
-        # The storage of every namespace on either side of a pair, which the
-        # suite writes in: the other owners', then the origins'.
         self.storages = list(
             dict.fromkeys(
                 [
@@ -104,8 +115,10 @@ class Test:
     def token(
         self, cred: OwnerCredential, pair: Pair, side: str
     ) -> tuple[Optional[str], Optional[str]]:
-        """cred's token for side of pair, and its file; (None, None) for
-        `none`."""
+        """Return cred's token for side of pair, and its file.
+
+        Return (None, None) for `none`.
+        """
         key = (cred.name, pair.export.name, side)
         if key not in self._tokens:
             path = self.session.path(f"tokens/owners.{cred.name}.{pair.name(side)}")
@@ -114,34 +127,40 @@ class Test:
         return self._tokens[key]
 
     def stores_of(self, pair: Pair, side: str) -> list[common.Origin]:
-        """The origins of side of pair."""
+        """Return the origins of side of pair."""
         return [pair.owner.origin] if side == "owner" else self.origins
 
     @staticmethod
     def path(origin: common.Origin, pair: Pair, side: str, rel: str) -> str:
-        """Where rel is in origin's storage of side's namespace of pair."""
+        """Return rel's path in origin's storage of pair.namespace(side)."""
         return f"{origin.store_of(pair.namespace(side))}/{rel}"
 
     def holders(self, pair: Pair, rel: str) -> list[str]:
-        """The origins of either side of pair whose storage of the side
-        holds rel."""
+        """Return the origins on either side of pair that hold rel.
+
+        Each is named by its service, and holds rel in its storage of its
+        side's namespace.
+        """
         sides = [(pair.owner.origin, "owner")] + [(o, "origins") for o in self.origins]
         return [o.svc for o, side in sides if common.sha256(self.path(o, pair, side, rel))]
 
     @staticmethod
     def object_rel(side: str, n: int = 0) -> str:
-        """One of the side's test objects (see init-data.py)."""
+        """Return one of the side's test objects (see init-data.py)."""
         return f"data/{'2' if side == 'owner' else '0'}.{n}"
 
 
 def hosts_named(answer: director.Answer, hosts: list[str]) -> list[str]:
-    """Those of hosts that answer names."""
+    """Return those of hosts that answer names."""
     return [h for h in hosts if answer.names(h)]
 
 
 def reader(pair: Pair) -> OwnerCredential:
-    """Who reads the other owner's side of pair: origin-2's token where a
-    token decides, and none in /public/other."""
+    """Return who reads the other owner's side of pair.
+
+    It is origin-2's token where a token decides, and none in
+    /public/other.
+    """
     return owners.BY_NAME["owner" if pair.like in credentials.PROTECTED else "none"]
 
 
@@ -150,7 +169,13 @@ def reader(pair: Pair) -> OwnerCredential:
 
 
 def ready(test: Test) -> tuple[str, str]:
-    """Dies if origin-2 never serves: nothing after it could pass."""
+    """Check that origin-2's objects come back, waiting until they do.
+
+    Try TRIES times, INTERVAL seconds apart (see not_ready()).
+
+    Raises:
+        Died: origin-2 never serves: nothing after it could pass.
+    """
     why = ""
     for n in range(1, TRIES + 1):
         why = not_ready(test)
@@ -164,7 +189,11 @@ def ready(test: Test) -> tuple[str, str]:
 
 
 def not_ready(test: Test) -> str:
-    """Why origin-2's objects do not yet come back, or ""."""
+    """Return why origin-2's objects do not yet come back.
+
+    They must come back through `pelican object get`, and from each
+    cache. Return "" if they do.
+    """
     fed = test.fed
     for pair in test.pairs:
         rel = test.object_rel("owner")
@@ -195,7 +224,11 @@ def not_ready(test: Test) -> str:
 
 
 def get_kids(url: str, name: str) -> tuple[Optional[frozenset[str]], str]:
-    """The kids of the JWKS at url, kept as name, or why there are none."""
+    """Return the kids of the JWKS at url, kept as name.
+
+    Returns:
+        The kids, and ""; or None, and why there are none.
+    """
     answer = web.request("GET", url)
     save(f"{OUT}/responses/{name}", answer)
     if answer.status != 200:
@@ -207,8 +240,10 @@ def get_kids(url: str, name: str) -> tuple[Optional[frozenset[str]], str]:
 
 
 def keys(test: Test) -> tuple[str, str]:
-    """Each owner and its issuers publish its keys alone, and the origins
-    none."""
+    """Check that each owner and its issuers publish its keys alone.
+
+    The origins publish none of its keys.
+    """
     fed = test.fed
     problems: list[str] = []
     origins_kids = set(owners.key_ids(os.path.dirname(fed.origin_key)))
@@ -278,10 +313,14 @@ def keys(test: Test) -> tuple[str, str]:
 
 
 def routing(test: Test) -> tuple[str, str]:
-    """A client's direct read (?directread) of each side of each pair must
+    """Check that direct reads of each side of each pair go to its origins.
+
+    A client's direct read (?directread) of each side of each pair must
     go to the side's own origins alone; where the side's export takes no
     direct clients, the director must find no origin (405), and name
-    none, not even the other side's, whose prefix may enclose it."""
+    none, not even the other side's, whose prefix may enclose it. Each
+    cache must also serve /public/other as origin-2's (see nested()).
+    """
     fed = test.fed
     problems: list[str] = []
     origin_hosts = [director.host(o.url) for o in fed.origins]
@@ -332,9 +371,13 @@ def routing(test: Test) -> tuple[str, str]:
 
 
 def nested(test: Test, pair: Pair) -> list[str]:
-    """/public/other/<rel> must be origin-2's, never what origin-0's
-    /public holds at other/<rel> (a decoy); and /public/others-<run>/probe
-    origin-0's, since a prefix matches whole path segments."""
+    """Return what is wrong with how each cache serves /public/other.
+
+    Through each cache, /public/other/<rel> must be origin-2's, never
+    what origin-0's /public holds at other/<rel> (a decoy); and
+    /public/others-<run>/probe origin-0's, since a prefix matches whole
+    path segments. The objects are written straight to storage.
+    """
     fed = test.fed
     rel = f"{test.base}/routed"
     mine, decoy, sibling = os.urandom(3000), os.urandom(3000), os.urandom(3000)
@@ -511,10 +554,14 @@ def check_delete(
 def client_get(
     test: Test, pair: Pair, side: str, cred: OwnerCredential, direct: bool, tag: str
 ) -> Optional[str]:
-    """`pelican object get` of one of side's objects with cred's token,
-    into a directory, so that the client stats the object first and a
-    refusal reads as the server's (see testlib/transfers.py); what went
-    wrong, or None."""
+    """Run `pelican object get` of one of side's objects with cred's token.
+
+    Get it into a directory, so that the client stats the object first
+    and a refusal reads as the server's (see testlib/transfers.py).
+
+    Returns:
+        What went wrong, or None.
+    """
     fed = test.fed
     _, token_file = test.token(cred, pair, side)
     rel = test.object_rel(side, 1)
@@ -563,8 +610,11 @@ def client_get(
 def client_put(
     test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: str
 ) -> Optional[str]:
-    """`pelican object put` of a new object to side with cred's token; what
-    went wrong, or None."""
+    """Run `pelican object put` of a new object to side with cred's token.
+
+    Returns:
+        What went wrong, or None.
+    """
     fed = test.fed
     _, token_file = test.token(cred, pair, side)
     data = os.urandom(5000)
@@ -600,10 +650,12 @@ def client_put(
 
 
 def client(test: Test, name: str) -> tuple[str, str]:
-    """The client scenario name, for each pair: the reads of every pair;
-    the cross-owner reads of the pairs that take a token to read; and
-    the puts of those that take writes (/other, and /public/other under
-    `-p origin-public-writes`)."""
+    """Check the client scenario name, for each pair.
+
+    It runs the reads of every pair; the cross-owner reads of the pairs
+    that take a token to read; and the puts of those that take writes
+    (/other, and /public/other under `-p origin-public-writes`).
+    """
     owner, theirs = owners.BY_NAME["owner"], owners.BY_NAME["origins"]
     problems: list[str] = []
     done = 0
@@ -638,14 +690,21 @@ def client(test: Test, name: str) -> tuple[str, str]:
 
 # --------------------------------------------------------------------------
 
+# The scenarios that are checks: each takes the Test, and returns its
+# row's status and note.
 CHECKS = {"ready": ready, "keys": keys, "routing": routing}
 
 
 def clean(test: Test) -> list[str]:
-    """Empty data/owners in the storage of every namespace on either side
-    of a pair (see run()); what went wrong. A pstore origin's encrypted
-    store, which only it can change, is emptied through it, and its plain
-    copy, which the suite writes too, directly."""
+    """Empty data/owners in each of test.storages.
+
+    A pstore origin's encrypted store, which only it can change, is
+    emptied through it, and its plain copy, which the suite writes too,
+    directly.
+
+    Returns:
+        What went wrong.
+    """
     fed = test.fed
     errors: list[str] = []
     for storage in test.storages:
@@ -662,8 +721,10 @@ def clean(test: Test) -> list[str]:
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Run the selected scenarios, `ready` first, and remove the suite's
-    objects."""
+    """Run the selected scenarios, and remove the suite's objects.
+
+    `ready` runs first, whatever else is selected.
+    """
     fed = session.fed
     test = Test(session)
     for storage in test.storages:

@@ -1,7 +1,8 @@
-"""What happens when a server's issuer keys change while it runs: the
-registry learning a key the origins add, the directors going on
-accepting the origins' and a cache's advertisements once each signs
-with a new key, every server taking tokens signed with it, the
+"""What happens when a server's issuer keys change while it runs.
+
+This covers the registry learning a key the origins add, the directors
+going on accepting the origins' and a cache's advertisements once each
+signs with a new key, every server taking tokens signed with it, the
 issuer's own tokens carrying its kid, a V2 cache's master key, sealed
 with its keys, and the database backups that every server writes. The
 suite writes keys into the services' key directories under
@@ -86,7 +87,7 @@ SCENARIOS = {
 
 NAMESPACE = "protected-a"
 # A row: its case (appended to the scenario's name, if any), its status,
-# and its note.
+# and its note. A scenario returns its status and note, or its rows.
 Row = tuple[str, str, str]
 Rows = Union[tuple[str, str], list[Row]]
 
@@ -114,9 +115,12 @@ OBJECT_SIZE = 200_000
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: servers whose keys the host may not
-    write, the tiny topology, whose one process holds every key, or no
-    /protected-a."""
+    """Return why there is nothing to test, or None.
+
+    There is nothing where the host may not write the servers' keys, in
+    the tiny topology, whose one process holds every key, or without
+    /protected-a.
+    """
     if fed.drop_privileges:
         return "under -p server-unprivileged, the host may not write the servers' keys"
     if fed.tiny:
@@ -127,8 +131,10 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 
 def outcome(problems: Sequence[str], note: str) -> Row:
-    """A row with no case: FAIL with the first of problems, or PASS with
-    note."""
+    """Return a row with no case: FAIL with problems, or PASS with note.
+
+    A FAIL's note is the first of problems.
+    """
     return ("", FAIL, first(problems)) if problems else ("", PASS, note)
 
 
@@ -138,16 +144,21 @@ def outcome(problems: Sequence[str], note: str) -> Row:
 
 
 def key_dirs_of(fed: common.Federation, what: str) -> list[str]:
-    """The key directories (under framework/var) that hold one keyset:
-    the origins' (origin-0's and origin-1's, which share a key), or a
-    cache's."""
+    """Return the key directories, under framework/var, of one keyset.
+
+    Args:
+        fed: The federation.
+        what: Whose keyset: `origins` for the origins' (origin-0's and
+            origin-1's, which share a key), or a cache's service for its
+            own.
+    """
     if what == "origins":
         return [f"issuer-keys/{o.svc}" for o in fed.origins]
     return [f"issuer-keys/{what}"]
 
 
 def prefixes_in(key_dir: str) -> list[int]:
-    """The NN prefixes of the keys in key_dir."""
+    """Return the NN prefixes of the keys in key_dir."""
     found: list[int] = []
     for path in glob.glob(os.path.join(key_dir, "[0-9][0-9]-*.pem")):
         found.append(int(os.path.basename(path)[:2]))
@@ -155,10 +166,12 @@ def prefixes_in(key_dir: str) -> list[int]:
 
 
 def new_key(test: "Test", dirs: Sequence[str], first_of_all: bool) -> str:
-    """Make a key in each of dirs, named to sort first of its keys
-    (first_of_all: the signer, as `keys rotate` names one) or last (a
-    verify-only key, as `keys add` does), the same key in each; its
-    name. Dies if there is no room, or no key to sort around."""
+    """Make the same new key in each of dirs, and return its name.
+
+    It is named to sort first of its keys (first_of_all: the signer, as
+    `keys rotate` names one) or last (a verify-only key, as `keys add`
+    does). Dies if there is no room, or no key to sort around.
+    """
     used = sorted({n for d in dirs for n in prefixes_in(d)})
     if not used:
         die(f"no NN-*.pem key in framework/var/{dirs[0]}; run ./fed.sh keys init")
@@ -183,8 +196,10 @@ def remove_key(dirs: Sequence[str], name: str) -> None:
 
 
 def demote_key(dirs: Sequence[str], name: str) -> str:
-    """Rename key name in each of dirs to sort last, so that the key it
-    displaced signs again: its new name."""
+    """Rename key name in each of dirs to sort last; return its new name.
+
+    The key it displaced then signs again.
+    """
     used = sorted({n for d in dirs for n in prefixes_in(d) if f"{n:02d}" != name[:2]})
     number = (used[-1] if used else 50) + 1
     new_name = f"{number:02d}{name[2:]}"
@@ -194,7 +209,7 @@ def demote_key(dirs: Sequence[str], name: str) -> str:
 
 
 def key_ids_at(url: str) -> Optional[frozenset[str]]:
-    """The kids in the JWKS at url; None if it serves none."""
+    """Return the kids in the JWKS at url, or None if it serves none."""
     answer = web.request("GET", url)
     if answer.status != 200:
         return None
@@ -205,8 +220,21 @@ def key_ids_at(url: str) -> Optional[frozenset[str]]:
 
 
 class Test:
-    """The federation, the run's keys and objects, and what the scenarios
-    share."""
+    """What the scenarios share: the federation, the run's keys and objects.
+
+    Attributes:
+        caps: The capabilities of /protected-a.
+        rel: The probe object's path in /protected-a.
+        path: The probe's path in the federation.
+        data: The probe's bytes.
+        origin_dirs: The origins' key directories.
+        origin_key: The origins' signing key, before anything changed.
+        cache: The first federated V2 cache, if any.
+        cache_key: Its signing key, before anything changed.
+        added: The keys the scenarios added, by directory, to remove.
+        rotated: The keys the scenarios made signers, by directory, to
+            demote.
+    """
 
     def __init__(self, session: Session):
         self.session = session
@@ -221,15 +249,12 @@ class Test:
         self.path = f"/{NAMESPACE}/{self.rel}"
         self.data = os.urandom(OBJECT_SIZE)
         self._probed = False
-        # The origins' keys before anything changed, and the first V2
-        # cache's.
         self.origin_dirs = key_dirs_of(self.fed, "origins")
         self.origin_key = self.fed.origin_key
         self.cache = next((c for c in self.fed.federated_caches if c.kind == "v2"), None)
         self.cache_key = (
             common.signing_key(f"issuer-keys/{self.cache.svc}") if self.cache else ""
         )
-        # The keys the scenarios added, by directory, to put back.
         self.added: list[tuple[list[str], str]] = []
         self.rotated: list[tuple[list[str], str]] = []
         self._cache_name: Optional[str] = None
@@ -247,22 +272,28 @@ class Test:
             die(f"could not put the probe in place: {first(errors)}")
 
     def origin_host(self) -> str:
-        """origin-0's host, as the directors name it."""
+        """Return origin-0's host, as the directors name it."""
         return director.host(self.fed.origins[0].url)
 
     def registry_jwks(self, prefix: str) -> str:
-        """The URL of the registry's JWKS for prefix."""
+        """Return the URL of the registry's JWKS for prefix."""
         return f"{self.fed.registry_url}/api/v1.0/registry{prefix}/.well-known/issuer.jwks"
 
     def origin_prefix(self) -> str:
-        """origin-0's registry prefix: /origins/<host:port> of its web URL
-        (GetOriginNs)."""
+        """Return origin-0's registry prefix (GetOriginNs).
+
+        That is /origins/<host:port> of its web URL.
+        """
         return f"/origins/{urlsplit(self.fed.origins[0].web_url).netloc}"
 
     def cache_name(self) -> str:
-        """The first V2 cache's name, as it records it, by which its
-        registry prefix is /caches/<name> (GetCacheNs); "" if it will not
-        say."""
+        """Return the first V2 cache's name, as it records it.
+
+        Its registry prefix is /caches/<name> (GetCacheNs).
+
+        Returns:
+            The name, or "" if there is no such cache, or it will not say.
+        """
         if self._cache_name is None:
             self._cache_name = ""
             if self.cache:
@@ -281,40 +312,55 @@ class Test:
         return self._cache_name
 
     def named(self, route: str, host: str) -> list[str]:
-        """The directors that would send a GET of the probe, for route, to
-        host."""
+        """Return the directors that would send a GET of the probe to host.
+
+        Args:
+            route: The route to ask of: `object` (for a cache) or
+                `origin`.
+            host: A server's host, as the directors name it.
+        """
         return director.naming(self.fed.directors, route, self.path, host)
 
     def wait_named(self, route: str, host: str, seconds: float = NAMED_WAIT) -> bool:
-        """Whether every director names host for the probe within
-        seconds."""
+        """Wait until every director names host for the probe.
+
+        Returns:
+            Whether they all did within seconds.
+        """
         return common.wait_for(
             lambda: len(self.named(route, host)) == len(self.fed.directors), seconds, 5
         )
 
     def signed_with(self, key: str) -> str:
-        """A token like the `server` token for /protected-a, signed with
-        key (see credentials.server_claims())."""
+        """Return a token like the `server` token, but signed with key.
+
+        Its claims are /protected-a's (see credentials.server_claims()).
+        """
         claims = credentials.server_claims(self.fed, NAMESPACE)
         return jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), claims, key=key)
 
     def data_servers(self) -> list[tuple[str, str]]:
-        """Each origin that takes direct clients, and each federated
-        cache: its service and its data URL."""
+        """Return each origin that takes direct clients, and each cache.
+
+        Returns:
+            The service and data URL of each such origin, and of each
+            federated cache.
+        """
         found = [(o.svc, o.url) for o in self.fed.origins if "DirectReads" in self.caps]
         found += [(c.svc, c.url) for c in self.fed.federated_caches]
         return found
 
     def served(self, url: str, token: str) -> bool:
-        """Whether a GET of the probe at the server at url, with token,
-        serves it."""
+        """Return whether the server at url serves the probe for token."""
         answer = web.request("GET", f"{url}{self.path}", token=token, timeout=60)
         return answer.status == 200 and answer.body == self.data
 
 
 def put_back(test: Test) -> None:
-    """Remove the keys the scenarios added, and demote those they made
-    signers, then wait until every director names origin-0 again."""
+    """Remove the keys the scenarios added, and demote those made signers.
+
+    Then wait until every director names origin-0 again.
+    """
     for dirs, name in test.added:
         remove_key(dirs, name)
     test.added.clear()
@@ -333,15 +379,18 @@ def put_back(test: Test) -> None:
 
 
 def hot_add(test: Test) -> list[Row]:
-    """A verify-only key, written into the origins' key directories so
-    that it sorts last: within KEY_WAIT seconds, origin-0's own JWKS
-    must list it (`origin-jwks`), and so must the registry's for the
-    namespace (`registry-namespace`) and for origin-0's own prefix
+    """Check that a verify-only key added to the origins comes and goes.
+
+    The key is written into the origins' key directories so that it sorts
+    last. Within KEY_WAIT seconds, origin-0's own JWKS must list it
+    (`origin-jwks`), and so must the registry's for the namespace
+    (`registry-namespace`) and for origin-0's own prefix
     (`registry-server`), since an origin pushes its keys to the registry
-    when they change (updateNamespacesPubKey in launcher_utils/, which
-    signs the update with a key the registry already holds); meanwhile
-    no director may drop origin-0 (`routing`). Then the key is removed,
-    and each must be rid of it as soon (`removed`)."""
+    when they change (updateNamespacesPubKey in launcher_utils/, which signs
+    the update with a key the registry already holds); meanwhile no director
+    may drop origin-0 (`routing`). Then the key is removed, and each must be
+    rid of it as soon (`removed`).
+    """
     fed = test.fed
     if not fed.registry_url:
         return [("", SKIP, "a standalone origin registers nothing")]
@@ -403,23 +452,24 @@ def hot_add(test: Test) -> list[Row]:
 
 
 def hot_rotate(test: Test) -> list[Row]:
-    """A new signing key on the origins, and another on the first V2
-    cache, watched for ROTATE_WINDOW seconds, every ROTATE_INTERVAL:
-    every director must go on naming origin-0 and the cache
-    (`directors`), each origin and cache must come to take tokens signed
-    with the origins' new key (`new-key`), and must take the old key's
-    throughout (`old-key`), and the issuer's tokens must come to carry
-    the new kid (`issuer-kid`); the registry must come to list the
-    origins' new key (`registry-origins`) and the cache's
-    (`registry-cache`). A director checks an ad against the keys it
-    fetched for the server's prefix up to Director.AdvertisementTTL (15
-    minutes) before, and never refetches for a kid it lacks
+    """Check new signing keys on the origins and the first V2 cache.
+
+    The keys are watched for ROTATE_WINDOW seconds, every ROTATE_INTERVAL:
+    every director must go on naming origin-0 and the cache (`directors`),
+    each origin and cache must come to take tokens signed with the origins'
+    new key (`new-key`), and must take the old key's throughout (`old-key`),
+    and the issuer's tokens must come to carry the new kid (`issuer-kid`);
+    the registry must come to list the origins' new key (`registry-origins`)
+    and the cache's (`registry-cache`). A director checks an ad against the
+    keys it fetched for the server's prefix up to Director.AdvertisementTTL
+    (15 minutes) before, and never refetches for a kid it lacks
     (verifyAdvertiseToken in director/origin_api.go), so once their ads
-    carry the new kid the directors refuse them, and drop origin-0 and
-    the cache (D5); and a cache never pushes a new key to the registry
-    (R4). Origins and caches keep a namespace's keyset for up to 15
-    minutes too (origin_serve/authz.go, local_cache/cache_authz.go), so
-    `new-key` is inconclusive if the window is not enough."""
+    carry the new kid the directors refuse them, and drop origin-0 and the
+    cache (D5); and a cache never pushes a new key to the registry (R4).
+    Origins and caches keep a namespace's keyset for up to 15 minutes too
+    (origin_serve/authz.go, local_cache/cache_authz.go), so `new-key` is
+    inconclusive if the window is not enough.
+    """
     fed = test.fed
     if not fed.registry_url or not fed.directors:
         return [("", SKIP, "a standalone origin has no registry or director")]
@@ -589,8 +639,12 @@ def hot_rotate(test: Test) -> list[Row]:
 
 
 def master_key_kids(cache: common.Cache) -> Optional[frozenset[str]]:
-    """The kids with which a V2 cache's master key file seals its master
-    key; None if there is no such file."""
+    """Return the kids with which a V2 cache's master key is sealed.
+
+    Returns:
+        The kids in its master key file, or None if the file is missing
+        or unreadable.
+    """
     path = f"data/cache/{cache.svc.rsplit('-', 1)[-1]}/{MASTER_KEY}"
     try:
         with open(path, encoding="utf-8") as f:
@@ -601,13 +655,16 @@ def master_key_kids(cache: common.Cache) -> Optional[frozenset[str]]:
 
 
 def master_key_path(cache: common.Cache) -> str:
-    """The master key file of cache, under framework/var."""
+    """Return the master key file of cache, under framework/var."""
     return f"data/cache/{cache.svc.rsplit('-', 1)[-1]}/{MASTER_KEY}"
 
 
 def held_with_age(test: Test, cache: common.Cache) -> Optional[int]:
-    """The Age with which cache serves the probe, if it serves it from its
-    store; None otherwise."""
+    """Return the Age with which cache serves the probe.
+
+    Returns:
+        The Age, or None if cache does not serve the probe from its store.
+    """
     answer = web.request("GET", f"{cache.url}{test.path}", token=test.token, timeout=120)
     if answer.status != 200 or answer.body != test.data:
         return None
@@ -616,7 +673,9 @@ def held_with_age(test: Test, cache: common.Cache) -> Optional[int]:
 
 
 def master_key(test: Test) -> list[Row]:
-    """The first V2 cache's master key file must seal the master key with
+    """Check that a V2 cache's master key is sealed with each of its keys.
+
+    The first V2 cache's master key file must seal the master key with
     each of the cache's keys, a verify-only key the suite adds included,
     before a restart (`sealed`) and after one (`sealed-after-restart`):
     Pelican re-seals it only through a key-change callback that the
@@ -627,7 +686,8 @@ def master_key(test: Test) -> list[Row]:
     the probe it held, with Age, fetching nothing (`retired`): a master
     key it cannot unseal is replaced by a new one, with which its store
     cannot be read. Afterward the keys and the master key file are put
-    back, and the cache restarted again."""
+    back, and the cache restarted again.
+    """
     fed = test.fed
     cache = test.cache
     if cache is None:
@@ -732,8 +792,18 @@ def master_key(test: Test) -> list[Row]:
 def restore_cache(
     test: Test, cache: common.Cache, dirs: Sequence[str], kept: str, retired: Sequence[str]
 ) -> Optional[str]:
-    """Put cache's retired keys and master key file back, and restart it;
-    why that failed, or None."""
+    """Put cache's retired keys and master key file back, and restart it.
+
+    Args:
+        test: What the scenarios share.
+        cache: The V2 cache.
+        dirs: Its key directories.
+        kept: Where the retired keys and the master key file were copied.
+        retired: The retired keys, in dirs[0].
+
+    Returns:
+        Why that failed, or None if it did not.
+    """
     try:
         control.stop(cache.svc)
     except control.ControlError as e:
@@ -760,8 +830,12 @@ def restore_cache(
 
 
 def sent_bytes(fed: common.Federation) -> Optional[float]:
-    """What the native origins have sent for GETs, in bytes; None where
-    they keep no such counter, or one did not answer."""
+    """Return how many bytes the native origins have sent for GETs.
+
+    Returns:
+        The bytes, or None where they keep no such counter, or one did
+        not answer.
+    """
     if not fed.native_origins:
         return None
     total = 0.0
@@ -780,7 +854,7 @@ def sent_bytes(fed: common.Federation) -> Optional[float]:
 
 
 def services_of(fed: common.Federation) -> list[tuple[str, str]]:
-    """Each Pelican server's service, and its key directory."""
+    """Return each Pelican server's service, and its key directory."""
     found = [(o.svc, f"issuer-keys/{o.svc}") for o in fed.origins]
     found += [(o.origin.svc, o.key_dir) for o in fed.owners]
     found += [(c.svc, f"issuer-keys/{c.svc}") for c in fed.caches]
@@ -794,8 +868,11 @@ def services_of(fed: common.Federation) -> list[tuple[str, str]]:
 def verify_backup(
     server: str, path: str, env: dict[str, str], cwd: str
 ) -> tuple[int, str, str]:
-    """`pelican-server server database backup verify path`: its exit
-    status, stdout, and stderr."""
+    """Run `pelican-server server database backup verify path`.
+
+    Returns:
+        Its exit status (124 if it timed out), stdout, and stderr.
+    """
     try:
         done = subprocess.run(  # nosec B603
             [server, "server", "database", "backup", "verify", path],
@@ -813,12 +890,15 @@ def verify_backup(
 
 
 def backups(test: Test) -> list[Row]:
-    """Each server's backups, under framework/var/state/<service>/backups/
+    """Check each server's backups of its database.
+
+    They are under framework/var/state/<service>/backups/
     (Server.DatabaseBackup.Location): at least one, since a server with
     none makes one as it starts (LaunchPeriodicBackup in
     database/backup.go); each PEM, never a plain SQLite file; and each
     opened by `pelican-server server database backup verify`, given a
-    copy of the server's keys, which skips without a pelican-server."""
+    copy of the server's keys, which skips without a pelican-server.
+    """
     rows: list[Row] = []
     server = test.session.pelican_server
     for svc, key_dir in services_of(test.fed):
@@ -882,7 +962,7 @@ RUN: dict[str, Callable[[Test], Rows]] = {
 
 
 def guarded(name: str, test: Test) -> list[Row]:
-    """Scenario name's rows; one failing row if it raised."""
+    """Return scenario name's rows, or one failing row if it raised."""
     try:
         found = RUN[name](test)
     except Exception as e:  # pylint: disable=broad-exception-caught
@@ -896,8 +976,10 @@ def guarded(name: str, test: Test) -> list[Row]:
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Run the selected scenarios, put the keys back, and remove the
-    run's objects."""
+    """Run the selected scenarios, then put the keys back.
+
+    The run's objects are removed too.
+    """
     fed = session.fed
     test = Test(session)
     print(f"Keys against {fed.url}, the probe at /{NAMESPACE}/{test.rel}\n")

@@ -31,20 +31,29 @@ PROPFIND_BODY = (
 
 @dataclass(frozen=True)
 class Entry:
-    """A resource in a listing."""
+    """A resource in a listing.
 
-    path: str  # the href's path, decoded, without a trailing /
+    Attributes:
+        path: The href's path, decoded, without a trailing /.
+        size: Its getcontentlength; None if none came.
+        modified: Its getlastmodified; None if none came.
+        etag: Its getetag, as sent; None if none came.
+    """
+
+    path: str
     collection: bool
-    size: Optional[int]  # None if no getcontentlength came
-    modified: Optional[datetime] = None  # None if no getlastmodified came
-    etag: Optional[str] = None  # its getetag, as sent; None if none came
+    size: Optional[int]
+    modified: Optional[datetime] = None
+    etag: Optional[str] = None
 
 
 def propfind(
     url: str, depth: str, token: Optional[str] = None, body: Optional[bytes] = None
 ) -> web.Response:
-    """PROPFIND url with Depth depth (`0`, `1`, or `infinity`), and body
-    if given."""
+    """PROPFIND url with Depth depth, and body if given.
+
+    depth is `0`, `1`, or `infinity`.
+    """
     headers = {"Depth": depth}
     if body is not None:
         headers["Content-Type"] = "application/xml"
@@ -52,7 +61,11 @@ def propfind(
 
 
 def parse(body: bytes) -> list[Entry]:
-    """The entries of a multistatus; ValueError if body is not one."""
+    """Return the entries of the multistatus body.
+
+    Raises:
+        ValueError: The body is not a well-formed multistatus.
+    """
     try:
         root = ET.fromstring(body)  # nosec B314
     except ET.ParseError as e:
@@ -96,12 +109,18 @@ def parse(body: bytes) -> list[Entry]:
 
 
 def relative(entries: list[Entry], base: str) -> dict[str, Entry]:
-    """entries by their paths below base (e.g. /protected-a/data/x), with
-    base itself as "". A server may put its own prefix before base, as
-    `tiny` does (/api/v1.0/origin/data); ValueError for any entry that is
-    not base or under it, or that appears twice. The prefix is the one
-    before base's own entry, if the listing has one, and must be the same
-    for every entry."""
+    """Return entries by their paths below base (e.g. /protected-a/data/x).
+
+    base itself is "". A server may put its own prefix before base, as
+    `tiny` does (/api/v1.0/origin/data). If the listing has base's own
+    entry, the prefix is the one before it, and must be the same for
+    every entry; otherwise, each entry's is what precedes base in its
+    path.
+
+    Raises:
+        ValueError: An entry is not base or under it, or a path is listed
+            twice.
+    """
     base = "/" + base.strip("/")
     prefixes = [e.path[: -len(base)] for e in entries if e.path.endswith(base)]
     if len(prefixes) > 1:
@@ -127,9 +146,15 @@ def relative(entries: list[Entry], base: str) -> dict[str, Entry]:
 
 
 def problems(want: Mapping[str, Optional[int]], got: Mapping[str, Entry]) -> list[str]:
-    """How a listing got differs from want: each name's size, or None
-    for a collection. The listing's own entry ("") is ignored. Every
-    object must have a getcontentlength, 0 included."""
+    """Return how a listing got differs from want.
+
+    The listing's own entry ("") is ignored. Every object must have a
+    getcontentlength, 0 included.
+
+    Args:
+        want: Each name's size, or None for a collection.
+        got: The listing, by name, as relative() returns it.
+    """
     found = {name: entry for name, entry in got.items() if name}
     wrong: list[str] = []
     missing = sorted(set(want) - set(found))
@@ -159,8 +184,11 @@ def copy_or_move(
     destination: Optional[str],
     overwrite: Optional[str] = None,
 ) -> web.Response:
-    """Send COPY or MOVE (method) of url to destination (none if None),
-    with an Overwrite header if overwrite is given."""
+    """Send COPY or MOVE (method) of url to destination.
+
+    There is no Destination header if destination is None, and an
+    Overwrite header only if overwrite is given.
+    """
     headers: dict[str, str] = {}
     if destination is not None:
         headers["Destination"] = destination
@@ -170,7 +198,10 @@ def copy_or_move(
 
 
 def root_url(origin: common.Origin) -> str:
-    """The root of origin's server, whose OPTIONS names the methods it
-    serves (registerRootOptions in Pelican's origin_serve/handlers.go)."""
+    """Return the root URL of origin's server.
+
+    Its OPTIONS names the methods it serves (registerRootOptions in
+    Pelican's origin_serve/handlers.go).
+    """
     parts = urlsplit(origin.url)
     return f"{parts.scheme}://{parts.netloc}/"

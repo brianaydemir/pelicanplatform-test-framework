@@ -1,9 +1,10 @@
-"""What the directors publish about the federation, and whether it is
-true of the shape: their lists of servers and of namespaces, the
-namespace a path falls in, their health tests of each server and the
-file they serve the caches for them, their stat of an object at the
-origins, their metrics, their comparison of the federation's metadata,
-and the ads they forward to one another.
+"""What the directors publish, and whether it is true of the shape.
+
+They publish, about the federation, their lists of servers and of
+namespaces, the namespace a path falls in, their health tests of each
+server and the file they serve the caches for them, their stat of an
+object at the origins, their metrics, their comparison of the
+federation's metadata, and the ads they forward to one another.
 
   servers           director_ui's list of servers, whole, by type, and
                     one at a time, with each one's namespaces; its list
@@ -33,9 +34,9 @@ A server advertises to every director it hears of, from its
 configuration, the discovery document, and each director's list of
 directors (doDiscovery in Pelican's server_utils/director_discovery.go),
 so no configuration keeps a server's ads from any director. `forwarding`
-posts the first cache's own ad instead, signed as the `advertise` suite
-signs it, to one director alone, and looks for it at the other. It
-waits until the cache's own ads have restored both.
+posts the first cache's own ad instead, signed as the cache would sign
+it, to one director alone, and looks for it at the other. It waits
+until the cache's own ads have restored both.
 
 `origin-stat` puts an object in /public at one origin, under
 data/director-api/<run>/, and the suite removes it afterward.
@@ -165,13 +166,21 @@ TOKEN_LIFETIME = 3600
 
 @dataclass(frozen=True)
 class Server:
-    """An origin or a federated cache of the shape."""
+    """An origin or a federated cache of the shape.
 
-    kind: str  # "Origin" or "Cache", as a director names its type
+    Attributes:
+        kind: "Origin" or "Cache", as a director names its type.
+        svc: Its compose service.
+        url: Its data URL.
+        storage: An origin's ORIGIN_VARIANT; a cache's is CACHE_STORAGE.
+        exports: An origin's exports; none for a cache.
+    """
+
+    kind: str
     svc: str
-    url: str  # its data URL
-    storage: str  # an origin's ORIGIN_VARIANT; a cache's is CACHE_STORAGE
-    exports: tuple[common.Export, ...]  # an origin's; none for a cache
+    url: str
+    storage: str
+    exports: tuple[common.Export, ...]
 
     @property
     def host(self) -> str:
@@ -185,14 +194,20 @@ class Server:
 
     @property
     def key(self) -> tuple[str, str]:
-        """How a director's list of servers is matched to it: its type,
-        and its web URL's host (one host is everything in `tiny`)."""
+        """How a director's list of servers is matched to it.
+
+        Its type, and its web URL's host (one host is everything in
+        `tiny`).
+        """
         return self.kind, self.host
 
     @property
     def tested(self) -> bool:
-        """Whether the directors test it: every cache, and an origin whose
-        storage can take the test (SupportsSelfTest)."""
+        """Whether the directors test it.
+
+        They test every cache, and an origin whose storage can take the
+        test (SupportsSelfTest).
+        """
         return self.kind == "Cache" or self.storage in SELF_TESTABLE
 
     @property
@@ -202,8 +217,11 @@ class Server:
 
 
 def shape_servers(fed: common.Federation) -> list[Server]:
-    """Every origin (another owner's included) and federated cache of the
-    shape, which every director should list."""
+    """Return every origin and federated cache of the shape.
+
+    Another owner's origins are included. Every director should list
+    each.
+    """
     exports = tuple(
         common.Export(f"/{ns}", ns, fed.exports[ns], fed.issuer_of(ns))
         for ns in credentials.exported(fed)
@@ -218,20 +236,27 @@ def shape_servers(fed: common.Federation) -> list[Server]:
 
 
 class Test:
-    """The federation, its servers, and what the scenarios share."""
+    """The federation, its servers, and what the scenarios share.
+
+    Attributes:
+        base: Where the suite puts its objects, below a namespace.
+        namespace: The first exported namespace, which the scenarios ask
+            about.
+        servers: The shape's servers (see shape_servers()).
+        started: When the suite began (time.monotonic()).
+        ads_before: Each director's metrics, by URL, as the suite began:
+            its ads received so far, which `metrics` compares with later.
+    """
 
     def __init__(self, session: Session):
         self.session = session
         self.fed = session.fed
         self.run = session.run
         self.base = f"data/director-api/{self.run}"
-        # The first exported namespace, which the scenarios ask about.
         self.namespace = credentials.exported(self.fed)[0]
         self.servers = shape_servers(self.fed)
         self._admin: dict[str, str] = {}
         self._names: dict[str, dict[tuple[str, str], str]] = {}
-        # Each director's ads received so far, which `metrics` compares
-        # with later.
         self.started = time.monotonic()
         self.ads_before = {url: metrics.fetch(url) for url in self.fed.directors}
 
@@ -245,8 +270,10 @@ class Test:
         return list(found.values())
 
     def admin(self, url: str) -> str:
-        """A token that the director at url takes as its admin's
-        (credentials.mint_user())."""
+        """Return a token that the director at url takes as its admin's.
+
+        It is minted once per director, by credentials.mint_user().
+        """
         if url not in self._admin:
             host = director.host(url)
             self._admin[url] = credentials.mint_user(
@@ -260,8 +287,11 @@ class Test:
         return self._admin[url]
 
     def names(self, url: str) -> dict[tuple[str, str], str]:
-        """The name by which the director at url lists each server, by its
-        key (Server.key), as its list of servers says; asked once."""
+        """Return the name by which the director at url lists each server.
+
+        The names are by each server's key (Server.key), as the
+        director's list of servers says; it is asked once.
+        """
         if url not in self._names:
             rows = listed_servers(web.request("GET", f"{url}{SERVERS}")) or []
             self._names[url] = {
@@ -275,8 +305,10 @@ class Test:
 
 
 def parse(answer: web.Response) -> Any:
-    """answer's body, as JSON, or None if it is not. A body of two JSON
-    documents, one after the other, is none."""
+    """Return answer's body, as JSON, or None if it is not.
+
+    A body of two JSON documents, one after the other, is not.
+    """
     try:
         return json.loads(answer.body)
     except ValueError:
@@ -284,26 +316,30 @@ def parse(answer: web.Response) -> Any:
 
 
 def objects(value: Any) -> list[dict[str, Any]]:
-    """The objects in value, a JSON array; none if it is none."""
+    """Return the objects in value, a JSON array; none if it is none."""
     return [common.as_object(v) or {} for v in common.as_array(value) or []]
 
 
 def listed_servers(answer: web.Response) -> Optional[list[dict[str, Any]]]:
-    """The servers in a director's list of servers, or None if answer is
-    not one."""
+    """Return answer's list of servers, or None if it is not one."""
     found = common.as_array(parse(answer)) if answer.status == 200 else None
     return None if found is None else objects(found)
 
 
 def row_key(row: Mapping[str, Any]) -> tuple[str, str]:
-    """How a server that a director lists is matched to the shape's (see
-    Server.key)."""
+    """Return row's key, to match it to a server of the shape.
+
+    See Server.key.
+    """
     return str(row.get("type", "")), director.host(str(row.get("webUrl", "")))
 
 
 def url_text(value: Any) -> str:
-    """A URL as a director's JSON holds it: a string, or, where Go
-    encodes a url.URL as it is, an object of its parts."""
+    """Return a URL that a director's JSON holds, as text.
+
+    The JSON holds a string, or, where Go encodes a url.URL as it is, an
+    object of its parts.
+    """
     found = common.as_object(value)
     if found is None:
         return str(value or "")
@@ -312,25 +348,24 @@ def url_text(value: Any) -> str:
 
 
 def caps_json(caps: frozenset[str]) -> dict[str, bool]:
-    """A namespace's capabilities, as a director's JSON names them."""
+    """Return caps, as a director's JSON names them."""
     found = {name: theirs in caps for theirs, name in CAPS.items()}
     found["Read"] = found["Read"] or found["PublicRead"]
     return found
 
 
 def issuer_of(export: common.Export) -> Optional[str]:
-    """The issuer a director should name for export, or None if it has
-    none."""
+    """Return the issuer a director should name for export, if any."""
     return export.issuer if credentials.has_issuer(export.caps) else None
 
 
 def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
-    """FAIL with the first of problems, or PASS with note."""
+    """Return FAIL with the first of problems, or PASS with note."""
     return (FAIL, first(problems)) if problems else (PASS, note)
 
 
 def guarded(check: Callable[[], list[Row]]) -> list[Row]:
-    """check()'s rows; one failing row if it raised."""
+    """Return check()'s rows, or one failing row if it raised."""
     try:
         return check()
     except Exception as e:  # pylint: disable=broad-exception-caught
@@ -341,13 +376,15 @@ def guarded(check: Callable[[], list[Row]]) -> list[Row]:
 
 
 def utc_stamp() -> str:
-    """Now, as a director's test files name it (RFC 3339, in UTC)."""
+    """Return now, as a director's test files name it (RFC 3339, in UTC)."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def started_ago(url: str) -> Optional[float]:
-    """How long ago the director at url started
-    (process_start_time_seconds), in seconds; None if it won't say."""
+    """Return how long ago the director at url started, in seconds.
+
+    Return None if it won't say (process_start_time_seconds).
+    """
     found = metrics.fetch(url)
     if found is None or not found.has("process_start_time_seconds"):
         return None
@@ -355,10 +392,12 @@ def started_ago(url: str) -> Optional[float]:
 
 
 def unknown_statuses(url: str) -> tuple[int, ...]:
-    """What the director at url may answer for a namespace no origin
-    exports: 404, but 429 while it may not have heard from every origin
-    (inStartupSequence), and either near the boundary or if it won't say
-    when it started."""
+    """Return what the director at url may answer for an unknown namespace.
+
+    A namespace no origin exports gets 404, but 429 while the director
+    may not have heard from every origin (inStartupSequence), and either
+    near the boundary or if it won't say when it started.
+    """
     ago = started_ago(url)
     if ago is None or abs(ago - STARTUP_WINDOW) <= STARTUP_SLACK:
         return (404, 429)
@@ -370,8 +409,10 @@ def unknown_statuses(url: str) -> tuple[int, ...]:
 
 
 def field_problems(test: Test, server: Server, row: Mapping[str, Any]) -> list[str]:
-    """What is wrong with what a director lists of server (row), whose
-    fields are listServerResponse's (director/director_ui.go)."""
+    """Return what is wrong with what a director lists of server (row).
+
+    row's fields are listServerResponse's (director/director_ui.go).
+    """
     name = str(row.get("name", ""))
     if server.kind == "Origin":
         # GetOriginNs of its web URL's host and port (origin/advertise.go).
@@ -407,10 +448,12 @@ def field_problems(test: Test, server: Server, row: Mapping[str, Any]) -> list[s
 
 
 def listing_rows(test: Test, url: str) -> list[str]:
-    """What is wrong with the director at url's list of servers: each
-    origin and federated cache of the shape, once, with the fields the
-    shape gives it (see field_problems()), and nothing else, a site-local
-    cache included."""
+    """Return what is wrong with the director at url's list of servers.
+
+    It must list each origin and federated cache of the shape, once,
+    with the fields the shape gives it (see field_problems()), and
+    nothing else, a site-local cache included.
+    """
     answer = web.request("GET", f"{url}{SERVERS}")
     rows = listed_servers(answer)
     name = director.host(url)
@@ -430,9 +473,11 @@ def listing_rows(test: Test, url: str) -> list[str]:
 
 
 def by_type_problems(test: Test, url: str) -> list[str]:
-    """What is wrong with the director at url's list of servers of one
-    type: `origin` must list the origins alone, and `cache` the caches; a
-    type that is neither must get 400."""
+    """Return what is wrong with the director at url's servers of one type.
+
+    `origin` must list the origins alone, and `cache` the caches; a type
+    that is neither must get 400.
+    """
     name = director.host(url)
     problems: list[str] = []
     for kind in ("Origin", "Cache"):
@@ -452,10 +497,13 @@ def by_type_problems(test: Test, url: str) -> list[str]:
 
 
 def by_type_case_problems(test: Test, url: str) -> list[str]:
-    """What is wrong with the director at url's list of servers of a type
-    spelled as Pelican does, `Origin` or `Cache`: it takes the type
-    without regard to case (listServers in director/director_ui.go), so
-    each must list what its lower-case spelling does."""
+    """Return what is wrong with the servers listed by Pelican's type names.
+
+    The director at url takes a type spelled as Pelican does, `Origin`
+    or `Cache`, without regard to case (listServers in
+    director/director_ui.go), so each must list what its lower-case
+    spelling does.
+    """
     name = director.host(url)
     problems: list[str] = []
     for kind in ("Origin", "Cache"):
@@ -472,8 +520,10 @@ def by_type_case_problems(test: Test, url: str) -> list[str]:
 
 
 def namespace_paths(value: Any) -> Optional[set[str]]:
-    """The paths of a list of namespaces, or None if value is no list (a
-    director answers null for none)."""
+    """Return the namespaces' paths in value, or None if it is no list.
+
+    A director answers null for none.
+    """
     if value is None:
         return set()
     found = common.as_array(value)
@@ -481,13 +531,15 @@ def namespace_paths(value: Any) -> Optional[set[str]]:
 
 
 def one_problems(test: Test, url: str) -> list[str]:
-    """What is wrong with what the director at url says of each server by
-    its name, /servers/<name>, and of its namespaces,
-    /servers/<name>/namespaces: its name and type, and for an origin, its
-    exports; and of a name it does not know: 404. In `tiny`, the origin
-    and the cache are one host, and share a name, of which the director
-    describes whichever it finds first (getServer), so there each must
-    only be one of them."""
+    """Return what is wrong with the director at url's /servers/<name>.
+
+    Of each server by its name, /servers/<name>, and of its namespaces,
+    /servers/<name>/namespaces, it must say its name and type, and for
+    an origin, its exports; and of a name it does not know: 404. In
+    `tiny`, the origin and the cache are one host, and share a name, of
+    which the director describes whichever it finds first (getServer),
+    so there each must only be one of them.
+    """
     name = director.host(url)
     names = test.names(url)
     kinds: dict[str, set[str]] = {}
@@ -531,9 +583,11 @@ def one_problems(test: Test, url: str) -> list[str]:
 
 
 def ui_namespaces_problems(test: Test, url: str) -> list[str]:
-    """What is wrong with the director at url's list of namespaces
-    (/director_ui/namespaces): each export, named with every origin that
-    exports it, and no other."""
+    """Return what is wrong with the director at url's list of namespaces.
+
+    The list (/director_ui/namespaces) must have each export, named with
+    every origin that exports it, and no other.
+    """
     name = director.host(url)
     answer = web.request("GET", f"{url}{UI_NAMESPACES}")
     found = common.as_array(parse(answer)) if answer.status == 200 else None
@@ -559,8 +613,10 @@ def ui_namespaces_problems(test: Test, url: str) -> list[str]:
 
 
 def contact_problems(url: str) -> list[str]:
-    """What is wrong with the director at url's support contact: the
-    email and URL its configuration gives."""
+    """Return what is wrong with the director at url's support contact.
+
+    It must be the email and URL its configuration gives.
+    """
     answer = web.request("GET", f"{url}{CONTACT}")
     found = common.as_object(parse(answer)) or {}
     want = {"email": CONTACT_EMAIL, "url": CONTACT_URL}
@@ -571,8 +627,11 @@ def contact_problems(url: str) -> list[str]:
 
 
 def directors_problems(test: Test, url: str) -> list[str]:
-    """What is wrong with the director at url's list of directors: every
-    director of the shape, by the URL it takes ads at, and no other."""
+    """Return what is wrong with the director at url's list of directors.
+
+    It must list every director of the shape, by the URL it takes ads
+    at, and no other.
+    """
     answer = web.request("GET", f"{url}{DIRECTORS}")
     found = common.as_array(parse(answer)) if answer.status == 200 else None
     if found is None:
@@ -583,8 +642,10 @@ def directors_problems(test: Test, url: str) -> list[str]:
 
 
 def servers(test: Test) -> list[Row]:
-    """What each director says of the federation's servers (see each
-    *_problems() function)."""
+    """Check what each director says of the federation's servers.
+
+    See each *_problems() function.
+    """
     count = f"{len(test.servers)} server(s), {len(test.fed.directors)} director(s)"
     checks: list[tuple[str, Callable[[str], list[str]], str]] = [
         ("listing", lambda u: listing_rows(test, u), count),
@@ -607,11 +668,14 @@ def servers(test: Test) -> list[Row]:
 
 
 def v2_problems(test: Test, url: str) -> list[str]:
-    """What is wrong with the director at url's listNamespaces: every
-    export, once per origin that exports it, with its capabilities and its
-    issuer (none for one without), and /pelican/monitoring, which anyone
-    may read, and nothing else. A cache learns a namespace's issuer here,
-    so a wrong one breaks every protected read through it."""
+    """Return what is wrong with the director at url's listNamespaces.
+
+    It must list every export, once per origin that exports it, with its
+    capabilities and its issuer (none for one without), and
+    /pelican/monitoring, which anyone may read, and nothing else. A
+    cache learns a namespace's issuer here, so a wrong one breaks every
+    protected read through it.
+    """
     name = director.host(url)
     answer = web.request("GET", f"{url}{LIST_NAMESPACES}")
     found = common.as_array(parse(answer)) if answer.status == 200 else None
@@ -649,9 +713,11 @@ def v2_problems(test: Test, url: str) -> list[str]:
 
 
 def v1_problems(url: str) -> list[str]:
-    """What is wrong with the director at url's answer to the first
-    version of listNamespaces, which it serves no longer: status 299, a
-    Warning, and no namespaces (listNamespacesV1Deprecated)."""
+    """Return what is wrong with the director at url's listNamespaces v1.
+
+    It serves the first version no longer: it must answer status 299, a
+    Warning, and no namespaces (listNamespacesV1Deprecated).
+    """
     name = director.host(url)
     answer = web.request("GET", f"{url}{LIST_NAMESPACES_V1}")
     warning = answer.header("Warning")
@@ -665,9 +731,13 @@ def v1_problems(url: str) -> list[str]:
 
 
 def prefix_cases(test: Test) -> list[tuple[str, Optional[str]]]:
-    """The paths whose namespace the suite asks for, and the namespace
-    each must get, or None for 404. A namespace's prefix matches whole
-    segments of a path."""
+    """Return the paths whose namespace the suite asks for.
+
+    A namespace's prefix matches whole segments of a path.
+
+    Returns:
+        Each path, and the namespace it must get, or None for 404.
+    """
     ns = test.namespace
     cases: list[tuple[str, Optional[str]]] = [
         (f"/{ns}/data/x", f"/{ns}"),
@@ -680,8 +750,10 @@ def prefix_cases(test: Test) -> list[tuple[str, Optional[str]]]:
 
 
 def prefix_problems(test: Test, url: str) -> list[str]:
-    """What is wrong with the namespace the director at url gives each
-    of prefix_cases()."""
+    """Return what is wrong with the namespaces the director at url gives.
+
+    It is asked for the namespace of each of prefix_cases().
+    """
     name = director.host(url)
     problems: list[str] = []
     for path, want in prefix_cases(test):
@@ -695,8 +767,10 @@ def prefix_problems(test: Test, url: str) -> list[str]:
 
 
 def namespaces(test: Test) -> list[Row]:
-    """What each director says of the namespaces (see v2_problems(),
-    v1_problems(), and prefix_problems())."""
+    """Check what each director says of the namespaces.
+
+    See v2_problems(), v1_problems(), and prefix_problems().
+    """
     directors = test.fed.directors
     cases = prefix_cases(test)
     rows: list[Row] = []
@@ -714,10 +788,15 @@ def namespaces(test: Test) -> list[Row]:
 
 
 def status_problems(test: Test) -> tuple[list[str], bool]:
-    """What is wrong with the health each director lists of each server:
-    OK, for a server it tests; and for an origin whose storage can't take
-    the test, disabled. And whether any may yet change: one not listed,
-    or whose test has not yet run."""
+    """Return what is wrong with the health the directors list of servers.
+
+    Each director must list OK, for a server it tests; and for an origin
+    whose storage can't take the test, disabled.
+
+    Returns:
+        The problems, and whether any may yet change: a server not
+        listed, or whose test has not yet run.
+    """
     problems: list[str] = []
     pending = False
     for url in test.fed.directors:
@@ -737,11 +816,16 @@ def status_problems(test: Test) -> tuple[list[str], bool]:
 
 
 def component_problems(test: Test) -> tuple[list[str], bool]:
-    """What is wrong with each origin's and federated cache's own view of
-    the directors' tests (pelican_component_health_status, component
-    `director`): ok. A server the directors don't test says so, ok too.
-    And whether any may yet change: one that says nothing, or that is
-    still waiting for its first test."""
+    """Return what is wrong with each server's own view of the health tests.
+
+    Each origin and federated cache must say ok of the directors' tests
+    (pelican_component_health_status, component `director`). A server
+    the directors don't test says so, ok too.
+
+    Returns:
+        The problems, and whether any may yet change: a server that says
+        nothing, or that is still waiting for its first test.
+    """
     problems: list[str] = []
     pending = False
     seen: set[str] = set()
@@ -765,9 +849,13 @@ def run_problems(
     before: Mapping[str, Optional[metrics.Snapshot]],
     after: Mapping[str, Optional[metrics.Snapshot]],
 ) -> list[str]:
-    """What is wrong with how each director's test runs rose between two
-    counts: by at least one run that passed and was reported, for each
-    server it tests; by none at all, for each it doesn't."""
+    """Return what is wrong with how each director's test runs rose.
+
+    Between two counts, before and after (each director's metrics, by
+    URL), they must rise by at least one run that passed and was
+    reported, for each server it tests; by none at all, for each it
+    doesn't.
+    """
     problems: list[str] = []
     for url in test.fed.directors:
         then, now = before.get(url), after.get(url)
@@ -798,12 +886,14 @@ def run_problems(
 
 
 def cache_file_problems(test: Test) -> list[str]:
-    """What is wrong with a test file read through each federated cache,
-    as a director tests the cache: the cache asks a director for an
-    origin of /pelican/monitoring, which sends it to the director's own
-    test file, whose body it must serve (runCacheTest in
-    director/cache_monitor.go). The file is the suite's own, by its name,
-    beside the directors' own."""
+    """Return what is wrong with a test file read through each cache.
+
+    Each federated cache reads it as a director tests the cache: the
+    cache asks a director for an origin of /pelican/monitoring, which
+    sends it to the director's own test file, whose body it must serve
+    (runCacheTest in director/cache_monitor.go). The file is the suite's
+    own, by its name, beside the directors' own.
+    """
     stamp = utc_stamp()
     path = f"{TEST_DIR}/director-api-{test.run}/{stamp[:10]}/director-test-{stamp}.txt"
     problems: list[str] = []
@@ -817,13 +907,16 @@ def cache_file_problems(test: Test) -> list[str]:
 
 
 def health(test: Test) -> list[Row]:
-    """The directors' health tests: within HEALTH_WAIT seconds, each
-    director must list each server's as passing (see status_problems()),
-    and each server must say so too (see component_problems()); each
-    director must have run them, at least RUN_SAMPLE seconds apart (see
-    run_problems()); and a test file must come back through each cache
-    (see cache_file_problems()). The wait ends early once nothing is
-    pending, and a failed test has had RUN_SAMPLE seconds to pass."""
+    """Check the directors' health tests of each server.
+
+    Within HEALTH_WAIT seconds, each director must list each server's as
+    passing (see status_problems()), and each server must say so too
+    (see component_problems()); each director must have run them, at
+    least RUN_SAMPLE seconds apart (see run_problems()); and a test file
+    must come back through each cache (see cache_file_problems()). The
+    wait ends early once nothing is pending, and a failed test has had
+    RUN_SAMPLE seconds to pass.
+    """
     before = {url: metrics.fetch(url) for url in test.fed.directors}
     started = time.monotonic()
     found: dict[str, list[str]] = {}
@@ -856,13 +949,15 @@ def health(test: Test) -> list[Row]:
 
 
 def health_test_file(test: Test) -> list[Row]:
-    """The test file each director serves for its tests of caches
-    (getHealthTestFile in director/director.go), named by a timestamp:
-    a GET gets the body; a HEAD its length; and a PROPFIND a multistatus
-    naming the file and its length. A name whose timestamp is none gets
-    400. A directory whose name holds `&` and `<` must come back escaped
-    in the PROPFIND's XML: Pelican escapes the path, but writes it as it
-    was, so the `escaped` row fails there."""
+    """Check the test file each director serves for its tests of caches.
+
+    The file (getHealthTestFile in director/director.go) is named by a
+    timestamp: a GET gets the body; a HEAD its length; and a PROPFIND a
+    multistatus naming the file and its length. A name whose timestamp
+    is none gets 400. A directory whose name holds `&` and `<` must come
+    back escaped in the PROPFIND's XML: Pelican escapes the path, but
+    writes it as it was, so the `escaped` row fails there.
+    """
     stamp = utc_stamp()
     name = f"director-test-{stamp}.txt"
     good = f"{TEST_DIR}/{name}"
@@ -915,16 +1010,26 @@ def health_test_file(test: Test) -> list[Row]:
 
 @dataclass(frozen=True)
 class Held:
-    """The object that `origin-stat` puts at one origin alone."""
+    """The object that `origin-stat` puts at one origin alone.
+
+    Attributes:
+        rel: Its path below /public.
+    """
 
     origin: common.Origin
-    rel: str  # its path below /public
+    rel: str
 
 
 def put_held(test: Test) -> tuple[Optional[Held], str]:
-    """Put an object in /public at the last origin (of those with stores
-    of their own), and no other: what was put, or None and why not. Where
-    /public reads another namespace's storage (pstore), it goes there."""
+    """Put an object in /public at the last origin, and no other.
+
+    The origin is the last of those with stores of their own. Where
+    /public reads another namespace's storage (pstore), the object goes
+    there.
+
+    Returns:
+        What was put, or None and why not.
+    """
     if "public" not in test.fed.exports:
         return None, "the shape exports no /public, whose objects the admin may stat"
     holder = stores.unique(test.fed.origins)[-1]
@@ -945,8 +1050,11 @@ def put_held(test: Test) -> tuple[Optional[Held], str]:
 
 
 def holders(test: Test, held: Held) -> set[str]:
-    """The hosts of the origins that hold held: its origin, and any that
-    shares its store (the lab server's, under `-p origin-ssh`)."""
+    """Return the hosts of the origins that hold held.
+
+    They are its origin, and any that shares its store (the lab
+    server's, under `-p origin-ssh`).
+    """
     mine = stores.unique([held.origin])[0]
     return {
         director.host(o.url)
@@ -956,9 +1064,12 @@ def holders(test: Test, held: Held) -> set[str]:
 
 
 def stat_admin_problems(test: Test, url: str, held: Held) -> list[str]:
-    """What is wrong with what the director at url's admin learns of
-    held: 200, naming origins that hold it, and no other. It names one,
-    by default (Director.MaxStatResponse)."""
+    """Return what is wrong with what the director's admin learns of held.
+
+    The director at url must answer its admin 200, naming origins that
+    hold held, and no other. It names one, by default
+    (Director.MaxStatResponse).
+    """
     answer = web.request("GET", f"{url}{STAT}/public/{held.rel}", token=test.admin(url))
     found = common.as_object(parse(answer)) or {}
     hosts = {director.host(str(o.get("url", ""))) for o in objects(found.get("objects"))}
@@ -972,13 +1083,16 @@ def stat_admin_problems(test: Test, url: str, held: Held) -> list[str]:
 
 
 def origin_stat(test: Test) -> list[Row]:
-    """Which origins hold an object, as each director asks them
-    (queryOrigins in director/director_ui.go): without credentials, 401;
-    as its admin, of an object one origin alone holds, that origin; with
-    min_responses above max_responses, 400; and for a namespace no origin
-    exports, 404, as one JSON document. Pelican writes the 404 and goes
-    on to ask no origin, which it answers with another, so the
-    `unknown-namespace` row fails there."""
+    """Check which origins hold an object, as each director asks them.
+
+    A director asks them by queryOrigins (director/director_ui.go).
+    Without credentials, it answers 401; as its admin, of an object one
+    origin alone holds, that origin; with min_responses above
+    max_responses, 400; and for a namespace no origin exports, 404 (see
+    unknown_statuses()), as one JSON document. Pelican writes the 404
+    and goes on to ask no origin, which it answers with another, so the
+    `unknown-namespace` row fails there.
+    """
     held, why = put_held(test)
     cases: dict[str, list[str]] = {
         c: [] for c in ("no-auth", "admin", "bad-bounds", "unknown-namespace")
@@ -1023,20 +1137,27 @@ def origin_stat(test: Test) -> list[Row]:
 
 
 def client_agent(test: Test) -> tuple[str, str, str]:
-    """A Pelican client's User-Agent of a version of the run's own, which
-    no other client sends: it, its version, as a director's redirects
-    count it, and its major and minor version, as its client requests
-    do (collectClientVersionMetric)."""
+    """Return a Pelican client's User-Agent of a version of the run's own.
+
+    No other client sends that version.
+
+    Returns:
+        The User-Agent; its version, as a director's redirects count it;
+        and its major and minor version, as its client requests do
+        (collectClientVersionMetric).
+    """
     patch = int(test.run.replace("-", "")[-6:])
     version = f"7.99.{patch}"
     return f"pelican-client/{version}", version, "7.99"
 
 
 def redirect_problems(test: Test, url: str) -> list[str]:
-    """What is wrong with how the director at url counts REDIRECT_ASKS
-    redirects of the run's client (see client_agent()): each must raise
-    its redirects of that version with status 307, and its client
-    requests of that version, by one."""
+    """Return what is wrong with how the director at url counts redirects.
+
+    It is asked for REDIRECT_ASKS redirects of the run's client (see
+    client_agent()): each must raise its redirects of that version with
+    status 307, and its client requests of that version, by one.
+    """
     agent, version, short = client_agent(test)
     ns = test.namespace
     token = None if ns == "public" else test.session.token(ns)
@@ -1067,11 +1188,13 @@ def redirect_problems(test: Test, url: str) -> list[str]:
 
 
 def ads_problems(test: Test, url: str) -> list[str]:
-    """What is wrong with how the director at url counts the ads it
-    receives: since the suite began, at least AD_SAMPLE seconds ago, each
-    origin's and federated cache's, taken (200). A director counts the
-    ads that a server sends it, and not those that another director
-    forwards (serverAdMetricMiddleware)."""
+    """Return what is wrong with how the director at url counts ads.
+
+    Since the suite began, at least AD_SAMPLE seconds ago, it must count
+    each origin's and federated cache's ads, taken (200). A director
+    counts the ads that a server sends it, and not those that another
+    director forwards (serverAdMetricMiddleware).
+    """
     name = director.host(url)
     before, after = test.ads_before.get(url), metrics.fetch(url)
     if before is None or after is None:
@@ -1086,10 +1209,12 @@ def ads_problems(test: Test, url: str) -> list[str]:
 
 
 def count_problems(test: Test, url: str) -> list[str]:
-    """What is wrong with the director at url's count of servers
-    (pelican_director_server_count): one of each origin and federated
-    cache, of its type, none from the topology, and as many of each type
-    as the shape has."""
+    """Return what is wrong with the director at url's count of servers.
+
+    The count (pelican_director_server_count) must be one of each origin
+    and federated cache, of its type, none from the topology, and as
+    many of each type as the shape has.
+    """
     name = director.host(url)
     found = metrics.fetch(url)
     if found is None:
@@ -1114,10 +1239,12 @@ def count_problems(test: Test, url: str) -> list[str]:
 
 
 def metrics_scenario(test: Test) -> list[Row]:
-    """What each director counts (metrics/director.go): the redirects and
-    client requests of a client of the run's own (see
-    redirect_problems()), the ads it receives (see ads_problems()), and
-    the servers it knows (see count_problems())."""
+    """Check what each director counts (metrics/director.go).
+
+    It counts the redirects and client requests of a client of the run's
+    own (see redirect_problems()), the ads it receives (see
+    ads_problems()), and the servers it knows (see count_problems()).
+    """
     left = AD_SAMPLE - (time.monotonic() - test.started)
     if left > 0:
         time.sleep(left)
@@ -1150,10 +1277,12 @@ def metrics_scenario(test: Test) -> list[Row]:
 
 
 def hosts_metadata(test: Test, url: str) -> bool:
-    """Whether the director at url is the federation's discovery host:
+    """Return whether the director at url is the discovery host.
+
     `tiny`'s is, director-0 under `-p director-discovery`, and every
     director where the discovery host is the directors' load balancer
-    (`-p director-ha` too); elsewhere the discovery service is."""
+    (`-p director-ha` too); elsewhere the discovery service is.
+    """
     discovery_host = director.host(str(test.fed.discovery["discovery_endpoint"]))
     if test.fed.director_ha and discovery_host == director.host(test.fed.director_url):
         return True
@@ -1161,14 +1290,17 @@ def hosts_metadata(test: Test, url: str) -> bool:
 
 
 def metadata_hosting(test: Test) -> list[Row]:
-    """Each director's discovery document, which it serves only where it
-    is the discovery host, and otherwise refuses with 410
+    """Check each director's discovery document and metadata comparison.
+
+    A director serves the discovery document only where it is the
+    discovery host, and otherwise refuses with 410
     (Director.EnableFederationMetadataHosting, off in
-    framework/config.d/director/default/); and its comparison of the
+    framework/config.d/director/default/). Its comparison of the
     metadata it was given with the discovery host's
-    (director/metadata_comparison.go): its admin's alone (401 for no
+    (director/metadata_comparison.go) is its admin's alone (401 for no
     one), and in agreement, but where it is the discovery host itself,
-    off."""
+    off.
+    """
     cases: dict[str, list[str]] = {c: [] for c in ("discovery", "no-auth", "discrepancy")}
     for url in test.fed.directors:
         what = director.host(url)
@@ -1201,25 +1333,33 @@ def metadata_hosting(test: Test) -> list[Row]:
 
 @dataclass
 class Forwarding:
-    """`forwarding`'s cache, its own key, and the two directors."""
+    """`forwarding`'s cache, its own key, and the two directors.
+
+    Attributes:
+        first: The director the suite posts the cache's ads to, by URL.
+        second: The director that must learn of them from the first.
+        status: The cache's status, as the second listed it at first.
+        posted: The statuses the suite posted, but the cache's own.
+    """
 
     cache: ads.Server
     token: str
-    first: str  # the director the suite posts the cache's ads to, by URL
-    second: str  # the director that must learn of them from the first
-    status: str  # the cache's status, as the second listed it at first
-    # The statuses the suite posted, but the cache's own.
+    first: str
+    second: str
+    status: str
     posted: set[str] = field(default_factory=set[str])
 
     def listed(self, url: str) -> dict[str, Any]:
-        """What the director at url says of the cache."""
+        """Return what the director at url says of the cache."""
         answer = web.request("GET", f"{url}{SERVERS}/{quote(self.cache.name, safe='')}")
         return common.as_object(parse(answer)) or {}
 
     def ads_seen(self, url: str) -> Optional[float]:
-        """How many of the cache's ads the director at url has taken
-        (each of its namespaces' series counts every ad); None if it
-        won't say."""
+        """Return how many of the cache's ads the director at url has taken.
+
+        Each of its namespaces' series counts every ad. Return None if
+        it won't say.
+        """
         found = metrics.fetch(url)
         if found is None:
             return None
@@ -1227,17 +1367,25 @@ class Forwarding:
         return max(found.series(ADS_RECEIVED, **labels).values(), default=0.0)
 
     def fresh(self, url: str) -> bool:
-        """Wait, up to FRESH_WAIT seconds, until the cache's own ad has
-        just reached the director at url, so that its next is about
-        Server.AdvertisementInterval away; whether it did."""
+        """Wait for the cache's own next ad to reach the director at url.
+
+        Wait up to FRESH_WAIT seconds, so that the ad after it is about
+        Server.AdvertisementInterval away.
+
+        Returns:
+            Whether it arrived.
+        """
         start = self.ads_seen(url)
         if start is None:
             return False
         return common.wait_for(lambda: (self.ads_seen(url) or 0) > start, FRESH_WAIT, 1)
 
     def post(self, url: str, status: str) -> web.Response:
-        """Post the cache's own ad, saying status, to the director at url
-        alone."""
+        """Post the cache's own ad, saying status, to the director at url.
+
+        No other director gets it. A status other than the cache's own
+        is added to posted.
+        """
         if status != self.status:
             self.posted.add(status)
         body = ads.ad(self.cache, status=status)
@@ -1245,12 +1393,15 @@ class Forwarding:
 
 
 def forwarded(f: Forwarding) -> Row:
-    """The cache's own ad, saying a status it doesn't, posted to the
-    first director alone, must reach the second within FORWARD_WAIT
-    seconds, by the first's forwarding (forwardServiceAd in
+    """Check that an ad posted to one director alone reaches the other.
+
+    The cache's own ad, saying a status it doesn't, posted to the first
+    director alone, must reach the second within FORWARD_WAIT seconds,
+    by the first's forwarding (forwardServiceAd in
     director/director_advertise.go). If the cache's own ad reached the
     second meanwhile, and the second shows the cache's status, the row
-    can't tell."""
+    can't tell.
+    """
     mark = "degraded" if f.status == "warning" else "warning"
     if not f.fresh(f.second):
         return "", INCONCLUSIVE, f"no ad of the cache's reached the second in {FRESH_WAIT}s"
@@ -1271,15 +1422,18 @@ def forwarded(f: Forwarding) -> Row:
 
 
 def shutdown_lifted(f: Forwarding) -> Row:
-    """The cache's own ad saying it is shutting down, posted to the
+    """Check that a forwarded ad lifts the cache's shutdown at a director.
+
+    The cache's own ad saying it is shutting down is posted to the
     second director, which must then filter it (shutdownFiltered); then
     its ad saying its status, posted to the first alone, which forwards
-    it, must lift that within FORWARD_WAIT seconds, as it would have, had
-    the cache posted it to the second. Only an ad posted to a director
-    lifts it (registerServerAd), not a forwarded one
+    it, must lift that within FORWARD_WAIT seconds, as it would have,
+    had the cache posted it to the second. Only an ad posted to a
+    director lifts it (registerServerAd), not a forwarded one
     (finishRegisterServeAd), so the row fails there. If the cache's own
     ad reached the second meanwhile, which would lift it, the row can't
-    tell."""
+    tell.
+    """
     second = director.host(f.second)
     if not f.fresh(f.second):
         return "", INCONCLUSIVE, f"no ad of the cache's reached {second} in {FRESH_WAIT}s"
@@ -1306,9 +1460,14 @@ def shutdown_lifted(f: Forwarding) -> Row:
 
 
 def restored(f: Forwarding) -> list[str]:
-    """Wait, up to RESTORE_WAIT seconds, until the cache's own ads have
-    restored it at both directors: unfiltered, and saying none of the
-    statuses the suite posted; what is still wrong after that."""
+    """Wait until the cache's own ads have restored it at both directors.
+
+    Wait up to RESTORE_WAIT seconds, at each, for it to be unfiltered,
+    and saying none of the statuses the suite posted.
+
+    Returns:
+        What is still wrong after that.
+    """
     problems: list[str] = []
     for url in (f.first, f.second):
 
@@ -1324,15 +1483,17 @@ def restored(f: Forwarding) -> list[str]:
 
 
 def as_rows(check: Callable[[Forwarding], Row], f: Forwarding) -> list[Row]:
-    """check(f)'s row, as a list (see guarded())."""
+    """Return check(f)'s row, as a list (see guarded())."""
     return [check(f)]
 
 
 def forwarding(test: Test) -> list[Row]:
-    """Under -p topo-multi-director, the first federated cache's own ads,
-    each posted to one director alone (see forwarded() and
-    shutdown_lifted()); then the cache's own ads must restore it at both
-    (`restored`)."""
+    """Check how the directors forward the first federated cache's ads.
+
+    Under -p topo-multi-director, the cache's own ads are each posted to
+    one director alone (see forwarded() and shutdown_lifted()); then the
+    cache's own ads must restore it at both (`restored`).
+    """
     directors = test.fed.directors
     cases = ("forwarded", "shutdown-lifted", "restored")
     if len(directors) < 2:
@@ -1363,6 +1524,7 @@ def forwarding(test: Test) -> list[Row]:
 # --------------------------------------------------------------------------
 
 
+# The scenarios, by name: each takes the Test, and returns its rows.
 RUN: dict[str, Callable[[Test], list[Row]]] = {
     "servers": servers,
     "namespaces": namespaces,
@@ -1376,8 +1538,10 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: a standalone origin has no
-    director."""
+    """Return why there is nothing to test, or None if there are directors.
+
+    A standalone origin has no director.
+    """
     return "a standalone origin has no director" if not fed.directors else None
 
 

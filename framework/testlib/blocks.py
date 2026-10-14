@@ -1,5 +1,6 @@
-"""Object sizes and byte ranges at the block boundaries of Pelican's
-stores, and checking what a server returns for them.
+"""Object sizes and byte ranges at the block boundaries of Pelican's stores.
+
+It also checks what a server returns for them.
 
 pstore (an origin's encrypted store) and the V2 cache share one block
 format: 4080 bytes of plaintext and a 16-byte authentication tag per
@@ -97,8 +98,12 @@ Request = tuple[Range, ...]
 
 
 def tier(size: int, declared: bool) -> str:
-    """Where pstore should put an object of size: `inline`, `buffered`, or
-    `streamed`, by whether its length was declared."""
+    """Return where pstore should put an object of size.
+
+    Returns:
+        One of `inline`, `buffered`, or `streamed`, by whether its length
+        was declared.
+    """
     if size <= INLINE:
         return "inline"
     if declared:
@@ -107,14 +112,16 @@ def tier(size: int, declared: bool) -> str:
 
 
 def stored(size: int) -> int:
-    """How many bytes the V2 cache's file of an object of size bytes takes:
-    its blocks, and a tag for each (CalculateFileSize in Pelican's
-    local_cache)."""
+    """Return how many bytes the V2 cache's file of an object of size takes.
+
+    It holds the object's blocks, and a tag for each (CalculateFileSize
+    in Pelican's local_cache).
+    """
     return size + TAG * -(-size // BLOCK)
 
 
 def header(request: Request) -> str:
-    """The Range header for request."""
+    """Return the Range header for request."""
     specs: list[str] = []
     for start, end in request:
         if start is None:
@@ -127,7 +134,7 @@ def header(request: Request) -> str:
 
 
 def resolve(size: int, r: Range) -> tuple[int, int]:
-    """The first and last byte that r asks for in an object of size."""
+    """Return the first and last byte r asks for in an object of size."""
     start, end = r
     if start is None:
         return max(size - (end or 0), 0), size - 1
@@ -137,7 +144,7 @@ def resolve(size: int, r: Range) -> tuple[int, int]:
 
 
 def requests(size: int) -> list[Request]:
-    """What to ask for of an object of size, beyond the whole of it."""
+    """Return what to ask of an object of size, beyond the whole of it."""
     if size == 0:
         return []
     found: list[Request] = [
@@ -163,14 +170,24 @@ def requests(size: int) -> list[Request]:
 
 
 def content_range(value: str) -> Optional[tuple[int, int, int]]:
-    """A Content-Range header's first byte, last byte, and total."""
+    """Return a Content-Range header's first byte, last byte, and total.
+
+    Returns:
+        The three, or None if value is not `bytes <first>-<last>/<total>`.
+    """
     m = re.fullmatch(r"\s*bytes\s+(\d+)-(\d+)/(\d+)\s*", value)
     return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
 def parse_byteranges(content_type: str, body: bytes) -> list[tuple[str, bytes]]:
-    """The parts of a multipart/byteranges body: each one's Content-Range
-    and bytes."""
+    """Return the parts of a multipart/byteranges body.
+
+    Returns:
+        Each part's Content-Range ("" if it has none) and bytes.
+
+    Raises:
+        ValueError: The content type names no boundary.
+    """
     m = re.search(r'boundary="?([^";]+)"?', content_type)
     if not m:
         raise ValueError("multipart body without a boundary")
@@ -194,7 +211,7 @@ def parse_byteranges(content_type: str, body: bytes) -> list[tuple[str, bytes]]:
 
 
 def merge(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Inclusive spans, with those that overlap or touch joined."""
+    """Return inclusive spans, with those that overlap or touch joined."""
     merged: list[tuple[int, int]] = []
     for first, last in sorted(spans):
         if merged and first <= merged[-1][1] + 1:
@@ -211,14 +228,23 @@ def check(
     headers: Sequence[tuple[str, str]],
     body: bytes,
 ) -> Optional[str]:
-    """What is wrong with a response to request for an object holding
-    data, or None. A range with no byte in the object is passed over, as
-    a server passes it over among others (RFC 9110); if every range is
-    such, the answer must be 416. One range must come back as 206 with
-    exactly its bytes. Several may come back as multipart/byteranges
-    parts, in any grouping that covers them. A server may instead answer
-    200 with the whole object, to several ranges or to one that covers it
-    all (RFC 9110 lets it ignore Range)."""
+    """Return what is wrong with a response to request, or None if nothing.
+
+    A range with no byte in the object is passed over, as a server passes
+    it over among others (RFC 9110); if every range is such, the answer
+    must be 416. One range must come back as 206 with exactly its bytes.
+    Several may come back as multipart/byteranges parts, in any grouping
+    that covers them. A server may instead answer 200 with the whole
+    object, to several ranges or to one that covers it all (RFC 9110 lets
+    it ignore Range).
+
+    Args:
+        data: The object's bytes.
+        request: The ranges asked for.
+        status: The response's status, or None if none came.
+        headers: The response's headers, as (name, value) pairs.
+        body: The response's body.
+    """
     size = len(data)
 
     def get(name: str) -> str:
@@ -269,12 +295,12 @@ def check(
 
 
 def past_end(size: int) -> list[Request]:
-    """Ranges that start at or after the end of an object of size."""
+    """Return ranges that start at or after the end of an object of size."""
     return [((size, None),), ((size, size),), ((size + 1000, size + 2000),)]
 
 
 def unsatisfiable(size: int, request: Request) -> bool:
-    """Whether no range of request has a byte in an object of size."""
+    """Return whether request asks for no byte of an object of size."""
     for start, end in request:
         if start is None:
             if (end or 0) > 0 and size > 0:
@@ -285,7 +311,7 @@ def unsatisfiable(size: int, request: Request) -> bool:
 
 
 # --------------------------------------------------------------------------
-# Several versions of an object (the blocks suite's overwrite scenarios).
+# Several versions of an object.
 
 
 def which_version(
@@ -295,10 +321,20 @@ def which_version(
     headers: Sequence[tuple[str, str]],
     body: bytes,
 ) -> tuple[Optional[str], str]:
-    """Which of versions, by name, a response to request (None for the
-    whole object) came from: (name, "") if it is entirely that one;
-    (None, why) if it is none of them, e.g. mixed, with another version's
-    size, or an error."""
+    """Return which of versions a response to request came from.
+
+    Args:
+        versions: Each version's bytes, by name.
+        request: The ranges asked for, or None for the whole object.
+        status: The response's status, or None if none came.
+        headers: The response's headers, as (name, value) pairs.
+        body: The response's body.
+
+    Returns:
+        The version's name and "", if the response is entirely that
+        one's; or None and why, if it is none of them, e.g. mixed, with
+        another version's size, or an error.
+    """
     if status is None or 300 <= status < 400 or (status >= 400 and status != 416):
         return None, "no response" if status is None else f"HTTP {status}"
     lengths = [v for k, v in headers if k.lower() == "content-length"]
@@ -328,11 +364,18 @@ def which_version(
 
 
 def freshness(cache_control: str) -> Optional[float]:
-    """How many seconds a cache treats an object as fresh under an
-    origin's Cache-Control, or None if it says nothing about that and the
-    cache decides for itself. A V2 cache revalidates no-cache after a
-    grace of 5 seconds (local_cache/cache_control.go), and none stores
-    no-store or private."""
+    """Return how many seconds a cache treats an object as fresh.
+
+    A V2 cache revalidates no-cache after a grace of 5 seconds
+    (local_cache/cache_control.go), and none stores no-store or private.
+
+    Args:
+        cache_control: The origin's Cache-Control.
+
+    Returns:
+        The seconds, or None if cache_control says nothing about that and
+        the cache decides for itself.
+    """
     ages: list[float] = []
     no_cache = False
     for part in cache_control.split(","):
@@ -352,25 +395,27 @@ def freshness(cache_control: str) -> Optional[float]:
     return max(ages) if ages else None
 
 
-# An object overwritten at the origins (the blocks and freshness suites'
-# overwrite scenarios): its size, and by how much the new version grows
-# or shrinks.
+# An object overwritten at the origins: its size, and by how much the new
+# version grows or shrinks.
 OVERWRITE_SIZE = 3 * XROOTD_BLOCK + 7
 OVERWRITE_CHANGE = 3 * BLOCK + 11
 
 
 # --------------------------------------------------------------------------
-# Overlapping reads (the blocks suite's cache-overlap). Each is unaligned to
-# both BLOCK and XROOTD_BLOCK, but for the object's own ends.
+# Overlapping reads. Each is unaligned to both BLOCK and XROOTD_BLOCK, but
+# for the object's own ends.
 
 OVERLAP_SIZE = 3 * XROOTD_BLOCK + 1234
 
 
 def overlap_plans() -> dict[str, list[Request]]:
-    """Reads of an OVERLAP_SIZE object, each plan in order on an object
-    of its own. Every read after a plan's first covers both blocks that
-    earlier ones fetched and blocks that they did not, at both block
-    sizes; but `inside` asks only for what its first read fetched."""
+    """Return plans of reads of an OVERLAP_SIZE object, by name.
+
+    Each plan's reads go in order, on an object of its own. Every read
+    after a plan's first covers both blocks that earlier ones fetched and
+    blocks that they did not, at both block sizes; but `inside` asks only
+    for what its first read fetched.
+    """
     return {
         "head": [((140001, 150000),), ((125001, 141000),)],
         "tail": [((140001, 150000),), ((149001, 270000),)],
@@ -388,9 +433,11 @@ def overlap_plans() -> dict[str, list[Request]]:
 
 
 def concurrent_reads() -> list[Optional[Request]]:
-    """Reads of a cold OVERLAP_SIZE object, all sent at once: the same
-    range twice, ranges that overlap their neighbors, and the whole
-    object (None)."""
+    """Return reads of a cold OVERLAP_SIZE object, to send all at once.
+
+    They are the same range twice, ranges that overlap their neighbors,
+    and the whole object (None).
+    """
     return [
         ((125001, 141000),),
         ((125001, 141000),),
@@ -404,8 +451,11 @@ def concurrent_reads() -> list[Optional[Request]]:
 
 
 def covering(request: Request, size: int, unit: int) -> list[int]:
-    """The blocks of unit bytes that request touches in an object of
-    size."""
+    """Return the blocks that request touches in an object of size.
+
+    Returns:
+        The indexes of the blocks of unit bytes, in order.
+    """
     found: set[int] = set()
     for r in request:
         first, last = resolve(size, r)
@@ -414,8 +464,8 @@ def covering(request: Request, size: int, unit: int) -> list[int]:
 
 
 # --------------------------------------------------------------------------
-# Ranges that add up to a whole object (the blocks suite's cache-assemble):
-# in the order read, overlapping, and unaligned to both block sizes.
+# Ranges that add up to a whole object: in the order read, overlapping,
+# and unaligned to both block sizes.
 
 ASSEMBLE_SIZE = 4 * XROOTD_BLOCK + 777
 ASSEMBLE: tuple[tuple[int, int], ...] = (
@@ -432,7 +482,7 @@ ASSEMBLE: tuple[tuple[int, int], ...] = (
 
 
 def crc32c(data: bytes) -> int:
-    """The CRC-32C (Castagnoli) of data."""
+    """Return the CRC-32C (Castagnoli) of data."""
     c = 0xFFFFFFFF
     for byte in data:
         c = _CRC32C[(c ^ byte) & 0xFF] ^ (c >> 8)
@@ -466,7 +516,11 @@ CINFO_ASTAT = 56
 
 @dataclass(frozen=True)
 class Cinfo:
-    """What an XRootD cache's .cinfo records."""
+    """What an XRootD cache's .cinfo records.
+
+    Attributes:
+        bitmap: The blocks the cache holds: bit i of byte i/8 for block i.
+    """
 
     block_size: int
     file_size: int
@@ -489,8 +543,11 @@ class Cinfo:
 
 
 def parse_cinfo(data: bytes) -> Cinfo:
-    """The blocks a .cinfo file records; ValueError if it is not one this
-    understands."""
+    """Return the blocks a .cinfo file records.
+
+    Raises:
+        ValueError: The data is not a .cinfo file that this understands.
+    """
     head = _CINFO_VERSION.size + _CINFO_STORE.size + _CINFO_CRC.size
     if len(data) < head:
         raise ValueError(f"a .cinfo of {len(data)} bytes is too short")
@@ -522,16 +579,23 @@ def parse_cinfo(data: bytes) -> Cinfo:
 
 
 def cache_dir(cache: common.Cache) -> str:
-    """Where cache keeps its store (under framework/var), which it mounts
-    at /data."""
+    """Return where cache keeps its store (under framework/var).
+
+    The cache mounts it at /data.
+    """
     name = cache.svc[len("cache-") :] if cache.svc.startswith("cache-") else cache.svc
     return f"data/cache/{name}"
 
 
 def store_bytes(cache: common.Cache) -> Optional[int]:
-    """How many bytes a V2 cache's object files take, in the store it
-    mounts at /data (local_cache/storage.go in Pelican); None if it has
-    no such store."""
+    """Return how many bytes a V2 cache's object files take in its store.
+
+    Its store is the one it mounts at /data (local_cache/storage.go in
+    Pelican).
+
+    Returns:
+        The total, or None if cache has no such store.
+    """
     root = f"{cache_dir(cache)}/persistent-cache/objects"
     if not os.path.isdir(root):
         return None
@@ -543,9 +607,14 @@ def store_bytes(cache: common.Cache) -> Optional[int]:
 
 
 def read_cinfo(cache: common.Cache, rel: str) -> tuple[Optional[Cinfo], str]:
-    """What an XRootD cache's .cinfo of rel in /protected-a records, or why
-    it could not be read. The cache links it from namespace/ to where it
-    keeps it, by a path in its own mount."""
+    """Return what an XRootD cache's .cinfo of rel in /protected-a records.
+
+    The cache links it from namespace/ to where it keeps it, by a path in
+    its own mount.
+
+    Returns:
+        A pair: the record and "", or None and why it could not be read.
+    """
     root = cache_dir(cache)
     link = f"{root}/namespace/protected-a/{rel}.cinfo"
     try:

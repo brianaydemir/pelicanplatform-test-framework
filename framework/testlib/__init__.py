@@ -1,5 +1,4 @@
-"""What test.py, its suites (framework/suites/), and
-framework/init-data.py share.
+"""What test.py, framework/suites/, and framework/init-data.py share.
 
   accounts     a server's web API as one of its users; its users and
                groups; logging in

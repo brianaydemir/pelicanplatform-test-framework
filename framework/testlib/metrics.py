@@ -1,5 +1,7 @@
-"""A server's Prometheus metrics (/metrics): fetched, parsed into series
-with their labels, and compared between two snapshots.
+"""A server's Prometheus metrics (/metrics): fetched, parsed, and compared.
+
+They are parsed into series with their labels, and compared between two
+snapshots.
 
 Every server guards its /metrics (Monitoring.MetricAuthorization, on by
 default), so fetch() presents a token of the server's own making with
@@ -33,7 +35,7 @@ _ESCAPES = {"\\\\": "\\", '\\"': '"', "\\n": "\n"}
 
 
 def _labels(text: str) -> Labels:
-    """The labels in text, the part of a sample between its braces."""
+    """Return the labels in text, a sample's part between its braces."""
     found = {
         m.group(1): re.sub(r"\\.", lambda e: _ESCAPES.get(e.group(0), e.group(0)), m.group(2))
         for m in _LABEL.finditer(text)
@@ -43,14 +45,19 @@ def _labels(text: str) -> Labels:
 
 @dataclass(frozen=True)
 class Snapshot:
-    """A server's metrics at one moment: each series' value, by its
-    metric's name and its labels."""
+    """A server's metrics at one moment.
+
+    Attributes:
+        samples: Each series' value, by its metric's name and its labels.
+    """
 
     samples: Mapping[tuple[str, Labels], float]
 
     def series(self, name: str, /, **labels: str) -> dict[Labels, float]:
-        """Every series of metric name that has labels (and perhaps
-        others), by all its labels."""
+        """Return every series of metric name that has labels.
+
+        Each may have other labels too, and is keyed by all of them.
+        """
         wanted = set(labels.items())
         return {
             have: value
@@ -59,18 +66,22 @@ class Snapshot:
         }
 
     def value(self, name: str, /, **labels: str) -> float:
-        """The sum of series(), 0 if there is none: e.g. of
-        pelican_http_requests_total with method="GET", whatever its
-        other labels."""
+        """Return the sum of series(), 0 if there is none.
+
+        For example, the sum of pelican_http_requests_total with
+        method="GET", whatever its other labels.
+        """
         return sum(self.series(name, **labels).values())
 
     def has(self, name: str) -> bool:
-        """Whether metric name has any series, which a metric with labels
-        has only once something has happened."""
+        """Return whether metric name has any series.
+
+        A metric with labels has one only once something has happened.
+        """
         return any(metric == name for metric, _ in self.samples)
 
     def has_prefix(self, prefix: str) -> bool:
-        """Whether any metric's name begins with prefix."""
+        """Return whether any metric's name begins with prefix."""
         return any(metric.startswith(prefix) for metric, _ in self.samples)
 
 
@@ -80,8 +91,10 @@ EMPTY = Snapshot({})
 
 
 def parse(text: str) -> Snapshot:
-    """The series in text, a Prometheus text exposition. Lines it cannot
-    read, and comments, are passed over."""
+    """Return the series in text, a Prometheus text exposition.
+
+    Lines it cannot read, and comments, are passed over.
+    """
     samples: dict[tuple[str, Labels], float] = {}
     for line in text.splitlines():
         found = _SAMPLE.match(line.strip())
@@ -106,15 +119,17 @@ _scrape_tokens: dict[str, tuple[str, float]] = {}
 
 @functools.lru_cache(maxsize=None)
 def _federation() -> common.Federation:
-    """The federation's shape, read once."""
+    """Return the federation's shape, read once."""
     return common.Federation()
 
 
 def scrape_token(url: str) -> str:
-    """A token that the server at web URL url takes for its metrics: from
-    its local issuer, signed with its own key, with scope
-    monitoring.scrape (credentials.web_token()); one per server, until it
-    nears its expiry."""
+    """Return a token that the server at web URL url takes for its metrics.
+
+    It is from its local issuer, signed with its own key, with scope
+    monitoring.scrape (credentials.web_token()); one per server, until
+    it nears its expiry.
+    """
     parts = urlsplit(url)
     web_url = f"{parts.scheme}://{parts.netloc}"
     token, expiry = _scrape_tokens.get(web_url, ("", 0.0))
@@ -128,9 +143,11 @@ def scrape_token(url: str) -> str:
 
 
 def fetch(url: str, token: Optional[str] = None) -> Optional[Snapshot]:
-    """The metrics of the server at web URL url (e.g. a common.Origin's
-    web_url), presenting token, or if none is given, scrape_token(); None
-    if it does not answer 200."""
+    """Return the metrics of the server at web URL url.
+
+    url is e.g. a common.Origin's web_url. Present token, or if none is
+    given, scrape_token(). Return None if it does not answer 200.
+    """
     if token is None:
         token = scrape_token(url)
     answer = web.request("GET", f"{url}/metrics", token=token)
@@ -140,6 +157,8 @@ def fetch(url: str, token: Optional[str] = None) -> Optional[Snapshot]:
 
 
 def delta(before: Snapshot, after: Snapshot, name: str, /, **labels: str) -> float:
-    """How much the sum of metric name's series with labels rose from
-    before to after (see Snapshot.value())."""
+    """Return how much the sum of metric name's series with labels rose.
+
+    It is the rise from before to after (see Snapshot.value()).
+    """
     return after.value(name, **labels) - before.value(name, **labels)

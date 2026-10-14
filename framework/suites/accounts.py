@@ -1,27 +1,28 @@
-"""Accounts: the life cycle of the identities that the issuer origin
-(origin-0, or `fed`) keeps in its database (Pelican's
-docs/user-group-design.md), and who may act as whom because of it:
-deactivating and deleting users; granting roles by scope and by
-authority group; what becomes of collection grants when users and
-groups are deleted, renamed, or recreated; group invites; and the
-acceptable use policy (AUP). A mistake in any of these is a privilege
-escalation, or a grant that outlives its owner. The suite needs the
-embedded issuer and a protected namespace, as the collections suite
-does, and skips with the issuer off or the external one.
+"""Accounts: the life cycle of the identities that the issuer origin keeps.
+
+The issuer origin (origin-0, or `fed`) keeps them in its database
+(Pelican's docs/user-group-design.md). The suite checks that life cycle,
+and who may act as whom because of it: deactivating and deleting users;
+granting roles by scope and by authority group; what becomes of
+collection grants when users and groups are deleted, renamed, or
+recreated; group invites; and the acceptable use policy (AUP). A
+mistake in any of these is a privilege escalation, or a grant that
+outlives its owner. The suite needs the embedded issuer and a protected
+namespace, and skips with the issuer off or the external one.
 
 Every user and group the suite makes is the run's own, named
-acct-<role>-<run>, and acts through a bearer token that the origin's
-web API takes as theirs (credentials.mint_user()), or through the
-cookie of a login, with a password set through an invite, as the issuer
-suite's users do. Tokens for data come from the namespace's issuer
-through its device flow, approved as the user, with a client that the
-admin creates. Collections are the admin's, under
-/<namespace>/data/accounts/<run>/. framework/config.d/base/40-origin.yaml
-names the suite's authorities: the groups test-server-admins
-(Server.AdminGroups) and test-collection-admins
-(Server.CollectionAdminGroups), which the origin reserves as it starts,
-and the user test-user-admin (Server.UserAdminUsers), whom the admin
-creates once and later runs reuse. The scenarios:
+acct-<role>-<run>, and acts through a bearer token that the origin's web
+API takes as theirs (credentials.mint_user()), or through the cookie of
+a login, with a password set through an invite. Tokens for data come
+from the namespace's issuer through its device flow, approved as the
+user, with a client that the admin creates. Collections are the admin's,
+under /<namespace>/data/accounts/<run>/.
+framework/config.d/base/40-origin.yaml names the suite's authorities:
+the groups test-server-admins (Server.AdminGroups) and
+test-collection-admins (Server.CollectionAdminGroups), which the origin
+reserves as it starts, and the user test-user-admin
+(Server.UserAdminUsers), whom the admin creates once and later runs
+reuse. The scenarios:
 
   user-status       a user made inactive, then active, then deleted:
                     their login cookie, logging in, their web token,
@@ -106,20 +107,35 @@ REFRESHABLE = ("openid", "offline_access")
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no embedded issuer, or no protected
-    namespace."""
+    """Return why there is nothing to test, or None if there is something.
+
+    That is so with no embedded issuer, or no protected namespace.
+    """
     return collections.missing(fed)
 
 
 def outcome(problems: Sequence[str], note: str) -> Row:
-    """A row with no case: FAIL with the first of problems, or PASS with
-    note."""
+    """Return a row with no case.
+
+    Returns:
+        FAIL with the first of problems, or PASS with note.
+    """
     return ("", FAIL, first(problems)) if problems else ("", PASS, note)
 
 
 class Test:
-    """The issuer origin and its namespace, the run's users, and tokens
-    and clients for them."""
+    """The issuer origin and its namespace, and the run's users.
+
+    It keeps tokens and clients for them.
+
+    Attributes:
+        web: The issuer origin's web URL.
+        namespace: Its namespace: the first protected one exported.
+        base: The run's path in the namespace: data/accounts/<run>.
+        prefix: The run's path in the federation: /<namespace>/<base>.
+        passwords: The passwords set, by username.
+        clients: The admin's clients (see client()), by kind.
+    """
 
     def __init__(self, session: Session):
         fed = session.fed
@@ -130,17 +146,19 @@ class Test:
         self.namespace = next(ns for ns in PROTECTED if ns in fed.exports)
         self.base = f"data/accounts/{self.run}"
         self.prefix = f"/{self.namespace}/{self.base}"
-        self.passwords: dict[str, str] = {}  # the passwords set, by username
-        self.clients: dict[str, issuer.Client] = {}  # the admin's, by kind
+        self.passwords: dict[str, str] = {}
+        self.clients: dict[str, issuer.Client] = {}
         self._web_tokens: dict[str, str] = {}
 
     def name(self, role: str) -> str:
-        """The run's name for role: acct-<role>-<run>."""
+        """Return the run's name for role: acct-<role>-<run>."""
         return f"{PREFIX}{role}-{self.run}"
 
     def web_token(self, username: str) -> str:
-        """A token that the origin's web API takes as username's: whoever
-        is named so when it is presented."""
+        """Return a token that the origin's web API takes as username's.
+
+        That is whoever is named so when it is presented.
+        """
         if username not in self._web_tokens:
             self._web_tokens[username] = credentials.mint_user(
                 self.fed,
@@ -153,12 +171,16 @@ class Test:
         return self._web_tokens[username]
 
     def api(self, username: str) -> Api:
-        """The origin's web API, as username, by bearer token."""
+        """Return the origin's web API, as username, by bearer token."""
         return Api(self.web, self.web_token(username))
 
     def client(self, kind: str) -> issuer.Client:
-        """The admin's client of the namespace's issuer, for the device flow
-        or the authorization code flow (kind), each with refresh tokens."""
+        """Return the admin's client of the namespace's issuer.
+
+        Args:
+            kind: `device`, for the device flow, or `code`, for the
+                authorization code flow; each with refresh tokens.
+        """
         if kind not in self.clients:
             code = kind == "code"
             self.clients[kind] = issuer.create_client(
@@ -172,20 +194,27 @@ class Test:
         return self.clients[kind]
 
     def data_scopes(self, username: str) -> frozenset[str]:
-        """The data scopes the namespace's issuer grants username now, of
-        everything they might have."""
+        """Return the data scopes the namespace's issuer grants username.
+
+        It asks now, for everything they might have.
+        """
         tok = issuer.token(
             self.client("device"), User(token=self.web_token(username)), issuer.DATA_SCOPES
         )
         return issuer.data_scopes(tok)
 
     def path(self, name: str) -> str:
-        """The namespace of the run's collection name: its federation path."""
+        """Return the namespace of the run's collection name.
+
+        It is the collection's federation path.
+        """
         return f"{self.prefix}/{name}"
 
     def read_scope(self, name: str) -> str:
-        """The scope that reads the run's collection name, as the
-        namespace's issuer mints it."""
+        """Return the scope that reads the run's collection name.
+
+        It is as the namespace's issuer mints it.
+        """
         return f"storage.read:/{self.base}/{name}"
 
 
@@ -194,8 +223,11 @@ class Test:
 
 
 def make_user(test: Test, username: str) -> str:
-    """Have the admin create the user username, who agrees to the AUP:
-    their ID."""
+    """Have the admin create the user username, who agrees to the AUP.
+
+    Returns:
+        Their ID.
+    """
     made = must(
         test.api("admin").call("POST", accounts.USERS, {"username": username}),
         f"creating user {username}",
@@ -205,9 +237,14 @@ def make_user(test: Test, username: str) -> str:
 
 
 def log_in(test: Test, username: str, user_id: str) -> str:
-    """Log username in: the login cookie, which carries the groups they
-    are in now. The first time, the admin mints them a password invite,
-    and they set a password of the run's with it."""
+    """Log username in.
+
+    The first time, the admin mints them a password invite, and they set
+    a password of the run's with it.
+
+    Returns:
+        The login cookie, which carries the groups they are in now.
+    """
     if username not in test.passwords:
         invite = accounts.password_invite(test.api("admin"), user_id)
         password = secrets.token_urlsafe(12)
@@ -217,24 +254,33 @@ def log_in(test: Test, username: str, user_id: str) -> str:
 
 
 def make_collection(test: Test, name: str) -> str:
-    """Have the admin create the run's collection name: its ID."""
+    """Have the admin create the run's collection name.
+
+    Returns:
+        Its ID.
+    """
     made = must(create(test.api("admin"), name, test.path(name)), f"creating collection {name}")
     return str(made.object.get("id", ""))
 
 
 def scope_route(user_id: str, scope: str = "") -> str:
-    """The route of a user's scope grants, or of one of them."""
+    """Return the route of a user's scope grants, or of one of them."""
     return f"{accounts.USERS}/{user_id}/scopes" + (f"/{scope}" if scope else "")
 
 
 def whoami(test: Test, cookie: str) -> dict[str, Any]:
-    """What /whoami says of the user whose login cookie this is."""
+    """Return what /whoami says of the user whose login cookie this is."""
     return Api(test.web, None, cookie).call("GET", accounts.WHOAMI).object
 
 
 def sweep(test: Test, this_run: bool) -> None:
-    """Remove the suite's collections, groups, and users: the run's, or
-    earlier runs' leftovers."""
+    """Remove the suite's collections, groups, and users.
+
+    Args:
+        test: The suite's run.
+        this_run: Whether to remove the run's, rather than earlier runs'
+            leftovers.
+    """
     admin = test.api("admin")
     directory = f"/{test.namespace}/data/accounts/"
     for row in objects(admin.call("GET", collections.COLLECTIONS).array):
@@ -264,15 +310,17 @@ def sweep(test: Test, this_run: bool) -> None:
 
 
 def prepare(test: Test) -> None:
-    """Have the admin agree to the AUP, and remove what earlier runs
-    left."""
+    """Have the admin agree to the AUP; remove what earlier runs left."""
     accounts.agree_to_aup(test.api("admin"))
     sweep(test, this_run=False)
 
 
 def finish(test: Test) -> None:
-    """Remove the run's collections, groups, users, and clients. The admin
-    agrees to the AUP first, in case `aup` left one they have not."""
+    """Remove the run's collections, groups, users, and clients.
+
+    The admin agrees to the AUP first, in case `aup` left one they have
+    not.
+    """
     try:
         accounts.agree_to_aup(test.api("admin"))
         sweep(test, this_run=True)
@@ -287,8 +335,10 @@ def finish(test: Test) -> None:
 
 
 def checked(rows: list[Row], case: str, check: Callable[[], Row]) -> None:
-    """Append check()'s row to rows, as case: a failing one if it raised
-    ApiError or IssuerError."""
+    """Append check()'s row to rows, as case.
+
+    It is a failing one if check() raised ApiError or IssuerError.
+    """
     try:
         _, status, note = check()
     except (ApiError, IssuerError) as e:
@@ -301,7 +351,7 @@ def checked(rows: list[Row], case: str, check: Callable[[], Row]) -> None:
 
 
 def cleared(answer: web.Response) -> bool:
-    """Whether answer clears the login cookie: sets it empty."""
+    """Return whether answer clears the login cookie: sets it empty."""
     return any(
         key.lower() == "set-cookie" and value.split(";", 1)[0].strip() == "login="
         for key, value in answer.headers
@@ -309,9 +359,12 @@ def cleared(answer: web.Response) -> bool:
 
 
 def web_problems(test: Test, username: str, cookie: str, allowed: bool) -> list[str]:
-    """What is wrong with the user's login cookie at /me, logging in again,
-    and their web token at /me: each should work if allowed, and
-    otherwise be refused (401), with the cookie cleared."""
+    """Return what is wrong with the user's login cookie, login, and token.
+
+    Each of the cookie at /me, logging in again, and their web token at
+    /me should work if allowed, and otherwise be refused (401), with the
+    cookie cleared.
+    """
     problems: list[str] = []
     want = "200" if allowed else "401"
     answer = web.request("GET", test.web + accounts.ME, headers={"Cookie": f"login={cookie}"})
@@ -333,8 +386,11 @@ def web_problems(test: Test, username: str, cookie: str, allowed: bool) -> list[
 
 
 def approves(client: issuer.Client, user: User) -> tuple[bool, str]:
-    """Whether the issuer approves a device flow for client as user, and
-    what it answered."""
+    """Return whether the issuer approves a device flow for client as user.
+
+    Returns:
+        Whether it does, and what it answered.
+    """
     flow = issuer.started(issuer.start_device(client, REFRESHABLE), client)
     try:
         done = issuer.decide(client.url, str(flow["user_code"]), user, "approve")
@@ -347,18 +403,29 @@ def approves(client: issuer.Client, user: User) -> tuple[bool, str]:
 
 
 def authorizes(client: issuer.Client, user: User) -> tuple[bool, str]:
-    """Whether the issuer's authorization page, shown user, sends client
-    back a code, and what it answered."""
+    """Return whether the issuer's authorization page sends client a code.
+
+    The page is shown user.
+
+    Returns:
+        Whether it sends client back a code, and what it answered.
+    """
     _, challenge = issuer.pkce()
     sent = issuer.authorize(client, user, REFRESHABLE, challenge, secrets.token_urlsafe(12))
     return bool(issuer.redirected(sent).get("code")), sent.describe()
 
 
 def issuer_refusals(test: Test, user: User, refresh: str) -> list[str]:
-    """What the issuer does for a user it should refuse: approve a device
-    flow, send a code from its authorization page, or honor the user's
-    refresh token (it should say invalid_grant), if they hold an unused
-    one ("" if not)."""
+    """Return what the issuer does for a user it should refuse.
+
+    It may approve a device flow, send a code from its authorization page,
+    or honor the user's refresh token (it should say invalid_grant).
+
+    Args:
+        test: The suite's run.
+        user: How the issuer knows the user.
+        refresh: The user's unused refresh token, or "" if they hold none.
+    """
     problems: list[str] = []
     if approves(test.client("device"), user)[0]:
         problems.append("the device flow was approved with the login cookie")
@@ -374,11 +441,14 @@ def issuer_refusals(test: Test, user: User, refresh: str) -> list[str]:
 
 
 def user_status(test: Test) -> list[Row]:
-    """A user, logged in and holding a refresh token, made inactive, active
-    again, and then deleted: their login cookie, logging in, and their
-    web token must be refused (401) while inactive or deleted, and the
-    issuer must approve no device flow, send no code, and honor no
-    refresh token for them."""
+    """Check that a user is refused while inactive or deleted.
+
+    A user, logged in and holding a refresh token, is made inactive,
+    active again, and then deleted: their login cookie, logging in, and
+    their web token must be refused (401) while inactive or deleted, and
+    the issuer must approve no device flow, send no code, and honor no
+    refresh token for them.
+    """
     username = test.name("status")
     admin = test.api("admin")
     user_id = make_user(test, username)
@@ -452,11 +522,14 @@ def user_status(test: Test) -> list[Row]:
 
 
 def scope_grants(test: Test) -> list[Row]:
-    """The scopes the admin grants a user (POST /users/:id/scopes), which
-    the server consults on each request: server.user_admin,
-    pelican.log_read, and server.collection_admin. An API token of
-    server.collection_admin, which the user makes while granted it, goes
-    with the grant. A data scope is refused (400)."""
+    """Check that scopes the admin grants a user work at once, and no more.
+
+    The admin grants a user scopes (POST /users/:id/scopes), which the
+    server consults on each request: server.user_admin, pelican.log_read,
+    and server.collection_admin. An API token of server.collection_admin,
+    which the user makes while granted it, goes with the grant. A data
+    scope is refused (400).
+    """
     admin = test.api("admin")
     rows: list[Row] = []
 
@@ -552,12 +625,15 @@ def scope_grants(test: Test) -> list[Row]:
         return outcome(problems, "creates a collection; refused once revoked")
 
     def collection_admin_token() -> Row:
-        """A user granted server.collection_admin makes an API token of
-        that scope, from their login cookie (POST /tokens), and creates
-        a collection with it; once the grant is revoked, the token must
-        be refused: a token keeps a user-grantable scope only while its
+        """Check that an API token's scope goes with its creator's grant.
+
+        A user granted server.collection_admin makes an API token of that
+        scope, from their login cookie (POST /tokens), and creates a
+        collection with it; once the grant is revoked, the token must be
+        refused: a token keeps a user-grantable scope only while its
         creator holds it (intersectWithUserScopes in
-        api_token/api_token.go). The token is deleted afterward."""
+        api_token/api_token.go). The token is deleted afterward.
+        """
         username = test.name("tokencurator")
         user_id = make_user(test, username)
         cookie = log_in(test, username, user_id)
@@ -630,14 +706,17 @@ def scope_grants(test: Test) -> list[Row]:
 
 
 def authority_groups(test: Test) -> list[Row]:
-    """The configured authority groups (Server.AdminGroups and
-    Server.CollectionAdminGroups), which the origin reserved as it
-    started: nobody may create or delete one (409); a member is a
-    collection administrator, or a server administrator, once they log
-    in again, and not once removed and logged in again; nor once
-    removed, with the login cookie from before (a cookie keeps the
-    groups it was minted with, so this fails). And the configured user
-    administrator (Server.UserAdminUsers)."""
+    """Check that the configured authority groups and user admin work.
+
+    The groups are Server.AdminGroups and Server.CollectionAdminGroups,
+    which the origin reserved as it started: nobody may create or delete
+    one (409); a member is a collection administrator, or a server
+    administrator, once they log in again, and not once removed and
+    logged in again; nor once removed, with the login cookie from before
+    (a cookie keeps the groups it was minted with, so this fails). The
+    configured user administrator (Server.UserAdminUsers) manages users,
+    and grants nothing.
+    """
     admin = test.api("admin")
     reserved: dict[str, str] = {}
     for name in (SERVER_ADMINS, COLLECTION_ADMINS):
@@ -759,11 +838,13 @@ def authority_groups(test: Test) -> list[Row]:
 
 
 def id_keyed_grants(test: Test) -> list[Row]:
-    """Grants are kept by the IDs of users and groups, not their names
-    (Pelican issues #3752 and #3753): a deleted group's go with it, and a
-    new group of its name gets none; a new user of a deleted user's name
+    """Check that grants are kept by the IDs of users and groups, not names.
+
+    See Pelican issues #3752 and #3753. A deleted group's go with it, and
+    a new group of its name gets none; a new user of a deleted user's name
     gets none of theirs; and a renamed group and user keep theirs, while
-    the names they leave grant nothing."""
+    the names they leave grant nothing.
+    """
     admin = test.api("admin")
     rows: list[Row] = []
 
@@ -889,9 +970,12 @@ def id_keyed_grants(test: Test) -> list[Row]:
 
 
 def group_invites(test: Test) -> list[Row]:
-    """A group's owner makes invite links: a single-use one joins the
-    first user who redeems it, and no other; a multi-use one joins
-    each. A member who does not own the group may make none."""
+    """Check that a group's invite links work, and are the owner's alone.
+
+    A group's owner makes invite links: a single-use one joins the first
+    user who redeems it, and no other; a multi-use one joins each. A
+    member who does not own the group may make none.
+    """
     owner = test.name("inviter")
     make_user(test, owner)
     joiners = {role: test.name(f"joiner-{role}") for role in ("a", "b", "c")}
@@ -953,12 +1037,15 @@ def group_invites(test: Test) -> list[Row]:
 
 
 def aup(test: Test) -> list[Row]:
-    """The admin puts up a new AUP (PUT /aup): until they agree to it, the
+    """Check that a new AUP gates the admin until they agree to it.
+
+    The admin puts up a new AUP (PUT /aup): until they agree to it, the
     server refuses them its user routes (403, with requires_aup and the
     new version), and /whoami says so; agreeing to an older version does
     not do; the policy is public. Another new one gates them again. The
     policy found is put back afterward, and with it the version every
-    user had agreed to."""
+    user had agreed to.
+    """
     admin = test.api("admin")
     found = admin.call("GET", accounts.AUP)
     if found.status == 404:
@@ -980,8 +1067,11 @@ def aup(test: Test) -> list[Row]:
         return new
 
     def gated(api: Api, route: str, new: str) -> Optional[str]:
-        """Why api's user is not refused route, a user route, for want of
-        agreeing to new; None if they are."""
+        """Return why api's user is not refused route, or None if they are.
+
+        It is a user route, and the refusal must be for want of agreeing
+        to new.
+        """
         answer = api.call("GET", route)
         said = answer.object
         if answer.status != 403:
@@ -1048,6 +1138,7 @@ def aup(test: Test) -> list[Row]:
 # --------------------------------------------------------------------------
 
 
+# Each scenario, by name: it returns its rows, one per case.
 RUN: dict[str, Callable[[Test], list[Row]]] = {
     "user-status": user_status,
     "scope-grants": scope_grants,
@@ -1059,7 +1150,7 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 
 
 def guarded(check: Callable[[], list[Row]]) -> list[Row]:
-    """check()'s rows; one failing row if it raised."""
+    """Return check()'s rows, or one failing row if it raised."""
     try:
         return check()
     except (ApiError, IssuerError) as e:
@@ -1072,8 +1163,10 @@ def guarded(check: Callable[[], list[Row]]) -> list[Row]:
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Remove what earlier runs left, run the selected scenarios, and
-    remove what this run made."""
+    """Run the selected scenarios, and remove what this run made.
+
+    It first removes what earlier runs left.
+    """
     test = Test(session)
     try:
         prepare(test)

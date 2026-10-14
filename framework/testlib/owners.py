@@ -1,5 +1,7 @@
-"""Two owners' namespaces side by side (`topo-multi-owner`): which
-credentials each should accept, for the owners suite.
+"""Two owners' namespaces, and which credentials each should accept.
+
+The namespaces are side by side (`topo-multi-owner`), for the owners
+suite.
 
 Another owner's origin (origin-2; see common.Owner) exports prefixes
 that mirror the origins' namespaces: /other is like /protected-a, and
@@ -26,11 +28,17 @@ SIDES = ("owner", "origins")
 
 @dataclass(frozen=True)
 class OwnerCredential:
-    """A credential that the owners suite presents."""
+    """A credential that the owners suite presents.
+
+    Attributes:
+        key: Whose key signs it: a side, `jwks`, or `ns-jwks`; None for
+            no token.
+        issuer: Whose issuer it names: a side.
+    """
 
     name: str
-    key: Optional[str]  # whose key signs it: a side, `jwks`, or `ns-jwks`; None: no token
-    issuer: str  # whose issuer it names: a side
+    key: Optional[str]
+    issuer: str
     description: str
 
 
@@ -74,19 +82,22 @@ class Pair:
         return self.export.like
 
     def namespace(self, side: str) -> str:
-        """The side's namespace, as URLs name it: e.g. `other`, or
-        `protected-a`."""
+        """Return the side's namespace, as URLs name it.
+
+        For example, `other`, or `protected-a`.
+        """
         return self.export.path if side == "owner" else self.like
 
     def name(self, side: str) -> str:
-        """The side's namespace, as rows and files name it."""
+        """Return the side's namespace, as rows and files name it."""
         return self.export.name if side == "owner" else self.like
 
 
 def pairs(fed: common.Federation) -> list[Pair]:
-    """Every export of another owner whose namespace the origins also
-    export. /public/secret mirrors none (its `like` is `-`), and is the
-    auth suite's (nested-protected)."""
+    """Return each export of another owner whose `like` the origins export.
+
+    /public/secret mirrors none (its `like` is `-`).
+    """
     return [
         Pair(owner, export)
         for owner in fed.owners
@@ -96,37 +107,42 @@ def pairs(fed: common.Federation) -> list[Pair]:
 
 
 def caps(fed: common.Federation, pair: Pair, side: str) -> AbstractSet[str]:
-    """The capabilities of side of pair."""
+    """Return the capabilities of side of pair."""
     return pair.export.caps if side == "owner" else fed.exports[pair.like]
 
 
 def verdict(cred: OwnerCredential, side: str) -> str:
-    """What the side should do with cred where a token decides."""
+    """Return what the side should do with cred where a token decides."""
     return ALLOW if cred.key == side and cred.issuer == side else DENY
 
 
 def expected(
     fed: common.Federation, cred: OwnerCredential, pair: Pair, side: str, op: str, direct: bool
 ) -> str:
-    """What should become of op on side of pair, presenting cred: ALLOW or
-    DENY (see credentials.decide())."""
+    """Return what should become of op on side of pair, presenting cred.
+
+    Returns:
+        ALLOW or DENY (see credentials.decide()).
+    """
     return credentials.decide(verdict(cred, side), caps(fed, pair, side), op, direct)
 
 
 def applies(fed: common.Federation, cred: OwnerCredential, pair: Pair) -> bool:
-    """Whether the suite presents cred in pair. /public and /public/other
-    have no issuer, and a token decides nothing there: only a token of
-    each owner, and none, are presented. Where /public takes writes
-    (`-p origin-public-writes`), each has an issuer, which decides a
-    write, so every credential is presented but `ns-jwks`: no public
-    namespace has keys of its own."""
+    """Return whether the suite presents cred in pair.
+
+    /public and /public/other have no issuer, and a token decides
+    nothing there: only a token of each owner, and none, are presented.
+    Where /public takes writes (`-p origin-public-writes`), each has an
+    issuer, which decides a write, so every credential is presented but
+    `ns-jwks`: no public namespace has keys of its own.
+    """
     if pair.like in credentials.PROTECTED or cred.name in ("owner", "origins", "none"):
         return True
     return credentials.has_issuer(fed.exports[pair.like]) and cred.key != "ns-jwks"
 
 
 def key_path(fed: common.Federation, cred: OwnerCredential, pair: Pair) -> str:
-    """The key that signs cred's token, under framework/var."""
+    """Return the key that signs cred's token, under framework/var."""
     if cred.key == "owner":
         return pair.owner.key
     if cred.key == "origins":
@@ -137,16 +153,21 @@ def key_path(fed: common.Federation, cred: OwnerCredential, pair: Pair) -> str:
 
 
 def issuer_url(fed: common.Federation, cred: OwnerCredential, pair: Pair) -> str:
-    """The issuer URL that cred's token names."""
+    """Return the issuer URL that cred's token names."""
     return pair.export.issuer if cred.issuer == "owner" else fed.issuer_of(pair.like)
 
 
 def mint(
     fed: common.Federation, cred: OwnerCredential, pair: Pair, side: str, out: str
 ) -> Optional[str]:
-    """Write cred's token for side of pair to file out, and return it; None
-    for `none`. Its scopes are for reading and writing the whole
-    namespace, so only its key and issuer decide."""
+    """Write cred's token for side of pair to file out, and return it.
+
+    Its scopes are for reading and writing the whole namespace, so only
+    its key and issuer decide.
+
+    Returns:
+        The token; None for `none`.
+    """
     if cred.key is None:
         return None
     credentials.mint(
@@ -164,8 +185,10 @@ def mint(
 
 
 def key_ids(key_dir: str) -> tuple[str, ...]:
-    """The kids of the keys in key_dir (under framework/var): the .jwks
-    beside each .pem (see fed_key_make in fed.sh)."""
+    """Return the kids of the keys in key_dir, under framework/var.
+
+    They are in the .jwks beside each .pem (see fed_key_make in fed.sh).
+    """
     found: list[str] = []
     for pem in sorted(glob.glob(f"{key_dir}/*.pem")):
         try:

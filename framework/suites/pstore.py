@@ -1,6 +1,8 @@
-"""What a pstore origin does that is its own, beyond serving objects:
-its administrative storage API and CLI, its scheduled verification
-passes, refusing writes once it is full, and backing up its catalog.
+"""What a pstore origin does that is its own, beyond serving objects.
+
+That is its administrative storage API and CLI, its scheduled
+verification passes, refusing writes once it is full, and backing up
+its catalog.
 
   storage-api       at each pstore origin, the storage API
                     (/api/v1.0/origin/storage/pstore/...) answers its
@@ -211,7 +213,16 @@ PROBE = "probe"
 
 
 class Test:
-    """The run's objects, the tokens, and the shape."""
+    """The run's objects, the tokens, and the shape.
+
+    Attributes:
+        namespace: The namespace that the suite writes in.
+        base: The run's collection, within the namespace.
+        pstores: The pstore origins.
+        tmp: A directory of the run's own, for the CLI's files.
+        objects: The storage API's collection, by rel (see
+            listing_objects()).
+    """
 
     def __init__(self, session: Session, namespace: str):
         self.session = session
@@ -223,27 +234,32 @@ class Test:
         self.tmp = session.path("pstore")
         os.makedirs(self.tmp, exist_ok=True)
         self._tokens: dict[tuple[str, str], str] = {}
-        # The storage API's collection (see listing_objects()), and what
-        # went wrong putting it at each origin that has it, by service.
         self.objects = listing_objects(self)
+        # What went wrong putting the collection at each origin that has
+        # it, by service.
         self._listed: dict[str, Optional[str]] = {}
 
     def rel(self, *parts: str) -> str:
-        """Where parts are, under the run's collection."""
+        """Return where parts are, under the run's collection."""
         return "/".join([self.base, *parts])
 
     def url(self, origin: common.Origin, rel: str) -> str:
-        """rel at origin's data port."""
+        """Return rel's URL at origin's data port."""
         return stores.url(origin, self.namespace, rel)
 
     def catalog(self, origin: common.Origin, rel: str) -> str:
-        """rel's path in origin's store, which the storage API takes: under
-        the export's StoragePrefix (fed_storage_prefix in fed.sh)."""
+        """Return rel's path in origin's store, which the storage API takes.
+
+        It is under the export's StoragePrefix (fed_storage_prefix in
+        fed.sh).
+        """
         return f"/{common.storage_dir(origin.storage_namespace(self.namespace))}/{rel}"
 
     def web_token(self, origin: common.Origin, user: str) -> str:
-        """A token that origin's web API takes as user's (see
-        credentials.mint_user()): its file's path."""
+        """Return the file of a token that origin's web API takes as user's.
+
+        The token is minted once, by credentials.mint_user().
+        """
         key = (origin.svc, user)
         if key not in self._tokens:
             out = self.session.path(f"tokens/pstore.{origin.svc}.{user}")
@@ -259,49 +275,59 @@ class Test:
         return self._tokens[key]
 
     def admin_file(self, origin: common.Origin) -> str:
-        """The admin's token for origin's web API: its file's path."""
+        """Return the file of the admin's token for origin's web API."""
         return self.web_token(origin, "admin")
 
     def admin(self, origin: common.Origin) -> str:
-        """The admin's token for origin's web API."""
+        """Return the admin's token for origin's web API."""
         return read_token(self.admin_file(origin))
 
     def user(self, origin: common.Origin) -> str:
-        """USER's token for origin's web API."""
+        """Return USER's token for origin's web API."""
         return read_token(self.web_token(origin, USER))
 
     def api(
         self, origin: common.Origin, path: str, token: Optional[str], **query: Any
     ) -> web.Response:
-        """GET path of origin's storage API (e.g. `usage`, or `ls/<path>`),
-        with query, presenting token."""
+        """GET path of origin's storage API, with query, presenting token.
+
+        path is e.g. `usage`, or `ls/<path>`.
+        """
         url = f"{origin.web_url}{API}/{path}"
         if query:
             url += "?" + urlencode(query)
         return web.request("GET", url, token=token)
 
     def listed(self, origin: common.Origin) -> Optional[str]:
-        """Put the storage API's collection at origin, once; what went
-        wrong, or None."""
+        """Put the storage API's collection at origin, once.
+
+        Returns:
+            What went wrong, or None.
+        """
         if origin.svc not in self._listed:
             puts = (self.put(origin, rel, data) for rel, data in self.objects.items())
             self._listed[origin.svc] = next((why for why in puts if why), None)
         return self._listed[origin.svc]
 
     def put(self, origin: common.Origin, rel: str, data: bytes) -> Optional[str]:
-        """Upload data to rel at origin, with its length; what went wrong,
-        or None. The store makes rel's collections."""
+        """Upload data to rel at origin, with its length.
+
+        The store makes rel's collections.
+
+        Returns:
+            What went wrong, or None.
+        """
         return stores.put(origin, self.namespace, rel, data, self.token)
 
 
 def read_token(path: str) -> str:
-    """The token in the file at path."""
+    """Return the token in the file at path."""
     with open(path, encoding="utf-8") as f:
         return f.read().strip()
 
 
 def decoded(answer: web.Response) -> Any:
-    """answer's body as JSON, or None if it is not JSON."""
+    """Return answer's body as JSON, or None if it is not JSON."""
     try:
         return json.loads(answer.body)
     except ValueError:
@@ -309,14 +335,20 @@ def decoded(answer: web.Response) -> Any:
 
 
 def route(kind: str, path: str) -> str:
-    """The storage API's route of kind (`ls`, `stat`, or `digest`) for the
-    store's path, each segment encoded, as the CLI sends it."""
+    """Return the storage API's route of kind for the store's path.
+
+    kind is `ls`, `stat`, or `digest`. Each segment of path is encoded,
+    as the CLI sends it.
+    """
     return f"{kind}{quote(path)}"
 
 
 def usage(test: Test, origin: common.Origin) -> tuple[Optional[dict[str, Any]], str]:
-    """What origin's storage API says of its usage, as the admin asks: the
-    object, or None and why."""
+    """Return what origin's storage API tells the admin of its usage.
+
+    Returns:
+        The object, and ""; or None, and why.
+    """
     answer = test.api(origin, "usage", test.admin(origin))
     found = common.as_object(decoded(answer)) if answer.status == 200 else None
     if found is None or not all(
@@ -327,12 +359,12 @@ def usage(test: Test, origin: common.Origin) -> tuple[Optional[dict[str, Any]], 
 
 
 def outcome(problems: Sequence[str], note: str) -> Row:
-    """FAIL with the first of problems, if any; else PASS with note."""
+    """Return FAIL with the first of problems, if any, or PASS with note."""
     return (FAIL, first(problems)) if problems else (PASS, note)
 
 
 def fetch_metrics(origin: common.Origin) -> metrics.Snapshot:
-    """origin's metrics, or none if it does not answer."""
+    """Return origin's metrics, or none if it does not answer."""
     return metrics.fetch(origin.web_url) or metrics.EMPTY
 
 
@@ -341,9 +373,12 @@ def fetch_metrics(origin: common.Origin) -> metrics.Snapshot:
 
 
 def absent(test: Test, origin: common.Origin) -> Row:
-    """At a native origin whose store is not a pstore, every route of the
+    """Check that the storage API is absent (404) at origin.
+
+    At a native origin whose store is not a pstore, every route of the
     storage API must be 404, with no token and with the admin's: the
-    origin registers none (RegisterStorageAPI)."""
+    origin registers none (RegisterStorageAPI).
+    """
     problems: list[str] = []
     routes = ("usage", route("ls", "/"), route("stat", "/"), route("digest", "/x"))
     for path in routes:
@@ -355,8 +390,10 @@ def absent(test: Test, origin: common.Origin) -> Row:
 
 
 def listing_objects(test: Test) -> dict[str, bytes]:
-    """The storage-api collection's objects, by rel: one per LISTED, but
-    `sub`, which holds one."""
+    """Return the storage-api collection's objects, by rel.
+
+    There is one per LISTED, but `sub`, which holds one.
+    """
     found = {
         test.rel("api", name): os.urandom(100 + 3000 * n)
         for n, name in enumerate(LISTED)
@@ -367,12 +404,15 @@ def listing_objects(test: Test) -> dict[str, bytes]:
 
 
 def authz(test: Test, origin: common.Origin, _objects: Mapping[str, bytes]) -> Row:
-    """Each route of the storage API, with no token, must get 401; with
-    the namespace's `server` token, which is not of the server's making
-    for its web API, 401; as an ordinary user, 403; and as the admin, 200.
-    AuthHandler says who the caller is, and AdminAuthHandler whether they
-    are the admin; registering the second alone would refuse everyone
-    with 401 (RegisterStorageAPI in origin_serve/storage_api.go)."""
+    """Check that each route of the storage API answers its admin alone.
+
+    Each route, with no token, must get 401; with the namespace's
+    `server` token, which is not of the server's making for its web API,
+    401; as an ordinary user, 403; and as the admin, 200. AuthHandler
+    says who the caller is, and AdminAuthHandler whether they are the
+    admin; registering the second alone would refuse everyone with 401
+    (RegisterStorageAPI in origin_serve/storage_api.go).
+    """
     directory = test.catalog(origin, test.rel("api"))
     routes = (
         route("ls", directory),
@@ -398,8 +438,12 @@ def authz(test: Test, origin: common.Origin, _objects: Mapping[str, bytes]) -> R
 
 
 def entries(answer: web.Response) -> tuple[Optional[list[dict[str, Any]]], bool]:
-    """The entries of an `ls` answer, and its `more`; None if it is not a
-    page of a listing."""
+    """Return the entries of an `ls` answer, and its `more`.
+
+    Returns:
+        The entries, and whether more are to come; None and False if
+        answer is not a page of a listing.
+    """
     found = common.as_object(decoded(answer)) if answer.status == 200 else None
     items = common.as_array((found or {}).get("entries"))
     if found is None or items is None:
@@ -411,12 +455,15 @@ def entries(answer: web.Response) -> tuple[Optional[list[dict[str, Any]]], bool]
 
 
 def listing(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row:
-    """`ls` of the collection must list every entry, in name order, each
+    """Check that `ls` lists the collection, whole and in pages.
+
+    `ls` of the collection must list every entry, in name order, each
     with its path, size, and kind, and no more to come. Then PAGE at a
     time: each page at most PAGE, `more` on every page but the last, and
     `after` the last name continuing it, the pages together the whole
     listing, with no entry twice and none left out. `ls` of an object
-    must get 400, and of nothing, 404."""
+    must get 400, and of nothing, 404.
+    """
     admin = test.admin(origin)
     directory = test.catalog(origin, test.rel("api"))
     problems: list[str] = []
@@ -470,10 +517,13 @@ def listing(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> 
 
 
 def stat(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row:
-    """`stat` of an object in a block file, and of one in the catalog,
-    must say its name, path, and size, and an ETag, each as a HEAD at the
-    data port says them; of the collection `sub`, that it is one, with no
-    ETag; and of nothing, 404."""
+    """Check that `stat` says what a HEAD at the data port says.
+
+    `stat` of an object in a block file, and of one in the catalog, must
+    say its name, path, and size, and an ETag, each as a HEAD at the
+    data port says them; of the collection `sub`, that it is one, with
+    no ETag; and of nothing, 404.
+    """
     admin = test.admin(origin)
     problems: list[str] = []
     for name in (FILED, INLINED):
@@ -514,10 +564,13 @@ def stat(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row
 
 
 def digest(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row:
-    """`digest` of an object must give the checksums the store recorded
-    as it wrote it (md5, sha, and crc32c; ingestAlgorithms in
+    """Check that `digest` gives the checksums the store recorded.
+
+    `digest` of an object must give the checksums the store recorded as
+    it wrote it (md5, sha, and crc32c; ingestAlgorithms in
     pstore/checksum.go), each the object's, and each what a HEAD with
-    Want-Digest of it alone gets at the data port; of a collection, 400."""
+    Want-Digest of it alone gets at the data port; of a collection, 400.
+    """
     admin = test.admin(origin)
     rel = test.rel("api", FILED)
     data = objects[rel]
@@ -548,10 +601,15 @@ def digest(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> R
 def gauges_agree(
     test: Test, origin: common.Origin, seconds: float
 ) -> tuple[Optional[str], str]:
-    """Wait until origin's capacity gauges (pelican_pstore_used_bytes and
-    pelican_pstore_limit_bytes) say what its storage API's usage says,
-    which may take a janitor's sweep: why they don't within seconds, or
-    None; and the figures."""
+    """Wait until origin's capacity gauges say what its usage says.
+
+    The gauges are pelican_pstore_used_bytes and
+    pelican_pstore_limit_bytes, and the usage is the storage API's; they
+    may take a janitor's sweep to agree.
+
+    Returns:
+        Why they don't within seconds, or None; and the figures.
+    """
     deadline = time.time() + seconds
     while True:
         found, why = usage(test, origin)
@@ -574,9 +632,12 @@ def gauges_agree(
 
 
 def usage_row(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row:
-    """`usage` must name the backend, count at least what the collection
+    """Check that `usage` is right, and that the capacity gauges agree.
+
+    `usage` must name the backend, count at least what the collection
     holds, and say the store is unbounded, as the shape has it; and the
-    capacity gauges must come to say the same (gauges_agree())."""
+    capacity gauges must come to say the same (gauges_agree()).
+    """
     found, why = usage(test, origin)
     if found is None:
         return FAIL, why
@@ -604,9 +665,11 @@ API_CASES: tuple[tuple[str, Callable[[Test, common.Origin, Mapping[str, bytes]],
 
 
 def storage_api(test: Test) -> dict[str, Row]:
-    """The storage API at each origin: at a pstore origin, each of
-    API_CASES over a collection put there; at another native one,
-    absent()."""
+    """Check the storage API at each origin.
+
+    At a pstore origin, each of API_CASES runs over a collection put
+    there; at another native one, absent().
+    """
     rows: dict[str, Row] = {}
     for origin in test.fed.origins:
         if not origin.pstore:
@@ -627,7 +690,11 @@ def storage_api(test: Test) -> dict[str, Row]:
 
 @dataclass
 class Cli:
-    """`pelican-server origin introspect` at one origin."""
+    """`pelican-server origin introspect` at one origin.
+
+    Attributes:
+        server: The pelican-server to run.
+    """
 
     test: Test
     server: str
@@ -636,9 +703,14 @@ class Cli:
     def run(
         self, *args: str, token_file: Optional[str], env: Optional[Mapping[str, str]] = None
     ) -> tuple[int, str, str]:
-        """Run `origin introspect <args> --json` at the origin, with
-        --token token_file if given: its exit status, stdout, and
-        stderr."""
+        """Run `origin introspect <args> --json` at the origin.
+
+        It gets --token token_file, if given, and runs with env added to
+        the session's environment.
+
+        Returns:
+            Its exit status, stdout, and stderr.
+        """
         command = [self.server, "origin", "introspect", *args, "--server", self.origin.web_url]
         if token_file is not None:
             command += ["--token", token_file]
@@ -662,9 +734,12 @@ class Cli:
     def compare(
         self, args: Sequence[str], api_route: str, env: Optional[Mapping[str, str]] = None
     ) -> Optional[str]:
-        """Why `introspect <args>`, with the admin's token file, or with
-        none and env, does not print what api_route of the storage API
-        answers the admin, or None."""
+        """Return why introspect disagrees with the storage API, or None.
+
+        `introspect <args>`, with the admin's token file, or with none
+        and env, must print what api_route of the storage API answers
+        the admin.
+        """
         token_file = None if env is not None else self.test.admin_file(self.origin)
         status, out, err = self.run(*args, token_file=token_file, env=env)
         if status != 0:
@@ -681,13 +756,15 @@ class Cli:
 
 
 def minting_env(test: Test, origin: common.Origin) -> dict[str, str]:
-    """The environment in which the CLI, given no token file, mints the
-    admin's token as origin would: a copy of origin's signing key as its
-    issuer keys, and origin's web URL as its own; and under `tiny`,
-    where the origin shares its process with a director, which changes
-    its local issuer, the modules that say so (originAndDirectorColocated
-    in Pelican's cmd/cmd_utils.go). A copy, since Pelican makes a key in
-    an issuer key directory that has none."""
+    """Return the environment in which the CLI mints the admin's token.
+
+    Given no token file, the CLI mints it as origin would, with a copy
+    of origin's signing key as its issuer keys, and origin's web URL as
+    its own; and under `tiny`, where the origin shares its process with
+    a director, which changes its local issuer, the modules that say so
+    (originAndDirectorColocated in Pelican's cmd/cmd_utils.go). A copy,
+    since Pelican makes a key in an issuer key directory that has none.
+    """
     keys = os.path.join(test.tmp, f"keys-{origin.svc}")
     os.makedirs(keys, exist_ok=True)
     key = os.path.join(keys, "issuer.pem")
@@ -703,12 +780,15 @@ def minting_env(test: Test, origin: common.Origin) -> dict[str, str]:
 
 
 def introspect_cli(test: Test) -> dict[str, Row]:
-    """At the first pstore origin, with the admin's token file (`token`):
+    """Check that `introspect` says what the storage API says.
+
+    At the first pstore origin, with the admin's token file (`token`):
     `introspect usage`, `ls`, `stat`, and `digest` of the storage-api
     collection must each print what the storage API answers. With a
     token file that is missing (`missing`), it must fail. With none, but
     the origin's key (`minted`), it must mint a token the origin takes,
-    and print the usage."""
+    and print the usage.
+    """
     server = test.session.pelican_server
     if server is None:
         skipped = "no pelican-server, which has `origin introspect`; run ./fed.sh init"
@@ -751,7 +831,7 @@ def introspect_cli(test: Test) -> dict[str, Row]:
 
 
 def pass_counts(snapshot: metrics.Snapshot) -> dict[str, float]:
-    """How many times each of PASSES has begun."""
+    """Return how many times each of PASSES has begun."""
     return {
         p: snapshot.value("pelican_pstore_scheduled_passes_total", **{"pass": p})
         for p in PASSES
@@ -759,7 +839,10 @@ def pass_counts(snapshot: metrics.Snapshot) -> dict[str, float]:
 
 
 def last_success(snapshot: metrics.Snapshot) -> dict[str, float]:
-    """When each of PASSES last succeeded, in Unix time; 0 for never."""
+    """Return when each of PASSES last succeeded, in Unix time.
+
+    It is 0 for a pass that never has.
+    """
     return {
         p: snapshot.value(
             "pelican_pstore_scheduled_pass_last_success_timestamp_seconds", **{"pass": p}
@@ -771,9 +854,13 @@ def last_success(snapshot: metrics.Snapshot) -> dict[str, float]:
 def wait_metrics(
     origin: common.Origin, done: Callable[[metrics.Snapshot], bool], seconds: float
 ) -> tuple[bool, metrics.Snapshot]:
-    """Fetch origin's metrics every 3 seconds until done() says they show
-    what it waits for, or seconds have passed: whether they did, and the
-    last."""
+    """Fetch origin's metrics every 3 seconds until done(), or seconds pass.
+
+    done() says whether they show what it waits for.
+
+    Returns:
+        Whether they did, and the last.
+    """
     deadline = time.time() + seconds
     while True:
         snapshot = fetch_metrics(origin)
@@ -783,16 +870,19 @@ def wait_metrics(
 
 
 def passes_at(test: Test, origin: common.Origin) -> Row:
-    """At origin: once the index check and the data scan have each
-    succeeded, an object is put and overwritten, and another put and
-    deleted. The janitor must then reclaim the two old versions
+    """Check that origin's passes run clean, and reclaim old versions.
+
+    Once the index check and the data scan have each succeeded, an
+    object is put and overwritten, and another put and deleted. The
+    janitor must then reclaim the two old versions
     (pelican_pstore_reclaimed_objects_total by 2, and
     reclaimed_bytes_total by their sizes), and each pass run again, and
     succeed. None may have failed
     (pelican_pstore_scheduled_pass_failures_total); the index check must
     find nothing (every pelican_pstore_fsck_findings 0); and the data
     scan must have verified objects, and found none changed
-    (pelican_pstore_data_scan_mismatches_total 0)."""
+    (pelican_pstore_data_scan_mismatches_total 0).
+    """
     ok, snapshot = wait_metrics(
         origin,
         lambda s: all(v > 0 for v in last_success(s).values()),
@@ -870,7 +960,7 @@ def passes_at(test: Test, origin: common.Origin) -> Row:
 
 
 def scheduled_passes(test: Test) -> dict[str, Row]:
-    """passes_at() at each pstore origin."""
+    """Run passes_at() at each pstore origin."""
     return {origin.svc: passes_at(test, origin) for origin in test.pstores}
 
 
@@ -879,9 +969,11 @@ def scheduled_passes(test: Test) -> dict[str, Row]:
 
 
 def config_text(bound: Optional[int], backups: Optional[str]) -> str:
-    """The restart's configuration: the store's one directory bounded at
-    bound bytes, if given, and backups to the directory backups, if
-    given."""
+    """Return the restart's configuration.
+
+    It bounds the store's one directory at bound bytes, if given, and
+    sends backups to the directory backups, if given.
+    """
     lines = ["Origin:"]
     if bound is not None:
         lines += ["  PStoreStorageDirs:", f"    - Path: {STORE}", f"      MaxSize: {bound}"]
@@ -895,9 +987,11 @@ def config_text(bound: Optional[int], backups: Optional[str]) -> str:
 
 
 def serving(test: Test) -> Optional[str]:
-    """Why the namespace is not served as before, or None: every origin
-    must answer a HEAD of the probe, every director name every origin for
-    it, and every federated cache answer a HEAD of it."""
+    """Return why the namespace is not served as before, or None.
+
+    Every origin must answer a HEAD of the probe, every director name
+    every origin for it, and every federated cache answer a HEAD of it.
+    """
     rel = test.rel(PROBE)
     for origin in test.fed.origins:
         answer = web.request("HEAD", test.url(origin, rel), token=test.token)
@@ -919,8 +1013,12 @@ def serving(test: Test) -> Optional[str]:
 
 
 def settle(test: Test) -> Optional[str]:
-    """Wait until the federation serves the namespace as before (see
-    serving()); why it doesn't within SETTLE_WAIT seconds, or None."""
+    """Wait until the federation serves the namespace as before.
+
+    Returns:
+        Why it doesn't within SETTLE_WAIT seconds (see serving()), or
+        None.
+    """
     deadline = time.time() + SETTLE_WAIT
     why = serving(test)
     while why and time.time() < deadline:
@@ -934,8 +1032,11 @@ def settle(test: Test) -> Optional[str]:
 
 
 def fits(room: int) -> int:
-    """The largest object the store writes whole at its exact length that
-    takes room bytes or fewer, beyond the catalog; 0 if none does."""
+    """Return the largest object size that takes room bytes or fewer.
+
+    The object is one that the store writes whole at its exact length,
+    beyond the catalog. It is 0 if none does.
+    """
     size = room - blocks.TAG * -(-room // (blocks.BLOCK + blocks.TAG))
     while size > blocks.INLINE and blocks.stored(size) > room:
         size -= 1
@@ -944,7 +1045,12 @@ def fits(room: int) -> int:
 
 @dataclass
 class Capacity:
-    """capacity's state, at the first origin, bounded at `bound` bytes."""
+    """capacity's state, at the first origin, bounded at `bound` bytes.
+
+    Attributes:
+        rows: The cases' rows so far, by case.
+        fillers: The rels of the fillers put.
+    """
 
     test: Test
     origin: common.Origin
@@ -953,24 +1059,29 @@ class Capacity:
     fillers: list[str] = field(default_factory=list[str])
 
     def room(self) -> int:
-        """The bytes left under the bound, as the storage API says;
-        ValueError if it can't."""
+        """Return the bytes left under the bound, as the storage API says.
+
+        Raises:
+            ValueError: The storage API can't say.
+        """
         found, why = usage(self.test, self.origin)
         if found is None:
             raise ValueError(why)
         return int(found["capacityBytes"]) - int(found["usedBytes"])
 
     def refusals(self) -> float:
-        """pelican_pstore_write_failures_total{reason="no_space"}."""
+        """Return pelican_pstore_write_failures_total{reason="no_space"}."""
         return fetch_metrics(self.origin).value(
             "pelican_pstore_write_failures_total", reason="no_space"
         )
 
     def fill(self) -> Row:
-        """Fill the store with objects, written whole, until ROOM bytes or
-        a little more are left. Each must be taken, and use what it should
-        take (blocks.stored()), less what the janitor reclaims
-        meanwhile."""
+        """Fill the store until ROOM bytes or a little more are left.
+
+        The fillers are objects written whole. Each must be taken, and
+        use what it should take (blocks.stored()), less what the janitor
+        reclaims meanwhile.
+        """
         found, why = usage(self.test, self.origin)
         if found is None:
             return FAIL, why
@@ -1014,9 +1125,15 @@ class Capacity:
         return PASS, f"{len(self.fillers)} fillers, {room} bytes left of {self.bound}"
 
     def refused(self, case: str, send: Callable[[int], tuple[Optional[str], str]]) -> Row:
-        """A PUT that send() makes, of the room left and some, must be
-        refused (send() says why not, or None, and a note), and count as
-        one no_space write failure."""
+        """Check that send()'s PUT, of more than the room left, is refused.
+
+        It must also count as one no_space write failure.
+
+        Args:
+            case: What the PUT is, for the note.
+            send: Given the room left, make a PUT of more, and say why it
+                was not refused, or None, and a note.
+        """
         before = self.refusals()
         room = self.room()
         why, note = send(room)
@@ -1028,11 +1145,14 @@ class Capacity:
         return PASS, f"{case}: {note}, with {room} bytes left"
 
     def sized(self, expect: bool) -> Callable[[int], tuple[Optional[str], str]]:
-        """A PUT that send()s its headers, with a Content-Length past the
-        room left, but not its body, with or without `Expect:
-        100-continue`: it must get 507, and nothing else first, before
-        the body comes (checkBackendCapacity in origin_serve/handlers.go;
-        HasCapacityFor in pstore/capacity.go)."""
+        """Return a send() for refused() that PUTs headers alone.
+
+        The PUT sends its headers, with a Content-Length past the room
+        left, but not its body, with `Expect: 100-continue` if expect: it
+        must get 507, and nothing else first, before the body comes
+        (checkBackendCapacity in origin_serve/handlers.go; HasCapacityFor
+        in pstore/capacity.go).
+        """
 
         def send(room: int) -> tuple[Optional[str], str]:
             headers = {"Content-Length": str(room + SIZED_OVER)}
@@ -1050,11 +1170,13 @@ class Capacity:
         return send
 
     def chunked(self, room: int) -> tuple[Optional[str], str]:
-        """A PUT in chunks of more than the room left: 507, which the
-        origin must not turn into the WebDAV handler's 405, or a 500
-        (statusForBackendError in origin_serve/error_handling.go); with no
-        object left, at the data port or in the storage API, and no space
-        held."""
+        """PUT more than the room left in chunks, as a send() for refused().
+
+        It must get 507, which the origin must not turn into the WebDAV
+        handler's 405, or a 500 (statusForBackendError in
+        origin_serve/error_handling.go); with no object left, at the data
+        port or in the storage API, and no space held.
+        """
         rel = self.test.rel("capacity", "chunked")
         found, why = usage(self.test, self.origin)
         if found is None:
@@ -1089,9 +1211,12 @@ class Capacity:
         return None, f"507 for {room + CHUNKED_OVER} bytes in chunks, nothing left"
 
     def freed(self) -> Row:
-        """After a DELETE of a filler, the janitor must give its space
-        back, within RECLAIM_WAIT seconds, so that the sized PUT, refused
-        before, now fits, and reads back."""
+        """Check that a DELETE frees room for the sized PUT refused before.
+
+        After a DELETE of a filler, the janitor must give its space back,
+        within RECLAIM_WAIT seconds, so that the sized PUT, refused
+        before, now fits, and reads back.
+        """
         size = self.room() + SIZED_OVER
         if not self.fillers:
             return FAIL, "no filler to delete"
@@ -1118,9 +1243,12 @@ class Capacity:
         return PASS, f"{size} bytes, once a DELETE freed room"
 
     def gauges(self) -> Row:
-        """pelican_pstore_limit_bytes must be the bound, and with
+        """Check that the capacity gauges agree with the storage API.
+
+        pelican_pstore_limit_bytes must be the bound, and with
         pelican_pstore_used_bytes, come to say what the storage API's
-        usage says (gauges_agree())."""
+        usage says (gauges_agree()).
+        """
         found, why = usage(self.test, self.origin)
         if found is None:
             return FAIL, why
@@ -1132,7 +1260,10 @@ class Capacity:
         return PASS, f"{figures} bytes"
 
     def run(self) -> dict[str, Row]:
-        """Each case, in order; once one fails, those that need it do too."""
+        """Run each case, in order, and return the rows.
+
+        Once one fails, those that need it do too.
+        """
         steps: tuple[tuple[str, Callable[[], Row]], ...] = (
             ("fill", self.fill),
             ("sized", lambda: self.refused("Content-Length", self.sized(False))),
@@ -1151,8 +1282,11 @@ class Capacity:
 
 
 def guarded(step: Callable[[], Row]) -> Row:
-    """step(), or a FAIL for the exception it raised: a bug, or a server
-    answering what the suite can't read."""
+    """Return step(), or a FAIL for the exception it raised.
+
+    Such an exception is a bug, or a server answering what the suite
+    can't read.
+    """
     try:
         return step()
     except Exception as e:  # pylint: disable=broad-exception-caught
@@ -1165,8 +1299,11 @@ def guarded(step: Callable[[], Row]) -> Row:
 
 
 def backup_time(name: str) -> Optional[float]:
-    """When a backup named name was written, in Unix time, to the second;
-    None if it is not one's name."""
+    """Return when a backup named name was written, in Unix time.
+
+    Returns:
+        The time, to the second; None if name is not a backup's.
+    """
     found = BACKUP_NAME.fullmatch(name)
     if found is None:
         return None
@@ -1176,9 +1313,14 @@ def backup_time(name: str) -> Optional[float]:
 
 @dataclass
 class Backups:
-    """backups' state, at the first origin: the directory its backups
-    go to, in its state, as it and the test see it; and when its restart
-    was asked for."""
+    """backups' state, at the first origin.
+
+    Its backups go to a directory in its state (see inside and outside).
+
+    Attributes:
+        asked: When its restart was asked for, in Unix time.
+        first: The startup backup's name, once started() has found it.
+    """
 
     test: Test
     origin: common.Origin
@@ -1196,21 +1338,27 @@ class Backups:
         return f"state/{self.origin.svc}/{BACKUPS}/{self.test.session.run}"
 
     def names(self) -> list[str]:
-        """What is in the directory, sorted; none if it is not there."""
+        """Return what is in the directory, sorted.
+
+        It is nothing if the directory is not there.
+        """
         try:
             return sorted(os.listdir(self.outside))
         except FileNotFoundError:
             return []
 
     def snapshots(self) -> list[str]:
-        """The backups in the directory, oldest first."""
+        """Return the backups in the directory, oldest first."""
         return [n for n in self.names() if backup_time(n) is not None]
 
     def started(self) -> Row:
-        """`startup`, right after the restart: a backup must appear within
-        STARTUP_WAIT seconds, written before an interval had passed since
-        the origin started (process_start_time_seconds), as the first of
-        its backup passes."""
+        """Check that a backup comes at startup (the `startup` case).
+
+        Right after the restart, a backup must appear within
+        STARTUP_WAIT seconds, written before an interval had passed
+        since the origin started (process_start_time_seconds), as the
+        first of its backup passes.
+        """
         if not common.wait_for(lambda: bool(self.snapshots()), STARTUP_WAIT, interval=1):
             return (
                 FAIL,
@@ -1239,14 +1387,17 @@ class Backups:
         return outcome(problems, f"{self.first}, {how}")
 
     def finished(self) -> dict[str, Row]:
-        """Once BACKUPS_KEPT + 1 backup passes have begun: `schedule`, the
+        """Check that backups keep to schedule, and only the newest stay.
+
+        Once BACKUPS_KEPT + 1 backup passes have begun: `schedule`, the
         backups must be an interval apart, give or take INTERVAL_SLACK,
         and none of their passes failed; `files`, the directory must hold
         BACKUPS_KEPT backups, the startup one pruned, each named for when
         it was written and beginning with the format's magic, no
         `.partial` file and nothing else; and
         pelican_pstore_metadata_backup_last_size_bytes must be the newest
-        one's size."""
+        one's size.
+        """
         if not self.first:
             why = "no startup backup to go on from"
             return {"schedule": (FAIL, why), "files": (FAIL, why)}
@@ -1282,7 +1433,7 @@ class Backups:
         }
 
     def files(self) -> Row:
-        """The `files` case (see finished())."""
+        """Run the `files` case (see finished())."""
         problems: list[str] = []
         names = self.names()
         if any(n.endswith(".partial") for n in names):
@@ -1333,12 +1484,13 @@ class Backups:
 
 
 def keys_env(test: Test, origin: common.Origin) -> dict[str, str]:
-    """The environment in which the pstore CLI opens origin's store: a
-    copy of every key in origin's issuer key directory as its own, since
-    the catalog's master key and each backup are sealed to them
-    (openPStoreForCLI in Pelican's cmd/origin_pstore.go). A copy, as
-    minting_env() makes one, so that Pelican never writes a key of its
-    own among the origin's."""
+    """Return the environment in which the pstore CLI opens origin's store.
+
+    It has a copy of every key in origin's issuer key directory as its
+    own, since the catalog's master key and each backup are sealed to
+    them (openPStoreForCLI in Pelican's cmd/origin_pstore.go). A copy,
+    so that Pelican never writes a key of its own among the origin's.
+    """
     keys = os.path.join(test.tmp, f"restore-keys-{origin.svc}")
     os.makedirs(keys, exist_ok=True)
     for path in sorted(glob.glob(f"issuer-keys/{origin.svc}/*.pem")):
@@ -1349,9 +1501,14 @@ def keys_env(test: Test, origin: common.Origin) -> dict[str, str]:
 
 
 def give_back(path: str, uid: int, gid: int) -> Optional[str]:
-    """Make path, and everything under it, belong to uid and gid, as what
-    the origin wrote does, so that an origin that dropped privileges can
-    still open what the tests wrote as root; why that failed, or None."""
+    """Make path, and everything under it, belong to uid and gid.
+
+    What the origin wrote belongs to them, so an origin that dropped
+    privileges can then still open what the tests wrote as root.
+
+    Returns:
+        Why that failed, or None.
+    """
     try:
         for root, dirs, files in os.walk(path):
             for name in [*dirs, *files]:
@@ -1363,7 +1520,7 @@ def give_back(path: str, uid: int, gid: int) -> Optional[str]:
 
 
 def exported_files(directory: str) -> dict[str, bytes]:
-    """Every file under directory, by name, with its bytes."""
+    """Return every file under directory, by name, with its bytes."""
     found: dict[str, bytes] = {}
     for root, _, files in os.walk(directory):
         for name in files:
@@ -1374,23 +1531,33 @@ def exported_files(directory: str) -> dict[str, bytes]:
 
 @dataclass
 class Restore:
-    """restore's state at the first origin: the backup copied for it, the
-    objects it wrote before and after, and the store's catalog set aside
-    while the restored one is tried."""
+    """restore's state at the first origin.
+
+    Attributes:
+        server: The pelican-server to run.
+        data: The objects written before the backup, by object name.
+        copied: The backup restored, copied under test.tmp.
+        aside: Where the catalog that the restore replaces is set aside
+            while the restored one is tried.
+        swapped: Whether the restored catalog is in place.
+    """
 
     test: Test
     origin: common.Origin
     backups: Backups
-    server: str  # pelican-server
-    data: dict[str, bytes] = field(default_factory=dict[str, bytes])  # by object name
-    copied: str = ""  # the backup restored, copied under test.tmp
-    aside: str = ""  # where the catalog that the restore replaces is set aside
-    swapped: bool = False  # whether the restored catalog is in place
+    server: str
+    data: dict[str, bytes] = field(default_factory=dict[str, bytes])
+    copied: str = ""
+    aside: str = ""
+    swapped: bool = False
 
     @property
     def store(self) -> str:
-        """The store, under framework/var: STORE (/data/pstore) in the
-        origin, whose /data is origin.store."""
+        """The store, under framework/var.
+
+        It is STORE (/data/pstore) in the origin, whose /data is
+        origin.store.
+        """
         return f"{self.origin.store}/{STORE[len('/data/') :]}"
 
     @property
@@ -1399,12 +1566,17 @@ class Restore:
         return f"{self.store}/{CATALOG_DIR}"
 
     def rel(self, name: str) -> str:
-        """Where object name of the scenario's is in the namespace."""
+        """Return where the scenario's object name is in the namespace."""
         return self.test.rel("restore", name)
 
     def cli(self, *args: str) -> tuple[int, str, str]:
-        """Run `pelican-server origin pstore <args>` on the store, with
-        the origin's keys: its exit status, stdout, and stderr."""
+        """Run `pelican-server origin pstore <args>` on the store.
+
+        It runs with the origin's keys.
+
+        Returns:
+            Its exit status, stdout, and stderr.
+        """
         command = [self.server, "origin", "pstore", *args]
         command += ["--location", os.path.abspath(self.store)]
         try:
@@ -1424,10 +1596,13 @@ class Restore:
         return done.returncode, done.stdout, done.stderr
 
     def written(self) -> Row:
-        """`objects`: write an object of each of RESTORE_SIZES, with its
-        length, straight to the origin, and wait for a backup taken after
-        them, which is copied under test.tmp before anything else is
-        written; then write LATE, which the origin must serve."""
+        """Write the objects, and wait for a backup of them (`objects`).
+
+        Write an object of each of RESTORE_SIZES, with its length,
+        straight to the origin, and wait for a backup taken after them,
+        which is copied under test.tmp before anything else is written;
+        then write LATE, which the origin must serve.
+        """
         for size in RESTORE_SIZES:
             data = os.urandom(size)
             why = self.test.put(self.origin, self.rel(str(size)), data)
@@ -1458,9 +1633,14 @@ class Restore:
         return PASS, f"{len(RESTORE_SIZES)} objects, backup {name}, then {LATE}"
 
     def set_aside(self) -> Optional[str]:
-        """With the origin stopped, set its catalog aside, so that the
-        store holds its block files and master key alone, as a restore
-        wants; why that failed, or None."""
+        """Set the stopped origin's catalog aside.
+
+        The store then holds its block files and master key alone, as a
+        restore wants.
+
+        Returns:
+            Why that failed, or None.
+        """
         for part in (CATALOG_DIR, OBJECTS_DIR, MASTER_KEY):
             if not os.path.exists(f"{self.store}/{part}"):
                 return f"framework/var/{self.store} has no {part}"
@@ -1485,8 +1665,10 @@ class Restore:
             warn(f"putting framework/var/{self.aside} back: {e.strerror}")
 
     def restored(self) -> Row:
-        """`cli`: `metadata-restore` of the copied backup into the store
-        must succeed, and say so."""
+        """Restore the copied backup into the store (`cli`).
+
+        `metadata-restore` must succeed, and say so.
+        """
         status, out, err = self.cli("metadata-restore", self.copied)
         if status != 0:
             return FAIL, f"exit {status}: {last_line(err or out)}"
@@ -1496,9 +1678,12 @@ class Restore:
         return PASS, last_line(out)
 
     def exported(self) -> Row:
-        """`export`: `export --verify` of the scenario's collection, from
+        """Check that the restored store exports what the backup held.
+
+        `export --verify` of the scenario's collection (`export`), from
         the restored store, must write every object the backup held, byte
-        for byte, verified against its recorded checksums, and not LATE."""
+        for byte, verified against its recorded checksums, and not LATE.
+        """
         directory = os.path.join(self.test.tmp, "restore-export")
         shutil.rmtree(directory, ignore_errors=True)
         root = self.test.catalog(self.origin, self.test.rel("restore"))
@@ -1520,9 +1705,11 @@ class Restore:
         return outcome(problems, f"{len(self.data)} objects, verified, and no {LATE}")
 
     def served(self) -> Row:
-        """`served`: the origin, started on the restored catalog, must
-        serve every object the backup held, byte for byte, and answer 404
-        for LATE."""
+        """Check that the origin serves the restored catalog (`served`).
+
+        Started on it, the origin must serve every object the backup
+        held, byte for byte, and answer 404 for LATE.
+        """
         why = settle(self.test)
         if why:
             return FAIL, f"once the origin started on the restored catalog, {why}"
@@ -1543,11 +1730,14 @@ class Restore:
         return outcome(problems, f"{len(self.data)} objects served; {LATE} gone")
 
     def run(self) -> dict[str, Row]:
-        """Every case, in order: the objects and the backup, with the
-        origin running; the restore and the export, with it stopped; and
-        what it serves once started again. Whatever happens, the origin
-        is started again, on the catalog set aside unless the restored
-        one served."""
+        """Run every case, in order, and return the rows.
+
+        The cases are the objects and the backup, with the origin
+        running; the restore and the export, with it stopped; and what
+        it serves once started again. Whatever happens, the origin is
+        started again, on the catalog set aside unless the restored one
+        served.
+        """
         rows: dict[str, Row] = {"objects": guarded(self.written)}
         if rows["objects"][0] != PASS:
             return rows
@@ -1599,19 +1789,24 @@ class Restore:
 
 
 def unrestartable(test: Test) -> Optional[str]:
-    """Why the first origin cannot be restarted with configuration of the
-    suite's own, or None."""
+    """Return why the suite cannot restart the first origin, or None.
+
+    The restart is with configuration of the suite's own.
+    """
     if test.fed.tiny:
         return "the tiny topology's origin is the whole federation's process"
     return control.unavailable()
 
 
 def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], None]) -> None:
-    """Restart the first origin for the scenarios in wanted (`capacity`,
+    """Run the scenarios in wanted with the first origin restarted.
+
+    Restart the first origin for the scenarios in wanted (`capacity`,
     `backups`, and `restore`), run them, restore it, and wait until the
     federation serves again. add() records a row: its scenario, case,
     and result. `restore` needs the backups that `backups` configures,
-    and the `pelican-server` that has the CLI."""
+    and the `pelican-server` that has the CLI.
+    """
     origin = test.fed.origins[0]
     why = unrestartable(test)
     if why:
@@ -1686,21 +1881,26 @@ def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], 
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: XRootD origins, whose stores are no
-    pstore, and which serve no storage API of Pelican's to be absent."""
+    """Return why there is nothing to test, or None.
+
+    There is nothing with XRootD origins, whose stores are no pstore,
+    and which serve no storage API of Pelican's to be absent.
+    """
     if not fed.native_origins:
         return "XRootD serves the origins, which have no pstore"
     return None
 
 
 def writable(fed: common.Federation) -> Optional[str]:
-    """The first protected namespace that takes writes, or None."""
+    """Return the first protected namespace that takes writes, or None."""
     return next((ns for ns in NAMESPACES if "Writes" in fed.exports.get(ns, ())), None)
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Run the selected scenarios, the restart's last; then remove the
-    run's objects."""
+    """Run the selected scenarios, the restart's last.
+
+    Then remove the run's objects.
+    """
     fed = session.fed
     pstore = any(o.pstore for o in fed.origins)
     namespace = writable(fed)

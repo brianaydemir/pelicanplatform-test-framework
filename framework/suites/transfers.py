@@ -1,5 +1,6 @@
-"""Transfers through the clients: each scenario's batches of objects,
-each batch one `pelican object get` or `put`, run together. The plugin-*
+"""Transfers through the clients: each scenario's batches, run together.
+
+Each batch of objects is one `pelican object get` or `put`. The plugin-*
 scenarios run the same batches through stash_plugin instead; the
 direct-* scenarios get from an origin rather than a cache, and the
 cache-* scenarios from the first federated cache, which the client
@@ -49,22 +50,30 @@ ROUTE_SERVERS = {"cache": "cache", "direct": "origin", "named": "named-cache"}
 
 
 def skip(_fed: common.Federation) -> Optional[str]:
-    """Never: every shape exports a namespace that some scenario uses."""
+    """Return None, as there is always something to test.
+
+    Every shape exports a namespace that some scenario uses.
+    """
     return None
 
 
 def token_path(scenario: Scenario) -> Optional[str]:
-    """Where the plugin finds the scenario's token, if it has one. The
-    plugin chooses among every file in its credentials directory, so each
-    scenario gets its own directory, with at most one token in it."""
+    """Return where the plugin finds the scenario's token, or None if none.
+
+    The plugin chooses among every file in its credentials directory, so
+    each scenario gets its own directory, with at most one token in it.
+    """
     if scenario.credential is None or scenario.credential.key is None:
         return None
     return f".condor_creds/{scenario.name}/{scenario.credential.name}.use"
 
 
 def hash_files(directory: str, prefix: str) -> dict[str, str]:
-    """The SHA-256 of each file directly in directory, by prefix/<name>,
-    e.g. protected-a/data/0.17."""
+    """Return the SHA-256 of each file directly in directory.
+
+    Returns:
+        Each file's digest, by prefix/<name>, e.g. protected-a/data/0.17.
+    """
     hashes: dict[str, str] = {}
     try:
         names = os.listdir(directory)
@@ -78,15 +87,23 @@ def hash_files(directory: str, prefix: str) -> dict[str, str]:
 
 
 class Plan:
-    """The scenarios that run, their batches and tokens, and how the
-    batches went."""
+    """The scenarios that run, with their batches and tokens.
+
+    It also records how the batches went.
+
+    Attributes:
+        batches: Each scenario's batches, by name.
+        token_files: Each scenario's token file (None for none), by name.
+        statuses: Each batch's exit status, by ID.
+        killed: The IDs of the batches that timed out.
+    """
 
     def __init__(self, scenarios: list[Scenario], batches: dict[str, list[Batch]]):
         self.scenarios = scenarios
-        self.batches = batches  # by scenario
-        self.token_files: dict[str, Optional[str]] = {}  # by scenario
-        self.statuses: dict[str, int] = {}  # exit status, by batch
-        self.killed: set[str] = set()  # batches that timed out
+        self.batches = batches
+        self.token_files: dict[str, Optional[str]] = {}
+        self.statuses: dict[str, int] = {}
+        self.killed: set[str] = set()
 
     @property
     def puts(self) -> list[Scenario]:
@@ -94,16 +111,18 @@ class Plan:
         return [s for s in self.scenarios if s.op == "put"]
 
     def all_batches(self) -> list[Batch]:
-        """Every batch, scenario by scenario."""
+        """Return every batch, scenario by scenario."""
         return [batch for s in self.scenarios for batch in self.batches[s.name]]
 
 
 def runnable(fed: common.Federation, selected: list[str], report: Report) -> list[Scenario]:
-    """The selected scenarios, each as it runs in this shape (see
-    transfers.placed()), but for those that can test nothing here, which
-    are recorded as skipped: those in a namespace the shape does not
-    export, those that name a cache where the shape has no federated
-    one, and those whose credential is moot."""
+    """Return the selected scenarios, each as it runs in this shape.
+
+    transfers.placed() places each. Those that can test nothing here are
+    left out, and recorded in report as skipped: those in a namespace the
+    shape does not export, those that name a cache where the shape has no
+    federated one, and those whose credential is moot.
+    """
     scenarios: list[Scenario] = []
     moot: dict[str, str] = {}
     for scenario in (transfers.placed(transfers.BY_NAME[n], fed.exports) for n in selected):
@@ -125,16 +144,21 @@ def runnable(fed: common.Federation, selected: list[str], report: Report) -> lis
 
 
 def named_cache(fed: common.Federation) -> common.Cache:
-    """The cache that the cache-* scenarios name: the first federated
-    one. A site-local cache, which a client must name, is the sitelocal
-    suite's."""
+    """Return the cache the cache-* scenarios name: the first federated one.
+
+    A site-local cache, which a client must name, is the sitelocal
+    suite's.
+    """
     return fed.federated_caches[0]
 
 
 def make_directories(fed: common.Federation, plan: Plan) -> None:
-    """Start framework/var/data/transfers afresh, with each batch in
-    stash_plugin's input format, and a credentials directory for each
-    scenario. Dies if a store lacks a put scenario's collection."""
+    """Start framework/var/data/transfers afresh.
+
+    It gets each batch in stash_plugin's input format, and a credentials
+    directory for each scenario. Dies if a store lacks a put scenario's
+    collection.
+    """
     for origin in stores.unique(fed.origins):
         for s in plan.puts:
             directory = f"{origin.store_of(s.namespace)}/{s.store_dir}"
@@ -155,9 +179,12 @@ def make_directories(fed: common.Federation, plan: Plan) -> None:
 
 
 def find_tokens(session: Session, plan: Plan) -> None:
-    """Each scenario's token (see testlib/credentials.py), from the
-    session, which minted the expired ones as it started; and a copy in
-    the scenario's credentials directory, where the plugin finds it."""
+    """Find each scenario's token, and copy it where the plugin finds it.
+
+    The token (see testlib/credentials.py) comes from the session, which
+    minted the expired ones as it started, and goes in plan; the copy
+    goes in the scenario's credentials directory.
+    """
     print(f"Creating tokens for {session.fed.url} ...")
     for s in plan.scenarios:
         path = None
@@ -172,11 +199,13 @@ def find_tokens(session: Session, plan: Plan) -> None:
 def seed_pstore(
     origin: common.Origin, exports: transfers.Exports, tokens: dict[str, str]
 ) -> None:
-    """Upload the test objects to a pstore origin, from the plain copy of
-    each namespace with storage of its own there, since nothing else can
-    write it. They go straight to the origin rather than through the
+    """Upload the test objects to a pstore origin, since nothing else can.
+
+    They come from the plain copy of each namespace with storage of its
+    own there. They go straight to the origin rather than through the
     director: under `topo-multi-origin`, each origin needs every object.
-    Objects it already holds, byte for byte, are skipped."""
+    Objects it already holds, byte for byte, are skipped.
+    """
 
     def seed_one(job: tuple[str, str]) -> Optional[str]:
         namespace, rel = job
@@ -204,9 +233,12 @@ def seed_pstore(
 
 
 def empty_put_collections(fed: common.Federation, plan: Plan, tokens: dict[str, str]) -> None:
-    """Remove old uploads from every store (a pstore origin's through the
-    namespace whose storage the scenario's reads), so that none can pass
-    for a new one, or fail a put that should be refused."""
+    """Remove old uploads from every store.
+
+    None can then pass for a new one, or fail a put that should be
+    refused. A pstore origin's are removed through the namespace whose
+    storage the scenario's reads.
+    """
     print("Emptying the put collections ...")
 
     def empty(scenario: Scenario) -> list[str]:
@@ -227,8 +259,10 @@ def empty_put_collections(fed: common.Federation, plan: Plan, tokens: dict[str, 
 
 
 def write_sources(plan: Plan) -> None:
-    """Fill each put batch's directory with new random files, of 1 byte to
-    64 KiB."""
+    """Fill each put batch's directory with new random files.
+
+    Each is of 1 byte to 64 KiB.
+    """
     size = 0
     for s in plan.puts:
         for batch in plan.batches[s.name]:
@@ -239,7 +273,7 @@ def write_sources(plan: Plan) -> None:
 
 
 def command(session: Session, plan: Plan, batch: Batch) -> tuple[list[str], dict[str, str]]:
-    """The client command that runs batch, and its environment."""
+    """Return the client command that runs batch, and its environment."""
     s = batch.scenario
     output = os.path.abspath(f"{OUT}/output/{batch.id}")
     env = dict(session.env)
@@ -275,9 +309,11 @@ def command(session: Session, plan: Plan, batch: Batch) -> tuple[list[str], dict
 
 
 def transfer(session: Session, plan: Plan, batch: Batch) -> None:
-    """Run batch in its directory, where its files are, with no terminal:
-    with no token, `pelican object` would try to acquire one
-    interactively. A batch that outlasts CLIENT_TIMEOUT is killed."""
+    """Run batch in its directory, where its files are, with no terminal.
+
+    With no token, `pelican object` would try to acquire one
+    interactively. A batch that outlasts CLIENT_TIMEOUT is killed.
+    """
     args, env = command(session, plan, batch)
     with open(f"{OUT}/log/{batch.id}", "wb") as log:
         try:
@@ -300,9 +336,14 @@ def transfer(session: Session, plan: Plan, batch: Batch) -> None:
 
 
 def transfer_all(session: Session, plan: Plan) -> float:
-    """Run every batch, transfers.CONCURRENCY at a time: round <x> of
-    every scenario, shuffled so that the scenarios and clients mix, then
-    round <x>+1. Returns how many seconds they took."""
+    """Run every batch, transfers.CONCURRENCY at a time.
+
+    Round <x> of every scenario runs, shuffled so that the scenarios and
+    clients mix, then round <x>+1.
+
+    Returns:
+        How many seconds they took.
+    """
     rounds: dict[int, list[Batch]] = collections.defaultdict(list)
     for batch in plan.all_batches():
         rounds[batch.index].append(batch)
@@ -323,9 +364,11 @@ def transfer_all(session: Session, plan: Plan) -> float:
 
 
 def observe(plan: Plan, batch: Batch) -> Observation:
-    """What batch did: what its client said, and what its directory holds.
-    One that was killed failed, however far it got, and not by refusal:
-    its log says it timed out."""
+    """Return what batch's client said, and what its directory holds.
+
+    A batch that was killed failed, however far it got, and not by
+    refusal: its log says it timed out.
+    """
     s = batch.scenario
     if s.client == "plugin":
         try:
@@ -355,9 +398,13 @@ def observe(plan: Plan, batch: Batch) -> Observation:
 
 
 def reference_hashes(fed: common.Federation) -> dict[str, str]:
-    """The SHA-256 of each test object, by its path in the federation (see
-    transfers.object_path()), from its namespace's storage at each origin
-    (a pstore origin's plain copy stands in for its store)."""
+    """Return the SHA-256 of each test object.
+
+    Returns:
+        Each object's digest, by its path in the federation (see
+        transfers.object_path()), from its namespace's storage at each
+        origin (a pstore origin's plain copy stands in for its store).
+    """
     refs: dict[str, str] = {}
     for origin in stores.unique(fed.origins):
         for namespace in fed.exports:
@@ -370,11 +417,16 @@ def reference_hashes(fed: common.Federation) -> dict[str, str]:
 def uploaded_hashes(
     fed: common.Federation, plan: Plan, tokens: dict[str, str]
 ) -> tuple[dict[str, set[str]], list[str]]:
-    """What the stores hold in the put collections: the SHA-256 of each
-    object at any origin, by its path in the federation (see
-    transfers.object_path()); and the pstore origins that could not say.
+    """Return what the stores hold in the put collections.
+
     A pstore origin's uploads are fetched from it directly, which also
-    bypasses any cache."""
+    bypasses any cache.
+
+    Returns:
+        The SHA-256 of each object at any origin, by its path in the
+        federation (see transfers.object_path()); and the pstore origins
+        that could not say.
+    """
     held: dict[str, set[str]] = collections.defaultdict(set)
     for origin in stores.unique(fed.origins):
         if origin.pstore:
@@ -420,10 +472,23 @@ def judge_all(
     held: dict[str, set[str]],
     report: Report,
 ) -> bool:
-    """Judge each batch (see testlib/transfers.py), and record a row per
-    scenario. A scenario with unexpected results also names the sizes of
-    the batches that had them. Returns whether every batch went as
-    expected."""
+    """Judge each batch, and record a row per scenario.
+
+    The batches are judged as testlib/transfers.py says. A scenario with
+    unexpected results also names the sizes of the batches that had
+    them.
+
+    Args:
+        plan: The plan, its batches run.
+        expected: Each scenario's expected outcome, by name.
+        refs: The test objects' digests, as reference_hashes() returns
+            them.
+        held: The uploads' digests, as uploaded_hashes() returns them.
+        report: Where to record the rows.
+
+    Returns:
+        Whether every batch went as expected.
+    """
     ok = True
     width = max(len(s.name) for s in plan.scenarios)
     print(
@@ -478,11 +543,13 @@ def judge_all(
 
 
 def served_by(batch: Batch) -> list[str]:
-    """The host that served each object the batch moved: in the plugin's
-    result ads, the highest-numbered EndpointN of each successful
-    transfer; in the pelican client's transfer stats, which it writes only
-    if every object moved, the endpoint of each result's highest-numbered
-    attempt."""
+    """Return the host that served each object the batch moved.
+
+    In the plugin's result ads, that is the highest-numbered EndpointN of
+    each successful transfer; in the pelican client's transfer stats,
+    which it writes only if every object moved, the endpoint of each
+    result's highest-numbered attempt.
+    """
     if batch.scenario.client == "plugin":
         try:
             with open(f"{OUT}/output/{batch.id}.ad", encoding="utf-8") as f:
@@ -509,13 +576,17 @@ def served_by(batch: Batch) -> list[str]:
 def check_served(
     fed: common.Federation, plan: Plan, expected: dict[str, Outcome], report: Report
 ) -> bool:
-    """Which servers served the successful downloads, by client and
-    route, judged by transfers.check_served_by(): outside `tiny`, a cache
-    must have served some of those meant for one in each namespace, an
-    origin every direct one, and every one where there is no cache, and
-    the named cache every named one. Uploads go straight to an origin,
-    so they don't count. Returns whether every verdict passed or
-    skipped."""
+    """Check which servers served the successful downloads.
+
+    They are judged by client and route, by transfers.check_served_by():
+    outside `tiny`, a cache must have served some of those meant for one
+    in each namespace, an origin every direct one, and every one where
+    there is no cache, and the named cache every named one. Uploads go
+    straight to an origin, so they don't count.
+
+    Returns:
+        Whether every verdict passed or skipped.
+    """
     ok = True
     origin_hosts = {o.svc for o in fed.origins}
     header = False
@@ -563,8 +634,7 @@ def check_served(
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Prepare the selected scenarios' batches, run them all, and judge
-    each one."""
+    """Prepare the selected scenarios' batches, run them, and judge each."""
     report = results.report
     fed = session.fed
     scenarios = runnable(fed, selected, report)

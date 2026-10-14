@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""The choices that shape a federation, and whether smoke.sh's shapes
-cover every pair of them.
+"""A federation's choices, and whether smoke.sh's shapes cover every pair.
 
   framework/matrix.py check     check smoke.sh's shapes (see below)
   framework/matrix.py pairs     list every pair of choices a shape can make
@@ -145,21 +144,26 @@ Pair = tuple[tuple[str, str], tuple[str, str]]
 
 @dataclass(frozen=True)
 class Shape:
-    """Every factor's level, and the EXTRAS that a shape runs."""
+    """Every factor's level, and the EXTRAS that a shape runs.
 
-    levels: Mapping[str, str]  # every factor's level
-    extras: frozenset[str]  # the EXTRAS it runs
+    Attributes:
+        levels: Every factor's level, by factor.
+        extras: The EXTRAS it runs.
+    """
+
+    levels: Mapping[str, str]
+    extras: frozenset[str]
 
     def __getitem__(self, factor: str) -> str:
         return self.levels[factor]
 
     def pairs(self) -> set[Pair]:
-        """Every pair of choices it makes."""
+        """Return every pair of choices it makes."""
         choices = [(f, self.levels[f]) for f in FACTORS]
         return set(itertools.combinations(choices, 2))
 
     def adds_server(self) -> bool:
-        """Whether it adds a server to the full topology."""
+        """Return whether it adds a server to the full topology."""
         return "on" in (self.levels[f] for f in ADDED_SERVERS) or any(
             self.levels[f] == level for f, level in ADDED_LEVELS
         )
@@ -395,9 +399,17 @@ SMOKE_LIMITS: list[Rule] = [
 def shape_of(
     presets: Iterable[str], rotated: bool = False
 ) -> tuple[Optional[Shape], list[str]]:
-    """The shape that presets make, rotating every key or not, and what
-    is wrong with the list: an unknown preset, or two that choose
-    differently for one factor. The shape is None if anything is."""
+    """Return the shape that presets make, and what is wrong with them.
+
+    Args:
+        presets: Names of presets, EXTRAS among them.
+        rotated: Whether the shape rotates every key.
+
+    Returns:
+        The shape, or None if anything is wrong; and what is wrong with
+        presets: an unknown preset, one that smoke.sh does not run, or two
+        that choose differently for one factor.
+    """
     levels = {f: choices[0] for f, choices in FACTORS.items()}
     levels["keys"] = "rotated" if rotated else "kept"
     chosen_by: dict[str, str] = {}
@@ -424,13 +436,17 @@ def shape_of(
 
 
 def refusals(shape: Shape) -> list[str]:
-    """Why fed.sh would refuse shape, or smoke.sh would not run it."""
+    """Return why fed.sh would refuse shape or smoke.sh would not run it."""
     return [why for why, applies in REFUSED + SMOKE_LIMITS if applies(shape)]
 
 
 def changes(factors: Sequence[str], depth: int) -> Iterator[dict[str, str]]:
-    """Every way to move at most depth of factors away from their
-    defaults, the fewest first."""
+    """Yield every way to move at most depth of factors from their defaults.
+
+    Yields:
+        The new levels of the factors that a way moves, by factor; the
+        ways that move the fewest come first.
+    """
     for count in range(depth + 1):
         for chosen in itertools.combinations(factors, count):
             for levels in itertools.product(*(FACTORS[f][1:] for f in chosen)):
@@ -438,9 +454,17 @@ def changes(factors: Sequence[str], depth: int) -> Iterator[dict[str, str]]:
 
 
 def completion(fixed: Mapping[str, str]) -> Optional[Shape]:
-    """A shape that smoke.sh could run, with no EXTRAS, that makes the
-    fixed choices (levels by factor), with as few other factors away from
-    their defaults as can be, and no more than SEARCH_DEPTH; or None."""
+    """Return a shape that smoke.sh could run that makes the fixed choices.
+
+    The shape has no EXTRAS, and as few other factors away from their
+    defaults as can be, and no more than SEARCH_DEPTH.
+
+    Args:
+        fixed: The choices to make, as levels by factor.
+
+    Returns:
+        The shape, or None if there is none.
+    """
     defaults = {f: choices[0] for f, choices in FACTORS.items()}
     others = [f for f in FACTORS if f not in fixed]
     for change in changes(others, SEARCH_DEPTH):
@@ -451,7 +475,7 @@ def completion(fixed: Mapping[str, str]) -> Optional[Shape]:
 
 
 def valid_pairs() -> set[Pair]:
-    """Every pair of choices that some shape smoke.sh could run makes."""
+    """Return the pairs of choices that a shape smoke.sh could run makes."""
     choices = [(f, level) for f, levels in FACTORS.items() for level in levels]
     found: set[Pair] = set()
     for a, b in itertools.combinations(choices, 2):
@@ -461,7 +485,7 @@ def valid_pairs() -> set[Pair]:
 
 
 def covered(shapes: Iterable[Shape]) -> set[Pair]:
-    """Every pair of choices that shapes make."""
+    """Return every pair of choices that shapes make."""
     found: set[Pair] = set()
     for shape in shapes:
         found |= shape.pairs()
@@ -469,8 +493,11 @@ def covered(shapes: Iterable[Shape]) -> set[Pair]:
 
 
 def grow(start: Pair, left: set[Pair]) -> Shape:
-    """A shape that makes start (see completion()), and, for each other
-    factor in turn, the level that covers the most pairs of left."""
+    """Return a shape that makes start, and covers pairs of left greedily.
+
+    The shape makes start as completion() does, and, for each other
+    factor in turn, the level that covers the most pairs of left.
+    """
     shape = completion(dict(start))
     if shape is None:
         raise ValueError(f"no shape makes {start}, though valid_pairs() says one does")
@@ -488,9 +515,11 @@ def grow(start: Pair, left: set[Pair]) -> Shape:
 
 
 def suggest(existing: Iterable[Shape]) -> list[Shape]:
-    """Shapes that cover every valid pair that existing shapes leave
-    uncovered, picked greedily: of the shapes that grow() from each pair
-    still uncovered, the one that covers the most of them."""
+    """Return shapes that cover every valid pair that existing shapes miss.
+
+    The shapes are picked greedily: of the shapes that grow() from each
+    pair still uncovered, the one that covers the most of them.
+    """
     left = valid_pairs() - covered(existing)
     picked: list[Shape] = []
     while left:
@@ -502,7 +531,12 @@ def suggest(existing: Iterable[Shape]) -> list[Shape]:
 
 
 def presets_of(shape: Shape) -> list[str]:
-    """The presets that make shape: one per factor not at its default."""
+    """Return the presets that make shape.
+
+    Returns:
+        One per factor not at its default, but `keys`, and then the
+        EXTRAS that shape runs.
+    """
     by_choice = {choice: preset for preset, choice in PRESETS.items()}
     chosen = [
         by_choice[(f, shape[f])]
@@ -518,8 +552,11 @@ def presets_of(shape: Shape) -> list[str]:
 
 @dataclass(frozen=True)
 class SmokeShape:
-    """A shape that smoke.sh runs: its name, whether it rotates every key,
-    and its presets."""
+    """A shape that smoke.sh runs.
+
+    Attributes:
+        rotated: Whether it rotates every key.
+    """
 
     name: str
     rotated: bool
@@ -527,8 +564,12 @@ class SmokeShape:
 
 
 def parse_table(text: str) -> list[SmokeShape]:
-    """`smoke.sh --table`: `<name>\\t<yes|no>\\t<preset> ...` per shape,
-    the middle column saying whether it rotates every key."""
+    """Return the shapes in the output of `smoke.sh --table`.
+
+    Args:
+        text: That output: `<name>\\t<yes|no>\\t<preset> ...` per shape,
+            the middle column saying whether it rotates every key.
+    """
     found: list[SmokeShape] = []
     for line in text.splitlines():
         if line.strip():
@@ -538,7 +579,7 @@ def parse_table(text: str) -> list[SmokeShape]:
 
 
 def smoke_shapes() -> list[SmokeShape]:
-    """The shapes that smoke.sh runs."""
+    """Return the shapes that smoke.sh runs."""
     table = subprocess.run(  # nosec B603 B607
         ["sh", os.path.join(TOP, "smoke.sh"), "--table"],
         check=True,
@@ -549,7 +590,7 @@ def smoke_shapes() -> list[SmokeShape]:
 
 
 def all_presets() -> set[str]:
-    """Every preset in framework/presets/ but `default`."""
+    """Return every preset in framework/presets/ but `default`."""
     return {
         name[: -len(".sh")]
         for name in os.listdir(os.path.join(TOP, "framework", "presets"))
@@ -558,7 +599,7 @@ def all_presets() -> set[str]:
 
 
 def made(shapes: Sequence[SmokeShape]) -> tuple[list[Shape], list[str]]:
-    """The shapes that smoke.sh's make, and what is wrong with them."""
+    """Return the shapes made by smoke.sh's, and what is wrong with them."""
     found: list[str] = []
     names = [s.name for s in shapes]
     for name in sorted({n for n in names if names.count(n) > 1}):
@@ -575,7 +616,7 @@ def made(shapes: Sequence[SmokeShape]) -> tuple[list[Shape], list[str]]:
 
 
 def check(shapes: Sequence[SmokeShape]) -> list[str]:
-    """What is wrong with smoke.sh's shapes."""
+    """Return what is wrong with smoke.sh's shapes."""
     shapes_made, found = made(shapes)
     run = {p for s in shapes for p in s.presets}
     for preset in sorted(all_presets() - run - set(NOT_RUN)):

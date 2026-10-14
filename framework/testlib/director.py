@@ -25,8 +25,10 @@ from . import common, web
 
 
 def parse_link(value: str) -> list[str]:
-    """The rel="duplicate" URLs of a Link header, by priority (lowest
-    pri first, as the client tries them)."""
+    """Return the rel="duplicate" URLs of a Link header, by priority.
+
+    The lowest pri comes first, as the client tries them.
+    """
     found: list[tuple[int, int, str]] = []
     for n, part in enumerate(re.split(r",(?=\s*<)", value)):
         m = re.match(r"\s*<([^>]*)>(.*)", part)
@@ -41,26 +43,37 @@ def parse_link(value: str) -> list[str]:
 
 
 def host(url: str) -> str:
-    """The host of a URL, without its port: how a server is named."""
+    """Return the host of a URL, without its port: how a server is named."""
     return urlsplit(url).hostname or ""
 
 
 @dataclass
 class Answer:
-    """Where a director would send a request."""
+    """Where a director would send a request.
+
+    Attributes:
+        status: The HTTP status of its answer, or None if none came.
+        location: The host the director redirected to, or "".
+        listed: The hosts in its Link header, by priority.
+        broker: Its X-Pelican-Broker header: the origin's connection
+            broker, or "".
+    """
 
     status: Optional[int]
-    location: str  # the host the director redirected to, or ""
-    listed: list[str]  # the hosts in its Link header, by priority
-    broker: str  # its X-Pelican-Broker header: the origin's connection broker, or ""
+    location: str
+    listed: list[str]
+    broker: str
 
     def names(self, name: str) -> bool:
-        """Whether the director sent the request to host name, or would
-        have the client try it."""
+        """Return whether the director picked or listed host name.
+
+        That is, whether it sent the request there, or would have the
+        client try it.
+        """
         return name == self.location or name in self.listed
 
     def describe(self) -> str:
-        """The answer, for a message."""
+        """Return the answer, for a message."""
         if self.status is None:
             return "no response"
         return f"HTTP {self.status} to {self.location or '(nowhere)'}, listing {self.listed}"
@@ -68,18 +81,28 @@ class Answer:
 
 @dataclass(frozen=True)
 class Hints:
-    """What a server's X-Pelican-* headers tell a client about the
-    namespace of what it asked for. Each is `key=value, key=value`;
-    X-Pelican-Authorization is one `issuer=<url>` per issuer."""
+    """What a server's X-Pelican-* headers tell of a request's namespace.
 
-    namespace: str  # X-Pelican-Namespace's `namespace`, e.g. /protected-a; "" if none came
-    require_token: Optional[bool]  # its `require-token`; None if none came
-    issuers: tuple[str, ...]  # X-Pelican-Authorization's issuers, in order
-    generation_issuer: str  # X-Pelican-Token-Generation's `issuer`, or ""
+    Each is `key=value, key=value`; X-Pelican-Authorization is one
+    `issuer=<url>` per issuer.
+
+    Attributes:
+        namespace: X-Pelican-Namespace's `namespace`, e.g. /protected-a;
+            "" if none came.
+        require_token: X-Pelican-Namespace's `require-token`; None if
+            none came.
+        issuers: X-Pelican-Authorization's issuers, in order.
+        generation_issuer: X-Pelican-Token-Generation's `issuer`, or "".
+    """
+
+    namespace: str
+    require_token: Optional[bool]
+    issuers: tuple[str, ...]
+    generation_issuer: str
 
 
 def _fields(value: str) -> dict[str, str]:
-    """`key=value, key=value` by key."""
+    """Return the values in `key=value, key=value`, by key."""
     found: dict[str, str] = {}
     for part in value.split(","):
         key, sep, item = part.strip().partition("=")
@@ -89,7 +112,7 @@ def _fields(value: str) -> dict[str, str]:
 
 
 def hints(response: web.Response) -> Hints:
-    """The hints in response's headers."""
+    """Return the hints in response's headers."""
     namespace = _fields(response.header("X-Pelican-Namespace"))
     require = namespace.get("require-token")
     issuers = [
@@ -108,10 +131,17 @@ def hints(response: web.Response) -> Hints:
 def ask(
     director: str, route: str, path: str, token: Optional[str] = None, query: str = ""
 ) -> Answer:
-    """Where director would send a GET of path: route `object` (a cache)
-    or `origin`. query, if given, follows the path, e.g. `directread` for a
-    client's direct read, which only an origin with DirectReads may serve;
-    without it, the `origin` route serves caches too."""
+    """Return where director would send a GET of path.
+
+    Args:
+        director: The director's URL.
+        route: Either `object` (for a cache) or `origin`.
+        path: The path to GET.
+        token: A bearer token to present, if any.
+        query: If given, follows the path, e.g. `directread` for a
+            client's direct read, which only an origin with DirectReads
+            may serve; without it, the `origin` route serves caches too.
+    """
     url = f"{director}/api/v1.0/director/{route}{path}" + (f"?{query}" if query else "")
     answer = web.request("GET", url, token=token)
     return Answer(
@@ -123,15 +153,26 @@ def ask(
 
 
 def naming(directors: Sequence[str], route: str, path: str, name: str) -> list[str]:
-    """The directors, of those at URLs directors, that would send a GET
-    of path, for route, to host name, or have the client try it: their
-    hosts."""
+    """Return the hosts of directors that would send a GET of path to name.
+
+    A director that would have the client try host name counts too.
+
+    Args:
+        directors: The directors' URLs.
+        route: As for ask().
+        path: The path to GET.
+        name: The host to look for.
+    """
     return [host(url) for url in directors if ask(url, route, path).names(name)]
 
 
 def expected_targets(fed: common.Federation) -> dict[tuple[str, str], str]:
-    """Each server that service discovery should list, by its type and
-    target (its web URL's host and port): its web URL."""
+    """Return each server that service discovery should list.
+
+    Returns:
+        Each server's web URL, by its type and target (its web URL's host
+        and port).
+    """
     found: dict[tuple[str, str], str] = {}
     origins = [o.url for o in fed.origins] + [o.origin.url for o in fed.owners]
     for kind, urls in (("Origin", origins), ("Cache", [c.url for c in fed.federated_caches])):
@@ -142,9 +183,11 @@ def expected_targets(fed: common.Federation) -> dict[tuple[str, str], str]:
 
 
 def listing_problems(fed: common.Federation, listed: Any) -> list[str]:
-    """What is wrong with a director's service discovery, listed: it must
-    list each of expected_targets() once, with its type, name, web URL,
-    and data URL (on the same host) as labels, and nothing else."""
+    """Return what is wrong with listed, a director's service discovery.
+
+    It must list each of expected_targets() once, with its type, name,
+    web URL, and data URL (on the same host) as labels, and nothing else.
+    """
     want = expected_targets(fed)
     problems: list[str] = []
     seen: dict[tuple[str, str], int] = {}

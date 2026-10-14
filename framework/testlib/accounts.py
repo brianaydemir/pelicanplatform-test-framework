@@ -1,7 +1,8 @@
-"""A Pelican server's web API, as one of its users: JSON requests with
-the user's bearer token (credentials.mint_user()); its users and
-groups; and logging a user in (login()), for the cookie that stands for
-them elsewhere.
+"""A Pelican server's web API, as one of its users.
+
+This covers JSON requests with the user's bearer token
+(credentials.mint_user()); its users and groups; and logging a user in
+(login()), for the cookie that stands for them elsewhere.
 
 Users and groups are records in each server's database (Pelican's
 docs/user-group-design.md). A user administrator creates users (the
@@ -40,15 +41,20 @@ LOGIN_TRIES = 5
 
 
 class ApiError(Exception):
-    """The server did not do as asked."""
+    """A failure of the server to do as asked."""
 
 
 @dataclass(frozen=True)
 class Answer:
-    """A server's answer to a JSON request."""
+    """A server's answer to a JSON request.
 
-    status: Optional[int]  # None if no response came
-    data: Any  # the decoded JSON body, or None
+    Attributes:
+        status: The HTTP status, or None if no response came.
+        data: The decoded JSON body, or None.
+    """
+
+    status: Optional[int]
+    data: Any
 
     @property
     def ok(self) -> bool:
@@ -66,7 +72,7 @@ class Answer:
         return common.as_array(self.data) or []
 
     def describe(self) -> str:
-        """The status, and the server's message if it sent one."""
+        """Return the status, and the server's message if it sent one."""
         if self.status is None:
             return "no response"
         message = self.object.get("msg") or self.object.get("error")
@@ -75,8 +81,13 @@ class Answer:
 
 @dataclass(frozen=True)
 class Api:
-    """The web API of the server at url, as the user whose token this is,
-    or whose login cookie (login()) this is."""
+    """The web API of a server, as one of its users.
+
+    Attributes:
+        url: The server's web URL.
+        token: The user's bearer token, if any.
+        cookie: The user's login cookie (see login()), if any.
+    """
 
     url: str
     token: Optional[str]
@@ -109,19 +120,31 @@ class Api:
 
 
 def must(answer: Answer, what: str) -> Answer:
-    """answer, if it succeeded; raises ApiError otherwise."""
+    """Return answer if it succeeded.
+
+    Args:
+        answer: The server's answer.
+        what: What was asked, to begin the error's message.
+
+    Raises:
+        ApiError: The answer is not a success.
+    """
     if not answer.ok:
         raise ApiError(f"{what}: {answer.describe()}")
     return answer
 
 
 def csrf(api: Api) -> dict[str, str]:
-    """The headers that let api's user change things through a route that
-    guards against cross-site requests, as the registry's do
-    (gorilla/csrf): the token that /whoami answers with, and the cookie it
-    sets, which the server checks against each other; and an Origin that
-    is the server's own, which it checks too. Raises ApiError if /whoami
-    hands out no token."""
+    """Return headers that let api's user change things past a CSRF guard.
+
+    Some routes guard against cross-site requests, as the registry's do
+    (gorilla/csrf). The headers are the token that /whoami answers with,
+    and the cookie it sets, which the server checks against each other;
+    and an Origin that is the server's own, which it checks too.
+
+    Raises:
+        ApiError: The server's /whoami hands out no token.
+    """
     answer = web.request("GET", api.url + WHOAMI, token=api.token)
     token, cookie = answer.header("X-CSRF-Token"), answer.cookie("_gorilla_csrf")
     if answer.status != 200 or not token or not cookie:
@@ -130,12 +153,16 @@ def csrf(api: Api) -> dict[str, str]:
 
 
 def agree_to_aup(api: Api) -> None:
-    """Have api's user agree to the server's acceptable use policy, as
-    they would on first logging in, if it has one: every server serves a
-    built-in one unless Server.AUPFile is `none` (web_ui/aup.go in
-    Pelican). Until they agree, it refuses them its routes for users,
-    groups, and much of /me (RequireAUPCompliance), its admin included.
-    Raises ApiError if that fails."""
+    """Have api's user agree to the server's acceptable use policy, if any.
+
+    They would agree on first logging in. Every server serves a built-in
+    policy unless Server.AUPFile is `none` (web_ui/aup.go in Pelican).
+    Until they agree, it refuses them its routes for users, groups, and
+    much of /me (RequireAUPCompliance), its admin included.
+
+    Raises:
+        ApiError: Reading or agreeing to the policy fails.
+    """
     found = api.call("GET", AUP)
     if found.status == 404:
         return
@@ -146,7 +173,11 @@ def agree_to_aup(api: Api) -> None:
 
 
 def find_user(api: Api, username: str) -> Optional[str]:
-    """The ID of the user named username, if there is one."""
+    """Return the ID of the user named username, if there is one.
+
+    Raises:
+        ApiError: Listing the users fails.
+    """
     for user in must(api.call("GET", USERS), "listing users").array:
         found = common.as_object(user) or {}
         if found.get("username") == username:
@@ -155,8 +186,13 @@ def find_user(api: Api, username: str) -> Optional[str]:
 
 
 def ensure_user(api: Api, username: str) -> str:
-    """The ID of the user named username, created if need be, as a user
-    administrator."""
+    """Return the ID of the user named username, created if need be.
+
+    It is created as a user administrator.
+
+    Raises:
+        ApiError: Listing the users, or creating the user, fails.
+    """
     found = find_user(api, username)
     if found:
         return found
@@ -165,22 +201,28 @@ def ensure_user(api: Api, username: str) -> str:
 
 
 def set_status(api: Api, user_id: str, status: str) -> Answer:
-    """Make the user active or inactive (status), as a user
-    administrator."""
+    """Make the user active or inactive (status) as a user administrator."""
     return api.call("PUT", f"{USERS}/{user_id}/status", {"status": status})
 
 
 def delete_user(api: Api, user_id: str) -> Optional[str]:
-    """Delete the user, as a user administrator; why that failed, or
-    None. The server keeps the record, marked deleted, and frees its
-    name."""
+    """Delete the user, as a user administrator.
+
+    The server keeps the record, marked deleted, and frees its name.
+
+    Returns:
+        Why that failed, or None if it did not.
+    """
     answer = api.call("DELETE", f"{USERS}/{user_id}")
     return None if answer.ok else f"deleting user {user_id}: {answer.describe()}"
 
 
 def find_group(api: Api, name: str) -> Optional[str]:
-    """The ID of the group named name, if there is one the caller may
-    see."""
+    """Return the ID of the group named name, if api's user may see one.
+
+    Raises:
+        ApiError: Listing the groups fails.
+    """
     for group in must(api.call("GET", GROUPS), "listing groups").array:
         found = common.as_object(group) or {}
         if found.get("name") == name:
@@ -189,9 +231,14 @@ def find_group(api: Api, name: str) -> Optional[str]:
 
 
 def create_group(api: Api, name: str, eligible: bool = False) -> str:
-    """Create the group named name, as its owner: its ID. With eligible,
-    ask that it may match the issuer's authorization templates, which
-    the server grants only an administrator."""
+    """Create the group named name, as its owner, and return its ID.
+
+    With eligible, ask that it may match the issuer's authorization
+    templates, which the server grants only an administrator.
+
+    Raises:
+        ApiError: Creating the group fails.
+    """
     body: dict[str, Any] = {"name": name}
     if eligible:
         body["authTemplateEligible"] = True
@@ -200,20 +247,30 @@ def create_group(api: Api, name: str, eligible: bool = False) -> str:
 
 
 def ensure_group(api: Api, name: str, eligible: bool = False) -> str:
-    """The ID of the group named name, created if need be (see
-    create_group())."""
+    """Return the ID of the group named name, created if need be.
+
+    See create_group().
+
+    Raises:
+        ApiError: Listing the groups, or creating the group, fails.
+    """
     return find_group(api, name) or create_group(api, name, eligible)
 
 
 def set_eligible(api: Api, group_id: str, eligible: bool) -> Answer:
-    """Set whether the group may match the issuer's authorization
-    templates, which only an administrator may."""
+    """Set whether the group may match the issuer's authorization templates.
+
+    Only an administrator may.
+    """
     return api.call("PATCH", f"{GROUPS}/{group_id}", {"authTemplateEligible": eligible})
 
 
 def add_member(api: Api, group_id: str, user_id: str) -> None:
-    """Add the user to the group, as its owner; a member already is
-    one."""
+    """Add the user to the group, as its owner; a member already is one.
+
+    Raises:
+        ApiError: Adding the user fails.
+    """
     must(
         api.call("POST", f"{GROUPS}/{group_id}/members", {"userId": user_id}),
         f"adding {user_id} to group {group_id}",
@@ -221,7 +278,11 @@ def add_member(api: Api, group_id: str, user_id: str) -> None:
 
 
 def remove_member(api: Api, group_id: str, user_id: str) -> None:
-    """Remove the user from the group, as its owner."""
+    """Remove the user from the group, as its owner.
+
+    Raises:
+        ApiError: Removing the user fails.
+    """
     must(
         api.call("DELETE", f"{GROUPS}/{group_id}/members/{user_id}"),
         f"removing {user_id} from group {group_id}",
@@ -229,8 +290,11 @@ def remove_member(api: Api, group_id: str, user_id: str) -> None:
 
 
 def delete_group(api: Api, group_id: str) -> Optional[str]:
-    """Delete the group, as its owner or an administrator; why that
-    failed, or None."""
+    """Delete the group, as its owner or an administrator.
+
+    Returns:
+        Why that failed, or None if it did not.
+    """
     answer = api.call("DELETE", f"{GROUPS}/{group_id}")
     return None if answer.ok else f"deleting group {group_id}: {answer.describe()}"
 
@@ -243,8 +307,13 @@ def delete_group(api: Api, group_id: str) -> Optional[str]:
 
 
 def password_invite(api: Api, user_id: str) -> str:
-    """An invite with which the user may set their password, minted as a
-    user administrator."""
+    """Return an invite with which the user may set their password.
+
+    It is minted as a user administrator.
+
+    Raises:
+        ApiError: Minting the invite fails.
+    """
     made = must(
         api.call("POST", f"{USERS}/{user_id}/password-invite", {}),
         f"minting a password invite for {user_id}",
@@ -253,7 +322,11 @@ def password_invite(api: Api, user_id: str) -> str:
 
 
 def set_password(web_url: str, invite: str, password: str) -> None:
-    """Set the password of the user the invite was minted for."""
+    """Set the password of the user the invite was minted for.
+
+    Raises:
+        ApiError: The server does not set it.
+    """
     answer = web.request(
         "POST",
         web_url + REDEEM_PASSWORD,
@@ -265,9 +338,13 @@ def set_password(web_url: str, invite: str, password: str) -> None:
 
 
 def try_login(web_url: str, username: str, password: str) -> web.Response:
-    """Try to log in to the server at web_url as username: its answer,
-    which sets the login cookie if it succeeded. Waits out the server's
-    limit of a login a second."""
+    """Try to log in to the server at web_url as username.
+
+    Waits out the server's limit of a login a second.
+
+    Returns:
+        The server's answer, which sets the login cookie if it succeeded.
+    """
     form = urlencode({"user": username, "password": password}).encode()
     answer = web.Response(None)
     for _ in range(LOGIN_TRIES):
@@ -279,8 +356,13 @@ def try_login(web_url: str, username: str, password: str) -> web.Response:
 
 
 def login(web_url: str, username: str, password: str) -> str:
-    """Log in to the server at web_url as username: the login cookie.
-    Waits out the server's limit of a login a second."""
+    """Log in to the server at web_url as username, and return the cookie.
+
+    Waits out the server's limit of a login a second.
+
+    Raises:
+        ApiError: The server sets no login cookie.
+    """
     answer = try_login(web_url, username, password)
     cookie = answer.cookie("login")
     if answer.status != 200 or not cookie:

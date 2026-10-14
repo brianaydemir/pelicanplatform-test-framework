@@ -1,14 +1,14 @@
-"""What every suite shares in one run of test.py: the federation, the
-client and its environment, tokens, and a scratch directory.
+"""What every suite shares in one run of test.py.
 
-test.py makes one Session, in framework/var, and hands it to each suite
-in turn. Tokens are minted once and kept: the server's own, for a
-suite's setup and checks, and those of the credential table
-(credentials.CREDENTIALS), which the auth and transfers suites both
-present. The expired ones are minted as the session starts, so that they
-are long past their expiry by the time those suites, which run late,
-present them. last_line() and the json_* functions read what a client
-printed.
+That is the federation, the client and its environment, tokens, and a
+scratch directory. test.py makes one Session, in framework/var, and
+hands it to each suite in turn. Tokens are minted once and kept: the
+server's own, for a suite's setup and checks, and those of the
+credential table (credentials.CREDENTIALS), which the auth and
+transfers suites both present. The expired ones are minted as the
+session starts, so that they are long past their expiry by the time
+those suites, which run late, present them. last_line() and the json_*
+functions read what a client printed.
 """
 
 import json
@@ -27,7 +27,7 @@ TIMED_OUT = 124
 
 
 def timed_out(seconds: float) -> str:
-    """What a client run that was killed after seconds says."""
+    """Return what a client run that was killed after seconds says."""
     return f"timed out after {seconds:.0f}s, and was killed"
 
 
@@ -38,26 +38,36 @@ def _text(output: Union[str, bytes, None]) -> str:
 
 
 class Session:
-    """What every suite shares in one run of test.py."""
+    """What every suite shares in one run of test.py.
+
+    Attributes:
+        pelican: The pelican client's absolute path.
+        plugin: The stash_plugin's absolute path.
+        pelican_server: The pelican-server's absolute path; None if there
+            is none, when only the scenarios that need it skip.
+        run: The run's ID: when it started, as YYYYMMDD-HHMMSS.
+        tmp: The scratch directory.
+        env: The environment for a client that should present only the
+            token it is given.
+        sync_env: The same, for `object sync`, which wants overwrites off.
+        namespaces: The namespaces that the federation exports.
+        stale_at: When the last expired token expired.
+    """
 
     def __init__(self, tmp: str):
         self.fed = common.Federation()
         self.pelican = os.path.abspath(common.binary("pelican"))
         self.plugin = os.path.abspath(common.binary("stash_plugin"))
-        # None if there is none: only the scenarios that need it skip.
         server = common.server_binary()
         self.pelican_server = os.path.abspath(server) if server else None
         self.run = time.strftime("%Y%m%d-%H%M%S")
         self.tmp = tmp
         os.makedirs(self.path("tokens"))
-        # For a client that should present only the token it is given; and
-        # for `object sync`, which wants overwrites off.
         self.env = credentials.client_env()
         self.sync_env = credentials.client_env(overwrites=False)
         self.namespaces: list[str] = credentials.exported(self.fed)
         self._server: dict[tuple[str, tuple[str, ...]], str] = {}
         self._credential: dict[tuple[str, str, str], Optional[str]] = {}
-        # When the last expired token expired.
         self.stale_at: Optional[float] = None
         for cred in credentials.CREDENTIALS:
             if cred.expired and not credentials.moot(self.fed, cred):
@@ -67,13 +77,13 @@ class Session:
                             self.credential_file(cred, namespace, op)
 
     def path(self, name: str) -> str:
-        """name in the session's scratch directory."""
+        """Return the path of name in the session's scratch directory."""
         return os.path.join(self.tmp, name)
 
     # The server's own tokens.
 
     def token_file(self, namespace: str, scopes: tuple[str, ...] = RWM) -> str:
-        """A `server` token for namespace with scopes: its file."""
+        """Return the file of a `server` token for namespace with scopes."""
         key = (namespace, scopes)
         if key not in self._server:
             path = self.path(f"tokens/server.{namespace}.{'-'.join(scopes)}")
@@ -82,19 +92,24 @@ class Session:
         return self._server[key]
 
     def token(self, namespace: str, scopes: tuple[str, ...] = RWM) -> str:
-        """The same token itself."""
+        """Return the same token itself."""
         with open(self.token_file(namespace, scopes), encoding="utf-8") as f:
             return f.read().strip()
 
     def tokens(self) -> dict[str, str]:
-        """A `server` token for each exported namespace, by namespace."""
+        """Return each exported namespace's `server` token, by namespace."""
         return {ns: self.token(ns) for ns in self.namespaces}
 
     # The credential table's tokens.
 
     def credential_file(self, cred: Credential, namespace: str, op: str) -> Optional[str]:
-        """cred's token for op (`get` or `put`) in namespace: its file, or
-        None for `none`, which has no token."""
+        """Return the file of cred's token for op in namespace.
+
+        op is `get` or `put`.
+
+        Returns:
+            The file; None for `none`, which has no token.
+        """
         key = (cred.name, namespace, op)
         if key not in self._credential:
             path = self.path(f"tokens/{cred.name}.{namespace}.{op}")
@@ -105,7 +120,7 @@ class Session:
         return self._credential[key]
 
     def credential_token(self, cred: Credential, namespace: str, op: str) -> Optional[str]:
-        """The same token itself, or None."""
+        """Return the same token itself, or None."""
         path = self.credential_file(cred, namespace, op)
         if path is None:
             return None
@@ -113,8 +128,10 @@ class Session:
             return f.read().strip()
 
     def wait_until_stale(self) -> None:
-        """Wait, if need be, until no server may accept the expired tokens
-        (see credentials.wait_until_stale)."""
+        """Wait, if need be, until no server may accept the expired tokens.
+
+        See credentials.wait_until_stale.
+        """
         credentials.wait_until_stale(self.stale_at)
 
     # The client.
@@ -126,10 +143,21 @@ class Session:
         cwd: Optional[str] = None,
         timeout: float = CLIENT_TIMEOUT,
     ) -> tuple[int, str, str]:
-        """Run `pelican <args>` with no terminal: its exit status, stdout,
-        and stderr. With no token, `pelican object` would otherwise try to
-        acquire one interactively. A run that outlasts timeout is killed,
-        and fails with "timed out" in its stderr."""
+        """Run `pelican <args>` with no terminal.
+
+        With no token, `pelican object` would otherwise try to acquire one
+        interactively. A run that outlasts timeout is killed, and fails
+        with "timed out" in its stderr.
+
+        Args:
+            *args: The arguments to `pelican`.
+            env: The environment, if not the session's env.
+            cwd: The working directory, if not the scratch directory.
+            timeout: How long the run may take, in seconds.
+
+        Returns:
+            Its exit status, stdout, and stderr.
+        """
         try:
             done = subprocess.run(  # nosec B603
                 [self.pelican, *args],
@@ -148,7 +176,10 @@ class Session:
 
 
 def last_line(text: str) -> str:
-    """The last line of a command's output that isn't blank, briefly."""
+    """Return the last line of a command's output that isn't blank.
+
+    The line is cut to 300 characters; "(no output)" if there is none.
+    """
     lines = [line for line in text.strip().splitlines() if line.strip()]
     return lines[-1][:300] if lines else "(no output)"
 
@@ -166,8 +197,11 @@ JSON_TYPES = {
 
 
 def last_json(text: str) -> Any:
-    """The JSON a command printed on stdout: its last line that parses.
-    Raises ValueError if none does."""
+    """Return the JSON in a command's stdout: its last line that parses.
+
+    Raises:
+        ValueError: No line parses.
+    """
     for line in reversed(text.strip().splitlines()):
         try:
             return json.loads(line)
@@ -177,14 +211,17 @@ def last_json(text: str) -> Any:
 
 
 def json_type(value: Any) -> str:
-    """How a message names value's JSON type."""
+    """Return how a message names value's JSON type."""
     name = type(value).__name__
     return JSON_TYPES.get(name, name)
 
 
 def json_object(text: str) -> dict[str, Any]:
-    """last_json(), which must be an object. Raises ValueError if it
-    isn't."""
+    """Return last_json(), which must be an object.
+
+    Raises:
+        ValueError: There is no JSON, or it is not an object.
+    """
     value = last_json(text)
     if not isinstance(value, dict):
         raise ValueError(f"the JSON is {json_type(value)}, not an object")
@@ -192,8 +229,11 @@ def json_object(text: str) -> dict[str, Any]:
 
 
 def json_objects(text: str) -> list[dict[str, Any]]:
-    """last_json(), which must be an array of objects. Raises ValueError
-    if it isn't."""
+    """Return last_json(), which must be an array of objects.
+
+    Raises:
+        ValueError: There is no JSON, or it is not an array of objects.
+    """
     value = last_json(text)
     items = common.as_array(value)
     if items is None:

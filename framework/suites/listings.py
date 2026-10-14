@@ -1,9 +1,11 @@
-"""Listings: PROPFIND at depths 0, 1, and infinity at each origin, each
-director, and each cache, in every namespace; who may list /protected-a;
-an object that comes and goes; Depth 1 of an object, which is no
-collection; a GET of a collection, which is no object, and which no
-cache may keep as one; and the links of an origin's HTML listing, which
-a browser follows, among names that a URL must encode.
+"""Listings, at each origin, each director, and each cache.
+
+The suite checks PROPFIND at depths 0, 1, and infinity, in every
+namespace; who may list /protected-a; an object that comes and goes;
+Depth 1 of an object, which is no collection; a GET of a collection,
+which is no object, and which no cache may keep as one; and the links
+of an origin's HTML listing, which a browser follows, among names that
+a URL must encode.
 
 Objects go under /<namespace>/data/listings/<run>/, put straight in
 every origin's store, in each namespace's storage (see stores.seed();
@@ -16,12 +18,11 @@ origin.
 
 An object's getlastmodified at an origin must be when its file was
 written. Who may list depends on the namespace's capabilities (see
-may_list()):
-an origin serves only direct clients, which a namespace without
-DirectReads has none of (`-p origin-no-direct`); a cache answers Depth 0
-of anything it may read, and a director redirects it; and anything
-deeper, at any server, needs Listings. A PROPFIND that may not be
-answered must be refused, with 401, 403, or 405.
+may_list()): an origin serves only direct clients, which a namespace
+without DirectReads has none of (`-p origin-no-direct`); a cache answers
+Depth 0 of anything it may read, and a director redirects it; and
+anything deeper, at any server, needs Listings. A PROPFIND that may not
+be answered must be refused, with 401, 403, or 405.
 """
 
 import json
@@ -77,13 +78,19 @@ MODIFIED_SLACK = 60
 
 
 def may_list(caps: AbstractSet[str], depth: str, role: str) -> bool:
-    """Whether a server in role (`origin`, `cache`, or `director`) should
-    answer a PROPFIND at depth in a namespace with caps. Depth 0 is a
-    stat, and anything deeper a listing, which needs Listings. An origin
-    answers only direct clients; a cache answers Depth 0 of anything it
-    may read; and a director answers by redirecting to an origin, Depth 0
-    where the namespace may be read at all (Reads or PublicReads), as for
-    a GET (director/sort.go)."""
+    """Return whether a server in role should answer a PROPFIND at depth.
+
+    Depth 0 is a stat, and anything deeper a listing, which needs
+    Listings. An origin answers only direct clients; a cache answers
+    Depth 0 of anything it may read; and a director answers by
+    redirecting to an origin, Depth 0 where the namespace may be read at
+    all (Reads or PublicReads), as for a GET (director/sort.go).
+
+    Args:
+        caps: The namespace's capabilities.
+        depth: `0`, `1`, or `infinity`.
+        role: `origin`, `cache`, or `director`.
+    """
     if role == "origin" and "DirectReads" not in caps:
         return False
     if depth == "0":
@@ -92,14 +99,23 @@ def may_list(caps: AbstractSet[str], depth: str, role: str) -> bool:
 
 
 class Test:
-    """The tree's place, the tokens, and the stores and servers to ask."""
+    """The tree's place, the tokens, and the stores and servers to ask.
+
+    Attributes:
+        origins: The origins, each store once.
+        caches: The federated caches.
+        base: The run's collection, in each namespace.
+        token_files: Each namespace's `server` token's file, by namespace.
+        tokens: Each namespace's `server` token, by namespace.
+        elsewhere: A token like `server`'s for /protected-a, but to read
+            <base>/elsewhere alone.
+    """
 
     def __init__(self, session: Session):
         self.session = session
         self.fed = session.fed
         self.origins = stores.unique(session.fed.origins)
-        # Site-local caches answer listings their own way (see the sitelocal
-        # suite).
+        # Site-local caches answer listings their own way.
         self.caches = session.fed.federated_caches
         self.run = session.run
         self.base = f"data/listings/{self.run}"
@@ -115,29 +131,34 @@ class Test:
         )
 
     def path(self, namespace: str, rel: str = "tree") -> str:
-        """The path of rel in namespace's tree."""
+        """Return the path of rel, in the run's collection, in namespace."""
         return f"/{namespace}/{self.base}/{rel}"
 
     def caps(self, namespace: str) -> AbstractSet[str]:
-        """namespace's capabilities."""
+        """Return namespace's capabilities."""
         return self.fed.exports[namespace]
 
     def own(self, namespace: str) -> str:
-        """The object that only namespace's tree holds: the namespace's
-        whose storage it reads (see Federation.storage_namespace())."""
+        """Return the object that only namespace's tree holds.
+
+        It is named for the namespace whose storage namespace reads (see
+        Federation.storage_namespace()).
+        """
         return f"only-{self.fed.storage_namespace(namespace)}"
 
     def children(self, namespace: str) -> dict[str, Optional[int]]:
-        """Depth 1 of namespace's tree/."""
+        """Return Depth 1 of namespace's tree/."""
         return {**CHILDREN, self.own(namespace): OWN}
 
     def everything(self, namespace: str) -> dict[str, Optional[int]]:
-        """Depth infinity of namespace's tree/."""
+        """Return Depth infinity of namespace's tree/."""
         return {**EVERYTHING, self.own(namespace): OWN}
 
     def refusal(self, url: str, depth: str, token: Optional[str]) -> Optional[str]:
-        """What is wrong with how url answers a PROPFIND at depth that it
-        should refuse, or None."""
+        """Return what is wrong with how url answers a PROPFIND at depth.
+
+        url should refuse it. Return None if it does.
+        """
         answer = webdav.propfind(url, depth, token)
         if answer.status == 207:
             return f"Depth {depth}: listed it, but should have refused"
@@ -146,8 +167,11 @@ class Test:
         return None
 
     def seed(self) -> list[str]:
-        """Put the tree, and a probe object for each cache, in place; what
-        went wrong."""
+        """Put the tree, and a probe object for each cache, in place.
+
+        Returns:
+            What went wrong.
+        """
         errors: list[str] = []
         for origin in self.origins:
             for ns in stores.storage_namespaces(origin, self.fed.exports):
@@ -181,8 +205,12 @@ class Test:
         token: Optional[str],
         body: Optional[bytes] = None,
     ) -> tuple[web.Response, Optional[dict[str, webdav.Entry]], str]:
-        """PROPFIND url: the answer, and if it is a listing, its entries
-        below base; else why not."""
+        """PROPFIND url at depth, with token and body.
+
+        Returns:
+            The answer; its entries below base if it is a listing, or else
+            None; and why it is not, or "" if it is.
+        """
         answer = webdav.propfind(url, depth, token, body)
         if answer.status != 207:
             return answer, None, f"Depth {depth}: {answer.describe()}, not 207"
@@ -200,7 +228,7 @@ class Test:
         token: Optional[str],
         body: Optional[bytes] = None,
     ) -> Optional[str]:
-        """What is wrong with url's listing at depth, against want."""
+        """Return what is wrong with url's listing at depth against want."""
         _, got, why = self.listing(url, depth, base, token, body)
         if got is None:
             return why
@@ -208,8 +236,12 @@ class Test:
         return f"Depth {depth}: {'; '.join(wrong)}" if wrong else None
 
     def ls(self, rel: str) -> tuple[Optional[dict[str, tuple[bool, int]]], str]:
-        """`pelican object ls -l --json` of rel in /protected-a: each name's
-        collection flag and size, or why it failed."""
+        """Run `pelican object ls -l --json` of rel in /protected-a.
+
+        Returns:
+            Each name's collection flag and size, and ""; or None, and why
+            it failed.
+        """
         code, out, err = self.session.pelican_cmd(
             "object",
             "ls",
@@ -237,7 +269,7 @@ class Test:
 
 
 def origin_url(origin: common.Origin, path: str) -> str:
-    """The URL of path at origin."""
+    """Return the URL of path at origin."""
     return f"{origin.url}{path}"
 
 
@@ -246,10 +278,13 @@ def origin_url(origin: common.Origin, path: str) -> str:
 
 
 def modified_problem(test: Test, origin: common.Origin, ns: str, entry: webdav.Entry) -> str:
-    """Why entry's getlastmodified is not when the object's file in
-    origin's store was written, if the store is on disk; "" if it is, or
-    the store cannot say. The origins and the tests keep different time
-    zones (TZ_STORAGE), so a time rendered in the wrong one shows."""
+    """Return why entry's getlastmodified is not when its file was written.
+
+    The file is the object's in origin's store, if the store is on disk.
+    Return "" if the time is right, or the store cannot say. The origins
+    and the tests keep different time zones (TZ_STORAGE), so a time
+    rendered in the wrong one shows.
+    """
     if entry.modified is None:
         return "no getlastmodified"
     if origin.pstore:
@@ -263,8 +298,10 @@ def modified_problem(test: Test, origin: common.Origin, ns: str, entry: webdav.E
 
 
 def origin_depth_0(test: Test) -> tuple[str, str]:
-    """Each origin: Depth 0 of an object, whose getlastmodified must be
-    when its file was written, and of a collection."""
+    """Check Depth 0 of an object, and of a collection, at each origin.
+
+    The object's getlastmodified must be when its file was written.
+    """
     problems: list[str] = []
     for origin in test.origins:
         for ns in test.namespaces:
@@ -300,7 +337,7 @@ def origin_depth_0(test: Test) -> tuple[str, str]:
 
 
 def origin_depth_1(test: Test) -> tuple[str, str]:
-    """Each origin: Depth 1 lists a collection's members."""
+    """Check that each origin lists a collection's members at Depth 1."""
     problems: list[str] = []
     for origin in test.origins:
         for ns in test.namespaces:
@@ -324,9 +361,14 @@ def infinity(
     token: Optional[str],
     refusable: bool = True,
 ) -> tuple[Optional[str], str]:
-    """Depth infinity of namespace's tree at url: what is wrong, or None,
-    and a note. RFC 4918 lets a server refuse it with 403, unless
-    refusable is False, as for a cache whose origins answer it."""
+    """Check Depth infinity of namespace's tree at url.
+
+    RFC 4918 lets a server refuse it with 403, unless refusable is False,
+    as for a cache whose origins answer it.
+
+    Returns:
+        What is wrong, or None; and a note.
+    """
     answer, got, why = test.listing(url, "infinity", test.path(namespace), token)
     if answer.status == 403:
         if refusable:
@@ -341,7 +383,10 @@ def infinity(
 
 
 def origin_infinity(test: Test) -> tuple[str, str]:
-    """Each origin: Depth infinity lists the whole tree, or is refused."""
+    """Check that each origin lists the whole tree at Depth infinity.
+
+    An origin may refuse it instead.
+    """
     problems: list[str] = []
     notes: list[str] = []
     for origin in test.origins:
@@ -362,10 +407,13 @@ def origin_infinity(test: Test) -> tuple[str, str]:
 
 
 def director(test: Test) -> tuple[str, str]:
-    """A PROPFIND to a director comes back as a redirect to an origin,
-    whose listing must then be right; or, where the director may not
-    answer it (see may_list()), as a refusal. Where the origin takes no
-    direct clients, it must refuse what the director sent there."""
+    """Check that each director redirects a PROPFIND to an origin.
+
+    The origin's listing must then be right; or, where the director may
+    not answer it (see may_list()), the PROPFIND must come back as a
+    refusal. Where the origin takes no direct clients, it must refuse
+    what the director sent there.
+    """
     origins = {urlsplit(o.url).netloc for o in test.fed.origins}
     problems: list[str] = []
     for director_url in test.fed.directors:
@@ -413,8 +461,10 @@ def director(test: Test) -> tuple[str, str]:
 
 
 def cache_depth_0(test: Test) -> tuple[str, str]:
-    """Each cache's own probe object: Depth 0 before the cache holds it,
-    then after a GET."""
+    """Check Depth 0 of each cache's own probe object.
+
+    Ask before the cache holds it, then after a GET.
+    """
     problems: list[str] = []
     for cache in test.caches:
         path = test.path("protected-a", f"probe/{cache.svc}")
@@ -436,7 +486,10 @@ def cache_depth_0(test: Test) -> tuple[str, str]:
 
 
 def cache_depth_1(test: Test) -> tuple[str, str]:
-    """Each cache: Depth 0 and 1 of a collection, as the origins list it."""
+    """Check Depth 0 and 1 of a collection at each cache.
+
+    Each must list it as the origins do.
+    """
     problems: list[str] = []
     caps = test.caps("protected-a")
     for cache in test.caches:
@@ -466,9 +519,11 @@ def cache_depth_1(test: Test) -> tuple[str, str]:
 
 
 def origins_refuse_infinity(test: Test, ns: str) -> Optional[bool]:
-    """Whether an origin refuses Depth infinity of ns's tree with 403, as
-    a cache that relays it to one then may; None if no origin may be
-    asked, as where ns takes no direct clients."""
+    """Return whether an origin refuses Depth infinity of ns's tree (403).
+
+    If one does, a cache that relays it to one then may. Return None if
+    no origin may be asked, as where ns takes no direct clients.
+    """
     if not may_list(test.caps(ns), "infinity", "origin"):
         return None
     path = test.path(ns)
@@ -479,9 +534,12 @@ def origins_refuse_infinity(test: Test, ns: str) -> Optional[bool]:
 
 
 def cache_infinity(test: Test) -> tuple[str, str]:
-    """Each cache must list the whole tree at Depth infinity, as it relays
-    it to an origin. It may refuse with 403 only if an origin does; where
-    no origin may be asked, its 403 is taken on trust, as the note says."""
+    """Check that each cache lists the whole tree at Depth infinity.
+
+    A cache relays it to an origin. It may refuse with 403 only if an
+    origin does; where no origin may be asked, its 403 is taken on trust,
+    as the note says.
+    """
     problems: list[str] = []
     notes: list[str] = []
     caps = test.caps("protected-a")
@@ -513,8 +571,11 @@ def cache_infinity(test: Test) -> tuple[str, str]:
 
 
 def cache_body(test: Test) -> tuple[str, str]:
-    """A cache relays a PROPFIND through the director, and must follow the
-    director's redirect, with the request's body, to answer it."""
+    """Check that each cache follows the director's redirect of a PROPFIND.
+
+    A cache relays a PROPFIND through the director, and must follow its
+    redirect, with the request's body, to answer it.
+    """
     problems: list[str] = []
     caps = test.caps("protected-a")
     for cache in test.caches:
@@ -542,16 +603,19 @@ def cache_body(test: Test) -> tuple[str, str]:
 
 
 def servers(test: Test) -> list[tuple[str, str, str]]:
-    """Every origin and cache: its name, data URL, and role."""
+    """Return every origin and cache: its name, data URL, and role."""
     return [(o.svc, o.url, "origin") for o in test.origins] + [
         (c.svc, c.url, "cache") for c in test.caches
     ]
 
 
 def refused_everywhere(test: Test, token: Optional[str]) -> tuple[str, str]:
-    """Listing /protected-a with token (none, or one for elsewhere) must be
-    refused, of an object and of a collection, at every server: with 401
-    or 403, or with 405 where the server would not list it anyway."""
+    """Check that every server refuses to list /protected-a with token.
+
+    token is none, or one for elsewhere. A listing of an object, and of a
+    collection, must each be refused: with 401 or 403, or with 405 where
+    the server would not list it anyway.
+    """
     problems: list[str] = []
     caps = test.caps("protected-a")
     for svc, url, role in servers(test):
@@ -572,18 +636,20 @@ def refused_everywhere(test: Test, token: Optional[str]) -> tuple[str, str]:
 
 
 def protected_a_no_token(test: Test) -> tuple[str, str]:
-    """refused_everywhere() with no token."""
+    """Check refused_everywhere() with no token."""
     return refused_everywhere(test, None)
 
 
 def protected_a_scope(test: Test) -> tuple[str, str]:
-    """refused_everywhere() with a token for elsewhere."""
+    """Check refused_everywhere() with a token for elsewhere."""
     return refused_everywhere(test, test.elsewhere)
 
 
 def public_no_token(test: Test) -> tuple[str, str]:
-    """/public has PublicReads: anyone may list it, as far as its
-    capabilities allow (see may_list())."""
+    """Check that anyone may list /public, as far as its capabilities allow.
+
+    /public has PublicReads (see may_list()).
+    """
     problems: list[str] = []
     path = test.path("public")
     for svc, url, role in servers(test):
@@ -599,9 +665,12 @@ def public_no_token(test: Test) -> tuple[str, str]:
 
 
 def new_object(test: Test) -> tuple[str, str]:
-    """An object put straight in every origin's store is listed at once by
-    each origin and cache (which relays Depth 1), and by the client; once
-    removed from every origin, by none."""
+    """Check that a new object is listed at once, and not once removed.
+
+    The object is put straight in every origin's store, and must be
+    listed at once by each origin and cache (which relays Depth 1), and
+    by the client; once removed from every origin, by none.
+    """
     caps = test.caps("protected-a")
     if "Listings" not in caps:
         return SKIP, "/protected-a has no Listings"
@@ -640,17 +709,19 @@ def new_object(test: Test) -> tuple[str, str]:
 
 
 def collection_get(test: Test) -> tuple[str, str]:
-    """A GET of a collection, tree/sub, which is no object (Pelican issue
-    #1706). An origin, asked without Accept: text/html, as a client that
-    expects bytes asks, refuses (a native origin, 405) or answers a
-    listing (an XRootD origin, HTML), never an object's bytes; asked with
-    it, answers an HTML listing. A federated cache must not keep what an
-    origin answers as the collection's object: its answer must be no
-    object's bytes, and a V2 cache's 200 must be typed
+    """Check a GET of a collection, tree/sub, which is no object.
+
+    See Pelican issue #1706. An origin, asked without Accept: text/html,
+    as a client that expects bytes asks, refuses (a native origin, 405)
+    or answers a listing (an XRootD origin, HTML), never an object's
+    bytes; asked with it, answers an HTML listing. A federated cache must
+    not keep what an origin answers as the collection's object: its
+    answer must be no object's bytes, and a V2 cache's 200 must be typed
     application/octet-stream, with X-Content-Type-Options: nosniff, and
     carry no Age, on a second GET either; and the object in the
     collection must come back intact afterward. The origins are asked
-    only if they take direct clients."""
+    only if they take direct clients.
+    """
     caps = test.caps("protected-a")
     token = test.tokens["protected-a"]
     path = test.path("protected-a", "tree/sub")
@@ -702,8 +773,13 @@ def collection_get(test: Test) -> tuple[str, str]:
 
 
 class Anchors(HTMLParser):
-    """The links (<a href>) of an HTML page: each href, and its text, as a
-    browser reads them, with character references resolved."""
+    """The links (<a href>) of an HTML page, as a browser reads them.
+
+    Character references are resolved.
+
+    Attributes:
+        links: Each link's href, and its text.
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -727,7 +803,7 @@ class Anchors(HTMLParser):
 
 
 def anchors(page: bytes) -> list[tuple[str, str]]:
-    """The links of an HTML page (see Anchors)."""
+    """Return the links of an HTML page (see Anchors)."""
     parser = Anchors()
     parser.feed(page.decode("utf-8", "replace"))
     parser.close()
@@ -743,9 +819,12 @@ QUERY_SAFE = "".join(chr(c) for c in range(0x21, 0x7F) if chr(c) not in "\"#<>'"
 
 
 def followed(page: str, href: str) -> str:
-    """The URL that a browser asks for when it follows a link to href on
-    the page at URL page: href resolved against page, without its
-    fragment, and percent-encoded as PATH_SAFE and QUERY_SAFE say."""
+    """Return the URL a browser asks for, following a link to href on page.
+
+    page is the page's URL. The URL is href resolved against page,
+    without its fragment, and percent-encoded as PATH_SAFE and QUERY_SAFE
+    say.
+    """
     parts = urlsplit(urljoin(page, href))
     return urlunsplit(
         (
@@ -759,13 +838,13 @@ def followed(page: str, href: str) -> str:
 
 
 def is_html(answer: web.Response) -> bool:
-    """Whether answer is an HTML page."""
+    """Return whether answer is an HTML page."""
     kind = answer.header("Content-Type").lower()
     return answer.status == 200 and kind.startswith("text/html")
 
 
-# html-links' collection, beside the names suite's objects: its name, and
-# the size of the one object in it.
+# html-links' collection, beside the objects of NAMES: its name, and the
+# size of the one object in it.
 HTML_SUB = "sub"
 HTML_INNER = 4321
 
@@ -773,10 +852,13 @@ HTML_INNER = 4321
 def link_problems(
     test: Test, svc: str, page: str, listing: web.Response, objects: Mapping[str, bytes]
 ) -> list[str]:
-    """What is wrong with the links of listing, the HTML listing at URL
-    page of a collection that holds objects (by name) and HTML_SUB, at
-    origin svc. A link is known by its text, the entry's name (a
-    collection's with a / after it), as a browser's user knows it."""
+    """Return what is wrong with the links of listing, at origin svc.
+
+    listing is the HTML listing at URL page of a collection that holds
+    objects (by name) and HTML_SUB. A link is known by its text, the
+    entry's name (a collection's with a / after it), as a browser's user
+    knows it.
+    """
     token = test.tokens["protected-a"]
     host = urlsplit(page).netloc
     problems: list[str] = []
@@ -816,23 +898,26 @@ def link_problems(
 
 
 def html_links(test: Test) -> tuple[str, str]:
-    """Each origin's HTML listing (a GET with Accept: text/html) of a
-    collection that holds the names suite's objects, beside their decoys,
-    and a collection, HTML_SUB: following each link as a browser does
-    (followed()) must bring the object of its name, never a decoy's bytes
-    or a 404, and the link to HTML_SUB, or to the parent (..), if there is
-    one, its listing. Every entry must have a link. A native origin's
-    listing must carry Cache-Control: no-store, as Pelican sends it, so
-    that no cache keeps it. An origin that answers no HTML listing, as
-    only a native origin over storage on its own host does, is passed
-    over, and named in the note; collection-get fails it. The origins are
-    asked only if they take direct clients."""
+    """Check the links of each origin's HTML listing.
+
+    The listing (a GET with Accept: text/html) is of a collection that
+    holds an object for each of NAMES, decoys among them, and a
+    collection, HTML_SUB. Following each link as a browser does
+    (followed()) must bring the object of its name, never a decoy's
+    bytes or a 404, and the link to HTML_SUB, or to the parent (..), if
+    there is one, its listing. Every entry must have a link. A native
+    origin's listing must carry Cache-Control: no-store, as Pelican sends
+    it, so that no cache keeps it. An origin that answers no HTML
+    listing, as only a native origin over storage on its own host does,
+    is passed over, and named in the note; collection-get fails it. The
+    origins are asked only if they take direct clients.
+    """
     caps = test.caps("protected-a")
     if not may_list(caps, "0", "origin"):
         return SKIP, "/protected-a takes no direct clients"
     token = test.tokens["protected-a"]
     rel = f"{test.base}/html"
-    # Each a size of its own, as in the names suite.
+    # Each a size of its own.
     objects = {name: os.urandom(1000 + 37 * n) for n, name in enumerate(NAMES)}
     errors = stores.make_dirs(test.origins, "protected-a", f"{rel}/{HTML_SUB}", token)
     for name, data in [*objects.items(), (f"{HTML_SUB}/inner", os.urandom(HTML_INNER))]:
@@ -866,12 +951,14 @@ def html_links(test: Test) -> tuple[str, str]:
 
 
 def plain_object_listing(test: Test) -> tuple[str, str]:
-    """PROPFIND Depth 1 of an object, tree/b, which is no collection, at
-    every origin and cache: 207, listing the object alone, with its size,
-    as Depth 0 would (RFC 4918, section 9.1); or, where the server may not
-    list (may_list()), a refusal. And `pelican object ls -l --json` of it
-    must list it alone, where /protected-a has Listings (Pelican's
-    TestListPlainObjectPosixV2)."""
+    """Check Depth 1 of an object, tree/b, which is no collection.
+
+    A PROPFIND at every origin and cache must answer 207, listing the
+    object alone, with its size, as Depth 0 would (RFC 4918, section
+    9.1); or, where the server may not list (may_list()), a refusal. And
+    `pelican object ls -l --json` of it must list it alone, where
+    /protected-a has Listings (Pelican's TestListPlainObjectPosixV2).
+    """
     caps = test.caps("protected-a")
     token = test.tokens["protected-a"]
     path = test.path("protected-a", "tree/b")
@@ -922,15 +1009,20 @@ RUN = {
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no /protected-a."""
+    """Return why there is nothing to test, or None if there is something.
+
+    There is nothing without /protected-a.
+    """
     if "protected-a" not in fed.exports:
         return "this shape does not export /protected-a"
     return None
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Put the tree in place, run the selected scenarios, and remove the
-    run's objects."""
+    """Put the tree in place, run the selected scenarios, and clean up.
+
+    Cleaning up removes the run's objects.
+    """
     fed = session.fed
     for origin in stores.unique(fed.origins):
         for ns in fed.exports:

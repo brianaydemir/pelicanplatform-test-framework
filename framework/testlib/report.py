@@ -16,8 +16,8 @@ names a tag (as smoke.sh does, to tell apart two runs of one suite).
 framework/report.py merges these files and converts them to JUnit XML
 and Markdown.
 
-A suite that prints a row per request, as the auth and owners suites
-do, records each with record() or record_skip().
+A suite that prints a row per request records each with record() or
+record_skip().
 """
 
 import os
@@ -39,28 +39,35 @@ _UNESCAPES = {v: k for k, v in _ESCAPES.items()}
 
 
 def escape(text: str) -> str:
-    """text, with each character that would break a row escaped."""
+    """Return text, with each character that would break a row escaped."""
     return "".join(_ESCAPES.get(c, c) for c in text)
 
 
 def unescape(text: str) -> str:
-    """text, with what escape() did undone."""
+    """Return text, with what escape() did undone."""
     return re.sub(r"\\[\\tnr]", lambda m: _UNESCAPES[m.group(0)], text)
 
 
 def format_table(columns: Sequence[str], rows: Sequence[dict[str, str]]) -> str:
-    """A header row, then each row's columns, tab-separated and escaped."""
+    """Return a table: a header row, then each row's columns.
+
+    The columns are tab-separated and escaped.
+    """
     lines = ["\t".join(columns)]
     lines += ["\t".join(escape(row.get(c, "")) for c in columns) for row in rows]
     return "\n".join(lines) + "\n"
 
 
 def parse_table(text: str) -> list[dict[str, str]]:
-    """The rows of a table that format_table wrote, by column name.
+    """Return the rows of a table that format_table wrote, by column name.
+
     format_table ends each row with a newline, and escapes any other, so
     rows are split at newlines alone (not at the other line boundaries
-    that str.splitlines() knows). ValueError for a row whose number of
-    fields differs from the header's."""
+    that str.splitlines() knows).
+
+    Raises:
+        ValueError: A row's number of fields differs from the header's.
+    """
     lines = [line for line in text.split("\n") if line]
     if not lines:
         return []
@@ -75,13 +82,18 @@ def parse_table(text: str) -> list[dict[str, str]]:
 
 
 def slug(name: str) -> str:
-    """name, safe as a file name."""
+    """Return name, safe as a file name."""
     return re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "results"
 
 
 @dataclass(frozen=True)
 class Row:
-    """A case, as recorded."""
+    """A case, as recorded.
+
+    Attributes:
+        status: One of STATUSES.
+        seconds: Its duration, or None if it has none of its own.
+    """
 
     case: str
     status: str
@@ -90,8 +102,16 @@ class Row:
 
 
 class Report:
-    """The cases one suite ran. A case's duration is, by default, the
-    time since the previous case, or since the Report was made."""
+    """The cases one suite ran.
+
+    A case's duration is, by default, the time since the previous case,
+    or since the Report was made.
+
+    Attributes:
+        suite: The suite's name, with `-<tag>` after it if RESULTS_TAG
+            names a tag.
+        path: The file that write() writes.
+    """
 
     def __init__(self, suite: str, directory: str):
         tag = os.environ.get("RESULTS_TAG")
@@ -103,8 +123,11 @@ class Report:
     def add(
         self, case: str, status: str, note: str = "", seconds: Optional[float] = -1.0
     ) -> None:
-        """Record a case. By default its duration is the time since the
-        previous case; pass None for no duration."""
+        """Record a case.
+
+        By default its duration is the time since the previous case;
+        pass None for no duration.
+        """
         if status not in STATUSES:
             raise ValueError(f"unknown status: {status}")
         now = time.monotonic()
@@ -119,11 +142,11 @@ class Report:
         return sum(1 for row in self.rows if row.status == FAIL)
 
     def count(self, status: str) -> int:
-        """How many cases have status."""
+        """Return how many cases have status."""
         return sum(1 for row in self.rows if row.status == status)
 
     def table(self) -> str:
-        """The cases, as a table."""
+        """Return the cases, as a table."""
         rows = [
             {
                 "suite": self.suite,
@@ -137,9 +160,12 @@ class Report:
         return format_table(COLUMNS, rows)
 
     def write(self, error: Optional[str] = None) -> None:
-        """Write the file. error is why the suite stopped early, if it did:
-        a FAIL row named `setup` if it recorded no case, or else
-        `aborted`."""
+        """Write the file.
+
+        error is why the suite stopped early, if it did: it is recorded
+        as a FAIL row named `setup` if the suite recorded no case, or
+        else `aborted`.
+        """
         if error:
             self.add("aborted" if self.rows else "setup", FAIL, error)
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -148,16 +174,21 @@ class Report:
 
 
 def label(svc: str, role: str) -> str:
-    """What rows call service svc in role (origin or cache). In `tiny`,
-    one service is both."""
+    """Return what rows call service svc in role (origin or cache).
+
+    In `tiny`, one service is both.
+    """
     return svc if svc.startswith(f"{role}-") else f"{svc}-{role}"
 
 
 def record(
     report: Report, heading: str, case: str, answer: web.Response, why: str, note: str = ""
 ) -> None:
-    """Print heading and answer's status as a row, and record case: failed
-    because of why, or passed, with note."""
+    """Print heading and answer's status as a row, and record case.
+
+    It failed because of why, if there is one, or else passed, with
+    note.
+    """
     code = "000" if answer.status is None else str(answer.status)
     line = f"{heading} {code:>4}"
     if why:
@@ -169,6 +200,6 @@ def record(
 
 
 def record_skip(report: Report, heading: str, case: str, why: str) -> None:
-    """Print heading as a row, and record case as skipped because of why."""
+    """Print heading as a row, and record case, skipped because of why."""
     print(f"{heading}       SKIP  {why}")
     report.add(case, SKIP, why)

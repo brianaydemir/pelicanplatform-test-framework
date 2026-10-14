@@ -1,12 +1,14 @@
-"""Metadata publishing (`-p origin-metadata` or `-p origin-metadata-tx`):
-upload objects with and without metadata, and check the events that
-reach the recorder (framework/var/data/metadata/); the URLs by which an
-uploader follows or cancels its event; the events that a MOVE, a COPY,
-and a collection's DELETE send, and those the reconcile sweep must not;
-the first origin's admin APIs over its record of objects and its publish
-queue, and the CLI over the record; and refusing uploads while a
-namespace's queue is full. With publishing off, only `queue-admin off`
-runs: the queue's admin API must say that publishing is off.
+"""Metadata publishing (`-p origin-metadata` or `-p origin-metadata-tx`).
+
+The suite uploads objects with and without metadata, and checks the
+events that reach the recorder (framework/var/data/metadata/); the URLs
+by which an uploader follows or cancels its event; the events that a
+MOVE, a COPY, and a collection's DELETE send, and those the reconcile
+sweep must not; the first origin's admin APIs over its record of
+objects and its publish queue, and the CLI over the record; and
+refusing uploads while a namespace's queue is full. With publishing
+off, only `queue-admin off` runs: the queue's admin API must say that
+publishing is off.
 
 Objects go under /protected-a/data/metadata/. `fields` and `blob` use
 `pelican object put` through the director; the rest go straight to the
@@ -145,13 +147,29 @@ BACKPRESSURE = "pelican_origin_metadata_backpressure_refusals_total"
 
 
 class Problem(Exception):
-    """A scenario could not do what it needed to judge Pelican: it fails,
-    with this as its note."""
+    """Why a scenario could not do what it needed to judge Pelican.
+
+    The scenario fails, with this as its note.
+    """
 
 
 class Test:
-    """What every scenario needs: a token, the first origin, and the
-    stores to look in."""
+    """What every scenario needs: a token, the first origin, and stores.
+
+    Attributes:
+        mode: Publishing's mode: `eventual` or `transactional`.
+        origin: The first origin.
+        stores: /protected-a's storage in each store.
+        tmp: The run's directory for files to upload.
+        token: /protected-a's `server` token.
+        fields: The custom fields that `fields` and `blob` send.
+        web: The first origin's web URL.
+        made: What the scenarios made under data/metadata/, by name, to
+            remove afterward.
+        held: Of those, the objects whose events the recorder always
+            fails, which are deleted through the first origin, so that it
+            records them gone, before the run's queue rows are.
+    """
 
     def __init__(self, session: Session):
         fed = session.fed
@@ -159,14 +177,12 @@ class Test:
         self.fed = fed
         self.mode = fed.metadata
         self.origin = fed.origins[0]
-        # /protected-a's storage in each store.
         self.stores = sorted({o.store_of("protected-a") for o in fed.origins})
         self.tmp = session.path("metadata")
         os.makedirs(self.tmp)
         self.run = session.run
         self.token_file = session.token_file("protected-a")
         self.token = session.token("protected-a")
-        # The custom fields that `fields` and `blob` send.
         self.fields = {
             "experiment": "pelican-test-framework",
             "run_number": int(self.run.split("-")[0]),
@@ -177,10 +193,6 @@ class Test:
         with open(self.fields_file, "w", encoding="utf-8") as f:
             json.dump(self.fields, f, indent=2)
         self.web = self.origin.web_url
-        # What the scenarios made under data/metadata/, by name, to remove
-        # afterward; and of those, the objects whose events the recorder
-        # always fails, which are deleted through the first origin, so
-        # that it records them gone, before the run's queue rows are.
         self.made: set[str] = set(uploaded(self.run))
         self.held: set[str] = set()
         self.admin_file = session.path("tokens/metadata.admin")
@@ -188,21 +200,25 @@ class Test:
         self._user: Optional[str] = None
 
     def url(self, name: str) -> str:
-        """Object name's URL at the first origin."""
+        """Return object name's URL at the first origin."""
         return f"{self.origin.url}{PREFIX}/{quote(name)}"
 
     def admin(self) -> str:
-        """The first origin's admin's bearer token (see web_token()), whose
-        file is admin_file."""
+        """Return the first origin's admin's bearer token (see web_token()).
+
+        Its file is admin_file.
+        """
         if self._admin is None:
             self._admin = web_token(self.fed, self.origin, self.admin_file, "admin")
         return self._admin
 
     def user(self) -> str:
-        """An ordinary user's bearer token for the first origin's web API:
-        USER's, whom its admin creates first, if need be. The admin, and
-        then the user, agree to its AUP, without which it would refuse
-        the user for that, not for being no admin."""
+        """Return USER's bearer token for the first origin's web API.
+
+        USER is an ordinary user, whom its admin creates first, if need be.
+        The admin, and then the user, agree to its AUP, without which it
+        would refuse the user for that, not for being no admin.
+        """
         if self._user is None:
             admin = accounts.Api(self.web, self.admin())
             accounts.agree_to_aup(admin)
@@ -214,14 +230,21 @@ class Test:
         return self._user
 
     def api(self, method: str, route: str, token: Optional[str]) -> accounts.Answer:
-        """Send method to route of the first origin's web API, presenting
-        token, if any."""
+        """Send method to route of the first origin's web API.
+
+        It presents token, if any.
+        """
         return accounts.Api(self.web, token).call(method, route)
 
     def queue_rows(self) -> list[dict[str, Any]]:
-        """Every row of the first origin's publish queue in the namespace,
-        pending or rejected, as its admin lists them, a page at a time.
-        Raises Problem if it won't list them."""
+        """Return the namespace's rows in the first origin's publish queue.
+
+        That is every row, pending or rejected, as its admin lists them, a
+        page at a time.
+
+        Raises:
+            Problem: The origin won't list them.
+        """
         rows: list[dict[str, Any]] = []
         while True:
             query = urlencode({"namespace": NAMESPACE, "limit": 1000, "offset": len(rows)})
@@ -237,13 +260,17 @@ class Test:
                 return rows
 
     def rows_for(self, path: str) -> list[dict[str, Any]]:
-        """queue_rows() for object path."""
+        """Return queue_rows() for object path."""
         return [r for r in self.queue_rows() if r.get("object_path") == path]
 
     def pending(self) -> int:
-        """How many rows of the namespace are pending in the first origin's
-        publish queue, as its health route says. Raises Problem if it won't
-        say."""
+        """Return how many of the namespace's queue rows are pending.
+
+        The health route of the first origin's publish queue says.
+
+        Raises:
+            Problem: The route won't say.
+        """
         answer = self.api("GET", f"{QUEUE}/_health", self.admin())
         if answer.status != 200:
             raise Problem(f"GET {QUEUE}/_health: {answer.describe()}")
@@ -251,20 +278,27 @@ class Test:
         return int(counts.get(NAMESPACE) or 0)
 
     def drop(self, event_id: str) -> Optional[str]:
-        """Delete event_id's row from the first origin's publish queue, as
-        its admin; why that failed, or None."""
+        """Delete event_id's row from the first origin's publish queue.
+
+        Returns:
+            Why the admin's DELETE failed, or None.
+        """
         answer = self.api("DELETE", f"{QUEUE}/{quote(event_id)}", self.admin())
         if answer.status in (200, 204, 404):
             return None
         return f"deleting queue row {event_id}: {answer.describe()}"
 
     def drop_rows(self, paths: Sequence[str]) -> list[str]:
-        """Delete the first origin's queue rows for paths; what went wrong."""
+        """Delete the first origin's queue rows for paths.
+
+        Returns:
+            What went wrong.
+        """
         doomed = [r for r in self.queue_rows() if r.get("object_path") in paths]
         return [e for e in (self.drop(str(r.get("event_id", ""))) for r in doomed) if e]
 
     def object_file(self, name: str) -> Optional[str]:
-        """The object's file in the first store that has it, if any."""
+        """Return the object's file in the first store with it, if any."""
         for store in self.stores:
             path = f"{store}/data/metadata/{name}"
             if os.path.exists(path):
@@ -272,7 +306,7 @@ class Test:
         return None
 
     def holds(self, name: str, data: bytes) -> bool:
-        """Whether a store holds object name, with exactly data."""
+        """Return whether a store holds object name, with exactly data."""
         path = self.object_file(name)
         if path is None:
             return False
@@ -280,7 +314,11 @@ class Test:
             return f.read() == data
 
     def check_stored(self, name: str, data: bytes, capture: str) -> Optional[tuple[str, str]]:
-        """A failure if no store holds object name with exactly data."""
+        """Return a failure if no store holds object name with exactly data.
+
+        Returns:
+            The failing row; None if a store holds it.
+        """
         path = self.object_file(name)
         if path is None:
             return FAIL, f"event {capture}, but the object is in no store"
@@ -291,9 +329,18 @@ class Test:
     def await_event(
         self, path: str, kind: str, seconds: int = 120, after: int = 0
     ) -> tuple[bool, str]:
-        """(True, the ID of a capture of a `kind` event for object path that
-        the verifier accepted, among those since after, a time.time_ns()),
-        waiting up to seconds; on a timeout, (False, why)."""
+        """Wait up to seconds for a `kind` event for object path.
+
+        Args:
+            path: The object's path.
+            kind: The event's kind, e.g. object.committed.
+            seconds: How long to wait.
+            after: A time.time_ns(): only captures since then count.
+
+        Returns:
+            True, and the ID of a capture of such an event that the
+            verifier accepted; or, on a timeout, False, and why.
+        """
         for _ in range(seconds):
             accepted = [row[0] for row in since(after) if row[1:4] == ["200", kind, path]]
             if accepted:
@@ -307,9 +354,17 @@ class Test:
     def await_all(
         self, wanted: Sequence[tuple[str, tuple[str, ...]]], after: int, seconds: float
     ) -> list[str]:
-        """Wait up to seconds for an event that the verifier accepted, since
-        after (a time.time_ns()), for each object path in wanted, of one of
-        its kinds; what never came, each said as `<kinds> for <path>`."""
+        """Wait up to seconds for an accepted event for each path in wanted.
+
+        Args:
+            wanted: Object paths, each with the kinds of event, any of
+                which will do, that the verifier must accept.
+            after: A time.time_ns(): only events since then count.
+            seconds: How long to wait.
+
+        Returns:
+            What never came, each said as `<kinds> for <path>`.
+        """
 
         def missing() -> list[str]:
             rows = [row for row in since(after) if row[1:2] == ["200"]]
@@ -323,8 +378,10 @@ class Test:
         return missing()
 
     def direct_put(self, data: bytes, name: str, metadata: str) -> web.Response:
-        """Upload data as object name straight to the first origin, with
-        X-Pelican-Object-Metadata metadata."""
+        """Upload data as object name straight to the first origin.
+
+        Its X-Pelican-Object-Metadata is metadata.
+        """
         return web.request(
             "PUT",
             f"{self.origin.url}{PREFIX}/{name}",
@@ -334,8 +391,11 @@ class Test:
         )
 
     def client_put(self, name: str, data: bytes, *flags: str) -> tuple[bool, str]:
-        """Upload data as object name with `pelican object put` and flags;
-        (whether it succeeded, the last line it logged)."""
+        """Upload data as object name with `pelican object put` and flags.
+
+        Returns:
+            Whether it succeeded, and the last line it logged.
+        """
         source = os.path.join(self.tmp, name)
         with open(source, "wb") as f:
             f.write(data)
@@ -352,8 +412,11 @@ class Test:
 
 
 def web_token(fed: common.Federation, origin: common.Origin, out: str, username: str) -> str:
-    """A bearer token that origin's web API takes as username's
-    (credentials.mint_user()), lasting the whole suite, written to out."""
+    """Return a bearer token that origin's web API takes as username's.
+
+    It lasts the whole suite, and is written to out (see
+    credentials.mint_user()).
+    """
     return credentials.mint_user(
         fed,
         out,
@@ -375,8 +438,13 @@ def fetch(method: str, url: str, token: Optional[str] = None) -> accounts.Answer
 
 
 def go_time(text: Any) -> Optional[float]:
-    """A time as Go's encoding/json writes it (RFC 3339, perhaps with
-    nanoseconds), in Unix time; None if text is none."""
+    """Return text, a time as Go's encoding/json writes it, in Unix time.
+
+    Go writes RFC 3339, perhaps with nanoseconds.
+
+    Returns:
+        The time; None if text is none, or no such time.
+    """
     found = re.fullmatch(
         r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)", str(text)
     )
@@ -388,12 +456,12 @@ def go_time(text: Any) -> Optional[float]:
 
 
 def outcome(problems: Sequence[str], note: str) -> Row:
-    """FAIL with the first of problems, if any; else PASS with note."""
+    """Return a row: FAIL with the first of problems, or PASS with note."""
     return (FAIL, first(problems)) if problems else (PASS, note)
 
 
 def guarded(check: Callable[[], Row]) -> Row:
-    """check's row; a FAIL if it could not set up, or raised."""
+    """Return check's row, or a FAIL if it could not set up, or raised."""
     try:
         return check()
     except (Problem, accounts.ApiError, stores.Unreadable) as e:
@@ -406,8 +474,10 @@ def guarded(check: Callable[[], Row]) -> Row:
 
 
 def same(got: object, want: object) -> bool:
-    """Whether a value from an event's JSON is want, type and all: 1 is
-    not True, nor 1.0."""
+    """Return whether got, from an event's JSON, is want, type and all.
+
+    So 1 is not True, nor 1.0.
+    """
     return json.dumps(got, sort_keys=True) == json.dumps(want, sort_keys=True)
 
 
@@ -416,7 +486,7 @@ def same(got: object, want: object) -> bool:
 
 
 def fields(test: Test) -> tuple[str, str]:
-    """`object put --metadata-file`: the event carries the fields."""
+    """Check that an `object put --metadata-file` event has the fields."""
     name = f"{test.run}-fields"
     data = os.urandom(65536)
     ok, last = test.client_put(name, data, "--metadata-file", test.fields_file)
@@ -439,7 +509,10 @@ def fields(test: Test) -> tuple[str, str]:
 
 
 def blob(test: Test) -> tuple[str, str]:
-    """`--metadata-body` too: the event carries the blob, byte for byte."""
+    """Check that the event carries the blob, byte for byte.
+
+    The upload has `--metadata-body` too, besides `--metadata-file`.
+    """
     name = f"{test.run}-blob"
     data = os.urandom(65536)
     sent = (
@@ -468,7 +541,7 @@ def blob(test: Test) -> tuple[str, str]:
 
 
 def update(test: Test) -> tuple[str, str]:
-    """Overwriting an object sends object.updated."""
+    """Check that overwriting an object sends object.updated."""
     name = f"{test.run}-update"
     answer = test.direct_put(os.urandom(4096), name, 'step="create"')
     arrived, capture = test.await_event(f"{PREFIX}/{name}", "object.committed")
@@ -496,7 +569,7 @@ def update(test: Test) -> tuple[str, str]:
 
 
 def delete(test: Test) -> tuple[str, str]:
-    """Deleting an object sends object.deleted."""
+    """Check that deleting an object sends object.deleted."""
     name = f"{test.run}-delete"
     answer = test.direct_put(os.urandom(4096), name, 'step="create"')
     arrived, capture = test.await_event(f"{PREFIX}/{name}", "object.committed")
@@ -513,7 +586,10 @@ def delete(test: Test) -> tuple[str, str]:
 
 
 def status(test: Test) -> tuple[str, str]:
-    """The origin answers X-Pelican-Metadata-Status: published."""
+    """Check that the origin answers X-Pelican-Metadata-Status: published.
+
+    The upload's object.committed event must then arrive.
+    """
     name = f"{test.run}-status"
     answer = test.direct_put(os.urandom(4096), name, 'step="status"')
     got = answer.header("X-Pelican-Metadata-Status")
@@ -526,10 +602,20 @@ def status(test: Test) -> tuple[str, str]:
 
 
 def fault(test: Test, scenario: str, name: str, eventual_status: str) -> tuple[str, str]:
-    """The recorder fails deliveries for objects named like name (see
+    """Check that an upload whose delivery fails goes as the mode says.
+
+    The recorder fails deliveries for objects named like name (see
     framework/metadata-server/recorder.py). In transactional mode the
     upload must fail with a 5xx and leave nothing behind; in eventual
-    mode it must succeed, with X-Pelican-Metadata-Status eventual_status."""
+    mode it must succeed, with X-Pelican-Metadata-Status eventual_status.
+
+    Args:
+        test: The suite's run.
+        scenario: `retry`, for a delivery that fails once, or `reject`.
+        name: The object's name.
+        eventual_status: The X-Pelican-Metadata-Status that eventual
+            mode must answer.
+    """
     answer = test.direct_put(os.urandom(4096), name, f'step="{scenario}"')
     got = answer.header("X-Pelican-Metadata-Status")
     if test.mode == "transactional":
@@ -562,18 +648,17 @@ def fault(test: Test, scenario: str, name: str, eventual_status: str) -> tuple[s
 
 
 def retry(test: Test) -> tuple[str, str]:
-    """fault() for a delivery that fails once."""
+    """Check, as fault() does, a delivery that fails once."""
     return fault(test, "retry", f"fail-once-{test.run}", "queued")
 
 
 def reject(test: Test) -> tuple[str, str]:
-    """fault() for a delivery rejected with 422."""
+    """Check, as fault() does, a delivery rejected with 422."""
     return fault(test, "reject", f"reject-{test.run}", "rejected")
 
 
 def uploaded(run_id: str) -> list[str]:
-    """The names of the objects that the first seven scenarios upload in
-    run run_id."""
+    """Return the names of the first seven scenarios' objects in run_id."""
     names = [f"{run_id}-{s}" for s in ("fields", "blob", "update", "delete", "status")]
     return names + [f"fail-once-{run_id}", f"reject-{run_id}"]
 
@@ -594,10 +679,16 @@ RUN = {
 
 
 def issued(answer: web.Response, name: str, wanted: str) -> tuple[str, str]:
-    """The query and manage URLs that answer, to the upload of object
-    name, hands the uploader, whose X-Pelican-Metadata-Status must be
-    wanted; raises Problem if the upload failed, says otherwise, or lacks
-    either URL."""
+    """Return the query and manage URLs that answer hands the uploader.
+
+    Args:
+        answer: The answer to the upload of object name.
+        name: The object's name.
+        wanted: The X-Pelican-Metadata-Status that answer must have.
+
+    Raises:
+        Problem: The upload failed, says otherwise, or lacks either URL.
+    """
     if not answer.ok:
         raise Problem(f"uploading {name} got {answer.describe()}")
     got = answer.header(STATUS_HEADER)
@@ -619,8 +710,11 @@ def issued(answer: web.Response, name: str, wanted: str) -> tuple[str, str]:
 
 
 def read_status(url: str, path: str, state: str) -> Optional[str]:
-    """Why a GET of status URL url does not say that object path's event
-    is in state, or None."""
+    """Return why status URL url does not say path's event is in state.
+
+    Returns:
+        Why a GET of url does not, or None if it does.
+    """
     answer = fetch("GET", url)
     if answer.status != 200:
         return f"GET {url} got {answer.describe()}, not 200"
@@ -634,7 +728,7 @@ def read_status(url: str, path: str, state: str) -> Optional[str]:
 
 
 def not_gone(urls: Sequence[str]) -> Optional[str]:
-    """Why a GET of each of urls does not answer 404, or None."""
+    """Return why a GET of each of urls does not answer 404, or None."""
     for url in urls:
         answer = fetch("GET", url)
         if answer.status != 404:
@@ -643,9 +737,12 @@ def not_gone(urls: Sequence[str]) -> Optional[str]:
 
 
 def urls_queued(test: Test) -> Row:
-    """A delivery that fails once: the upload hands out both URLs, each of
-    which reads the event as pending, and answers 404 once the event is
-    delivered, which deletes it."""
+    """Check that the status URLs follow a delivery that fails once.
+
+    The upload hands out both URLs, each of which reads the event as
+    pending, and answers 404 once the event is delivered, which deletes
+    it.
+    """
     name = f"fail-once-{test.run}-urls"
     path = f"{PREFIX}/{name}"
     test.made.add(name)
@@ -662,9 +759,11 @@ def urls_queued(test: Test) -> Row:
 
 
 def urls_rejected(test: Test) -> Row:
-    """A delivery rejected with 422: the upload hands out both URLs, each
-    of which reads the event as rejected, which it stays; the manage URL
-    removes it."""
+    """Check that the status URLs follow a delivery rejected with 422.
+
+    The upload hands out both URLs, each of which reads the event as
+    rejected, which it stays; the manage URL removes it.
+    """
     name = f"reject-{test.run}-urls"
     path = f"{PREFIX}/{name}"
     test.made.add(name)
@@ -684,11 +783,14 @@ def urls_rejected(test: Test) -> Row:
 
 
 def urls_cancel(test: Test) -> Row:
-    """A delivery that always fails: the query URL may only read the
+    """Check that only the manage URL cancels an event.
+
+    The event's delivery always fails. The query URL may only read the
     event, so its DELETE gets 403, and the event stays; the manage URL's
     DELETE cancels it (200), after which both URLs answer 404, and the
     recorder gets no more deliveries of it, though the next retry was due
-    within seconds."""
+    within seconds.
+    """
     name = f"fail-always-{test.run}-urls"
     path = f"{PREFIX}/{name}"
     test.made.add(name)
@@ -729,10 +831,12 @@ def urls_cancel(test: Test) -> Row:
 
 
 def status_urls(test: Test) -> dict[str, Row]:
-    """The URLs by which an uploader follows or cancels its event, which
-    an eventual-mode upload hands out whenever its event outlives it
+    """Check the URLs by which an uploader follows or cancels its event.
+
+    An eventual-mode upload hands them out whenever its event outlives it
     (handleMetadataStatus and handleMetadataCancel in
-    origin_serve/metadata_status_api.go)."""
+    origin_serve/metadata_status_api.go).
+    """
     if test.mode != "eventual":
         why = "transactional mode hands out no status URLs: an event never outlives its upload"
         return {case: (SKIP, why) for case in CASES["status-urls"]}
@@ -748,9 +852,14 @@ def status_urls(test: Test) -> dict[str, Row]:
 
 
 def committed(test: Test, name: str, metadata: str) -> None:
-    """Upload object name straight to the first origin, with
-    X-Pelican-Object-Metadata metadata, and wait for its object.committed
-    event; raises Problem if it does not come."""
+    """Upload object name, and wait for its object.committed event.
+
+    It goes straight to the first origin, with X-Pelican-Object-Metadata
+    metadata.
+
+    Raises:
+        Problem: The event does not come.
+    """
     test.made.add(name.split("/", 1)[0])
     answer = test.direct_put(os.urandom(4096), name, metadata)
     arrived, why = test.await_event(f"{PREFIX}/{name}", "object.committed", EVENT_WAIT)
@@ -759,11 +868,14 @@ def committed(test: Test, name: str, metadata: str) -> None:
 
 
 def catalog_move(test: Test) -> Row:
-    """MOVE an object to a new name: the new path must get an
+    """Check that a MOVE sends events for both the new path and the old.
+
+    MOVE an object to a new name: the new path must get an
     object.committed (or object.updated) event, and the old one an
     object.deleted. Pelican records the rename in its own record of
     objects, but publishes nothing (aferoFileSystem.Rename in
-    origin_serve/filesystem.go)."""
+    origin_serve/filesystem.go).
+    """
     src, dst = f"{test.run}-move-from", f"{test.run}-move-to"
     test.made.add(dst)
     committed(test, src, 'step="move"')
@@ -789,9 +901,12 @@ def catalog_move(test: Test) -> Row:
 
 
 def catalog_copy(test: Test) -> Row:
-    """COPY an object that was uploaded with custom metadata to a new
-    name: the copy's object.committed event must carry the source's
-    fields, compared type for type. The COPY carries none of its own."""
+    """Check that a COPY's event carries the source's custom metadata.
+
+    COPY an object that was uploaded with custom metadata to a new name:
+    the copy's object.committed event must carry the source's fields,
+    compared type for type. The COPY carries none of its own.
+    """
     src, dst = f"{test.run}-copy-from", f"{test.run}-copy-to"
     test.made.add(dst)
     custom = {"step": "copy", "experiment": "pelican-testing"}
@@ -816,10 +931,13 @@ def catalog_copy(test: Test) -> Row:
 
 
 def catalog_collection_delete(test: Test) -> Row:
-    """DELETE a collection that holds two objects: each must get an
+    """Check that a collection's DELETE sends each object an object.deleted.
+
+    DELETE a collection that holds two objects: each must get an
     object.deleted event. Pelican publishes one, for the collection's own
     path, which the note mentions (aferoFileSystem.RemoveAll in
-    origin_serve/filesystem.go)."""
+    origin_serve/filesystem.go).
+    """
     collection = f"{test.run}-collection"
     children = [f"{collection}/one", f"{collection}/two"]
     for child in children:
@@ -840,8 +958,10 @@ def catalog_collection_delete(test: Test) -> Row:
 
 
 def catalog(test: Test) -> dict[str, Row]:
-    """The events that changes to the store other than an upload send.
-    The reconcile rows run later (reconcile_rows())."""
+    """Check the events that changes to the store other than an upload send.
+
+    The reconcile rows run later (reconcile_rows()).
+    """
     return {
         "move": guarded(lambda: catalog_move(test)),
         "copy": guarded(lambda: catalog_copy(test)),
@@ -850,15 +970,23 @@ def catalog(test: Test) -> dict[str, Row]:
 
 
 def tracked(test: Test, path: str) -> bool:
-    """Whether the first origin's record of objects has a live row for
-    object path."""
+    """Return whether the first origin's record of objects has object path.
+
+    That is, whether it has a live row for it.
+    """
     query = urlencode({"namespace": NAMESPACE, "path": path})
     return test.api("GET", f"{OBJECTS}/lookup?{query}", test.admin()).status == 200
 
 
 def cancelled_object(test: Test) -> str:
-    """reconcile-cancelled's object: an upload whose event the recorder
-    always fails, cancelled through its manage URL. Its path."""
+    """Make reconcile-cancelled's object, and return its path.
+
+    It is an upload whose event the recorder always fails, cancelled
+    through its manage URL.
+
+    Raises:
+        Problem: It could not be made.
+    """
     name = f"fail-always-{test.run}-reconcile"
     test.made.add(name)
     test.held.add(name)
@@ -871,8 +999,13 @@ def cancelled_object(test: Test) -> str:
 
 
 def rejected_object(test: Test) -> str:
-    """reconcile-rejected's object: an upload whose event the recorder
-    rejects (422). Its path."""
+    """Make reconcile-rejected's object, and return its path.
+
+    It is an upload whose event the recorder rejects (422).
+
+    Raises:
+        Problem: It could not be made.
+    """
     name = f"reject-{test.run}-reconcile"
     test.made.add(name)
     issued(test.direct_put(os.urandom(4096), name, 'step="reconcile"'), name, "rejected")
@@ -880,9 +1013,14 @@ def rejected_object(test: Test) -> str:
 
 
 def observed_object(test: Test) -> str:
-    """reconcile-observed's object: one written straight to the first
-    origin's store, which the origin then serves, and so records, as an
-    object it did not write. Its path."""
+    """Make reconcile-observed's object, and return its path.
+
+    It is one written straight to the first origin's store, which the
+    origin then serves, and so records, as an object it did not write.
+
+    Raises:
+        Problem: It could not be made.
+    """
     name = f"{test.run}-observed"
     test.made.add(name)
     error = stores.write_file(
@@ -897,8 +1035,11 @@ def observed_object(test: Test) -> str:
 
 
 def reconcile_config() -> str:
-    """The reconcile restart's configuration: a sweep every
-    RECONCILE_INTERVAL seconds, of objects at rest for RECONCILE_SETTLE."""
+    """Return the reconcile restart's configuration.
+
+    It sets a sweep every RECONCILE_INTERVAL seconds, of objects at rest
+    for RECONCILE_SETTLE.
+    """
     lines = [
         "Origin:",
         "  Metadata:",
@@ -910,7 +1051,9 @@ def reconcile_config() -> str:
 
 
 def reconcile_rows(test: Test) -> dict[str, Row]:
-    """The reconcile sweep re-enqueues an object whose publish was lost,
+    """Check that the reconcile sweep re-enqueues only lost publishes.
+
+    The reconcile sweep re-enqueues an object whose publish was lost,
     as to a crash between the commit and the queue's write
     (Origin.Metadata.ReconcileEnabled), and only such an object: one this
     origin wrote, whose event never reached the catalog. Make an event
@@ -921,7 +1064,8 @@ def reconcile_rows(test: Test) -> dict[str, Row]:
     come. Pelican's sweep takes every live record without a publish of
     its etag and with no pending queue row (ReconcileCandidates in
     origin_serve/object_metadata.go), so it is predicted to republish all
-    three, the rejected one at every sweep."""
+    three, the rejected one at every sweep.
+    """
     if test.mode != "eventual":
         only = "eventual mode only: a transactional event is never cancelled or kept rejected"
         return {case: (SKIP, only) for case in RECONCILE_CASES}
@@ -982,9 +1126,14 @@ def reconcile_rows(test: Test) -> dict[str, Row]:
 
 
 def refusals(test: Test, routes: Sequence[tuple[str, str]]) -> list[str]:
-    """What is wrong with how the first origin answers each of routes (a
-    method and a route of its web API): with no token, it must get 401,
-    and as USER, an ordinary user, 403."""
+    """Return what is wrong with the first origin's answers to routes.
+
+    With no token, each must get 401, and as USER, an ordinary user, 403.
+
+    Args:
+        test: The suite's run.
+        routes: Each a method, and a route of the origin's web API.
+    """
     problems: list[str] = []
     user = test.user()
     for method, route in routes:
@@ -998,9 +1147,15 @@ def refusals(test: Test, routes: Sequence[tuple[str, str]]) -> list[str]:
 
 
 def object_routes(path: str) -> list[tuple[str, str]]:
-    """The routes of the record of objects that the CLI's `list`, `get`,
-    and `history` each ask, for the namespace and object path, as their
-    flags in cli_args() ask them (cmd/origin_object_metadata.go)."""
+    """Return the routes that the CLI's `list`, `get`, and `history` ask.
+
+    They are routes of the record of objects, for the namespace and object
+    path, as the flags in cli_args() ask them
+    (cmd/origin_object_metadata.go).
+
+    Returns:
+        Each subcommand, with its route.
+    """
     listed = urlencode({"namespace": NAMESPACE, "limit": 5})
     looked_up = urlencode({"namespace": NAMESPACE, "path": path, "history": 5})
     history = urlencode({"namespace": NAMESPACE, "path": path, "limit": 100})
@@ -1012,8 +1167,10 @@ def object_routes(path: str) -> list[tuple[str, str]]:
 
 
 def cli_args(subcommand: str, path: str) -> list[str]:
-    """The flags of `origin object-metadata <subcommand>` that ask what
-    object_routes() names for it."""
+    """Return subcommand, with the flags of `origin object-metadata` for it.
+
+    They ask what object_routes() names for it.
+    """
     flags = {
         "list": ["--namespace", NAMESPACE, "--limit", "5"],
         "get": ["--namespace", NAMESPACE, "--path", path, "--history", "5"],
@@ -1023,9 +1180,16 @@ def cli_args(subcommand: str, path: str) -> list[str]:
 
 
 def tracked_object(test: Test) -> tuple[str, int]:
-    """Upload an object straight to the first origin, and wait until its
-    record of objects has it; its path and size. Raises Problem if
-    either fails."""
+    """Upload an object straight to the first origin.
+
+    It then waits until the origin's record of objects has it.
+
+    Returns:
+        The object's path and size.
+
+    Raises:
+        Problem: Either fails.
+    """
     name = f"{test.run}-tracked"
     test.made.add(name)
     data = os.urandom(3000)
@@ -1039,10 +1203,18 @@ def tracked_object(test: Test) -> tuple[str, int]:
 
 
 def objects_api(test: Test, path: str, size: int) -> Row:
-    """The record of objects' admin routes (RegisterObjectMetadataAdminAPI
-    in origin_serve/object_metadata_admin.go): each refuses no one (401)
-    and an ordinary user (403); the admin's lookup has the object, of its
-    size, and its history a `commit`."""
+    """Check that the record of objects' admin routes serve the admin alone.
+
+    The routes are RegisterObjectMetadataAdminAPI's, in
+    origin_serve/object_metadata_admin.go. Each refuses no one (401) and
+    an ordinary user (403); the admin's lookup has the object, of its
+    size, and its history a `commit`.
+
+    Args:
+        test: The suite's run.
+        path: A tracked object's path (see tracked_object()).
+        size: Its size, in bytes.
+    """
     routes = dict(object_routes(path))
     problems = refusals(test, [("GET", route) for route in routes.values()])
     admin = test.admin()
@@ -1063,8 +1235,10 @@ def objects_api(test: Test, path: str, size: int) -> Row:
 
 
 def steady(value: Any) -> Any:
-    """value, a decoded JSON answer, without the access times that the
-    origin records as it pleases (`last_accessed`)."""
+    """Return value, a decoded JSON answer, without its access times.
+
+    The origin records those as it pleases (`last_accessed`).
+    """
     found = common.as_object(value)
     if found is not None:
         return {k: steady(v) for k, v in found.items() if k != "last_accessed"}
@@ -1075,9 +1249,16 @@ def steady(value: Any) -> Any:
 
 
 def objects_cli(test: Test, path: str) -> Row:
-    """`pelican-server origin object-metadata list`, `get`, and `history`
-    at the first origin, with the admin's token file: each must print
-    what the route it asks answers the admin."""
+    """Check that the record's CLI prints what its routes answer the admin.
+
+    The CLI is `pelican-server origin object-metadata list`, `get`, and
+    `history` at the first origin, with the admin's token file: each must
+    print what the route it asks answers the admin.
+
+    Args:
+        test: The suite's run.
+        path: A tracked object's path (see tracked_object()).
+    """
     server = test.session.pelican_server
     if server is None:
         return SKIP, "no pelican-server, which has `origin object-metadata`; run ./fed.sh init"
@@ -1117,8 +1298,10 @@ def objects_cli(test: Test, path: str) -> Row:
 
 
 def object_metadata_cli(test: Test) -> dict[str, Row]:
-    """The first origin's record of objects (Origin.Metadata.TrackAccess):
-    its admin API, and the CLI over it."""
+    """Check the first origin's record of objects: its admin API, and CLI.
+
+    See Origin.Metadata.TrackAccess.
+    """
     try:
         path, size = tracked_object(test)
     except Problem as e:
@@ -1134,11 +1317,19 @@ def object_metadata_cli(test: Test) -> dict[str, Row]:
 
 
 def held_event(test: Test) -> tuple[str, str]:
-    """Queue an event that the recorder always fails, in either mode, as
-    the first origin publishes object.deleted for what it deletes: write
-    an object straight to its store, and DELETE it through the origin.
-    Its event's ID and object path, once its first delivery has failed;
-    raises Problem if it is not queued within EVENT_WAIT seconds."""
+    """Queue an event that the recorder always fails, in either mode.
+
+    As the first origin publishes object.deleted for what it deletes, it
+    writes an object straight to its store, and DELETEs it through the
+    origin.
+
+    Returns:
+        Its event's ID and object path, once its first delivery has
+        failed.
+
+    Raises:
+        Problem: It is not queued within EVENT_WAIT seconds.
+    """
     name = f"fail-always-{test.run}-held"
     path = f"{PREFIX}/{name}"
     test.made.add(name)
@@ -1162,8 +1353,10 @@ def held_event(test: Test) -> tuple[str, str]:
 
 
 def queue_routes(event_id: str) -> list[tuple[str, str]]:
-    """The publish queue's admin routes (RegisterMetadataAdminAPI in
-    origin_serve/metadata_admin.go), for event event_id."""
+    """Return the publish queue's admin routes, for event event_id.
+
+    See RegisterMetadataAdminAPI in origin_serve/metadata_admin.go.
+    """
     row = f"{QUEUE}/{quote(event_id)}"
     return [
         ("GET", QUEUE),
@@ -1175,8 +1368,11 @@ def queue_routes(event_id: str) -> list[tuple[str, str]]:
 
 
 def queue_auth(test: Test, event_id: str) -> Row:
-    """Each route refuses no one (401) and an ordinary user (403), and the
-    event is still there for the admin."""
+    """Check that each queue route refuses no one and an ordinary user.
+
+    No one gets 401, and an ordinary user 403; and the event is still
+    there for the admin.
+    """
     problems = refusals(test, queue_routes(event_id))
     kept = test.api("GET", f"{QUEUE}/{quote(event_id)}", test.admin())
     if kept.status != 200:
@@ -1185,8 +1381,11 @@ def queue_auth(test: Test, event_id: str) -> Row:
 
 
 def queue_views(test: Test, event_id: str, path: str) -> Row:
-    """The admin's list has the event, the queue's health counts it, and
-    a GET of it shows it; a GET of an event that isn't there gets 404."""
+    """Check that the admin's views of the queue show the event.
+
+    The admin's list has the event, the queue's health counts it, and a
+    GET of it shows it; a GET of an event that isn't there gets 404.
+    """
     admin = test.admin()
     problems: list[str] = []
     listed = [r for r in test.queue_rows() if r.get("event_id") == event_id]
@@ -1214,11 +1413,14 @@ def queue_views(test: Test, event_id: str, path: str) -> Row:
 
 
 def queue_retry(test: Test, event_id: str) -> Row:
-    """With the event's next delivery minutes away, the admin's retry must
+    """Check that the admin's retry has the event delivered again.
+
+    With the event's next delivery minutes away, the admin's retry must
     answer 200 and have it delivered again within RETRY_WAIT seconds.
     Pelican's handler moves the row's next attempt to now, but wakes no
     worker (retryQueueRowHandler in origin_serve/metadata_admin.go), which
-    sleeps until the attempt it last saw due."""
+    sleeps until the attempt it last saw due.
+    """
     row = test.api("GET", f"{QUEUE}/{quote(event_id)}", test.admin())
     due = go_time(row.object.get("next_attempt_at"))
     if row.status != 200 or due is None:
@@ -1239,8 +1441,10 @@ def queue_retry(test: Test, event_id: str) -> Row:
 
 
 def queue_delete(test: Test, event_id: str, path: str) -> Row:
-    """The admin's DELETE of the event removes it: a GET of it gets 404,
-    and the list lacks it."""
+    """Check that the admin's DELETE of the event removes it.
+
+    A GET of it gets 404, and the list lacks it.
+    """
     route = f"{QUEUE}/{quote(event_id)}"
     answer = test.api("DELETE", route, test.admin())
     if answer.status not in (200, 204):
@@ -1255,10 +1459,16 @@ def queue_delete(test: Test, event_id: str, path: str) -> Row:
 
 
 def queue_admin(test: Test, unrestarted: Optional[str]) -> dict[str, Row]:
-    """The publish queue's admin API, with an event held queued. Unless
-    the first origin was restarted with its retries put off
-    (unrestarted, why not, is None), its next delivery is seconds away,
-    and the retry row skips."""
+    """Check the publish queue's admin API, with an event held queued.
+
+    Unless the first origin was restarted with its retries put off, the
+    event's next delivery is seconds away, and the retry row skips.
+
+    Args:
+        test: The suite's run.
+        unrestarted: Why the first origin was not restarted so, or None
+            if it was.
+    """
     try:
         event_id, path = held_event(test)
     except (Problem, accounts.ApiError) as e:
@@ -1274,8 +1484,11 @@ def queue_admin(test: Test, unrestarted: Optional[str]) -> dict[str, Row]:
 
 
 def queue_off(session: Session) -> Row:
-    """With publishing off, the queue's admin routes still refuse no one
-    (401), and tell the admin that publishing is off (503)."""
+    """Check that the queue's admin routes say publishing is off.
+
+    With publishing off, the queue's admin routes still refuse no one
+    (401), and tell the admin that publishing is off (503).
+    """
     origin = session.fed.origins[0]
     token = web_token(session.fed, origin, session.path("tokens/metadata.admin"), "admin")
     problems: list[str] = []
@@ -1294,11 +1507,20 @@ def queue_off(session: Session) -> Row:
 
 
 def past_cap(test: Test, name: str, limit: str, state: str) -> Row:
-    """With the namespace's queue at its cap (state says how), an ordinary
-    upload of object name must be refused with a 5xx, which says to come
-    back later, and leave nothing; and the origin must count the refusal,
-    for the cap on limit (`rows` or `bytes`). Pelican returns the close's
-    error, which x/net's WebDAV handler answers with 405."""
+    """Check that an upload past the namespace's queue cap is refused.
+
+    With the namespace's queue at its cap, an ordinary upload of object
+    name must be refused with a 5xx, which says to come back later, and
+    leave nothing; and the origin must count the refusal, for the cap on
+    limit. Pelican returns the close's error, which x/net's WebDAV
+    handler answers with 405.
+
+    Args:
+        test: The suite's run.
+        name: The object's name.
+        limit: The cap reached: `rows` or `bytes`.
+        state: How the queue is at its cap, for the note.
+    """
     test.made.add(name)
     before = metrics.fetch(test.web) or metrics.EMPTY
     answer = test.direct_put(os.urandom(4096), name, 'step="refused"')
@@ -1317,10 +1539,18 @@ def past_cap(test: Test, name: str, limit: str, state: str) -> Row:
 
 
 def cap_rows(test: Test, cap: int, filled: list[str]) -> Row:
-    """Upload objects whose events the recorder always fails until the
+    """Check that the cap on the namespace's pending rows refuses uploads.
+
+    Upload objects whose events the recorder always fails until the
     namespace has cap rows pending (Origin.Metadata.MaxQueuedPerNamespace),
     each of which must be taken; then an ordinary upload must be refused
-    (past_cap()). filled gets the objects' names."""
+    (past_cap()).
+
+    Args:
+        test: The suite's run.
+        cap: The cap on the namespace's pending rows.
+        filled: Gets the objects' names.
+    """
     pending = test.pending()
     for n in range(cap + ROW_HEADROOM):
         if pending >= cap:
@@ -1342,9 +1572,12 @@ def cap_rows(test: Test, cap: int, filled: list[str]) -> Row:
 
 
 def with_blob(boundary: str, metadata: bytes, data: bytes) -> bytes:
-    """A multipart/form-data body (RFC 7578) of the parts Pelican takes
-    apart by name (splitMultipartParts in origin_serve/metadata_multipart.go):
-    `metadata`, whose bytes are metadata, then `object`, data."""
+    """Return a multipart/form-data body (RFC 7578) of metadata and data.
+
+    Its parts are those Pelican takes apart by name (splitMultipartParts
+    in origin_serve/metadata_multipart.go): `metadata`, whose bytes are
+    metadata, then `object`, data.
+    """
     body = b""
     for name, part in (("metadata", metadata), ("object", data)):
         head = (
@@ -1357,11 +1590,19 @@ def with_blob(boundary: str, metadata: bytes, data: bytes) -> bytes:
 
 
 def cap_bytes(test: Test, filled: list[str], blobs: list[str]) -> Row:
-    """With filled's rows deleted, one upload whose event the recorder
+    """Check that the cap on pending blob bytes refuses uploads.
+
+    With filled's rows deleted, one upload whose event the recorder
     always fails, with a blob of BLOB_CAP bytes, must be taken, and fill
     the namespace's pending blob bytes
     (Origin.Metadata.MaxQueuedBytesPerNamespace); then an ordinary upload
-    must be refused (past_cap()). blobs gets its name."""
+    must be refused (past_cap()).
+
+    Args:
+        test: The suite's run.
+        filled: The objects whose rows cap_rows() filled.
+        blobs: Gets the name of the upload with the blob.
+    """
     errors = test.drop_rows([f"{PREFIX}/{n}" for n in filled])
     if errors:
         raise Problem(f"draining the rows: {errors[0]}")
@@ -1390,8 +1631,11 @@ def cap_bytes(test: Test, filled: list[str], blobs: list[str]) -> Row:
 
 
 def drained(test: Test, held: Sequence[str]) -> Row:
-    """With the held rows deleted through the admin API, an ordinary
-    upload must be taken again, and stored."""
+    """Check that an upload is taken again once the queue drains.
+
+    With the held rows deleted through the admin API, an ordinary upload
+    must be taken again, and stored.
+    """
     errors = test.drop_rows([f"{PREFIX}/{n}" for n in held])
     if errors:
         raise Problem(f"draining the queue: {errors[0]}")
@@ -1410,8 +1654,11 @@ def drained(test: Test, held: Sequence[str]) -> Row:
 
 
 def backpressure(test: Test, cap: int) -> dict[str, Row]:
-    """The namespace's queue capped at cap rows and BLOB_CAP blob bytes:
-    each cap refuses uploads once reached, until the queue drains."""
+    """Check that the namespace's queue caps refuse uploads until it drains.
+
+    The queue is capped at cap rows and BLOB_CAP blob bytes; each cap
+    refuses uploads once reached.
+    """
     filled: list[str] = []
     blobs: list[str] = []
     return {
@@ -1426,17 +1673,21 @@ def backpressure(test: Test, cap: int) -> dict[str, Row]:
 
 
 def unrestartable(test: Test) -> Optional[str]:
-    """Why the first origin cannot be restarted with configuration of the
-    suite's own, or None."""
+    """Return why the first origin cannot be restarted, or None if it can.
+
+    That is, with configuration of the suite's own.
+    """
     if test.fed.tiny:
         return "the tiny topology's origin is the whole federation's process"
     return control.unavailable()
 
 
 def held_config(cap: Optional[int]) -> str:
-    """The configuration of `queue-admin`'s and `backpressure`'s restart:
-    a failed delivery is put off for HELD_BACKOFF, every time; and, given
-    cap, the namespace's queue capped at cap rows and BLOB_CAP bytes."""
+    """Return `queue-admin`'s and `backpressure`'s restart configuration.
+
+    A failed delivery is put off for HELD_BACKOFF, every time; and, given
+    cap, the namespace's queue is capped at cap rows and BLOB_CAP bytes.
+    """
     lines = ["Origin:", "  Metadata:", f"    MinBackoff: {HELD_BACKOFF}"]
     lines.append(f"    MaxBackoff: {HELD_BACKOFF}")
     if cap is not None:
@@ -1446,9 +1697,11 @@ def held_config(cap: Optional[int]) -> str:
 
 
 def serving(test: Test) -> Optional[str]:
-    """Why the namespace is not served as before, or None: every origin
-    must answer a HEAD of the probe, every director name every origin for
-    it, and every federated cache answer a HEAD of it."""
+    """Return why the namespace is not served as before, or None.
+
+    Every origin must answer a HEAD of the probe, every director name
+    every origin for it, and every federated cache answer a HEAD of it.
+    """
     path = f"{PREFIX}/{test.run}-probe"
     for origin in test.fed.origins:
         answer = web.request("HEAD", f"{origin.url}{path}", token=test.token)
@@ -1467,8 +1720,13 @@ def serving(test: Test) -> Optional[str]:
 
 
 def settle(test: Test) -> Optional[str]:
-    """Wait until the federation serves the namespace as before (see
-    serving()); why it doesn't within SETTLE_WAIT seconds, or None."""
+    """Wait until the federation serves the namespace as before.
+
+    See serving().
+
+    Returns:
+        Why it doesn't within SETTLE_WAIT seconds, or None.
+    """
     deadline = time.time() + SETTLE_WAIT
     why = serving(test)
     while why and time.time() < deadline:
@@ -1478,10 +1736,15 @@ def settle(test: Test) -> Optional[str]:
 
 
 def restart_for(test: Test, text: str, body: Callable[[], None]) -> Optional[str]:
-    """Put the probe in every store; restart the first origin with text as
+    """Run body with the first origin restarted with text as configuration.
+
+    Put the probe in every store; restart the first origin with text as
     the last of its configuration layers; run body; restore the origin,
-    and wait until the federation serves again. Why the restart, or
-    restoring, failed, or None."""
+    and wait until the federation serves again.
+
+    Returns:
+        Why putting the probe, the restart, or restoring failed, or None.
+    """
     name = f"{test.run}-probe"
     test.made.add(name)
     for origin in stores.unique(test.fed.origins):
@@ -1505,9 +1768,15 @@ def restart_for(test: Test, text: str, body: Callable[[], None]) -> Optional[str
 
 
 def held_rows(test: Test, wanted: Sequence[str]) -> dict[str, Row]:
-    """`queue-admin`'s and `backpressure`'s rows, of those in wanted, by
-    row name: in one restart of the first origin (held_config()), or,
-    where it can't be restarted, `queue-admin`'s at the origin as it is."""
+    """Run `queue-admin` and `backpressure`, of those in wanted.
+
+    They run in one restart of the first origin (held_config()), or,
+    where it can't be restarted, `queue-admin` runs at the origin as it
+    is.
+
+    Returns:
+        Their rows, by row name.
+    """
     rows: dict[str, Row] = {}
 
     def add(scenario: str, found: dict[str, Row]) -> None:
@@ -1554,6 +1823,7 @@ def held_rows(test: Test, wanted: Sequence[str]) -> dict[str, Row]:
 # --------------------------------------------------------------------------
 
 
+# The scenarios with cases: each returns its rows, by case.
 CHECKS: dict[str, Callable[[Test], dict[str, Row]]] = {
     "status-urls": status_urls,
     "catalog": catalog,
@@ -1562,8 +1832,11 @@ CHECKS: dict[str, Callable[[Test], dict[str, Row]]] = {
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: publishing, but no writes. With
-    publishing off, `queue-admin off` runs."""
+    """Return why there is nothing to test, or None if there is something.
+
+    That is so with publishing, but no writes. With publishing off,
+    `queue-admin off` runs.
+    """
     if fed.metadata in ("eventual", "transactional"):
         if "Writes" not in fed.exports.get("protected-a", ()):
             return "/protected-a takes no writes"
@@ -1571,11 +1844,14 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 
 def clean(test: Test) -> None:
-    """Remove what the run made from every store, and its rows from the
-    first origin's publish queue. The objects whose events the recorder
-    always fails are first deleted through the origin, so that it records
-    them gone, rather than find them gone later and queue an object.deleted
-    that is never delivered; what it queues now goes with the rest."""
+    """Remove what the run made from the stores, and its queue rows.
+
+    The rows are in the first origin's publish queue. The objects whose
+    events the recorder always fails are first deleted through the
+    origin, so that it records them gone, rather than find them gone later
+    and queue an object.deleted that is never delivered; what it queues
+    now goes with the rest.
+    """
     errors: list[str] = []
     for name in sorted(test.held):
         answer = web.request("DELETE", test.url(name), token=test.token)
@@ -1609,9 +1885,11 @@ def clean(test: Test) -> None:
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Wait for the recorder, run the selected scenarios, the restarts'
-    last, and remove what they made. With publishing off, run only
-    `queue-admin off`."""
+    """Run the selected scenarios, and remove what they made.
+
+    It waits for the recorder first, and runs the restarts' last. With
+    publishing off, it runs only `queue-admin off`.
+    """
     if session.fed.metadata not in ("eventual", "transactional"):
         off = "metadata publishing is off ('-p origin-metadata' or '-p origin-metadata-tx')"
         for name in selected:

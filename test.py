@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Run the basic functionality tests against the running federation:
-every suite that applies to its shape, over every combination of
-client, route, namespace, credential, and server that the shape has.
-Exits non-zero if any case fails.
+"""Run the basic functionality tests against the running federation.
+
+Runs every suite that applies to the federation's shape, over every
+combination of client, route, namespace, credential, and server that the
+shape has. Exits non-zero if any case fails.
 
   ./test.py                          everything that applies
   ./test.py auth commands            only these suites
@@ -52,8 +53,7 @@ RESULTS = os.path.join(common.VAR, "results")
 
 
 def current_shape() -> Optional[common.Federation]:
-    """The federation's shape, if fed.sh has written it (see
-    common.Federation); None if not."""
+    """Return the federation's shape, if fed.sh has written it, or None."""
     if not os.path.isfile(os.path.join(common.VAR, "generated", "origins")):
         return None
     common.enter_var()
@@ -61,7 +61,10 @@ def current_shape() -> Optional[common.Federation]:
 
 
 def skip_reason(name: str, fed: common.Federation) -> Optional[str]:
-    """Why suite name skips in fed's shape, or None."""
+    """Return why suite name skips in fed's shape, or None if it doesn't.
+
+    None too if the suite's skip() dies.
+    """
     try:
         return SUITES[name].skip(fed)
     except common.Died:
@@ -86,7 +89,13 @@ def list_suites(chosen: dict[str, list[str]]) -> None:
 
 
 def with_required(chosen: dict[str, list[str]]) -> dict[str, list[str]]:
-    """chosen, and each suite's REQUIRED scenarios, in the suites' order."""
+    """Return chosen, with each suite's REQUIRED scenarios added.
+
+    Returns:
+        Each suite that chosen names or that has REQUIRED scenarios, in
+        the suites' order, with its chosen and REQUIRED scenarios, in
+        their order.
+    """
     found: dict[str, list[str]] = {}
     for name, module in SUITES.items():
         required = getattr(module, "REQUIRED", ())
@@ -97,7 +106,7 @@ def with_required(chosen: dict[str, list[str]]) -> dict[str, list[str]]:
 
 
 def describe(fed: common.Federation) -> str:
-    """fed's shape, briefly."""
+    """Return fed's shape, briefly."""
     caches = "no cache"
     if fed.caches:
         kinds = ", ".join(sorted({c.kind for c in fed.caches}))
@@ -110,8 +119,12 @@ def describe(fed: common.Federation) -> str:
 
 
 def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report, bool]:
-    """Run one suite's selected scenarios, and write its results: its
-    report, and whether it finished. If it didn't, its report says why."""
+    """Run one suite's selected scenarios, and write its results.
+
+    Returns:
+        The suite's report, and whether the suite finished; if it didn't,
+        its report says why.
+    """
     module = SUITES[name]
     report = Report(name, RESULTS)
     results = common.Results(list(module.SCENARIOS), report)
@@ -141,7 +154,12 @@ def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report,
 
 
 def summarize(reports: list[Report], seconds: float) -> None:
-    """Print each suite's counts, then every failed or unsure case."""
+    """Print each suite's counts, then every failed or unsure case.
+
+    Args:
+        reports: Each suite's report, in the order the suites ran.
+        seconds: How long the run took.
+    """
     width = max(len("suite"), *(len(r.suite) for r in reports))
     print(
         f"\n==> summary\n\n  {'suite':<{width}} {'pass':>5} {'fail':>5} {'skip':>5}"
@@ -162,7 +180,11 @@ def summarize(reports: list[Report], seconds: float) -> None:
 
 
 def main() -> int:
-    """Run the suites that the arguments ask for, or list them."""
+    """Run the suites that the arguments ask for, or list them.
+
+    Returns:
+        The exit status: 1 if any case failed, and 0 otherwise.
+    """
     args = sys.argv[1:]
     if args[:1] in (["-h"], ["--help"]):
         print((__doc__ or "").strip("\n"))
@@ -181,8 +203,8 @@ def main() -> int:
 
     common.enter_var()
     if not args:
-        # Only this run's: with RESULTS_TAG, another tag's are another run's
-        # (as smoke.sh's rerun after rotating the keys is).
+        # Only this run's: with RESULTS_TAG, another tag's are another
+        # run's.
         for name in SUITES:
             with contextlib.suppress(FileNotFoundError):
                 os.remove(Report(name, RESULTS).path)

@@ -1,8 +1,10 @@
-"""How the directors choose where to send a client, in what order, and
-what they put in the redirect: sorting by declared location, at random,
-by adaptive weights, and with servers filtered out; whether they ask the
-origins for an object first; what Location and Link carry; and what they
-refuse, and with what status.
+"""How the directors choose where to send a client, and what they answer.
+
+The suite covers in what order they send it, and what they put in the
+redirect: sorting by declared location, at random, by adaptive weights,
+and with servers filtered out; whether they ask the origins for an
+object first; what Location and Link carry; and what they refuse, and
+with what status.
 
   distance            the default sort: a client's X-Pelican-Coordinate,
                       against the servers' declared GeoLocation, decides
@@ -41,10 +43,10 @@ refuse, and with what status.
 
 Each service's own layer (framework/config.d/instance/) gives cache-0
 and origin-0 a GeoLocation in Madison, and cache-1 and origin-1 one in
-Lisbon, which the suite knows (GEO). The framework
-has no MaxMind database, so a client that sends no coordinate is placed
-at random in the contiguous US, and sorted toward the Madison servers,
-as their names would sort them anyway; `distance` sends its own.
+Lisbon, which the suite knows (GEO). The framework has no MaxMind
+database, so a client that sends no coordinate is placed at random in
+the contiguous US, and sorted toward the Madison servers, as their names
+would sort them anyway; `distance` sends its own.
 
 The other director settings need a restart: under `-p topo-multi-cache`,
 and with a control helper, the suite restarts every director, as the
@@ -170,11 +172,15 @@ CONFIG_FILE = "90-routing.yaml"
 
 @dataclass(frozen=True)
 class Server:
-    """An origin or a cache: its service, its data URL, and its kind."""
+    """An origin or a cache: its service, its data URL, and its kind.
+
+    Attributes:
+        kind: "origin", or a cache's kind: "v2" or "xrootd".
+    """
 
     svc: str
     url: str
-    kind: str  # "origin", or a cache's kind: "v2" or "xrootd"
+    kind: str
 
     @property
     def host(self) -> str:
@@ -183,23 +189,32 @@ class Server:
 
 
 class Test:
-    """The federation, the suite's objects, and what the scenarios share."""
+    """The federation, the suite's objects, and what the scenarios share.
+
+    Attributes:
+        namespace: The first protected namespace, or /public where the
+            origins export only that (`-p origin-public`), whose token
+            every server ignores.
+        caps: The namespace's capabilities.
+        token: The namespace's `server` token.
+        base: The suite's collection, below the namespace.
+        data: The contents of the objects that the suite puts, by name.
+        objects: Each object's path below the namespace, by name: the
+            probe, which every origin holds; `warm`, which every origin
+            holds, and only `adaptive` reads, through the last cache;
+            `missing`, which none does; and `permitted`, which only
+            `permitted-namespaces` puts, in another namespace.
+        caches: The federated caches.
+    """
 
     def __init__(self, session: Session):
         self.session = session
         self.fed = session.fed
         self.run = session.run
-        # The first protected namespace, or /public where the origins
-        # export only that (`-p origin-public`), whose token every server
-        # ignores.
         self.namespace = credentials.probe_namespace(self.fed)
         self.caps = self.fed.exports[self.namespace]
         self.token = session.token(self.namespace)
         self.base = f"data/routing/{self.run}"
-        # The probe, which every origin holds; `warm`, which every origin
-        # holds, and only `adaptive` reads, through the last cache;
-        # `missing`, which none does; and `permitted`, which only
-        # `permitted-namespaces` puts, in another namespace.
         self.data = {
             "probe": os.urandom(4096),
             "warm": os.urandom(8192),
@@ -212,12 +227,16 @@ class Test:
         self.origins = [Server(o.svc, o.url, "origin") for o in self.fed.origins]
 
     def path(self, name: str, namespace: Optional[str] = None) -> str:
-        """The federation path of object name (`probe`, `warm`, or
-        `missing`), in namespace or the suite's own."""
+        """Return the federation path of object name.
+
+        Args:
+            name: `probe`, `warm`, `missing`, or `permitted`.
+            namespace: Its namespace, if not the suite's own.
+        """
         return f"/{namespace or self.namespace}/{self.objects[name]}"
 
     def token_for(self, namespace: str) -> Optional[str]:
-        """namespace's `server` token, or None for /public."""
+        """Return namespace's `server` token, or None for /public."""
         return None if namespace == "public" else self.session.token(namespace)
 
 
@@ -226,8 +245,12 @@ class Test:
 
 
 def link_entries(value: str) -> list[tuple[str, dict[str, str]]]:
-    """Each rel="duplicate" entry of a Link header, in the order sent:
-    its URL and its parameters (e.g. pri and depth), unquoted."""
+    """Return a Link header's rel="duplicate" entries, in the order sent.
+
+    Returns:
+        Each entry's URL and its parameters (e.g. pri and depth),
+        unquoted.
+    """
     found: list[tuple[str, dict[str, str]]] = []
     for part in value.split(", <"):
         url, sep, rest = part.lstrip("<").partition(">")
@@ -244,18 +267,20 @@ def link_entries(value: str) -> list[tuple[str, dict[str, str]]]:
 
 
 def query_of(location: str) -> dict[str, list[str]]:
-    """The query parameters of URL location, blank values kept."""
+    """Return the query parameters of URL location, blank values kept."""
     return parse_qs(urlsplit(location).query, keep_blank_values=True)
 
 
 def where(location: str, servers: Sequence[Server]) -> Optional[Server]:
-    """Which of servers URL location is at, or None."""
+    """Return which of servers URL location is at, or None."""
     return next((s for s in servers if location.startswith(s.url + "/")), None)
 
 
 def debug_info(answer: web.Response) -> dict[str, Any]:
-    """The decision that a director explains in answer to
-    X-Pelican-Debug: its JSON body (server_structs.RedirectInfo), or {}."""
+    """Return the decision a director explains in answer to X-Pelican-Debug.
+
+    It is answer's JSON body (server_structs.RedirectInfo), or {}.
+    """
     try:
         return common.as_object(json.loads(answer.body)) or {}
     except ValueError:
@@ -263,32 +288,37 @@ def debug_info(answer: web.Response) -> dict[str, Any]:
 
 
 def servers_info(info: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """What a debug answer says of each server it sorted, by host."""
+    """Return what a debug answer says of each server it sorted, by host."""
     found = common.as_object(info.get("serversInfo")) or {}
     return {director.host(url): common.as_object(v) or {} for url, v in found.items()}
 
 
 def weight(server: Mapping[str, Any], name: str) -> float:
-    """One of a server's weights in a debug answer (e.g. distanceWeight);
-    NaN if it has none."""
+    """Return a server's weight in a debug answer; NaN if it has none.
+
+    name names the weight, e.g. distanceWeight.
+    """
     weights = common.as_object(server.get("RedirectWeights")) or {}
     value = weights.get(name)
     return float(value) if isinstance(value, (int, float)) else math.nan
 
 
 def coordinate(found: Mapping[str, Any]) -> dict[str, Any]:
-    """The Coordinate of a server, or of clientInfo, in a debug answer."""
+    """Return a server's Coordinate, or clientInfo's, in a debug answer."""
     return common.as_object(found.get("Coordinate")) or {}
 
 
 def at(found: Mapping[str, Any], place: tuple[float, float]) -> bool:
-    """Whether a debug answer's Coordinate is place."""
+    """Return whether a debug answer's Coordinate is place."""
     return (found.get("Lat"), found.get("Long")) == place
 
 
 def distance_weight(client: tuple[float, float], server: tuple[float, float]) -> float:
-    """The weight a director gives server for client by distance alone
-    (distanceWeight and angularDistanceOnSphere in Pelican)."""
+    """Return the distance weight a director gives server for client.
+
+    That is, by distance alone (distanceWeight and angularDistanceOnSphere
+    in Pelican).
+    """
     if client == server:
         return 1.0
     phi1, phi2 = math.radians(90 - client[0]), math.radians(90 - server[0])
@@ -299,7 +329,7 @@ def distance_weight(client: tuple[float, float], server: tuple[float, float]) ->
 
 
 def coordinate_header(place: tuple[float, float]) -> dict[str, str]:
-    """An X-Pelican-Coordinate header claiming place."""
+    """Return an X-Pelican-Coordinate header claiming place."""
     return {"X-Pelican-Coordinate": f"lat={place[0]}, long={place[1]}"}
 
 
@@ -309,17 +339,17 @@ def ask(
     headers: Optional[Mapping[str, str]] = None,
     method: str = "GET",
 ) -> web.Response:
-    """method at url, presenting token, with headers."""
+    """Send method to url, presenting token, with headers."""
     return web.request(method, url, token=token, headers=headers)
 
 
 def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
-    """FAIL with the first of problems, or PASS with note."""
+    """Return FAIL with the first of problems, or PASS with note."""
     return (FAIL, first(problems)) if problems else (PASS, note)
 
 
 def guarded(check: Callable[[], list[Row]]) -> list[Row]:
-    """check()'s rows; one failing row if it raised."""
+    """Return check()'s rows; one failing row if it raised."""
     try:
         return check()
     except Exception as e:  # pylint: disable=broad-exception-caught
@@ -330,12 +360,12 @@ def guarded(check: Callable[[], list[Row]]) -> list[Row]:
 
 
 def no_director(fed: common.Federation) -> Optional[str]:
-    """Why the shape has no director to ask, or None."""
+    """Return why the shape has no director to ask, or None."""
     return "a standalone origin has no director" if fed.standalone else None
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no director."""
+    """Return why there is nothing to test: no director."""
     return no_director(fed)
 
 
@@ -344,16 +374,18 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 
 def expected_order(servers: Sequence[Server], client: tuple[float, float]) -> list[Server]:
-    """servers, nearest client first, by their declared locations."""
+    """Return servers, nearest client first, by their declared locations."""
     return sorted(servers, key=lambda s: -distance_weight(client, GEO[s.svc]))
 
 
 def order_problems(
     test: Test, route: str, servers: Sequence[Server], client: tuple[float, float]
 ) -> list[str]:
-    """What is wrong with where each director sends a client at client,
-    for the probe, by route: Location must be the nearest of servers, and
-    Link list them nearest first."""
+    """Return what is wrong with where each director sends a client.
+
+    The client is at client, and asks for the probe by route: Location
+    must be the nearest of servers, and Link list them nearest first.
+    """
     want = [s.host for s in expected_order(servers, client)]
     hosts = {s.host for s in servers}
     problems: list[str] = []
@@ -376,10 +408,13 @@ def order_problems(
 def debug_problems(
     test: Test, route: str, servers: Sequence[Server], client: tuple[float, float]
 ) -> list[str]:
-    """What is wrong with what each director explains of a distance sort
-    for a client at client (X-Pelican-Debug): a 307 to the nearest of
-    servers, whose body names the sort, the client's coordinate as it
-    declared it, and each server's declared coordinate and its weight."""
+    """Return what is wrong with how each director explains a distance sort.
+
+    The sort is for a client at client, by route. With X-Pelican-Debug,
+    each must answer a 307 to the nearest of servers, whose body names the
+    sort, the client's coordinate as it declared it, and each server's
+    declared coordinate and its weight.
+    """
     nearest = expected_order(servers, client)[0]
     problems: list[str] = []
     for url in test.fed.directors:
@@ -416,9 +451,11 @@ def debug_problems(
 
 
 def malformed_problems(test: Test) -> list[str]:
-    """What is wrong with each director's answer to a malformed
-    X-Pelican-Coordinate: it must still send the client to a cache, and
-    must not take the header as the client's coordinate."""
+    """Return what is wrong with each director's answer to a bad coordinate.
+
+    Given a malformed X-Pelican-Coordinate, it must still send the client
+    to a cache, and must not take the header as the client's coordinate.
+    """
     problems: list[str] = []
     for url in test.fed.directors:
         for value in MALFORMED:
@@ -436,11 +473,14 @@ def malformed_problems(test: Test) -> list[str]:
 
 
 def distance(test: Test) -> list[Row]:
-    """The default sort, by distance, of the caches and of the origins:
-    each director must order them as a client near Madrid, and one near
-    Madison, says it is (see order_problems()), and explain why with
-    X-Pelican-Debug (see debug_problems()); and must route a client whose
-    coordinate it can't read (see malformed_problems())."""
+    """Check that the directors sort the caches and origins by distance.
+
+    The sort is the default. Each director must order them as a client
+    near Madrid, and one near Madison, says it is (see order_problems()),
+    and explain why with X-Pelican-Debug (see debug_problems()); and must
+    route a client whose coordinate it can't read (see
+    malformed_problems()).
+    """
     rows: list[Row] = []
     for kind, route, servers in (
         ("caches", OBJECT, test.caches),
@@ -479,22 +519,27 @@ def distance(test: Test) -> list[Row]:
 
 
 def unasked(test: Test, namespace: str) -> bool:
-    """Whether a director cannot ask the origins about an object in
-    namespace: where the namespace takes no direct clients, they refuse
-    its stat, which carries no federation token (a native origin answers
-    401), and it takes a refusal for presence, as it must when it cannot
-    tell (generateAvailabilityMaps)."""
+    """Return whether a director can't ask the origins about namespace.
+
+    Where the namespace takes no direct clients, the origins refuse the
+    director's stat of an object in it, which carries no federation
+    token (a native origin answers 401), and it takes a refusal for
+    presence, as it must when it cannot tell (generateAvailabilityMaps).
+    """
     return "DirectReads" not in test.fed.exports[namespace]
 
 
 def stat_problems(
     test: Test, namespaces: Sequence[str], query: str, with_token: bool, found: bool
 ) -> list[str]:
-    """What is wrong with each director's answer, for an origin, to a GET
-    and a HEAD of the missing object, in each of namespaces, with query,
-    presenting the namespace's token if with_token: if found, a 307 to an
+    """Return what is wrong with each director's answers for `missing`.
+
+    The answers, for an origin, are to a GET and a HEAD of the missing
+    object, in each of namespaces, with query, presenting the
+    namespace's token if with_token. If found, each must be a 307 to an
     origin; otherwise 404, and a GET's body saying no origin had it, but
-    where the director cannot ask (unasked()), a 307 too."""
+    where the director cannot ask (unasked()), a 307 too.
+    """
     problems: list[str] = []
     for url in test.fed.directors:
         for ns in namespaces:
@@ -518,13 +563,16 @@ def stat_problems(
 
 
 def stat(test: Test) -> list[Row]:
-    """An object no origin holds, asked for of each director's origin
-    route: with several origins, the director asks them (shouldStatOrigins
-    in Pelican's director/stat.go), and must answer 404; with ?skipstat,
-    or with no token in a protected namespace, it can't or won't ask, and
+    """Check each director's answer for an object no origin holds.
+
+    The object is asked for of each director's origin route: with
+    several origins, the director asks them (shouldStatOrigins in
+    Pelican's director/stat.go), and must answer 404; with ?skipstat, or
+    with no token in a protected namespace, it can't or won't ask, and
     must redirect; with one origin, it assumes the object is there
     (Director.AssumePresenceAtSingleOrigin), and must redirect. The
-    restart's `single-checked` row checks one origin with that off."""
+    restart's `single-checked` row checks one origin with that off.
+    """
     namespaces = test.session.namespaces
     protected = [ns for ns in namespaces if ns in credentials.PROTECTED]
     several = len(test.origins) > 1
@@ -547,8 +595,11 @@ def stat(test: Test) -> list[Row]:
 
 
 def single_checked(test: Test) -> tuple[str, str]:
-    """With Director.AssumePresenceAtSingleOrigin off, the one origin is
-    asked about the missing object: 404 (see stat_problems())."""
+    """Check that a director asks a single origin about the missing object.
+
+    With Director.AssumePresenceAtSingleOrigin off, the one origin is
+    asked, and the answer must be 404 (see stat_problems()).
+    """
     problems = stat_problems(test, test.session.namespaces, "", True, False)
     return outcome(problems, "404")
 
@@ -559,12 +610,17 @@ def single_checked(test: Test) -> tuple[str, str]:
 
 @dataclass
 class Redirects:
-    """The checks of `redirect` at one director and route, and what they
-    found."""
+    """The checks of `redirect` at one director and route.
+
+    Attributes:
+        url: The director's URL.
+        route: "object", or "bare".
+        problems: What the checks found: each case's problems, by case.
+    """
 
     test: Test
-    url: str  # the director's URL
-    route: str  # "object", or "bare"
+    url: str
+    route: str
     problems: dict[str, list[str]]
 
     @property
@@ -579,17 +635,22 @@ class Redirects:
         self.problems.setdefault(case, []).append(f"{asked}: {problem}")
 
     def redirect(self, case: str, answer: web.Response) -> Optional[dict[str, list[str]]]:
-        """The query of answer's Location, if it is a 307; else None, and
-        a problem of case."""
+        """Return the query of answer's Location, if it is a 307.
+
+        Otherwise, note a problem of case, and return None.
+        """
         if answer.status != 307 or not answer.header("Location"):
             self.note(case, f"{answer.describe()}, not 307")
             return None
         return query_of(answer.header("Location"))
 
     def follow(self, case: str, answer: web.Response) -> None:
-        """Follow answer's Location, presenting nothing, as curl does
-        across hosts: what it lands at must serve the probe, where the
-        namespace lets it, and otherwise refuse."""
+        """Follow answer's Location, presenting nothing.
+
+        curl, too, presents nothing across hosts. What it lands at must
+        serve the probe, where the namespace lets it, and otherwise
+        refuse.
+        """
         test = self.test
         location = answer.header("Location")
         at_origin = where(location, test.origins) is not None
@@ -607,9 +668,11 @@ class Redirects:
             self.note(case, "followed: the body is not the probe")
 
     def link(self, case: str, answer: web.Response) -> list[str]:
-        """Check answer's Link (none of its URLs carries the token; pri
-        runs 1..N in order; depth is the probe's below the namespace);
-        its URLs."""
+        """Check answer's Link, and return its URLs.
+
+        None of its URLs may carry the token; pri must run 1..N in order;
+        and depth must be the probe's below the namespace.
+        """
         token = self.test.token
         entries = link_entries(answer.header("Link"))
         depth = str(len(self.test.objects["probe"].split("/")))
@@ -626,7 +689,7 @@ class Redirects:
         return [u for u, _ in entries]
 
     def check(self) -> None:
-        """Every case, at this director and route."""
+        """Check every case, at this director and route."""
         test = self.test
         token = test.token
 
@@ -705,9 +768,12 @@ REDIRECT_CASES = (
 
 
 def redirect(test: Test) -> list[Row]:
-    """How each director builds a redirect of the probe, for its object
-    route and its bare path (generateRedirectResponse in Pelican's
-    director/director.go): see Redirects."""
+    """Check how each director builds a redirect of the probe.
+
+    That is for its object route and its bare path
+    (generateRedirectResponse in Pelican's director/director.go); see
+    Redirects.
+    """
     problems: dict[str, list[str]] = {}
     for url in test.fed.directors:
         for route in ("object", "bare"):
@@ -721,9 +787,12 @@ def redirect(test: Test) -> list[Row]:
 
 
 def signed(test: Test, issued: int, expires: Optional[int]) -> str:
-    """A token like the namespace's `server` token, signed with the
-    origins' key, issued at issued and expiring at expires (None: no exp
-    claim). The director reads it without checking its signature."""
+    """Return a token like the namespace's `server` token.
+
+    It is signed with the origins' key, issued at issued and expiring at
+    expires (None: no exp claim). The director reads it without checking
+    its signature.
+    """
     claims = credentials.server_claims(test.fed, test.namespace)
     claims["iat"] = claims["nbf"] = issued
     if expires is None:
@@ -749,8 +818,10 @@ EXPIRY_CASES: tuple[tuple[str, Callable[[Test, int], str], bool, bool], ...] = (
 
 
 def expired_401(test: Test) -> list[Row]:
-    """Each director, on its object and origin routes and the bare path
-    of the probe, must refuse a token that expires within its grace (10
+    """Check that a token about to expire gets 401 and WWW-Authenticate.
+
+    Each director, on its object and origin routes and the bare path of
+    the probe, must refuse a token that expires within its grace (10
     seconds, or half the token's lifetime if less), or whose lifetime is
     none, with 401 and a WWW-Authenticate challenge, so that a client
     gets a new one (validateClientToken in Pelican's
@@ -758,7 +829,8 @@ def expired_401(test: Test) -> list[Row]:
     one that expires in 5 seconds; a 10-second one issued 6 seconds ago;
     and one that expires as it is issued. A 10-second one just issued,
     and those whose expiry it can't read, an opaque token and a JWT with
-    no exp, must be redirected (307)."""
+    no exp, must be redirected (307).
+    """
     rows: list[Row] = []
     targets = [("object", OBJECT), ("origin", ORIGIN), ("bare", "")]
     for case, make, in_query, refused in EXPIRY_CASES:
@@ -788,8 +860,10 @@ def expired_401(test: Test) -> list[Row]:
 
 
 def started_ago(url: str) -> Optional[float]:
-    """How long ago the director at url started
-    (process_start_time_seconds), in seconds; None if it won't say."""
+    """Return how long ago the director at url started, in seconds.
+
+    That is by its process_start_time_seconds; None if it won't say.
+    """
     found = metrics.fetch(url)
     if found is None or not found.has("process_start_time_seconds"):
         return None
@@ -797,9 +871,11 @@ def started_ago(url: str) -> Optional[float]:
 
 
 def unknown_namespace(test: Test) -> tuple[str, str]:
-    """A namespace no origin exports: each director must answer 404, but
-    within 5 minutes of starting, 429, since it may not have heard from
-    every origin yet (inStartupSequence)."""
+    """Check each director's answer for a namespace no origin exports.
+
+    Each must answer 404, but within 5 minutes of starting, 429, since it
+    may not have heard from every origin yet (inStartupSequence).
+    """
     path = f"/routing-nowhere-{test.run}/probe"
     problems: list[str] = []
     unsure: list[str] = []
@@ -830,8 +906,12 @@ def unknown_namespace(test: Test) -> tuple[str, str]:
 
 @dataclass
 class Statuses:
-    """`status-codes`'s cases, and every answer they got, whose Server
-    headers the last cases check."""
+    """`status-codes`'s cases, and every answer they got.
+
+    Attributes:
+        answers: Every answer that the cases got, with what it was to;
+            the last cases check their Server headers.
+    """
 
     test: Test
     answers: list[tuple[str, web.Response]]
@@ -844,20 +924,23 @@ class Statuses:
         headers: Optional[Mapping[str, str]] = None,
         method: str = "GET",
     ) -> web.Response:
-        """ask(), kept."""
+        """Return ask()'s answer, and keep it, labeled what."""
         answer = ask(url, token, headers, method)
         self.answers.append((what, answer))
         return answer
 
     def expect(self, what: str, want: int, url: str, **kwargs: Any) -> list[str]:
-        """A problem, if the answer at url is not want."""
+        """Return a problem, if the answer at url is not want."""
         answer = self.ask(what, url, **kwargs)
         return [] if answer.status == want else [f"{what}: {answer.describe()}, not {want}"]
 
     def writes(self) -> tuple[str, str]:
-        """A PUT and a DELETE of a bare path in /public, which no origin
-        takes writes in: 405, since every origin of the namespace is
-        found, and none supports the verb (noOriginsForReqErr)."""
+        """Check that a PUT or DELETE of a bare path in /public gets 405.
+
+        No origin takes writes in /public, so every origin of the
+        namespace is found, and none supports the verb
+        (noOriginsForReqErr).
+        """
         if "public" not in self.test.fed.exports:
             return SKIP, "the shape exports no /public"
         if "Writes" in self.test.fed.exports["public"]:
@@ -871,8 +954,11 @@ class Statuses:
         return outcome(problems, "405")
 
     def bad_requests(self) -> tuple[str, str]:
-        """?directread with ?prefercached, which conflict, and a client
-        older than 7.0.0 (minClientVersion): 400. A 7.0.0 client: 307."""
+        """Check that conflicting parameters and too old a client get 400.
+
+        ?directread with ?prefercached conflict, and a client older than
+        7.0.0 is too old (minClientVersion). A 7.0.0 client gets 307.
+        """
         problems: list[str] = []
         token = self.test.token
         for url in self.test.fed.directors:
@@ -891,8 +977,10 @@ class Statuses:
         return outcome(problems, f"400, and {NEW_ENOUGH_CLIENT} 307")
 
     def options(self) -> tuple[str, str]:
-        """A bare OPTIONS: 200, with Allow and CORS headers
-        (ShortcutMiddleware)."""
+        """Check that a bare OPTIONS gets 200, with Allow and CORS headers.
+
+        ShortcutMiddleware answers it.
+        """
         problems: list[str] = []
         for url in self.test.fed.directors:
             what = f"{director.host(url)}: OPTIONS"
@@ -910,9 +998,12 @@ class Statuses:
         return outcome(problems, "200, with Allow and CORS")
 
     def servers(self) -> list[Row]:
-        """Each answer that came must name the server as Pelican, of the
-        shape's version, `Server: pelican/<version>`; and in one field,
-        since Server is no list (RFC 9110, sections 5.3 and 10.2.4)."""
+        """Check that each answer names the server as Pelican, in one field.
+
+        Each answer that came must name it as Pelican, of the shape's
+        version, `Server: pelican/<version>`; and in one field, since
+        Server is no list (RFC 9110, sections 5.3 and 10.2.4).
+        """
         version = self.test.fed.pelican_version
         wrong: list[str] = []
         repeated: list[str] = []
@@ -934,8 +1025,10 @@ class Statuses:
 
 
 def status_codes(test: Test) -> list[Row]:
-    """What each director refuses, and how (see Statuses and
-    unknown_namespace()); and the Server header of every answer."""
+    """Check what each director refuses, and how; and its Server headers.
+
+    See Statuses and unknown_namespace().
+    """
     checks = Statuses(test, [])
     rows: list[Row] = [("unknown-namespace", *unknown_namespace(test))]
     rows.append(("writes", *checks.writes()))
@@ -954,9 +1047,11 @@ def status_codes(test: Test) -> list[Row]:
 
 
 def serving(test: Test, filtered: frozenset[str] = frozenset()) -> Optional[str]:
-    """Why the directors don't route the probe as before, or None: each
-    must name every federated cache, but those filtered (hosts), and
-    every origin."""
+    """Return why the directors don't route the probe as before, or None.
+
+    Each must name every federated cache, but those filtered (hosts), and
+    every origin.
+    """
     path = test.path("probe")
     for url in test.fed.directors:
         name = director.host(url)
@@ -972,8 +1067,12 @@ def serving(test: Test, filtered: frozenset[str] = frozenset()) -> Optional[str]
 
 
 def settle(test: Test, filtered: frozenset[str] = frozenset()) -> Optional[str]:
-    """Wait until the directors route the probe as before (see
-    serving()); why they don't within SETTLE_WAIT seconds, or None."""
+    """Wait until the directors route the probe as before.
+
+    Returns:
+        Why they don't within SETTLE_WAIT seconds (see serving()), or
+        None.
+    """
     found: list[str] = []
 
     def served() -> bool:
@@ -988,8 +1087,10 @@ def settle(test: Test, filtered: frozenset[str] = frozenset()) -> Optional[str]:
 
 @contextlib.contextmanager
 def directors_with(test: Test, text: str) -> Generator[None, None, None]:
-    """Restart every director with text as the last of its configuration
-    layers, and afterward, even on failure, restore and restart it."""
+    """Restart every director with text as its last configuration layer.
+
+    Afterward, even on failure, restore and restart it.
+    """
     with contextlib.ExitStack() as stack:
         for url in test.fed.directors:
             svc = director.host(url)
@@ -998,8 +1099,11 @@ def directors_with(test: Test, text: str) -> Generator[None, None, None]:
 
 
 def random_order(test: Test) -> tuple[str, str]:
-    """With CacheSortMethod random, each director, asked RANDOM_ASKS
-    times for the probe, must put each cache first at least once."""
+    """Check that each director, sorting at random, puts each cache first.
+
+    With CacheSortMethod random, each director, asked RANDOM_ASKS times
+    for the probe, must put each cache first at least once.
+    """
     hosts = {c.host for c in test.caches}
     problems: list[str] = []
     for url in test.fed.directors:
@@ -1022,9 +1126,15 @@ def random_order(test: Test) -> tuple[str, str]:
 def availability(
     test: Test, token: Optional[str]
 ) -> tuple[list[str], dict[str, dict[str, float]]]:
-    """Each director's adaptive sort of the caches for `warm`, presenting
-    token, as X-Pelican-Debug explains it: what is wrong, and each
-    director's availabilityWeight by cache host."""
+    """Read each director's adaptive sort of the caches for `warm`.
+
+    Each is asked presenting token, and explains its sort with
+    X-Pelican-Debug.
+
+    Returns:
+        What is wrong; and each director's availabilityWeight of each
+        cache, by the director's host and the cache's.
+    """
     problems: list[str] = []
     found: dict[str, dict[str, float]] = {}
     headers = {**coordinate_header(NEAR_MADISON), "X-Pelican-Debug": "true"}
@@ -1050,8 +1160,11 @@ def availability(
 
 
 def equal_weights(test: Test, token: Optional[str]) -> tuple[str, str]:
-    """Each director's adaptive sort, which can't tell which cache holds
-    `warm`, presenting token, must weigh their availability alike."""
+    """Check that adaptive sorts weigh the caches' availability alike.
+
+    Each director's adaptive sort, which can't tell which cache holds
+    `warm`, asked presenting token, must weigh their availability alike.
+    """
     problems, found = availability(test, token)
     for name, weights in found.items():
         if len({round(w, 9) for w in weights.values()}) > 1:
@@ -1061,20 +1174,28 @@ def equal_weights(test: Test, token: Optional[str]) -> tuple[str, str]:
 
 
 def tokenless_weights(test: Test) -> tuple[str, str]:
-    """equal_weights() with no token, with which a director can't ask the
-    caches of a protected namespace (shouldStatCaches)."""
+    """Check equal_weights() with no token.
+
+    With none, a director can't ask the caches of a protected namespace
+    (shouldStatCaches).
+    """
     return equal_weights(test, None)
 
 
 def unchecked_weights(test: Test) -> tuple[str, str]:
-    """equal_weights() with the token, but CheckCachePresence off."""
+    """Check equal_weights() with the token, but CheckCachePresence off."""
     return equal_weights(test, test.token)
 
 
 def warm_last_cache(test: Test) -> Optional[str]:
-    """Read `warm` through the last cache alone, and wait until it gives
-    the copy an Age of a second or more, by which a director takes it as
-    held there (generateAvailabilityMaps); why that failed, or None."""
+    """Read `warm` through the last cache alone, and wait for its Age.
+
+    Wait until the cache gives the copy an Age of a second or more, by
+    which a director takes it as held there (generateAvailabilityMaps).
+
+    Returns:
+        Why that failed, or None.
+    """
     cache = test.caches[-1]
     url = f"{cache.url}{test.path('warm')}"
     answer = web.request("GET", url, token=test.token)
@@ -1091,11 +1212,14 @@ def warm_last_cache(test: Test) -> Optional[str]:
 
 
 def adaptive_presence(test: Test) -> tuple[str, str]:
-    """With CacheSortMethod adaptive, `warm` read through the last cache
+    """Check that adaptive sorts weigh a cache that holds `warm` higher.
+
+    With CacheSortMethod adaptive, `warm` read through the last cache
     alone: each director, asked with the token, which it asks the caches
     with, must weigh that cache's availability HOLDS, and every other
     cache's LACKS (availabilityWeightFn in Pelican's
-    director/sort_algorithms.go)."""
+    director/sort_algorithms.go).
+    """
     if any(c.kind != "v2" for c in test.caches):
         return SKIP, "a director takes a cache's copy by its Age, which V2 caches send"
     why = warm_last_cache(test)
@@ -1112,8 +1236,11 @@ def adaptive_presence(test: Test) -> tuple[str, str]:
 
 
 def cache_name(test: Test, cache: Server) -> Optional[str]:
-    """The name that the first director knows cache by, in its list of
-    servers; None if it doesn't list it."""
+    """Return the name that the first director knows cache by.
+
+    Returns:
+        The name, from its list of servers; None if it doesn't list it.
+    """
     answer = web.request("GET", f"{test.fed.directors[0]}{SERVERS}")
     try:
         rows = common.as_array(json.loads(answer.body)) or []
@@ -1129,18 +1256,23 @@ def cache_name(test: Test, cache: Server) -> Optional[str]:
 
 
 def unlisted(test: Test, name: Optional[str]) -> Optional[str]:
-    """Why `filtered` can't check the last cache, or None: the first
-    director did not list it, so the suite knows no name to filter it
-    by."""
+    """Return why `filtered` can't check the last cache, or None.
+
+    It can't if the first director did not list it, so that the suite
+    knows no name to filter it by.
+    """
     if name is not None:
         return None
     return f"{director.host(test.fed.directors[0])} does not list {test.caches[-1].svc}"
 
 
 def filtered_routing(test: Test, name: Optional[str]) -> tuple[str, str]:
-    """With FilteredServers naming the last cache (name), no director may
+    """Check that no director names a cache in FilteredServers.
+
+    With FilteredServers naming the last cache (name), no director may
     name it, by the object route or the bare path, asked FILTERED_ASKS
-    times each; and each must still name the other caches."""
+    times each; and each must still name the other caches.
+    """
     why = unlisted(test, name)
     if why:
         return FAIL, why
@@ -1167,9 +1299,12 @@ def filtered_routing(test: Test, name: Optional[str]) -> tuple[str, str]:
 
 
 def filtered_listing(test: Test, name: Optional[str]) -> tuple[str, str]:
-    """Each director's list of servers must show the last cache, by name,
+    """Check that each director lists the last cache as filtered.
+
+    Each director's list of servers must show the last cache, by name,
     as filtered by its configuration: `filtered` true, `filteredType`
-    `permFiltered`."""
+    `permFiltered`.
+    """
     why = unlisted(test, name)
     if why:
         return FAIL, why
@@ -1193,9 +1328,12 @@ def filtered_listing(test: Test, name: Optional[str]) -> tuple[str, str]:
 
 
 def response_hostname(test: Test, header: str, hostname: str, kind: str) -> tuple[str, str]:
-    """Each director must send a bare-path GET of the probe, sent with
+    """Check that a bare path asked of hostname goes to kind.
+
+    Each director must send a bare-path GET of the probe, sent with
     header naming hostname, to kind (`origin` or `cache`)
-    (checkHostnameRedirects in Pelican's director/director.go)."""
+    (checkHostnameRedirects in Pelican's director/director.go).
+    """
     servers = test.origins if kind == "origin" else test.caches
     problems: list[str] = []
     for url in test.fed.directors:
@@ -1212,9 +1350,11 @@ def response_hostname(test: Test, header: str, hostname: str, kind: str) -> tupl
 
 
 def combined_text(name: Optional[str]) -> str:
-    """The combined restart's configuration: FilteredServers naming name
-    (none if None), AssumePresenceAtSingleOrigin off, and the response
-    hostnames."""
+    """Return the combined restart's configuration.
+
+    It has FilteredServers naming name (none if None),
+    AssumePresenceAtSingleOrigin off, and the response hostnames.
+    """
     lines = ["Director:"]
     if name:
         lines += ["  FilteredServers:", f"    - {json.dumps(name)}"]
@@ -1235,8 +1375,12 @@ Check = tuple[str, str, Callable[[Test], tuple[str, str]]]
 
 @dataclass(frozen=True)
 class Phase:
-    """A restart of the directors: its name, their configuration, and its
-    checks."""
+    """A restart of the directors.
+
+    Attributes:
+        text: The directors' configuration for it.
+        checks: Its checks.
+    """
 
     name: str
     text: str
@@ -1244,8 +1388,10 @@ class Phase:
 
 
 def phases(selected: Sequence[str], name: Optional[str]) -> list[Phase]:
-    """The restarts that the selected scenarios need, in order; name is
-    the last cache's, for `filtered`, if known."""
+    """Return the restarts that the selected scenarios need, in order.
+
+    name is the last cache's, for `filtered`, if known.
+    """
     found: list[Phase] = []
     scenario = "random-and-adaptive"
     if scenario in selected:
@@ -1292,14 +1438,14 @@ def phases(selected: Sequence[str], name: Optional[str]) -> list[Phase]:
 
 
 def unrestartable(test: Test) -> Optional[str]:
-    """Why the suite won't restart the directors here, or None."""
+    """Return why the suite won't restart the directors here, or None."""
     if len(test.caches) < 2:
         return "the suite restarts the directors only under -p topo-multi-cache"
     return control.unavailable()
 
 
 def checked(check: Callable[[Test], tuple[str, str]], test: Test) -> tuple[str, str]:
-    """check(test); FAIL if it raised (see guarded())."""
+    """Return check(test); FAIL if it raised (see guarded())."""
     rows = guarded(lambda: [("", *check(test))])
     return rows[0][1], rows[0][2]
 
@@ -1307,9 +1453,12 @@ def checked(check: Callable[[Test], tuple[str, str]], test: Test) -> tuple[str, 
 def restarted(
     test: Test, selected: Sequence[str], add: Callable[[str, str, str, str], None]
 ) -> None:
-    """Restart the directors for each phase the selected scenarios need,
-    run its checks, and restore them; then wait until they route as
-    before. add() records a row: its scenario, case, status, and note."""
+    """Restart the directors for each phase the selected scenarios need.
+
+    For each, run its checks, and restore the directors; then wait until
+    they route as before. add() records a row: its scenario, case,
+    status, and note.
+    """
     why = unrestartable(test)
     name: Optional[str] = None
     if not why and "filtered" in selected:
@@ -1355,10 +1504,12 @@ PERMITTED_ASKS = FILTERED_ASKS
 
 
 def permitted_namespace(test: Test) -> Optional[str]:
-    """The namespace that `permitted-namespaces` leaves the last cache:
-    /public, if exported, else another protected namespace; None if the
-    shape exports only the suite's own (`-p origin-public` too, whose
-    /public is the suite's own)."""
+    """Return the namespace `permitted-namespaces` leaves the last cache.
+
+    It is /public, if exported, else another protected namespace; None if
+    the shape exports only the suite's own (`-p origin-public` too, whose
+    /public is the suite's own).
+    """
     others = [
         ns
         for ns in ("public", *credentials.PROTECTED)
@@ -1368,17 +1519,21 @@ def permitted_namespace(test: Test) -> Optional[str]:
 
 
 def names_cache(answer: web.Response, cache: Server) -> bool:
-    """Whether a director's redirect sends the client to cache, or lists
-    it in Link."""
+    """Return whether a director's redirect names cache.
+
+    It does if it sends the client to cache, or lists it in Link.
+    """
     listed = [director.host(u) for u, _ in link_entries(answer.header("Link"))]
     return cache.host in listed or director.host(answer.header("Location")) == cache.host
 
 
 def permitted_routing(test: Test, permitted: str, restricted: Server) -> Optional[str]:
-    """Why the directors don't route as the restriction says, or None:
-    each must name the restricted cache for the object in the permitted
+    """Return why the directors don't heed the restriction, or None.
+
+    Each must name the restricted cache for the object in the permitted
     namespace, and not for the probe in the suite's own, for which it
-    must still name every other cache."""
+    must still name every other cache.
+    """
     others = [c for c in test.caches if c.host != restricted.host]
     for url in test.fed.directors:
         name = director.host(url)
@@ -1401,9 +1556,12 @@ def permitted_routing(test: Test, permitted: str, restricted: Server) -> Optiona
 
 
 def permitted_listing(test: Test, permitted: str, restricted: Server) -> tuple[str, str]:
-    """Each director's list of servers must show the restricted cache
-    with namespacePrefixes of the permitted namespace, and any under it,
-    and no other."""
+    """Check how each director lists the restricted cache.
+
+    Each director's list of servers must show the restricted cache with
+    namespacePrefixes of the permitted namespace, and any under it, and
+    no other.
+    """
     problems: list[str] = []
     for url in test.fed.directors:
         what = director.host(url)
@@ -1435,9 +1593,11 @@ def permitted_listing(test: Test, permitted: str, restricted: Server) -> tuple[s
 
 
 def permitted_direct(test: Test, permitted: str, restricted: Server) -> tuple[str, str]:
-    """Asked straight, the restricted cache must serve the object in the
-    permitted namespace; of the probe in the suite's own, it may serve it
-    or refuse, but never other bytes."""
+    """Check what the restricted cache serves, asked straight.
+
+    It must serve the object in the permitted namespace; of the probe in
+    the suite's own, it may serve it or refuse, but never other bytes.
+    """
     data = test.data["permitted"]
     answer = web.request(
         "GET",
@@ -1456,9 +1616,13 @@ def permitted_direct(test: Test, permitted: str, restricted: Server) -> tuple[st
 
 
 def put_permitted(test: Test, permitted: str) -> Optional[str]:
-    """Put the `permitted` object in the permitted namespace's storage at
-    every origin (on a pstore origin, /public's is /protected-a's); why
-    that failed, or None."""
+    """Put `permitted` in the permitted namespace's storage at every origin.
+
+    On a pstore origin, /public's storage is /protected-a's.
+
+    Returns:
+        Why that failed, or None.
+    """
     target = test.fed.storage_namespace(permitted)
     token = test.session.token(target)
     caps = test.fed.exports[target]
@@ -1474,10 +1638,13 @@ def put_permitted(test: Test, permitted: str) -> Optional[str]:
 
 
 def permitted_namespaces(test: Test, add: Callable[[str, str, str, str], None]) -> None:
-    """Restart the last cache restricted to one namespace, check how the
-    directors route and list it, and what it serves, and restore it;
-    then wait until the directors route as before. add() records a row:
-    its scenario, case, status, and note."""
+    """Run `permitted-namespaces`: restrict the last cache to one namespace.
+
+    Restart it so restricted, check how the directors route and list it,
+    and what it serves, and restore it; then wait until the directors
+    route as before. add() records a row: its scenario, case, status, and
+    note.
+    """
     scenario = "permitted-namespaces"
     why = unrestartable(test)
     permitted = permitted_namespace(test)
@@ -1550,6 +1717,8 @@ def permitted_namespaces(test: Test, add: Callable[[str, str, str, str], None]) 
 # --------------------------------------------------------------------------
 
 
+# The scenarios that run without a restart, by name: each takes the Test,
+# and returns its rows.
 RUN: dict[str, Callable[[Test], list[Row]]] = {
     "distance": distance,
     "stat": stat,
@@ -1563,8 +1732,11 @@ RESTARTED = ("random-and-adaptive", "filtered", "response-hostnames")
 
 
 def put_objects(test: Test) -> Optional[str]:
-    """Put the probe and `warm` at every origin; why that failed, or
-    None."""
+    """Put the probe and `warm` at every origin.
+
+    Returns:
+        Why that failed, or None.
+    """
     errors = stores.make_dirs(test.fed.origins, test.namespace, test.base, test.token)
     for name in ("probe", "warm"):
         for origin in stores.unique(test.fed.origins):
@@ -1584,10 +1756,13 @@ def put_objects(test: Test) -> Optional[str]:
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Put the objects in place, run the selected scenarios, the
-    restarts' last, and remove the objects. `stat`'s `single-checked`
-    row needs a restart only with one origin. `permitted-namespaces`
-    restarts a cache, not the directors, and comes last."""
+    """Run the selected scenarios, the restarts' last.
+
+    The objects are put in place first, and removed afterward. `stat`'s
+    `single-checked` row needs a restart only with one origin.
+    `permitted-namespaces` restarts a cache, not the directors, and comes
+    last.
+    """
     test = Test(session)
 
     def add(scenario: str, case: str, status: str, note: str) -> None:

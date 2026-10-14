@@ -1,15 +1,18 @@
-"""Advertisements, as an origin or a cache posts them to a director
-(server_structs.OriginAdvertise; registerServerAd in Pelican's
-director/director.go), and the token that signs one: the server's own
-key, which the registry holds for its prefix (/origins/<host> or
-/caches/<host>), with the advertise scope, which the director checks
-against the registry's copy (verifyAdvertiseToken in
-director/origin_api.go). Servers finds each server as the first
-director describes it, and the key in framework/var/issuer-keys/<host>/
-that the registry holds for it; ad() builds an ad like the server's own
-from that description, which lasts AD_LIFETIME seconds, and the
-server's next ad, within Server.AdvertisementInterval, replaces; and
-post_ad() posts an ad as a server does.
+"""Advertisements, as an origin or a cache posts them to a director.
+
+An ad is a server_structs.OriginAdvertise (registerServerAd in Pelican's
+director/director.go). The token that signs one is signed with the server's
+own key, which the registry holds for its prefix (/origins/<host> or
+/caches/<host>), and has the advertise scope; the director checks it against
+the registry's copy of the key (verifyAdvertiseToken in
+director/origin_api.go).
+
+Servers finds each server as the first director describes it, and the key in
+framework/var/issuer-keys/<host>/ that the registry holds for it; ad()
+builds an ad like the server's own from that description, which lasts
+AD_LIFETIME seconds, and the server's next ad, within
+Server.AdvertisementInterval, replaces; and post_ad() posts an ad as a
+server does.
 """
 
 import glob
@@ -26,7 +29,7 @@ from . import common, credentials, director, jwt, web
 
 # The scope of an advertise token.
 ADVERTISE = "pelican.advertise"
-# A key that no server knows (see credentials.keys()).
+# A key that no server knows.
 UNKNOWN_KEY = "test-keys/unknown.pem"
 # The directors' list of servers.
 SERVERS = "/api/v1.0/director_ui/servers"
@@ -38,16 +41,22 @@ TOKEN_LIFETIME = 300
 
 
 class Missing(Exception):
-    """Something needed is not there: a server, or its key."""
+    """The absence of something needed: a server, or its key."""
 
 
 @dataclass(frozen=True)
 class Server:
-    """An origin or a cache, as a director describes it."""
+    """An origin or a cache, as a director describes it.
 
-    kind: str  # "Origin" or "Cache"
-    host: str  # its web URL's host: its service, whose keys are its own
-    detail: Mapping[str, Any]  # what /servers/<name> says of it
+    Attributes:
+        kind: "Origin" or "Cache".
+        host: Its web URL's host: its service, whose keys are its own.
+        detail: What /servers/<name> says of it.
+    """
+
+    kind: str
+    host: str
+    detail: Mapping[str, Any]
 
     @property
     def name(self) -> str:
@@ -66,8 +75,13 @@ class Server:
 
 
 class Servers:
-    """The servers as the first director describes them, their keys, and
-    tokens like their own."""
+    """The servers as the first director describes them.
+
+    It also finds their keys, and makes tokens like their own.
+
+    Attributes:
+        director: The first director's URL.
+    """
 
     def __init__(self, fed: common.Federation):
         self.fed = fed
@@ -76,8 +90,18 @@ class Servers:
         self._keys: dict[str, tuple[str, str]] = {}
 
     def server(self, kind: str, host: str) -> Server:
-        """The kind of server (Origin or Cache) whose web URL is at host,
-        as the first director lists it; raises Missing if it does not."""
+        """Return the server of kind whose web URL is at host.
+
+        Args:
+            kind: "Origin" or "Cache".
+            host: The host of the server's web URL.
+
+        Returns:
+            The server, as the first director lists it.
+
+        Raises:
+            Missing: The first director does not list it.
+        """
         if (kind, host) in self._servers:
             return self._servers[(kind, host)]
         listed = web.request("GET", f"{self.director}{SERVERS}")
@@ -94,9 +118,17 @@ class Servers:
         raise Missing(f"{director.host(self.director)} lists no {kind.lower()} at {host}")
 
     def key(self, server: Server) -> tuple[str, str]:
-        """server's own key (a PEM file under framework/var) and its kid:
-        the one of its keys whose public key the registry holds for its
-        prefix. Raises Missing if none is."""
+        """Return server's own key, and its kid.
+
+        Its own key is the one of its keys whose public key the registry
+        holds for its prefix.
+
+        Returns:
+            The key (a PEM file under framework/var), and its kid.
+
+        Raises:
+            Missing: The registry holds none of its keys for its prefix.
+        """
         if server.prefix not in self._keys:
             url = f"{self.fed.registry_url}/api/v1.0/registry{server.prefix}/.well-known/issuer.jwks"
             answer = web.request("GET", url)
@@ -114,17 +146,29 @@ class Servers:
         return self._keys[server.prefix]
 
     def advertise_token(self, server: Server, scope: str = ADVERTISE) -> str:
-        """A token like server's own advertise token (GetAdvertisementTok in
-        Pelican's server_utils/server_utils.go), of scope, for the first
-        director."""
+        """Return a token like server's own advertise token, of scope.
+
+        Like server's own (GetAdvertisementTok in Pelican's
+        server_utils/server_utils.go), it is for the first director.
+        """
         key, kid = self.key(server)
         web_url = str(server.detail.get("webUrl", ""))
         return sign(key, kid, scope, web_url, self.director, web_url)
 
 
 def sign(key: str, kid: str, scope: str, issuer: str, audience: str, subject: str = "") -> str:
-    """A token of scope, from issuer, for audience, signed with key (a PEM
-    file under framework/var) under kid, lasting TOKEN_LIFETIME seconds."""
+    """Return a token of scope, from issuer, for audience.
+
+    It lasts TOKEN_LIFETIME seconds.
+
+    Args:
+        key: The PEM file, under framework/var, to sign it with.
+        kid: The key ID to sign it under.
+        scope: Its scope.
+        issuer: Its issuer.
+        audience: Its audience.
+        subject: Its subject, if not credentials.SUBJECT.
+    """
     now = int(time.time())
     claims = {
         "aud": [audience],
@@ -141,13 +185,18 @@ def sign(key: str, kid: str, scope: str, issuer: str, audience: str, subject: st
 
 
 def unknown_token(scope: str, issuer: str, audience: str) -> str:
-    """A token of scope from issuer, signed with UNKNOWN_KEY."""
+    """Return a token of scope, from issuer, for audience.
+
+    It is signed with UNKNOWN_KEY.
+    """
     return sign(UNKNOWN_KEY, jwt.key_id(UNKNOWN_KEY), scope, issuer, audience)
 
 
 def url_object(text: str) -> dict[str, str]:
-    """A URL, as Go's encoding/json writes a url.URL, which an ad's
-    namespaces hold."""
+    """Return the URL text as Go's encoding/json writes a url.URL.
+
+    An ad's namespaces hold such URLs.
+    """
     parts = urlsplit(text)
     return {
         "Scheme": parts.scheme,
@@ -158,8 +207,14 @@ def url_object(text: str) -> dict[str, str]:
 
 
 def namespace_ad(listed: Mapping[str, Any]) -> dict[str, Any]:
-    """A namespace of an ad (server_structs.NamespaceAd), from what a
-    director says of it (NamespaceAdResponse)."""
+    """Return a namespace of an ad, from what a director says of it.
+
+    Args:
+        listed: What the director says (a NamespaceAdResponse).
+
+    Returns:
+        The namespace (a server_structs.NamespaceAd).
+    """
     generations = [
         common.as_object(g) or {} for g in common.as_array(listed.get("tokenGeneration")) or []
     ]
@@ -191,9 +246,14 @@ def namespace_ad(listed: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def ad(server: Server, **changes: Any) -> dict[str, Any]:
-    """An ad like server's own (server_structs.OriginAdvertise), as the
-    director describes the server, lasting AD_LIFETIME seconds, with
-    changes (by JSON name) made."""
+    """Return an ad like server's own, as the director describes the server.
+
+    The ad (a server_structs.OriginAdvertise) lasts AD_LIFETIME seconds.
+
+    Args:
+        server: The server whose ad to imitate.
+        **changes: Values to set in the ad, by JSON name.
+    """
     detail = server.detail
     now = datetime.now(timezone.utc)
     body: dict[str, Any] = {
@@ -224,8 +284,12 @@ def ad(server: Server, **changes: Any) -> dict[str, Any]:
 
 
 def user_agent(kind: str, version: str) -> dict[str, str]:
-    """The User-Agent with which a server of kind, at version, posts its
-    ads, as the director reads it; none if version is not one."""
+    """Return the User-Agent with which a server of kind posts its ads.
+
+    Returns:
+        The header for a server at version, as the director reads it, or
+        no header if version is not one.
+    """
     bare = version.lstrip("v")
     if not bare[:1].isdigit():
         return {}
@@ -233,8 +297,10 @@ def user_agent(kind: str, version: str) -> dict[str, str]:
 
 
 def post_ad(url: str, kind: str, body: Mapping[str, Any], token: Optional[str]) -> web.Response:
-    """POST ad body to the director at url, as a server of kind does,
-    presenting token (none if None)."""
+    """POST ad body to the director at url, as a server of kind does.
+
+    It presents token, or no token if token is None.
+    """
     headers = {"Content-Type": "application/json"}
     headers.update(user_agent(kind, str(body.get("version", ""))))
     return web.request(

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Control the federation's services for the tests, which run in the dev
-container, where there is no Docker.
+"""Control the federation's services for the tests in the dev container.
+
+The dev container has no Docker.
 
   framework/control.py serve   serve the tests' requests until stopped,
                                or until the process that started it ends
@@ -59,7 +60,11 @@ def die(message: str, status: int = 1) -> NoReturn:
 
 
 def compose(*args: str) -> tuple[bool, str]:
-    """Run `docker compose <args>`: whether it succeeded, and its output."""
+    """Run `docker compose <args>`.
+
+    Returns:
+        Whether it succeeded, and its output, or on failure, why it failed.
+    """
     command = f"docker compose {' '.join(args)}"
     try:
         done = subprocess.run(  # nosec B603 B607
@@ -83,19 +88,31 @@ def compose(*args: str) -> tuple[bool, str]:
 
 
 class Helper:
-    """The shape's services that the tests may control, and what puts
-    back what the tests' requests left undone."""
+    """What does the tests' requests, and puts back what they left undone.
+
+    Attributes:
+        services: The shape's services that the tests may control: all
+            but `dev`.
+        undo: The action that puts each service back, by service.
+    """
 
     def __init__(self) -> None:
         ok, output = compose("config", "--services")
         if not ok:
             die(f"cannot list the shape's services: {output}")
         self.services = sorted(set(output.split()) - {"dev"})
-        # The action that puts each service back, by service.
         self.undo: dict[str, str] = {}
 
     def handle(self, request: dict[str, Any]) -> tuple[bool, str]:
-        """Do what request asks: whether it was done, and what to say."""
+        """Do what request asks.
+
+        Args:
+            request: The request's JSON object: its `action`, and its
+                `service`.
+
+        Returns:
+            Whether it was done, and what to say.
+        """
         action = str(request.get("action", ""))
         svc = str(request.get("service", ""))
         if action not in control.ACTIONS:
@@ -119,10 +136,12 @@ class Helper:
         return ok, output
 
     def put_back(self) -> None:
-        """Remove configuration that tests left in control/config/, and
-        start, or unpause, what they left stopped, killed, or paused;
-        then restart each running service that had configuration of
-        theirs."""
+        """Put back what the tests left.
+
+        Remove configuration that they left in control/config/, and start,
+        or unpause, what they left stopped, killed, or paused; then
+        restart each running service that had configuration of theirs.
+        """
         configured: set[str] = set()
         for svc in sorted(os.listdir(control.CONFIG)):
             directory = os.path.join(control.CONFIG, svc)
@@ -161,8 +180,12 @@ def answer(path: str, ok: bool, output: str) -> None:
 
 
 def serve_requests(helper: Helper, parent: int) -> None:
-    """Answer requests, oldest first, until the process that started
-    the helper ends."""
+    """Answer requests, oldest first, until the helper's parent ends.
+
+    Args:
+        helper: What does the requests.
+        parent: The process ID of the process that started the helper.
+    """
     while os.getppid() == parent:
         for name in sorted(os.listdir(control.REQUESTS)):
             if not name.endswith(".req"):

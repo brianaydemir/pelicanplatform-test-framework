@@ -1,9 +1,10 @@
-"""Checksums as a server reports them in an RFC 3230 Digest header,
-read as the Pelican client reads them (parseDigestHeader in Pelican's
-client/handle_http.go): md5 and sha (SHA-1) in base64; crc32 and crc32c
-in hex. XRootD writes crc32c in base64, which the client accepts too
-(xrootd/xrootd#2456), and so does this. The client knows no other
-algorithm; adler32 (hex) and sha-256 (base64), which a server may
+"""Checksums as a server reports them in an RFC 3230 Digest header.
+
+They are read as the Pelican client reads them (parseDigestHeader in
+Pelican's client/handle_http.go): md5 and sha (SHA-1) in base64; crc32
+and crc32c in hex. XRootD writes crc32c in base64, which the client
+accepts too (xrootd/xrootd#2456), and so does this. The client knows no
+other algorithm; adler32 (hex) and sha-256 (base64), which a server may
 report, are read as RFC 3230 has them.
 """
 
@@ -23,7 +24,7 @@ BASE64 = ("md5", "sha", "sha-256")
 
 
 def compute(algorithm: str, data: bytes) -> bytes:
-    """data's digest by algorithm, one of ALGORITHMS."""
+    """Return data's digest by algorithm, one of ALGORITHMS."""
     if algorithm == "crc32c":
         return crc32c(data).to_bytes(4, "big")
     if algorithm == "crc32":
@@ -38,7 +39,7 @@ def compute(algorithm: str, data: bytes) -> bytes:
 
 
 def parse(header: str) -> dict[str, str]:
-    """A Digest header's values, by algorithm (lowercased)."""
+    """Return a Digest header's values, by algorithm (lowercased)."""
     found: dict[str, str] = {}
     for entry in header.split(","):
         name, sep, value = entry.strip().partition("=")
@@ -48,8 +49,11 @@ def parse(header: str) -> dict[str, str]:
 
 
 def decode(algorithm: str, value: str) -> Optional[bytes]:
-    """The digest that value, as reported for algorithm, stands for; None
-    if it stands for none."""
+    """Return the digest that value, as reported for algorithm, stands for.
+
+    Returns:
+        The digest, or None if value stands for none.
+    """
     try:
         if algorithm in BASE64 or (algorithm == "crc32c" and re.fullmatch(r".{6}==", value)):
             return base64.b64decode(value, validate=True)
@@ -62,9 +66,15 @@ def decode(algorithm: str, value: str) -> Optional[bytes]:
 
 
 def check(header: str, data: bytes) -> tuple[list[str], list[str]]:
-    """What is wrong with a Digest header for an object holding data, and
-    the algorithms it reports rightly. An algorithm not in ALGORITHMS is
-    passed over, as the client passes over one it does not know."""
+    """Check a Digest header for an object holding data.
+
+    An algorithm not in ALGORITHMS is passed over, as the client passes
+    over one it does not know.
+
+    Returns:
+        What is wrong with the header, and the algorithms it reports
+        rightly.
+    """
     wrong: list[str] = []
     right: list[str] = []
     for algorithm, value in parse(header).items():

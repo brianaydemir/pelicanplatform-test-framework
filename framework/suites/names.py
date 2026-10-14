@@ -1,5 +1,6 @@
-"""Objects whose names a URL or a listing must encode (testlib/names.py),
-each beside decoys, objects whose names a server or client that
+"""Objects whose names a URL or a listing must encode (testlib/names.py).
+
+Each is beside decoys, objects whose names a server or client that
 mishandles the encoding would take for its own. Any bytes but the
 object's own fail, and another's are named.
 
@@ -57,14 +58,25 @@ SCENARIOS = {
 
 
 class Test:
-    """The objects, by name, where they are, and the token."""
+    """The objects, by name, where they are, and the token.
+
+    Attributes:
+        origins: The origins, each store once.
+        base: Where the objects are in /protected-a.
+        put_base: Where client-put uploads, beside the objects.
+        tmp: The test's scratch directory.
+        token_file: The file that holds token.
+        token: A token for /protected-a.
+        caps: The capabilities of /protected-a.
+        objects: Each object's bytes, by name.
+        unseeded: What went wrong putting the objects in place.
+    """
 
     def __init__(self, session: Session):
         self.session = session
         self.fed = session.fed
         self.origins = stores.unique(self.fed.origins)
         self.base = f"data/names/{session.run}"
-        # Where client-put uploads, beside the objects.
         self.put_base = f"{self.base}-put"
         self.tmp = session.path("names")
         os.makedirs(self.tmp)
@@ -73,23 +85,26 @@ class Test:
         self.caps = self.fed.exports["protected-a"]
         # Each a size of its own, so that a listing shows which is which.
         self.objects = {name: os.urandom(1000 + 37 * n) for n, name in enumerate(NAMES)}
-        # What went wrong putting them in place.
         self.unseeded: list[str] = []
 
     def rel(self, name: str) -> str:
-        """Where object name is in /protected-a."""
+        """Return where object name is in /protected-a."""
         return f"{self.base}/{name}"
 
     def url(self, server: str, name: str) -> str:
-        """The URL of object name at a server's data URL."""
+        """Return the URL of object name at a server's data URL."""
         return f"{server}/protected-a/{quote(self.rel(name))}"
 
     def which(self, data: bytes) -> str:
-        """The name of the object whose bytes data are, or ""."""
+        """Return the name of the object whose bytes data are, or ""."""
         return next((name for name, held in self.objects.items() if held == data), "")
 
     def wrong(self, name: str, data: bytes) -> Optional[str]:
-        """Why data, as served for object name, are not its bytes."""
+        """Return why data, as served for object name, are not its bytes.
+
+        Returns:
+            Why not, or None if they are.
+        """
         if data == self.objects[name]:
             return None
         other = self.which(data)
@@ -98,9 +113,11 @@ class Test:
         return f"{name!r}: {len(data)} bytes that are no object's"
 
     def seed(self) -> None:
-        """Put every object at every origin. What an origin refuses is
-        left out, and recorded in unseeded: the scenarios then fail for
-        it."""
+        """Put every object at every origin.
+
+        What an origin refuses is left out, and recorded in unseeded: the
+        scenarios then fail for it.
+        """
         errors = stores.make_dirs(self.origins, "protected-a", self.base, self.token)
         if errors:
             die(f"could not make the run's collection: {first(errors)}")
@@ -111,8 +128,11 @@ class Test:
 
 
 def origin_put(test: Test) -> tuple[str, str]:
-    """A PUT of each name (made as the test began) lands in each store on
-    disk as a file of that name, with its bytes, and nothing else."""
+    """Check that a PUT of each name lands in each store on disk, by name.
+
+    The PUTs were made as the test began. Each lands as a file of that
+    name, with its bytes, and nothing else does.
+    """
     if "Writes" not in test.caps:
         return SKIP, "/protected-a takes no writes, so each name was written in each store"
     disk = [o for o in test.origins if not o.pstore]
@@ -139,7 +159,15 @@ def origin_put(test: Test) -> tuple[str, str]:
 
 
 def served(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
-    """Each object, by its name, from each of servers (name, data URL)."""
+    """Check that each of servers serves each object by its name.
+
+    Args:
+        test: The test, as a scenario takes it.
+        servers: Each server's name and data URL.
+
+    Returns:
+        The status and note, as a scenario returns them.
+    """
     problems: list[str] = []
     for svc, server in servers:
         for name in NAMES:
@@ -156,27 +184,30 @@ def served(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
 
 
 def origin_get(test: Test) -> tuple[str, str]:
-    """Each origin serves each object by its name."""
+    """Check that each origin serves each object by its name."""
     if "DirectReads" not in test.caps:
         return SKIP, "/protected-a takes no direct clients"
     return served(test, [(o.svc, o.url) for o in test.origins])
 
 
 def cache_get(test: Test) -> tuple[str, str]:
-    """Each cache serves each object by its name, cold."""
+    """Check that each cache serves each object by its name, cold."""
     if not test.fed.caches:
         return SKIP, "this shape has no cache"
     return served(test, [(c.svc, c.url) for c in test.fed.caches])
 
 
 def director_get(test: Test) -> tuple[str, str]:
-    """Each director's object route, asked for each object by its name,
-    sends a plain HTTP client to a federated cache, or, with no cache, to
-    an origin, by a redirect whose Location names the object again: the
+    """Check that each director's redirect leads to each object by its name.
+
+    Each director's object route, asked for each object by its name,
+    sends a plain HTTP client to a federated cache, or, with none, to an
+    origin, by a redirect whose Location names the object again: the
     director takes the name decoded and encodes it anew (getRedirectURL
     in Pelican's director/director.go), so a name it mangled on the way
     would fetch a decoy, or nothing. The client follows the Location as
-    it is, as curl -L does, and must get the object's bytes."""
+    it is, as curl -L does, and must get the object's bytes.
+    """
     if not test.fed.directors:
         return SKIP, "a standalone origin has no director"
     urls = [c.url for c in test.fed.federated_caches] or [o.url for o in test.fed.origins]
@@ -207,8 +238,17 @@ def director_get(test: Test) -> tuple[str, str]:
 
 
 def listed(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
-    """Depth 1 of the run's collection at each of servers (name, data
-    URL): every name once, with its size."""
+    """Check that each of servers lists every name once, with its size.
+
+    Each lists the run's collection at depth 1.
+
+    Args:
+        test: The test, as a scenario takes it.
+        servers: Each server's name and data URL.
+
+    Returns:
+        The status and note, as a scenario returns them.
+    """
     path = f"/protected-a/{test.base}"
     want: dict[str, Optional[int]] = {n: len(data) for n, data in test.objects.items()}
     problems: list[str] = []
@@ -231,15 +271,17 @@ def listed(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
 
 
 def origin_list(test: Test) -> tuple[str, str]:
-    """Each origin lists every name."""
+    """Check that each origin lists every name."""
     if not {"Listings", "DirectReads"} <= test.caps:
         return SKIP, "/protected-a may not be listed straight from an origin"
     return listed(test, [(o.svc, o.url) for o in test.origins])
 
 
 def cache_list(test: Test) -> tuple[str, str]:
-    """Each federated cache lists every name (site-local caches list
-    their own way; see the sitelocal suite)."""
+    """Check that each federated cache lists every name.
+
+    Site-local caches list their own way.
+    """
     if not test.fed.federated_caches:
         return SKIP, "this shape has no federated cache"
     if "Listings" not in test.caps:
@@ -248,8 +290,14 @@ def cache_list(test: Test) -> tuple[str, str]:
 
 
 def fetched(test: Test, target: str) -> Optional[str]:
-    """Why directory target does not hold a file of each object's name,
-    with its bytes, and nothing else; None if it does."""
+    """Return why directory target does not hold each object's file.
+
+    It must hold a file of each object's name, with its bytes, and
+    nothing else.
+
+    Returns:
+        Why not, or None if it does.
+    """
     found = set(os.listdir(target))
     if found != set(NAMES):
         return f"wrote {sorted(found - set(NAMES))}, lacking {sorted(set(NAMES) - found)}"
@@ -262,13 +310,16 @@ def fetched(test: Test, target: str) -> Optional[str]:
 
 
 def client_get(test: Test) -> tuple[str, str]:
-    """`pelican object get` of every object, into a directory: a file of
-    each one's name, with its bytes, and nothing else; the three ways a
-    client reaches an object: through the cache the director picks,
-    direct from an origin (--direct), where /protected-a takes direct
-    clients, and from each federated cache in turn, named (--cache),
-    which alone may serve it, since the client builds that cache's URL
-    of each name itself."""
+    """Check that `pelican object get` writes a file of each object's name.
+
+    A get of every object, into a directory, must write a file of each
+    one's name, with its bytes, and nothing else, in each of the three
+    ways a client reaches an object: through the cache the director
+    picks; direct from an origin (--direct), where /protected-a takes
+    direct clients; and from each federated cache in turn, named
+    (--cache), which alone may serve it, since the client builds that
+    cache's URL of each name itself.
+    """
     urls = [f"{test.fed.url}/protected-a/{quote(test.rel(name))}" for name in NAMES]
     # Each way: its key, the client's flags, and the cache it names.
     ways: list[tuple[str, list[str], Optional[common.Cache]]] = [("cache", [], None)]
@@ -318,9 +369,12 @@ def client_get(test: Test) -> tuple[str, str]:
 
 
 def client_put(test: Test) -> tuple[str, str]:
-    """`pelican object put` of a file of each name into a new collection:
-    an object of each name, with the file's bytes, at some origin; and in
-    a store on disk, no file of any other name."""
+    """Check that `pelican object put` of each name lands as that object.
+
+    A put of a file of each name into a new collection must make an
+    object of each name, with the file's bytes, at some origin; and in a
+    store on disk, no file of any other name.
+    """
     if "Writes" not in test.caps:
         return SKIP, "/protected-a takes no writes"
     collection = test.put_base
@@ -358,8 +412,10 @@ def client_put(test: Test) -> tuple[str, str]:
 
 
 def client_ls(test: Test) -> tuple[str, str]:
-    """`pelican object ls -l --json` of the run's collection: every name,
-    once, with its size."""
+    """Check that `pelican object ls` lists every name once, with its size.
+
+    It lists the run's collection, with -l --json.
+    """
     if "Listings" not in test.caps:
         return SKIP, "/protected-a has no Listings"
     code, out, err = test.session.pelican_cmd(
@@ -387,6 +443,8 @@ def client_ls(test: Test) -> tuple[str, str]:
     return PASS, f"{len(NAMES)} names"
 
 
+# The scenarios, by name: each takes the Test, and returns its status and
+# a note.
 RUN = {
     "origin-put": origin_put,
     "origin-get": origin_get,
@@ -401,15 +459,14 @@ RUN = {
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no /protected-a."""
+    """Return why there is nothing to test: no /protected-a."""
     if "protected-a" not in fed.exports:
         return "this shape does not export /protected-a"
     return None
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Put the objects in place, run the selected scenarios, and remove the
-    run's objects."""
+    """Seed the objects, run the selected scenarios, then remove them."""
     fed = session.fed
     for origin in stores.unique(fed.origins):
         directory = f"{origin.store_of('protected-a')}/data/names"

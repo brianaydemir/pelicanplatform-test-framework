@@ -1,6 +1,7 @@
-"""Controlling the federation's services in the middle of a run:
-restarting, stopping, starting, pausing, unpausing, or killing one, or
-restarting one with configuration of a test's own.
+"""Controlling the federation's services in the middle of a run.
+
+A test may restart, stop, start, pause, unpause, or kill a service, or
+restart one with configuration of its own.
 
 The dev container has no Docker, so a helper on the host,
 framework/control.py, acts for the tests: `./fed.sh test` runs one
@@ -73,7 +74,7 @@ class ControlError(Exception):
 
 
 def _ask(action: str, service: str, seconds: float = ANSWER_WAIT) -> str:
-    """Ask the helper to do action to service: what it said."""
+    """Ask the helper to do action to service, and return what it said."""
     ident = f"{time.time_ns():020d}-{uuid.uuid4().hex[:12]}"
     request = os.path.join(REQUESTS, f"{ident}.req")
     answer = os.path.join(REQUESTS, f"{ident}.res")
@@ -96,9 +97,12 @@ def _ask(action: str, service: str, seconds: float = ANSWER_WAIT) -> str:
 
 @functools.lru_cache(maxsize=None)
 def unavailable() -> Optional[str]:
-    """Why the tests can't control the services here, or None: no helper
-    serves this run (as when test.py runs by hand in the dev container,
-    without `./fed.sh control`), or it does not answer. Asked once."""
+    """Return why the tests can't control the services, or None if they can.
+
+    They can't where no helper serves this run (as when test.py runs by
+    hand in the dev container, without `./fed.sh control`), or it does not
+    answer. Asked once.
+    """
     if not common.wait_for(lambda: os.path.exists(SERVING), STARTUP_WAIT):
         return (
             "no control helper serves this run: ./fed.sh test runs one, and"
@@ -112,66 +116,112 @@ def unavailable() -> Optional[str]:
 
 
 def pelican_server(svc: str) -> bool:
-    """Whether svc is a Pelican server."""
+    """Return whether svc is a Pelican server."""
     return PELICAN_SERVER.fullmatch(svc) is not None
 
 
 def answers(svc: str) -> bool:
-    """Whether Pelican server svc answers on its web port, whatever it
-    says, as its health check asks (framework/service-health.sh)."""
+    """Return whether Pelican server svc answers on its web port.
+
+    Whatever it says counts, as its health check asks
+    (framework/service-health.sh).
+    """
     url = f"https://{svc}:8444/api/v1.0/health"
     return web.request("GET", url, timeout=5).status is not None
 
 
 def wait_serving(svc: str, seconds: float = SERVE_WAIT) -> None:
-    """Wait until svc, if it is a Pelican server, answers on its web
-    port; raise ControlError if it doesn't within seconds."""
+    """Wait until svc, if it is a Pelican server, answers on its web port.
+
+    Raises:
+        ControlError: It doesn't within seconds.
+    """
     if pelican_server(svc) and not common.wait_for(lambda: answers(svc), seconds, interval=1):
         raise ControlError(f"{svc} did not answer on its web port within {seconds:.0f}s")
 
 
 def restart(svc: str) -> None:
-    """Restart svc (`docker compose restart`), and wait until it serves."""
+    """Restart svc (`docker compose restart`), and wait until it serves.
+
+    Raises:
+        ControlError: The action failed, the helper did not answer, or svc
+            did not answer on its web port within SERVE_WAIT seconds.
+    """
     _ask("restart", svc)
     wait_serving(svc)
 
 
 def stop(svc: str) -> None:
-    """Stop svc (`docker compose stop`): SIGTERM, then SIGKILL."""
+    """Stop svc (`docker compose stop`): SIGTERM, then SIGKILL.
+
+    Raises:
+        ControlError: The action failed, or the helper did not answer.
+    """
     _ask("stop", svc)
 
 
 def start(svc: str) -> None:
-    """Start svc, stopped or killed, and wait until it serves."""
+    """Start svc, stopped or killed, and wait until it serves.
+
+    Raises:
+        ControlError: The action failed, the helper did not answer, or svc
+            did not answer on its web port within SERVE_WAIT seconds.
+    """
     _ask("start", svc)
     wait_serving(svc)
 
 
 def pause(svc: str) -> None:
-    """Freeze svc's processes (`docker compose pause`): its ports take
-    connections, but nothing answers."""
+    """Freeze svc's processes (`docker compose pause`).
+
+    Its ports take connections, but nothing answers.
+
+    Raises:
+        ControlError: The action failed, or the helper did not answer.
+    """
     _ask("pause", svc)
 
 
 def unpause(svc: str) -> None:
-    """Thaw svc, and wait until it serves."""
+    """Thaw svc, and wait until it serves.
+
+    Raises:
+        ControlError: The action failed, the helper did not answer, or svc
+            did not answer on its web port within SERVE_WAIT seconds.
+    """
     _ask("unpause", svc)
     wait_serving(svc)
 
 
 def kill(svc: str) -> None:
-    """Kill svc (`docker compose kill`: SIGKILL), with no chance to shut
-    down cleanly."""
+    """Kill svc (`docker compose kill`: SIGKILL).
+
+    It has no chance to shut down cleanly.
+
+    Raises:
+        ControlError: The action failed, or the helper did not answer.
+    """
     _ask("kill", svc)
 
 
 @contextlib.contextmanager
 def restart_with(svc: str, files: Mapping[str, str]) -> Generator[None, None, None]:
-    """Restart svc with files, YAML text by file name (e.g.
-    `90-test.yaml`), as the last of its configuration layers, which wins
-    over every other; and afterward, even on failure, remove them and
-    restart it again, so that what comes later sees the shape as it
-    was."""
+    """Restart svc with files as the last of its configuration layers.
+
+    That layer wins over every other. Afterward, even on failure, remove
+    the files and restart svc again, so that what comes later sees the
+    shape as it was.
+
+    Args:
+        svc: The Pelican server to restart.
+        files: YAML text, by file name (e.g. `90-test.yaml`).
+
+    Raises:
+        ControlError: There is no directory for svc under config/ (it is
+            no Pelican server, or ./fed.sh has not made it), a name in
+            files is not a configuration file's (CONFIG_FILE), or a
+            restart failed.
+    """
     directory = os.path.join(CONFIG, svc)
     if not os.path.isdir(directory):
         raise ControlError(

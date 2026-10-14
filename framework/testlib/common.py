@@ -1,8 +1,8 @@
-"""Paths, messages, the command line, and what fed.sh derived from the
-shape, for test.py, its suites, and init-data.py.
+"""Paths, messages, arguments, and what fed.sh derived from the shape.
 
-They run in framework/var (see enter_var), so the paths they use are
-relative to it. Messages name paths from the top of the checkout.
+They are for test.py, its suites, and init-data.py, which run in
+framework/var (see enter_var), so the paths they use are relative to it.
+Messages name paths from the top of the checkout.
 """
 
 import fnmatch
@@ -43,13 +43,21 @@ class Died(SystemExit):
 
 
 def die(message: str) -> NoReturn:
-    """Print message, and end the suite, or the program."""
+    """Print message, and end the suite, or the program.
+
+    Raises:
+        Died: Always, with exit status 1.
+    """
     print(f"{PROG}: {message}", file=sys.stderr)
     raise Died(message, 1)
 
 
 def die_usage(message: str) -> NoReturn:
-    """die(), for a usage error."""
+    """Print message, and end the suite or the program, for a usage error.
+
+    Raises:
+        Died: Always, with exit status 2.
+    """
     print(f"{PROG}: {message}", file=sys.stderr)
     raise Died(message, 2)
 
@@ -64,11 +72,21 @@ def warn(message: str) -> None:
 
 
 def select(args: Sequence[str], suites: Mapping[str, Sequence[str]]) -> dict[str, list[str]]:
-    """The scenarios that args ask for, by suite: each suite in the order
-    of suites, and its scenarios in their order, each once. An argument
-    is a suite (e.g. `auth`), or `<suite>/<scenario>`; either part may be
-    a shell-style pattern (e.g. 'transfers/plugin-*'). No args means
-    every scenario. An argument that matches nothing exits 2."""
+    """Return the scenarios that args ask for, by suite.
+
+    Args:
+        args: Suites (e.g. `auth`), or `<suite>/<scenario>`; either part
+            may be a shell-style pattern (e.g. 'transfers/plugin-*').
+            Empty means every scenario.
+        suites: Each suite's scenarios, in the order they run.
+
+    Returns:
+        Each suite that args name, in the order of suites, with its
+        scenarios in their order, each once.
+
+    Raises:
+        Died: An argument matches nothing (exit status 2).
+    """
     wanted: dict[str, set[str]] = {}
     for arg in args:
         suite_part, sep, scenario_part = arg.partition("/")
@@ -97,12 +115,12 @@ def select(args: Sequence[str], suites: Mapping[str, Sequence[str]]) -> dict[str
 
 
 def as_object(value: Any) -> Optional[dict[str, Any]]:
-    """value, a parsed JSON value, if it is an object; else None."""
+    """Return value, a parsed JSON value, if it is an object; else None."""
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
 
 
 def as_array(value: Any) -> Optional[list[Any]]:
-    """value, a parsed JSON value, if it is an array; else None."""
+    """Return value, a parsed JSON value, if it is an array; else None."""
     if not isinstance(value, list):
         return None
     # mypy takes value for a list[Any] here, and so would call a cast
@@ -112,7 +130,7 @@ def as_array(value: Any) -> Optional[list[Any]]:
 
 
 def objects(items: Iterable[Any]) -> list[dict[str, Any]]:
-    """The JSON objects among items, parsed JSON values."""
+    """Return the JSON objects among items, parsed JSON values."""
     return [found for found in (as_object(item) for item in items) if found is not None]
 
 
@@ -125,7 +143,7 @@ def enter_var() -> None:
 
 
 def binary(name: str) -> str:
-    """The path of framework/var/bin/<os>/<name>, which must exist."""
+    """Return the path of framework/var/bin/<os>/<name>; it must exist."""
     path = os.path.join("bin", platform.system().lower(), name)
     if not os.path.exists(path):
         die(f"framework/var/{path} is missing; run ./fed.sh init on the host")
@@ -133,9 +151,15 @@ def binary(name: str) -> str:
 
 
 def server_binary() -> Optional[str]:
-    """The pelican-server to run server-only commands with, which the
-    client lacks: the container's own, if it has one; otherwise
-    framework/var/bin/<os>/pelican-server, if there is one."""
+    """Return the pelican-server to run server-only commands with.
+
+    The client lacks those commands.
+
+    Returns:
+        The container's own, if it has one; otherwise
+        framework/var/bin/<os>/pelican-server, if there is one; otherwise
+        None.
+    """
     found = shutil.which("pelican-server")
     if found is not None:
         return found
@@ -144,12 +168,12 @@ def server_binary() -> Optional[str]:
 
 
 def digest(data: bytes) -> str:
-    """The SHA-256 of data."""
+    """Return the SHA-256 of data."""
     return hashlib.sha256(data).hexdigest()
 
 
 def sha256(path: str) -> Optional[str]:
-    """The file's SHA-256, or None if there is no such file."""
+    """Return the file's SHA-256, or None if there is no such file."""
     found = hashlib.sha256()
     try:
         with open(path, "rb") as f:
@@ -161,7 +185,10 @@ def sha256(path: str) -> Optional[str]:
 
 
 def wait_for(condition: Callable[[], bool], seconds: float, interval: float = 0.5) -> bool:
-    """Whether condition holds within seconds, asking every interval."""
+    """Return whether condition holds within seconds.
+
+    It asks every interval.
+    """
     deadline = time.time() + seconds
     while not condition():
         if time.time() >= deadline:
@@ -171,30 +198,46 @@ def wait_for(condition: Callable[[], bool], seconds: float, interval: float = 0.
 
 
 def shown(path: Optional[str]) -> str:
-    """How a message names path, which is under framework/var, or a URL;
-    "" for none."""
+    """Return how a message names path: one under framework/var, or a URL.
+
+    Returns:
+        The name; "" if there is no path.
+    """
     if not path:
         return ""
     return path if "://" in path else f"framework/var/{path}"
 
 
 def first(problems: Sequence[str]) -> str:
-    """The first of problems, and how many more there are."""
+    """Return the first of problems, and how many more there are."""
     more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
     return problems[0] + more
 
 
 @dataclass
 class Findings:
-    """What a case found: problems, which fail it; doubts, which leave it
-    inconclusive; and notes on what went right."""
+    """What a case found: problems, doubts, and notes.
+
+    Attributes:
+        problems: Problems, which fail the case.
+        doubts: Doubts, which leave it inconclusive.
+        notes: Notes on what went right.
+    """
 
     problems: list[str] = field(default_factory=list[str])
     doubts: list[str] = field(default_factory=list[str])
     notes: list[str] = field(default_factory=list[str])
 
     def row(self, passed: str) -> tuple[str, str]:
-        """FAIL, INCONCLUSIVE, or PASS (with note passed), and a note."""
+        """Return the case's status, and a note on it.
+
+        Args:
+            passed: The note's start, if the case passed.
+
+        Returns:
+            FAIL, with the first problem; INCONCLUSIVE, with the doubts; or
+            PASS, with passed and the notes.
+        """
         if self.problems:
             return report_module.FAIL, first(self.problems)
         if self.doubts:
@@ -203,8 +246,10 @@ class Findings:
 
 
 def timestamp(when: datetime) -> str:
-    """when, a UTC time, as Go's encoding/json reads a time.Time: RFC
-    3339, to the second."""
+    """Return when, a UTC time, as Go's encoding/json reads a time.Time.
+
+    That is RFC 3339, to the second.
+    """
     return when.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -222,35 +267,50 @@ def empty_dir(path: str) -> None:
 
 
 def storage_namespace(namespace: str, pstore: bool) -> str:
-    """The namespace whose storage namespace (e.g. protected-a) reads at
-    an origin: its own, but on a pstore origin, /public reads
-    /protected-a's, since nothing can write /public (fed_storage_dir in
-    fed.sh)."""
+    """Return the namespace whose storage namespace reads at an origin.
+
+    It is namespace's own (e.g. protected-a), but on a pstore origin,
+    /public reads /protected-a's, since nothing can write /public
+    (fed_storage_dir in fed.sh).
+    """
     return "protected-a" if pstore and namespace == "public" else namespace
 
 
 def storage_dir(namespace: str) -> str:
-    """The directory of a namespace's storage in an origin's store: its
-    name, e.g. protected-a, with any / of a nested one as -, e.g.
-    public-other for /public/other (fed_storage_dir in fed.sh)."""
+    """Return the directory of a namespace's storage in an origin's store.
+
+    It is the namespace's name, e.g. protected-a, with any / of a nested
+    one as -, e.g. public-other for /public/other (fed_storage_dir in
+    fed.sh).
+    """
     return namespace.strip("/").replace("/", "-")
 
 
 def web_url_of(data_url: str) -> str:
-    """The web URL of the server that serves data at data_url, where its
-    web API is: every server's web port is 8444
-    (config.d/base/20-server.yaml), whatever port its data is on."""
+    """Return the web URL of the server that serves data at data_url.
+
+    That is where its web API is: every server's web port is 8444
+    (config.d/base/20-server.yaml), whatever port its data is on.
+    """
     return f"https://{urlsplit(data_url).hostname}:8444"
 
 
 @dataclass(frozen=True)
 class Origin:
-    """A running origin."""
+    """A running origin.
 
-    svc: str  # the compose service
-    url: str  # where it serves its exports
-    store: str  # its store, a directory under framework/var (see store_of())
-    kind: str  # "pstore" if the store is encrypted, and `store` holds its plain copy
+    Attributes:
+        svc: The compose service.
+        url: Where it serves its exports.
+        store: Its store, a directory under framework/var (see store_of()).
+        kind: "pstore" if the store is encrypted, and `store` holds its
+            plain copy.
+    """
+
+    svc: str
+    url: str
+    store: str
+    kind: str
 
     @property
     def pstore(self) -> bool:
@@ -263,29 +323,44 @@ class Origin:
         return web_url_of(self.url)
 
     def storage_namespace(self, namespace: str) -> str:
-        """The namespace whose storage namespace reads here (see
-        storage_namespace())."""
+        """Return the namespace whose storage namespace reads here.
+
+        See storage_namespace().
+        """
         return storage_namespace(namespace, self.pstore)
 
     def store_of(self, namespace: str) -> str:
-        """The directory (under framework/var) of namespace's storage, in
-        the store: on a pstore origin, of its plain copy."""
+        """Return the directory of namespace's storage in the store.
+
+        It is under framework/var; on a pstore origin, it is of the store's
+        plain copy.
+        """
         return f"{self.store}/{storage_dir(self.storage_namespace(namespace))}"
 
 
 @dataclass(frozen=True)
 class Export:
-    """An export of another owner's origin (see Owner)."""
+    """An export of another owner's origin (see Owner).
 
-    prefix: str  # its federation prefix, e.g. /public/other
-    like: str  # the namespace it mirrors, e.g. `public`; `-` for none (/public/secret)
-    caps: frozenset[str]  # its capabilities
-    issuer: str  # the issuer URL it has, or would have
+    Attributes:
+        prefix: Its federation prefix, e.g. /public/other.
+        like: The namespace it mirrors, e.g. `public`; `-` for none
+            (/public/secret).
+        caps: Its capabilities.
+        issuer: The issuer URL it has, or would have.
+    """
+
+    prefix: str
+    like: str
+    caps: frozenset[str]
+    issuer: str
 
     @property
     def path(self) -> str:
-        """Its prefix without the slashes around it, e.g. public/other,
-        for URLs like <origin>/<path>/<rel>."""
+        """Its prefix without the slashes around it, e.g. public/other.
+
+        It is for URLs like <origin>/<path>/<rel>.
+        """
         return self.prefix.strip("/")
 
     @property
@@ -296,12 +371,18 @@ class Export:
 
 @dataclass(frozen=True)
 class Owner:
-    """A running origin of another owner (`topo-multi-owner`), with a key
-    and an issuer of its own, and exports of its own."""
+    """A running origin of another owner (`topo-multi-owner`).
+
+    It has a key and an issuer of its own, and exports of its own.
+
+    Attributes:
+        key_dir: The directory (under framework/var) of its issuer keys.
+        web_url: Where it serves its web API, e.g. its server-wide JWKS.
+    """
 
     origin: Origin
-    key_dir: str  # the directory (under framework/var) of its issuer keys
-    web_url: str  # where it serves its web API, e.g. its server-wide JWKS
+    key_dir: str
+    web_url: str
     exports: tuple[Export, ...]
 
     @property
@@ -311,8 +392,11 @@ class Owner:
 
 
 def signing_key(key_dir: str) -> str:
-    """A server's active signing key: the .pem in key_dir (under
-    framework/var) that sorts first, as Pelican picks it."""
+    """Return a server's active signing key.
+
+    It is the .pem in key_dir (under framework/var) that sorts first, as
+    Pelican picks it.
+    """
     keys = sorted(glob.glob(os.path.join(key_dir, "*.pem")))
     if not keys:
         die(f"no key in framework/var/{key_dir}/; run ./fed.sh init")
@@ -320,9 +404,15 @@ def signing_key(key_dir: str) -> str:
 
 
 def parse_owners(owners: str, exports: str) -> list[Owner]:
-    """generated/owners, `<service> <URL> <store> <key dir> <web URL>` per
-    line, with each owner's lines of generated/owner-exports,
-    `<service> <prefix> <namespace> <capability>,... <issuer URL>`."""
+    """Parse generated/owners, with each owner's lines of owner-exports.
+
+    Args:
+        owners: generated/owners:
+            `<service> <URL> <store> <key dir> <web URL>` per line.
+        exports: generated/owner-exports:
+            `<service> <prefix> <namespace> <capability>,... <issuer URL>`
+            per line.
+    """
     found: dict[str, list[Export]] = {}
     for line in exports.splitlines():
         if line.strip():
@@ -342,12 +432,20 @@ def parse_owners(owners: str, exports: str) -> list[Owner]:
 
 @dataclass(frozen=True)
 class Cache:
-    """A running cache."""
+    """A running cache.
 
-    svc: str  # the compose service
-    url: str  # its data URL
-    kind: str  # "v2" (native) or "xrootd"
-    role: str  # "federated", or "site-local": the director does not know of it
+    Attributes:
+        svc: The compose service.
+        url: Its data URL.
+        kind: "v2" (native) or "xrootd".
+        role: "federated", or "site-local": the director does not know of
+            it.
+    """
+
+    svc: str
+    url: str
+    kind: str
+    role: str
 
     @property
     def site_local(self) -> bool:
@@ -362,12 +460,21 @@ class Cache:
 
 @dataclass(frozen=True)
 class IssuerLifetimes:
-    """How long the embedded issuer's tokens last, in seconds."""
+    """How long the embedded issuer's tokens last, in seconds.
 
-    access: int  # Issuer.AccessTokenLifetime
-    refresh: int  # Issuer.RefreshTokenLifetime
-    grace: int  # Issuer.RefreshTokenGracePeriod: how long a used refresh token still works
-    code: int  # Issuer.AuthorizationCodeLifetime: authorization and device codes
+    Attributes:
+        access: Issuer.AccessTokenLifetime.
+        refresh: Issuer.RefreshTokenLifetime.
+        grace: Issuer.RefreshTokenGracePeriod: how long a used refresh
+            token still works.
+        code: Issuer.AuthorizationCodeLifetime: authorization and device
+            codes.
+    """
+
+    access: int
+    refresh: int
+    grace: int
+    code: int
 
 
 # The origins that XRootD serves (ORIGIN_VARIANT); the rest are Pelican's
@@ -377,30 +484,49 @@ XROOTD_ORIGINS = ("posix", "https", "s3")
 
 @dataclass(frozen=True)
 class TransferApi:
-    """Where the transfer API is served: origin-0's
-    (`-p origin-transfer-api`), or a transfer server's own
-    (`-p topo-transfer-server`)."""
+    """Where the transfer API is served.
 
-    url: str  # its web URL
-    issuer: str  # the issuer of its tokens
-    key_dir: str  # the directory (under framework/var) of the key that signs them
-    svc: str  # the compose service that serves it
-    confined: bool  # whether it confines jobs to the origin's exports
+    It is origin-0's (`-p origin-transfer-api`), or a transfer server's
+    own (`-p topo-transfer-server`).
+
+    Attributes:
+        url: Its web URL.
+        issuer: The issuer of its tokens.
+        key_dir: The directory (under framework/var) of the key that signs
+            them.
+        svc: The compose service that serves it.
+        confined: Whether it confines jobs to the origin's exports.
+    """
+
+    url: str
+    issuer: str
+    key_dir: str
+    svc: str
+    confined: bool
 
 
 @dataclass(frozen=True)
 class TierTarget:
-    """Where a V2 cache tiers objects (`-p cache-tiered`)."""
+    """Where a V2 cache tiers objects (`-p cache-tiered`).
 
-    svc: str  # the cache's compose service
-    mode: str  # "redirect": it sends clients to the target; or "proxy"
-    threshold: int  # the size, in bytes, from which it tiers an object
-    directory: str  # the target's directory, under framework/var
+    Attributes:
+        svc: The cache's compose service.
+        mode: "redirect": it sends clients to the target; or "proxy".
+        threshold: The size, in bytes, from which it tiers an object.
+        directory: The target's directory, under framework/var.
+    """
+
+    svc: str
+    mode: str
+    threshold: int
+    directory: str
 
 
 class Federation:
-    """framework/var/generated/, read as needed. fed.sh documents each
-    file where it writes them (fed_generate)."""
+    """framework/var/generated/, read as needed.
+
+    fed.sh documents each file where it writes them (fed_generate).
+    """
 
     def _read(self, name: str) -> str:
         path = os.path.join("generated", name)
@@ -420,9 +546,11 @@ class Federation:
 
     @cached_property
     def issuers(self) -> dict[str, str]:
-        """The issuer URL the origins give each namespace, by name, or
-        would give it: /public has no issuer, and the shape may not export
-        every namespace. `<namespace> <URL>` per line."""
+        """The issuer URL that the origins give each namespace, by name.
+
+        Or that they would give it: /public has no issuer, and the shape
+        may not export every namespace. `<namespace> <URL>` per line.
+        """
         found: dict[str, str] = {}
         for line in self._read("issuer-urls").splitlines():
             if line.strip():
@@ -431,33 +559,41 @@ class Federation:
         return found
 
     def issuer_of(self, namespace: str) -> str:
-        """The issuer URL of namespace, e.g. `protected-a`."""
+        """Return the issuer URL of namespace, e.g. `protected-a`."""
         return self.issuers[namespace]
 
     @cached_property
     def external_issuer(self) -> bool:
-        """EXTERNAL_ISSUER: whether the exports trust the federation's
-        external issuer instead of the origins' (see
-        presets/auth-external-issuer.sh)."""
+        """EXTERNAL_ISSUER: whether the exports trust the external issuer.
+
+        That is the federation's, instead of the origins' (see
+        presets/auth-external-issuer.sh).
+        """
         return self._line("external-issuer") == "true"
 
     @cached_property
     def embedded_issuer(self) -> bool:
-        """ORIGIN_ENABLE_ISSUER: whether the origins run Pelican's embedded
-        OAuth2 issuer, which gives each protected namespace an issuer of
-        its own (see presets/default.sh)."""
+        """ORIGIN_ENABLE_ISSUER: whether the origins' embedded issuer runs.
+
+        It is Pelican's embedded OAuth2 issuer, which gives each protected
+        namespace an issuer of its own (see presets/default.sh).
+        """
         return self._line("origin-enable-issuer") == "true"
 
     @cached_property
     def origin_web_url(self) -> str:
-        """The web URL of the origin whose issuer the namespaces name, which
-        serves the server-wide JWKS."""
+        """The web URL of the origin whose issuer the namespaces name.
+
+        It serves the server-wide JWKS.
+        """
         return self._line("origin-web-url")
 
     @cached_property
     def exports(self) -> dict[str, frozenset[str]]:
-        """Each exported namespace's capabilities, by name (e.g.
-        `protected-a`): `<prefix> <capability>,...` per line."""
+        """Each exported namespace's capabilities, by name.
+
+        Names are like `protected-a`. `<prefix> <capability>,...` per line.
+        """
         found: dict[str, frozenset[str]] = {}
         for line in self._read("exports").splitlines():
             if line.strip():
@@ -499,20 +635,27 @@ class Federation:
 
     @property
     def native_origins(self) -> bool:
-        """Whether Pelican serves the origins itself (origin_serve/ in
-        Pelican), rather than XRootD (see XROOTD_ORIGINS)."""
+        """Whether Pelican serves the origins itself, rather than XRootD.
+
+        See origin_serve/ in Pelican, and XROOTD_ORIGINS.
+        """
         return self.origin_variant not in XROOTD_ORIGINS
 
     @property
     def sent_cache_control(self) -> str:
-        """The Cache-Control that the origins send: ORIGIN_CACHE_CONTROL
-        (origin_cache_control) at native origins, and nothing at XRootD
-        ones, which have no Origin.CacheControl."""
+        """The Cache-Control that the origins send.
+
+        It is ORIGIN_CACHE_CONTROL (origin_cache_control) at native
+        origins, and nothing at XRootD ones, which have no
+        Origin.CacheControl.
+        """
         return self.origin_cache_control if self.native_origins else ""
 
     def storage_namespace(self, namespace: str) -> str:
-        """The namespace whose storage namespace reads at the origins, all
-        of one ORIGIN_VARIANT (see storage_namespace())."""
+        """Return the namespace whose storage namespace reads at an origin.
+
+        The origins are all of one ORIGIN_VARIANT (see storage_namespace()).
+        """
         return storage_namespace(namespace, self.origin_variant == "pstore")
 
     @cached_property
@@ -527,8 +670,10 @@ class Federation:
 
     @cached_property
     def origin_cache_control(self) -> str:
-        """ORIGIN_CACHE_CONTROL: the Cache-Control that the origins send,
-        or "" for none (see presets/origin-max-age.sh)."""
+        """ORIGIN_CACHE_CONTROL: the Cache-Control that native origins send.
+
+        It is "" for none (see presets/origin-max-age.sh).
+        """
         return self._line("origin-cache-control")
 
     @cached_property
@@ -548,8 +693,10 @@ class Federation:
 
     @cached_property
     def directors(self) -> list[str]:
-        """Every director's URL, from the federation's discovery
-        document: none for a standalone origin."""
+        """Every director's URL, from the federation's discovery document.
+
+        There are none for a standalone origin.
+        """
         found = self.discovery
         urls = as_array(found.get("director_advertise_endpoints")) or [
             found["director_endpoint"]
@@ -558,51 +705,66 @@ class Federation:
 
     @cached_property
     def director_url(self) -> str:
-        """The director's URL that clients use, from the federation's
-        discovery document: under `-p director-ha`, the load balancer's;
-        "" for a standalone origin."""
+        """The director's URL that clients use.
+
+        It comes from the federation's discovery document. Under
+        `-p director-ha`, it is the load balancer's; it is "" for a
+        standalone origin.
+        """
         return str(self.discovery.get("director_endpoint") or "")
 
     @cached_property
     def director_ha(self) -> bool:
-        """DIRECTOR_HA: whether the directors sit behind a load balancer,
-        at director_url, each with the shared name as its external URL
-        (see presets/director-ha.sh)."""
+        """DIRECTOR_HA: whether the directors sit behind a load balancer.
+
+        It is at director_url, and each director has the shared name as
+        its external URL (see presets/director-ha.sh).
+        """
         return self._line("director-ha") == "true"
 
     @property
     def registry_url(self) -> str:
-        """The registry's web URL, from the federation's discovery
-        document; "" for a standalone origin, which has none."""
+        """The registry's web URL, from the federation's discovery document.
+
+        It is "" for a standalone origin, which has none.
+        """
         return str(self.discovery.get("namespace_registration_endpoint") or "")
 
     @cached_property
     def director_default_response(self) -> str:
-        """DIRECTOR_DEFAULT_RESPONSE: where a director sends a GET of a
-        bare path, `cache` or `origin` (see
-        presets/director-default-origin.sh)."""
+        """DIRECTOR_DEFAULT_RESPONSE: `cache` or `origin`.
+
+        It is where a director sends a GET of a bare path (see
+        presets/director-default-origin.sh).
+        """
         return self._line("director-default-response")
 
     @cached_property
     def registry_approval(self) -> bool:
-        """REGISTRY_REQUIRE_APPROVAL: whether a registration serves nothing
-        until an administrator approves it (see
-        presets/registry-approval.sh)."""
+        """REGISTRY_REQUIRE_APPROVAL: whether registrations need approval.
+
+        If so, a registration serves nothing until an administrator
+        approves it (see presets/registry-approval.sh).
+        """
         return self._line("registry-approval") == "true"
 
     @cached_property
     def issuer_lifetimes(self) -> IssuerLifetimes:
-        """How long the origins' embedded issuer's tokens last:
+        """How long the origins' embedded issuer's tokens last.
+
         `<access> <refresh> <grace> <code>` seconds (see
-        presets/origin-short-tokens.sh)."""
+        presets/origin-short-tokens.sh).
+        """
         access, refresh, grace, code = self._line("issuer-lifetimes").split()
         return IssuerLifetimes(int(access), int(refresh), int(grace), int(code))
 
     @cached_property
     def export_templates(self) -> bool:
-        """ORIGIN_EXPORT_TEMPLATES: whether the /protected-b export has
-        authorization templates of its own (see
-        presets/origin-export-templates.sh)."""
+        """ORIGIN_EXPORT_TEMPLATES (see presets/origin-export-templates.sh).
+
+        Whether the /protected-b export has authorization templates of its
+        own.
+        """
         return self._line("export-templates") == "true"
 
     @cached_property
@@ -617,8 +779,10 @@ class Federation:
 
     @cached_property
     def transfer_api(self) -> Optional[TransferApi]:
-        """Where the transfer API is served, if it is (see TransferApi):
-        `<URL> <issuer> <key dir> <service> <exports|none>`, or `off`."""
+        """Where the transfer API is served, if it is (see TransferApi).
+
+        `<URL> <issuer> <key dir> <service> <exports|none>`, or `off`.
+        """
         fields = self._line("transfer-api").split()
         if fields == ["off"]:
             return None
@@ -627,8 +791,10 @@ class Federation:
 
     @cached_property
     def tiering(self) -> dict[str, TierTarget]:
-        """Where each cache tiers objects (`-p cache-tiered`), by service:
-        `<service> <mode> <threshold> <directory>` per line, none if off."""
+        """Where each cache tiers objects (`-p cache-tiered`), by service.
+
+        `<service> <mode> <threshold> <directory>` per line, none if off.
+        """
         found: dict[str, TierTarget] = {}
         for line in self._read("tiering").splitlines():
             if line.strip():
@@ -638,10 +804,12 @@ class Federation:
 
     @cached_property
     def eviction(self) -> dict[str, tuple[int, int]]:
-        """Each cache whose store is bounded (`-p cache-small`), by service:
-        the high water mark, in bytes, at which it evicts, and the low one,
-        down to which it does. `<service> <high> <low>` per line, none if
-        the stores are unbounded."""
+        """Each bounded cache's water marks, by service (`-p cache-small`).
+
+        They are the high water mark, in bytes, at which its store evicts,
+        and the low one, down to which it does. `<service> <high> <low>`
+        per line, none if the stores are unbounded.
+        """
         found: dict[str, tuple[int, int]] = {}
         for line in self._read("eviction").splitlines():
             if line.strip():
@@ -651,17 +819,21 @@ class Federation:
 
     @cached_property
     def oidc_issuer(self) -> Optional[str]:
-        """The identity provider that the servers send their users to log
-        in through (`-p auth-oidc`), its OIDC issuer URL; None if the
-        shape runs none (see presets/auth-oidc.sh)."""
+        """The OIDC issuer URL of the identity provider (`-p auth-oidc`).
+
+        The servers send their users to log in through it. It is None if
+        the shape runs none (see presets/auth-oidc.sh).
+        """
         found = self._line("oidc")
         return None if found == "off" else found
 
     @cached_property
     def pelican_version(self) -> Optional[str]:
-        """The version that every server should report: PELICAN_TAG's,
-        without the `v`; None if the shape runs images of the user's own,
-        whose versions no one knows in advance."""
+        """The version that every server should report.
+
+        It is PELICAN_TAG's, without the `v`; None if the shape runs images
+        of the user's own, whose versions no one knows in advance.
+        """
         found = self._line("pelican-version")
         return None if found == "custom" else found
 
@@ -686,10 +858,13 @@ class Federation:
 
 
 class Results:
-    """Rows of `<scenario> <status> <note>` (see report.STATUSES) for one
-    suite, printed briefly as they come and in full by print(), and
-    recorded in its report. A suite that prints rows its own way records
-    them in the report directly."""
+    """Rows of `<scenario> <status> <note>` for one suite.
+
+    The statuses are report.STATUSES. Rows are printed briefly as they
+    come and in full by print(), and recorded in the suite's report. A
+    suite that prints rows its own way records them in the report
+    directly.
+    """
 
     def __init__(self, names: Sequence[str], report: report_module.Report):
         self.name_width = max((len(n) for n in names), default=0)

@@ -1,7 +1,9 @@
-"""Logging in to a Pelican server through the identity provider
-(`-p auth-oidc`; framework/idp/idp.py), as a browser would; and what
-else the provider offers the tests: its users, and approving a device
-flow there.
+"""Logging in to a Pelican server through the identity provider.
+
+The tests log in as a browser would, through the provider
+(`-p auth-oidc`; framework/idp/idp.py). Here too is what else the
+provider offers the tests: its users, and approving a device flow
+there.
 
 A server sends a user to the provider from its login route
 (/api/v1.0/auth/oauth/login; handleOAuthLogin in Pelican's
@@ -47,20 +49,27 @@ class LoginError(Exception):
 
 @dataclass(frozen=True)
 class IdpUser:
-    """A user of the provider, and what it says of them."""
+    """A user of the provider, and what it says of them.
+
+    Attributes:
+        preferred_username: The claim a server takes the username from.
+        sub: The subject the provider names them by.
+    """
 
     username: str
     password: str
     name: str
     email: str
     groups: tuple[str, ...]
-    preferred_username: str  # the claim a server takes the username from
-    sub: str  # the subject the provider names them by
+    preferred_username: str
+    sub: str
 
 
 def users(issuer: str) -> dict[str, IdpUser]:
-    """The provider's users, by username, given its issuer URL, as it
-    fills in what USERS_FILE leaves out (idp.py)."""
+    """Return the provider's users, by username, given its issuer URL.
+
+    Fill in what USERS_FILE leaves out as the provider does (idp.py).
+    """
     with open(USERS_FILE, encoding="utf-8") as f:
         parsed = common.as_object(json.load(f)) or {}
     found: dict[str, IdpUser] = {}
@@ -79,15 +88,19 @@ def users(issuer: str) -> dict[str, IdpUser]:
 
 
 def client_id() -> str:
-    """The client ID that the servers present to the provider."""
+    """Return the client ID that the servers present to the provider."""
     with open(CLIENT_ID_FILE, encoding="utf-8") as f:
         return f.read().strip()
 
 
 @dataclass(frozen=True)
 class Started:
-    """A login begun at a server: the session cookie it set, and the
-    authorization URL it sent the user to."""
+    """A login begun at a server.
+
+    Attributes:
+        session: The session cookie it set.
+        authorize_url: The authorization URL it sent the user to.
+    """
 
     session: str
     authorize_url: str
@@ -95,8 +108,11 @@ class Started:
 
 def begin(web_url: str, next_url: str = "/") -> Started:
     """Begin a login at the server at web_url, to return to next_url.
-    Raises LoginError if the server sends the user nowhere, or keeps no
-    session."""
+
+    Raises:
+        LoginError: The server sends the user nowhere, or keeps no
+            session.
+    """
     answer = web.request("GET", f"{web_url}{LOGIN}?{urlencode({'nextUrl': next_url})}")
     session = answer.cookie(SESSION_COOKIE)
     location = answer.header("Location")
@@ -108,9 +124,15 @@ def begin(web_url: str, next_url: str = "/") -> Started:
 
 
 def authorize(authorize_url: str, user: IdpUser) -> web.Response:
-    """Log user in at the provider's authorization endpoint, as its login
-    form does, with the request the server put in authorize_url: the
-    provider's answer, a redirect (302) to the callback with the code."""
+    """Log user in at the provider's authorization endpoint.
+
+    Do so as its login form does, with the request the server put in
+    authorize_url.
+
+    Returns:
+        The provider's answer, a redirect (302) to the callback with the
+        code.
+    """
     parts = urlsplit(authorize_url)
     form = {k: v[0] for k, v in parse_qs(parts.query).items()}
     form.update({"username": user.username, "password": user.password})
@@ -123,22 +145,34 @@ def authorize(authorize_url: str, user: IdpUser) -> web.Response:
 
 
 def callback_at(web_url: str, location: str) -> str:
-    """The callback that the provider sends the user to (location), at the
-    server's own host (web_url) rather than OIDC.ClientRedirectHostname."""
+    """Return the callback that the provider sends the user to (location).
+
+    It is at the server's own host (web_url) rather than
+    OIDC.ClientRedirectHostname.
+    """
     parts = urlsplit(location)
     return f"{web_url}{parts.path}?{parts.query}"
 
 
 def finish(session: str, callback: str) -> web.Response:
-    """GET callback at the server, with the session cookie of the login
-    it belongs to: the server's answer, a redirect that sets the login
-    cookie if all went well."""
+    """GET callback at the server, with the session cookie of its login.
+
+    Returns:
+        The server's answer, a redirect that sets the login cookie if all
+        went well.
+    """
     return web.request("GET", callback, headers={"Cookie": f"{SESSION_COOKIE}={session}"})
 
 
 def login(web_url: str, user: IdpUser) -> str:
-    """Log user in at the server at web_url through the provider: the
-    login cookie. Raises LoginError if any step fails."""
+    """Log user in at the server at web_url through the provider.
+
+    Returns:
+        The login cookie.
+
+    Raises:
+        LoginError: A step failed.
+    """
     started = begin(web_url)
     sent = authorize(started.authorize_url, user)
     location = sent.header("Location")
@@ -155,18 +189,23 @@ def login(web_url: str, user: IdpUser) -> str:
 
 
 def api(web_url: str, cookie: str) -> accounts.Api:
-    """The server's web API, as the user whose login cookie this is."""
+    """Return the web API of the server at web_url, as cookie's user."""
     return accounts.Api(web_url, None, cookie)
 
 
 def whoami(web_url: str, cookie: str) -> dict[str, Any]:
-    """What the server says of the user whose login cookie this is."""
+    """Return what the server at web_url says of cookie's user."""
     return api(web_url, cookie).call("GET", accounts.WHOAMI).object
 
 
 def approve_device(issuer: str, user_code: str, user: IdpUser) -> web.Response:
-    """Approve the device flow with user_code at the provider, as user
-    logging in at its verification page: the provider's answer."""
+    """Approve the device flow with user_code at the provider.
+
+    Do so as user, logging in at its verification page.
+
+    Returns:
+        The provider's answer.
+    """
     form = {"user_code": user_code, "username": user.username, "password": user.password}
     return web.request(
         "POST", f"{issuer}/device", upload=urlencode(form).encode(), headers=FORM
@@ -174,9 +213,11 @@ def approve_device(issuer: str, user_code: str, user: IdpUser) -> web.Response:
 
 
 def user_code_in(line: str) -> Optional[str]:
-    """The user code of the provider's verification URL
-    (<issuer>/device?user_code=...) in a line of a client's output; None
-    if the line names none."""
+    """Return the user code of the provider's verification URL in line.
+
+    The URL is <issuer>/device?user_code=..., and line is one of a
+    client's output. Return None if the line names none.
+    """
     for word in line.split():
         parts = urlsplit(word)
         if parts.path.endswith("/device"):
@@ -187,8 +228,11 @@ def user_code_in(line: str) -> Optional[str]:
 
 
 def log_entries() -> list[dict[str, Any]]:
-    """What the provider has logged, in order: a JSON object per
-    request; none if there is no log yet."""
+    """Return what the provider has logged, in order.
+
+    Returns:
+        A JSON object per request; none if there is no log yet.
+    """
     try:
         with open(LOG, encoding="utf-8") as f:
             lines = f.read().splitlines()
@@ -206,5 +250,5 @@ def log_entries() -> list[dict[str, Any]]:
 
 
 def count(entries: Iterable[dict[str, Any]], **fields: str) -> int:
-    """How many of entries have each of fields."""
+    """Return how many of entries have each of fields."""
     return sum(1 for e in entries if all(e.get(k) == v for k, v in fields.items()))

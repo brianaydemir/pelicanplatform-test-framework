@@ -1,6 +1,7 @@
-"""The registry, the federation's root of trust: it records which key
-owns which namespace, and serves those keys to every director and cache
-(registry/ in Pelican).
+"""The registry, the federation's root of trust (registry/ in Pelican).
+
+It records which key owns which namespace, and serves those keys to every
+director and cache.
 
   register      registering prefixes, as `pelican namespace register`
                 does: the prefixes it refuses, key chaining, a prefix
@@ -99,12 +100,19 @@ INVALID = ("/api/{t}", "/view/{t}", "/pelican/{t}", "/{t}/./b", "/{t}/../b", "/.
 
 @dataclass(frozen=True)
 class Server:
-    """An origin or a federated cache, which registers itself."""
+    """An origin or a federated cache, which registers itself.
 
-    svc: str  # the compose service
-    kind: str  # "origin" or "cache"
-    web_url: str  # where its web API is
-    key_dir: str  # the directory (under framework/var) of its keys
+    Attributes:
+        svc: The compose service.
+        kind: "origin" or "cache".
+        web_url: Where its web API is.
+        key_dir: The directory (under framework/var) of its keys.
+    """
+
+    svc: str
+    kind: str
+    web_url: str
+    key_dir: str
 
     @property
     def key(self) -> str:
@@ -118,8 +126,10 @@ class Server:
 
 
 def servers(fed: common.Federation) -> list[Server]:
-    """Every origin, another owner's included, and every federated cache.
-    A site-local cache registers nothing."""
+    """Return every origin, another owner's too, and every federated cache.
+
+    A site-local cache registers nothing.
+    """
     found = [Server(o.svc, "origin", o.web_url, f"issuer-keys/{o.svc}") for o in fed.origins]
     found += [Server(o.origin.svc, "origin", o.web_url, o.key_dir) for o in fed.owners]
     found += [
@@ -129,12 +139,15 @@ def servers(fed: common.Federation) -> list[Server]:
 
 
 def row(case: str, problems: Sequence[str], note: str) -> Row:
-    """A row that passes with note, or fails with the first of problems."""
+    """Return a row that passes with note, or fails if there are problems.
+
+    A failing row's note is the first of problems.
+    """
     return (case, FAIL, first(problems)) if problems else (case, PASS, note)
 
 
 def guarded(check: Callable[[], list[Row]]) -> list[Row]:
-    """check()'s rows; one failing row if it raised."""
+    """Return check()'s rows, or one failing row if it raised."""
     try:
         return check()
     except Exception as e:  # pylint: disable=broad-exception-caught
@@ -145,18 +158,33 @@ def guarded(check: Callable[[], list[Row]]) -> list[Row]:
 
 
 def path_of(prefix: str) -> str:
-    """prefix, as a URL's path quotes it."""
+    """Return prefix, as a URL's path quotes it."""
     return quote(prefix, safe="/:")
 
 
 def millis() -> int:
-    """Now, in milliseconds since the epoch, as a downtime's times are."""
+    """Return now, in milliseconds since the epoch.
+
+    That is how a downtime's times are given.
+    """
     return int(time.time() * 1000)
 
 
 class Test:
-    """The registry, the shape's servers, and the keys, tokens, and users
-    the scenarios share."""
+    """The registry, the shape's servers, and what the scenarios share.
+
+    The scenarios share keys, tokens, and users.
+
+    Attributes:
+        registry: The registry's URL.
+        registry_host: The registry's host.
+        tag: registry-test-<run>, which every prefix, site name, and
+            downtime description of the run's has in it.
+        chaining: Whether the registry requires key chaining.
+        servers: The servers that register themselves (see servers()).
+        protected: The first protected namespace that the shape exports,
+            or None.
+    """
 
     def __init__(self, session: Session):
         self.session = session
@@ -183,22 +211,24 @@ class Test:
     # Keys and prefixes of the run's own.
 
     def key(self, name: str) -> str:
-        """The run's key named name, made the first time."""
+        """Return the run's key named name, made the first time."""
         return registry.new_key(self.session.path(f"registry-{name}.pem"))
 
     def prefix(self, name: str) -> str:
-        """The run's prefix named name: /registry-test-<run>-<name>."""
+        """Return the run's prefix /registry-test-<run>-<name>."""
         return f"/{self.tag}-{name}"
 
     def register(self, prefix: str, *keys: str, server_id: str = "") -> web.Response:
-        """Register prefix with keys, the first signing (see
-        registry.register()), under the run's site name."""
+        """Register prefix with keys, under the run's site name.
+
+        The first of keys signs (see registry.register()).
+        """
         return registry.register(self.registry, prefix, keys, self.tag, server_id)
 
     # The registry's users.
 
     def admin(self) -> accounts.Api:
-        """The registry's web API, as its admin (credentials.mint_admin())."""
+        """Return the registry's web API, as its admin."""
         if self._admin is None:
             self._admin = accounts.Api(
                 self.registry,
@@ -214,23 +244,29 @@ class Test:
         return self._admin
 
     def csrf(self) -> dict[str, str]:
-        """The headers with which the admin may change things through the
-        registry's web API, which guards against cross-site requests."""
+        """Return the headers with which the admin may change things.
+
+        The registry's web API guards against cross-site requests.
+        """
         if not self._csrf:
             self._csrf = accounts.csrf(self.admin())
         return self._csrf
 
     def user(self) -> tuple[accounts.Api, str]:
-        """The registry's web API as the ordinary user, whom its admin
-        creates first, if need be, and the user's ID. The admin, and then
-        the user, agree to the registry's AUP first, as webapi does."""
+        """Return the registry's web API as the ordinary user, and their ID.
+
+        Its admin creates the user first, if need be. The admin, and then
+        the user, agree to the registry's AUP first.
+        """
         if self._user is None:
             self._user = self._as_user(USER)
         return self._user
 
     def heir(self) -> tuple[accounts.Api, str]:
-        """The registry's web API as the other ordinary user, HEIR, made
-        as user() makes USER, and the user's ID."""
+        """Return the registry's web API as HEIR, and HEIR's ID.
+
+        HEIR, the other ordinary user, is made as user() makes USER.
+        """
         if self._heir is None:
             self._heir = self._as_user(HEIR)
         return self._heir
@@ -256,43 +292,56 @@ class Test:
     # What the registry holds.
 
     def get(self, path: str) -> web.Response:
-        """A GET of path at the registry, with no credentials."""
+        """GET path at the registry, with no credentials."""
         return web.request("GET", self.registry + path)
 
     def stored(self, prefix: str) -> Optional[dict[str, Any]]:
-        """The registration of prefix, as anyone may read it
-        (/api/v1.0/registry/<prefix>, getNamespaceHandler), pubkey and
-        all; None if there is none."""
+        """Return the registration of prefix, or None if there is none.
+
+        It is as anyone may read it (/api/v1.0/registry/<prefix>,
+        getNamespaceHandler), pubkey and all.
+        """
         answer = self.get(REGISTRY + path_of(prefix))
         if answer.status != 200:
             return None
         return common.as_object(registry.parse(answer.body))
 
     def stored_keys(self, prefix: str) -> Optional[frozenset[str]]:
-        """The thumbprints of the keys registered for prefix; None if
-        there is no registration, or its pubkey is no JWKS."""
+        """Return the thumbprints of the keys registered for prefix.
+
+        Returns:
+            The thumbprints, or None if there is no registration, or its
+            pubkey is no JWKS.
+        """
         found = self.stored(prefix)
         return None if found is None else registry.thumbprints(found.get("pubkey"))
 
     def jwks(self, prefix: str) -> web.Response:
-        """A GET of the JWKS the registry serves for prefix."""
+        """GET the JWKS the registry serves for prefix."""
         return self.get(f"{REGISTRY}{path_of(prefix)}/.well-known/issuer.jwks")
 
     def registration(self, reg_id: int) -> dict[str, Any]:
-        """Registration reg_id, as the admin reads it."""
+        """Return registration reg_id, as the admin reads it."""
         return accounts.must(
             self.admin().call("GET", f"{REGISTRATIONS}/{reg_id}"),
             f"reading registration {reg_id}",
         ).object
 
     def status_of(self, prefix: str) -> str:
-        """The status of prefix's registration, or "" if there is none."""
+        """Return prefix's registration's status, or "" if there is none."""
         found = self.stored(prefix)
         return "" if found is None else str(registry.admin_metadata(found).get("status", ""))
 
     def set_status(self, prefix: str, action: str) -> Optional[str]:
-        """approve or deny prefix's registration, as the admin; what went
-        wrong, or None."""
+        """Approve or deny prefix's registration, as the admin.
+
+        Args:
+            prefix: The registered prefix.
+            action: "approve" or "deny".
+
+        Returns:
+            What went wrong, or None if nothing did.
+        """
         found = self.stored(prefix)
         if found is None:
             return f"{prefix} is not registered"
@@ -304,7 +353,7 @@ class Test:
     # The shape's servers.
 
     def server_admin(self, server: Server) -> accounts.Api:
-        """server's web API, as its admin."""
+        """Return server's web API, as its admin."""
         if server.web_url not in self._server_admins:
             self._server_admins[server.web_url] = accounts.Api(
                 server.web_url,
@@ -320,9 +369,14 @@ class Test:
         return self._server_admins[server.web_url]
 
     def metadata(self, server: Server) -> dict[str, Any]:
-        """What server records of itself, as the registry told it: its ID,
-        name, and type (HandleGetServerLocalMetadata), as its admin reads
-        it. Raises accounts.ApiError if it won't say."""
+        """Return what server records of itself, as the registry told it.
+
+        That is its ID, name, and type (HandleGetServerLocalMetadata), as
+        its admin reads it.
+
+        Raises:
+            accounts.ApiError: It won't say.
+        """
         if server.web_url not in self._metadata:
             answer = accounts.must(
                 self.server_admin(server).call("GET", LOCAL_METADATA),
@@ -332,17 +386,21 @@ class Test:
         return self._metadata[server.web_url]
 
     def server_prefix(self, server: Server) -> str:
-        """server's registry prefix: an origin's is
-        /origins/<host>:<port> of its web URL (GetOriginNs), and a cache's
-        /caches/<name> (GetCacheNs)."""
+        """Return server's registry prefix.
+
+        An origin's is /origins/<host>:<port> of its web URL (GetOriginNs),
+        and a cache's /caches/<name> (GetCacheNs).
+        """
         if server.kind == "origin":
             return f"/origins/{urlsplit(server.web_url).netloc}"
         return f"/caches/{self.metadata(server).get('name', '')}"
 
     def export_servers(self) -> dict[str, Server]:
-        """Each export's prefix, and the origin that registered it: the
-        origins' exports the first origin, whose keys the others share;
-        another owner's, its own origin."""
+        """Return each export's prefix, and the origin that registered it.
+
+        For the origins' exports, that is the first origin, whose keys the
+        others share; for another owner's, its own origin.
+        """
         found = {f"/{ns}": self.servers[0] for ns in self.fed.exports}
         for owner in self.fed.owners:
             server = next(s for s in self.servers if s.svc == owner.origin.svc)
@@ -351,10 +409,15 @@ class Test:
         return found
 
     def published(self, server: Server) -> Optional[frozenset[str]]:
-        """The thumbprints of the keys server publishes itself
-        (/.well-known/issuer.jwks), which it registers
+        """Return the thumbprints of the keys server publishes itself.
+
+        It publishes them at /.well-known/issuer.jwks, and registers them
         (GetIssuerPublicJWKS): its key directory's, and those of
-        Server.IssuerJwks, which the origins set; None if it won't say."""
+        Server.IssuerJwks, which the origins set.
+
+        Returns:
+            The thumbprints, or None if it won't say.
+        """
         if server.web_url not in self._published:
             answer = web.request("GET", f"{server.web_url}/.well-known/issuer.jwks")
             found = registry.thumbprints(registry.parse(answer.body))
@@ -362,10 +425,12 @@ class Test:
         return self._published[server.web_url]
 
     def server_token(self, server: Server, scope: str, server_id: str) -> str:
-        """A token the registry takes from a registered server
-        (checkRegisteredServer in token/token_verify.go): subject
-        server_id, for the registry's host and port, of scope, signed with
-        server's own key."""
+        """Return a token the registry takes from a registered server.
+
+        Such a token (checkRegisteredServer in token/token_verify.go) has
+        subject server_id, is for the registry's host and port, of scope,
+        and is signed with server's own key.
+        """
         return registry.token(
             server.key,
             scope,
@@ -380,9 +445,13 @@ class Test:
 
 
 def register(test: Test) -> list[Row]:
-    """The registration of prefixes of the run's own, as a server or
-    `pelican namespace register` does, through the protocol itself, so
-    that each status the registry answers is seen."""
+    """Check the registration of prefixes of the run's own.
+
+    Register them as a server or `pelican namespace register` does, through
+    the protocol itself, so that each status the registry answers is seen.
+    Each case takes keys of the run's own (Test.key()), and returns its row
+    or rows.
+    """
     k1, k2 = test.key("k1"), test.key("k2")
     rows = [invalid(test, k1)]
     rows += chaining(test, k1)
@@ -395,7 +464,7 @@ def register(test: Test) -> list[Row]:
 
 
 def invalid(test: Test, key: str) -> Row:
-    """Each prefix that validatePrefix refuses gets 400."""
+    """Check that each prefix that validatePrefix refuses gets 400."""
     problems: list[str] = []
     for pattern in INVALID:
         prefix = pattern.format(t=test.tag)
@@ -406,12 +475,15 @@ def invalid(test: Test, key: str) -> Row:
 
 
 def chaining(test: Test, k1: str) -> list[Row]:
-    """With key chaining on, a prefix inside a protected export's may be
+    """Check key chaining for the prefixes inside a protected export.
+
+    With key chaining on, a prefix inside a protected export's may be
     registered only with a key of the export's (validateKeyChaining):
     with a key no one has registered, 403; with the origins' own, 201.
     One that only begins with the export's name is no child of it, and
     takes any key. With chaining off (`topo-multi-owner`), the first is
-    registered too."""
+    registered too.
+    """
     if test.protected is None:
         return [("chaining", SKIP, "no protected namespace is exported")]
     export = f"/{test.protected}"
@@ -456,12 +528,15 @@ def chaining(test: Test, k1: str) -> list[Row]:
 
 
 def like_decoys(test: Test, k1: str, k2: str) -> list[Row]:
-    """A registered prefix with a LIKE wildcard in it (`_` or `%`) must not
+    """Check that a LIKE wildcard in a prefix is not taken as a pattern.
+
+    A registered prefix with a LIKE wildcard in it (`_` or `%`) must not
     enclose one it only matches as a pattern: the registry finds a
     prefix's superspaces with `? LIKE (prefix || '/%')`
     (namespaceSupSubChecks in registry/registry_db.go), which takes a
     registered /x_b for the parent of /xYb/c, and so refuses the latter
-    another key."""
+    another key.
+    """
     if not test.chaining:
         why = "key chaining is off, so no superspace is consulted"
         return [("like-underscore", SKIP, why), ("like-percent", SKIP, why)]
@@ -495,8 +570,11 @@ def like_decoys(test: Test, k1: str, k2: str) -> list[Row]:
 
 
 def again(test: Test, k2: str) -> Row:
-    """A protected export's prefix, registered again with another key:
-    200, already registered, with its keys as they were."""
+    """Check that an export's prefix registered again keeps its keys.
+
+    A protected export's prefix, registered again with another key: 200,
+    already registered, with its keys as they were.
+    """
     if test.protected is None:
         return ("again", SKIP, "no protected namespace is exported")
     export = f"/{test.protected}"
@@ -521,13 +599,16 @@ def again(test: Test, k2: str) -> Row:
 
 
 def deletion(test: Test, k1: str, k2: str) -> list[Row]:
-    """DELETE /api/v1.0/registry/<prefix> takes a token of
+    """Check that a DELETE of a registration takes a token of its own key.
+
+    DELETE /api/v1.0/registry/<prefix> takes a token of
     pelican.namespace_delete signed with a key registered for the prefix
     (deleteNamespaceHandler), as `pelican namespace delete` mints one:
     signed with another key, 403; with the registered one, 200, after
     which the prefix has no JWKS (404). A prefix that was never
     registered gets 400, as one JSON document; Pelican writes that and
-    goes on, and writes another."""
+    goes on, and writes another.
+    """
     prefix, never = test.prefix("del"), test.prefix("never")
     rows: list[Row] = []
     made = test.register(prefix, k1)
@@ -563,10 +644,13 @@ def deletion(test: Test, k1: str, k2: str) -> list[Row]:
 
 
 def approval(test: Test, key: str) -> Row:
-    """A new registration, which starts Incomplete (keySignChallengeCommit),
+    """Check when a new registration's keys are served.
+
+    A new registration, which starts Incomplete (keySignChallengeCommit),
     serves its keys at once; but under `-p registry-approval`
     (Registry.RequireOriginApproval), not until the admin approves it:
-    403 before, and then its keys."""
+    403 before, and then its keys.
+    """
     prefix = test.prefix("approval")
     made = test.register(prefix, key)
     if made.status != 201:
@@ -594,9 +678,12 @@ def approval(test: Test, key: str) -> Row:
 
 
 def cli_env(test: Test, key_dir: str) -> dict[str, str]:
-    """The environment for `pelican namespace` to register under the run's
-    site name with the keys in key_dir alone: IssuerKeysDirectory, and no
-    legacy IssuerKey file (config.loadPEMFiles)."""
+    """Return the environment for `pelican namespace`, with key_dir's keys.
+
+    In it, the client registers under the run's site name with the keys in
+    key_dir alone: IssuerKeysDirectory, and no legacy IssuerKey file
+    (config.loadPEMFiles).
+    """
     env = dict(test.session.env)
     env["PELICAN_ISSUERKEYSDIRECTORY"] = os.path.abspath(key_dir)
     env["PELICAN_ISSUERKEY"] = os.path.abspath(os.path.join(key_dir, "absent.jwk"))
@@ -606,7 +693,7 @@ def cli_env(test: Test, key_dir: str) -> dict[str, str]:
 
 
 def key_dir_of(test: Test, name: str, keys: Sequence[str]) -> str:
-    """A directory of the session's, named name, holding keys alone."""
+    """Return a directory of the session's, named name, with keys alone."""
     path = test.session.path(f"registry-keys-{name}")
     shutil.rmtree(path, ignore_errors=True)
     os.makedirs(path, mode=0o700)
@@ -616,13 +703,15 @@ def key_dir_of(test: Test, name: str, keys: Sequence[str]) -> str:
 
 
 def cli(test: Test, k1: str, k2: str) -> list[Row]:
-    """`pelican namespace register` and `delete` (cmd/registry_client.go),
-    with the key the client is configured with: it must register the
-    prefix with that key, and delete it. Its --privkey flag names the key
-    to sign with, and must be honored; Pelican binds it to IssuerKey only
-    if it has a value when the command is defined, which it never does,
-    so the client signs with a key of its configuration, or one it makes,
-    and the `cli-flags` row fails."""
+    """Check `pelican namespace register` and `delete`.
+
+    With the key the client is configured with, it must register the prefix
+    with that key, and delete it (cmd/registry_client.go). Its --privkey
+    flag names the key to sign with, and must be honored; Pelican binds it
+    to IssuerKey only if it has a value when the command is defined, which
+    it never does, so the client signs with a key of its configuration, or
+    one it makes, and the `cli-flags` row fails.
+    """
     rows: list[Row] = []
     prefix = test.prefix("cli")
     env = cli_env(test, key_dir_of(test, "cli", [k1]))
@@ -673,11 +762,13 @@ def cli(test: Test, k1: str, k2: str) -> list[Row]:
 
 
 def jwks(test: Test) -> list[Row]:
-    """The keys the registry serves for each prefix
-    (/api/v1.0/registry/<prefix>/.well-known/issuer.jwks, the wildcard
-    handler's issuer.jwks branch), and the openid-configuration that
-    names them; and private key material in any JWKS the federation
-    serves."""
+    """Check the keys the registry serves for each prefix.
+
+    It serves them at /api/v1.0/registry/<prefix>/.well-known/issuer.jwks
+    (the wildcard handler's issuer.jwks branch), with an
+    openid-configuration that names them. Check also for private key
+    material in any JWKS the federation serves.
+    """
     exports = test.export_servers()
     rows: list[Row] = []
     problems: list[str] = []
@@ -722,10 +813,17 @@ def jwks(test: Test) -> list[Row]:
 
 
 def served_problems(test: Test, prefix: str, server: Server, exact: bool) -> list[str]:
-    """What is wrong with the JWKS the registry serves for prefix, which
-    server registered: with exact, it must hold the keys server publishes
-    itself (see Test.published()), and nothing else; without, only some
-    of them. Those must include every key in server's key directory."""
+    """Return what is wrong with the JWKS the registry serves for prefix.
+
+    Args:
+        test: The test.
+        prefix: The prefix, which server registered.
+        server: The server that registered prefix. The keys it publishes
+            itself (see Test.published()) must include every key in its key
+            directory.
+        exact: Whether the JWKS must hold all the keys server publishes
+            itself, and nothing else, rather than only some of them.
+    """
     own = test.published(server)
     if own is None:
         return [f"{server.svc}'s own JWKS did not answer"]
@@ -750,8 +848,10 @@ def served_problems(test: Test, prefix: str, server: Server, exact: bool) -> lis
 
 
 def openid_problems(test: Test, prefix: str) -> list[str]:
-    """What is wrong with prefix's openid-configuration at the registry:
-    its jwks_uri must be the registry's JWKS of prefix."""
+    """Return what is wrong with prefix's openid-configuration.
+
+    At the registry, its jwks_uri must be the registry's JWKS of prefix.
+    """
     answer = test.get(f"{REGISTRY}{path_of(prefix)}/.well-known/openid-configuration")
     if answer.status != 200:
         return [f"{prefix}'s openid-configuration: {answer.describe()}"]
@@ -766,13 +866,16 @@ def openid_problems(test: Test, prefix: str) -> list[str]:
 
 
 def private_keys(test: Test, prefixes: Sequence[str]) -> Row:
-    """No JWKS the federation serves may hold private key material (any of
-    registry.PRIVATE_MEMBERS): each server's own; each namespace issuer's,
-    by its openid-configuration; the registry's for each prefix; the
-    registrations' keys, as it lists them all (/api/v1.0/registry), as
-    it serves each one (/api/v1.0/registry/<prefix>), as its admin
-    downloads each (registry_ui's /namespaces/:id/pubkey), and as its
-    list of servers shows them."""
+    """Check that no JWKS the federation serves holds private key material.
+
+    Private key material is any of registry.PRIVATE_MEMBERS. The JWKS
+    documents are each server's own; each namespace issuer's, by its
+    openid-configuration; the registry's for each of prefixes; the
+    registrations' keys, as it lists them all (/api/v1.0/registry), as it
+    serves each one (/api/v1.0/registry/<prefix>), as its admin downloads
+    each (registry_ui's /namespaces/:id/pubkey), and as its list of servers
+    shows them.
+    """
     documents: dict[str, Any] = {}
     problems: list[str] = []
 
@@ -839,8 +942,10 @@ def private_keys(test: Test, prefixes: Sequence[str]) -> Row:
 
 
 def namespace_issuers(fed: common.Federation) -> list[str]:
-    """The issuer URL of each exported namespace that has one: the
-    protected ones, and another owner's exports with issuers."""
+    """Return the issuer URL of each exported namespace that has one.
+
+    Those are the protected ones, and another owner's exports with issuers.
+    """
     found = {
         fed.issuer_of(ns)
         for ns in fed.exports
@@ -856,10 +961,12 @@ def namespace_issuers(fed: common.Federation) -> list[str]:
 
 
 def registry_ui(test: Test) -> list[Row]:
-    """The registry's web API (/api/v1.0/registry_ui; registry_ui.go):
-    listing registrations (listNamespaces), seeing one (getNamespace),
-    approving and denying them (updateNamespaceStatus), and its servers
-    (listServersHandler, getServerHandler)."""
+    """Check the registry's web API (/api/v1.0/registry_ui; registry_ui.go).
+
+    That is, listing registrations (listNamespaces), seeing one
+    (getNamespace), approving and denying them (updateNamespaceStatus), and
+    its servers (listServersHandler, getServerHandler).
+    """
     key = test.key("k1")
     listed, unlisted = test.prefix("listed"), test.prefix("unlisted")
     rows: list[Row] = []
@@ -896,9 +1003,12 @@ def registry_ui(test: Test) -> list[Row]:
 
 
 def public_listing(test: Test, listed: str, unlisted: str) -> Row:
-    """With no credentials, the registrations are Approved ones alone,
-    without their keys: the run's approved one, but not its incomplete
-    one."""
+    """Check that the public listing is of Approved registrations alone.
+
+    With no credentials, the registrations are Approved ones alone, without
+    their keys: listed, the run's approved one, but not unlisted, its
+    incomplete one.
+    """
     answer = test.get(REGISTRATIONS)
     if answer.status != 200:
         return ("list-public", FAIL, f"{answer.describe()}, not 200")
@@ -921,8 +1031,10 @@ def public_listing(test: Test, listed: str, unlisted: str) -> Row:
 
 
 def bad_status(test: Test) -> Row:
-    """As the admin, ?status=Bogus gets 400, as one JSON document. Pelican
-    writes that and goes on, and writes the list too (R2)."""
+    """Check that the admin's ?status=Bogus gets 400, as one JSON document.
+
+    Pelican writes that and goes on, and writes the list too (R2).
+    """
     answer = web.request(
         "GET", f"{test.registry}{REGISTRATIONS}?status=Bogus", token=test.admin().token
     )
@@ -934,8 +1046,10 @@ def bad_status(test: Test) -> Row:
 
 
 def non_owner(test: Test) -> Row:
-    """An ordinary user may not see a registration that isn't theirs: an
-    export's, which no user owns (403)."""
+    """Check that an ordinary user may not see another's registration.
+
+    The registration is an export's, which no user owns (403).
+    """
     if test.protected is None:
         return ("non-owner", SKIP, "no protected namespace is exported")
     found = test.stored(f"/{test.protected}")
@@ -951,7 +1065,7 @@ def non_owner(test: Test) -> Row:
 
 
 def unknown_id(test: Test) -> Row:
-    """Approving or denying a registration that doesn't exist gets 404."""
+    """Check that approving or denying an unknown registration gets 404."""
     ids = [
         int(e.get("id", 0))
         for e in (
@@ -971,8 +1085,10 @@ def unknown_id(test: Test) -> Row:
 
 
 def denied(test: Test, key: str) -> Row:
-    """Under `-p registry-approval`, a denied registration's JWKS gets
-    403."""
+    """Check that a denied registration's JWKS gets 403.
+
+    It is checked under `-p registry-approval` alone.
+    """
     if not test.fed.registry_approval:
         return ("denied", SKIP, "the registry serves every registration's keys (no approval)")
     prefix = test.prefix("denied")
@@ -991,9 +1107,11 @@ def denied(test: Test, key: str) -> Row:
 
 
 def server_list(test: Test) -> list[Row]:
-    """/servers lists each of the shape's servers once, with its
-    registry prefix among its registrations; /servers/<id> is each; an ID
-    no server has gets 404."""
+    """Check that /servers lists each of the shape's servers once.
+
+    Each is listed with its registry prefix among its registrations;
+    /servers/<id> is each; an ID no server has gets 404.
+    """
     answer = test.get(SERVERS)
     if answer.status != 200:
         return [("servers", FAIL, f"{SERVERS}: {answer.describe()}")]
@@ -1041,7 +1159,9 @@ def server_list(test: Test) -> list[Row]:
 
 
 def completeness(test: Test) -> list[Row]:
-    """A server's registration starts Incomplete (keySignChallengeCommit),
+    """Check the completeness of a server's registration.
+
+    A server's registration starts Incomplete (keySignChallengeCommit),
     and the completeness check (checkStatusHandler) says so, with the
     URL of the page to complete it on. Its holder completes it through
     the web API (PUT /namespaces/:id, createUpdateNamespace) with an
@@ -1050,7 +1170,8 @@ def completeness(test: Test) -> list[Row]:
     with any other key, 403; with its own, it becomes the user's, not the
     owner the body names, and Pending. Claiming is for good, so the suite
     completes a server registration of the run's own,
-    /origins/registry-test-<run>.invalid, not one of the shape's."""
+    /origins/registry-test-<run>.invalid, not one of the shape's.
+    """
     rows = [shape_completeness(test)]
     key = test.key("server")
     prefix = f"/origins/{test.tag}.invalid"
@@ -1119,10 +1240,13 @@ def completeness(test: Test) -> list[Row]:
 
 
 def shape_completeness(test: Test) -> Row:
-    """The completeness check of each of the shape's server registrations:
-    incomplete, since no one has filled in its form, with a page to do
-    so; and where nothing needs approval, Incomplete. (Under
-    `-p registry-approval`, the federation suite has approved them.)"""
+    """Check that the shape's server registrations are incomplete.
+
+    The completeness check says so of each, since no one has filled in its
+    form, with a page to do so; and where nothing needs approval, each is
+    Incomplete. (Under `-p registry-approval`, the federation suite has
+    approved them.)
+    """
     prefixes: dict[str, int] = {}
     problems: list[str] = []
     for server in test.servers:
@@ -1142,10 +1266,18 @@ def shape_completeness(test: Test) -> Row:
 def check_problems(
     test: Test, prefixes: Mapping[str, int], complete: bool, page: str
 ) -> list[str]:
-    """What is wrong with the completeness check of prefixes (by their
-    registrations' IDs): each must be complete or not, as complete says,
-    with the URL of a page of the registry's for its registration, and
-    if page names one, that one (claim/, or origin/edit/)."""
+    """Return what is wrong with the completeness check of prefixes.
+
+    Each must have the URL of a page of the registry's for its
+    registration.
+
+    Args:
+        test: The test.
+        prefixes: The prefixes, with their registrations' IDs.
+        complete: Whether each must be complete.
+        page: The page each URL must be of (claim/, or origin/edit/), or ""
+            for any.
+    """
     answer = web.request(
         "POST",
         test.registry + registry.CHECK_STATUS,
@@ -1182,8 +1314,9 @@ INVITE_TOO_LONG = "800h"
 
 
 def ownership(test: Test) -> list[Row]:
-    """Who owns a registration, and what that lets them do
-    (registry/registry_ui.go). A registration starts unowned; the
+    """Check who owns a registration, and what that lets them do.
+
+    A registration starts unowned (registry/registry_ui.go); the
     holder of its key claims it (POST /namespaces/:id/claim,
     claimNamespace), with a token of registry.edit_registration signed
     with the key, for good: a claim without a token is 400, with another
@@ -1201,7 +1334,8 @@ def ownership(test: Test) -> list[Row]:
     nothing afterward. The registration is one of the run's own,
     /registry-test-<run>-own, which `test-registry` claims and hands on
     to `test-registry-heir`; a user keeps the registrations they own, so
-    the suite's sweep removes it."""
+    the suite's sweep removes it.
+    """
     key = test.key("own")
     prefix = test.prefix("own")
     made = test.register(prefix, key)
@@ -1236,8 +1370,11 @@ def ownership(test: Test) -> list[Row]:
     def edit(
         who: str, text: str, site_name: Optional[str] = None, pubkey: Optional[str] = None
     ) -> accounts.Answer:
-        """A PUT of the registration as who, with text as its description,
-        and otherwise as it is, but for a site name or a key given."""
+        """PUT the registration as who, with text as its description.
+
+        Otherwise, the registration is as it is, but for a site name or a
+        key given.
+        """
         stored = test.registration(reg_id)
         meta = registry.admin_metadata(stored)
         body = {
@@ -1424,10 +1561,13 @@ def ownership(test: Test) -> list[Row]:
 
 
 def identity(test: Test) -> list[Row]:
-    """Each server's ID: as it records it (/api/v1.0/server/localMetadata,
-    which it learns from the registry), as the registry looks it up by its
-    prefix (/api/v1.0/registry/server/<prefix>, getServerByPrefixHandler),
-    and as the registry lists it (registry_ui's /servers), once."""
+    """Check that each server's ID agrees everywhere it is known.
+
+    That is, as it records it (/api/v1.0/server/localMetadata, which it
+    learns from the registry), as the registry looks it up by its prefix
+    (/api/v1.0/registry/server/<prefix>, getServerByPrefixHandler), and as
+    the registry lists it (registry_ui's /servers), once.
+    """
     if test.fed.tiny:
         return [("", SKIP, "the tiny topology's origin and cache are one process, one record")]
     problems: list[str] = []
@@ -1471,8 +1611,10 @@ def identity(test: Test) -> list[Row]:
 
 
 def downtime_body(test: Test, what: str, start: int, end: int) -> dict[str, Any]:
-    """A downtime of the run's, from start to end (milliseconds), its
-    description saying what it is for."""
+    """Return a downtime of the run's, from start to end (in milliseconds).
+
+    Its description says what it is for.
+    """
     return {
         "class": "SCHEDULED",
         "severity": SEVERITY,
@@ -1483,17 +1625,19 @@ def downtime_body(test: Test, what: str, start: int, end: int) -> dict[str, Any]
 
 
 def registry_downtime(test: Test, downtime_id: str) -> web.Response:
-    """A GET of downtime downtime_id at the registry."""
+    """GET downtime downtime_id at the registry."""
     return test.get(f"{DOWNTIME}/{downtime_id}")
 
 
 def downtime(test: Test) -> list[Row]:
-    """Downtimes recorded at the registry (web_ui/server_api.go): a cache's
-    own, which it tells the registry of; a registered server's token,
-    which may create or change only that server's own
-    (DowntimeAuthHandler, and downtimeMutationAuthorized); and the
-    admin's, which the directors apply to routing, at once if current,
-    and only list if not yet begun (director/cache_ads.go)."""
+    """Check downtimes recorded at the registry (web_ui/server_api.go).
+
+    That is, a cache's own, which it tells the registry of; a registered
+    server's token, which may create or change only that server's own
+    (DowntimeAuthHandler, and downtimeMutationAuthorized); and the admin's,
+    which the directors apply to routing, at once if current, and only list
+    if not yet begun (director/cache_ads.go).
+    """
     fed = test.fed
     if fed.tiny:
         return [("", SKIP, "the tiny topology's servers and director are one process")]
@@ -1583,10 +1727,14 @@ def bound(
     cache_name: str,
     later: tuple[int, int],
 ) -> list[Row]:
-    """A registered server's token creates a downtime only of its own:
-    the registry records the token's subject and that server's name,
-    whatever server the body names; and none whose source is the
-    registry (403)."""
+    """Check that a server's token creates a downtime only of its own.
+
+    The token is origin's, a registered server's: the registry records its
+    subject and name, origin_id and origin_name, whatever server the body
+    names (the cache, by cache_id and cache_name); and it creates none whose
+    source is the registry (403). Each downtime is from later's start to its
+    end, in milliseconds.
+    """
     rows: list[Row] = []
     downtime_id = str(uuid.uuid4())
     body = {
@@ -1636,8 +1784,14 @@ def bound(
 
 
 def director_names(test: Test, cache: Server) -> dict[str, str]:
-    """What each director (by URL) calls cache in its list of servers, by
-    its host; "" where it lists no such server."""
+    """Return what each director calls cache in its list of servers.
+
+    Each director finds cache there by its host.
+
+    Returns:
+        The names, by director URL; "" where a director lists no such
+        server.
+    """
     found: dict[str, str] = {}
     for url in test.fed.directors:
         answer = web.request("GET", url + DIRECTOR_SERVERS)
@@ -1657,7 +1811,7 @@ def director_names(test: Test, cache: Server) -> dict[str, str]:
 
 
 def filtered_at(test: Test, cache: Server) -> list[str]:
-    """The directors that list cache as filtered."""
+    """Return the hosts of the directors that list cache as filtered."""
     found: list[str] = []
     for url in test.fed.directors:
         answer = web.request("GET", url + DIRECTOR_SERVERS)
@@ -1674,16 +1828,21 @@ def filtered_at(test: Test, cache: Server) -> list[str]:
 
 
 def routing_path(test: Test) -> str:
-    """An object that every director would send to a cache: the first
-    exported namespace's first object (init-data.py)."""
+    """Return an object that every director would send to a cache.
+
+    It is the first exported namespace's first object (init-data.py).
+    """
     return f"/{next(iter(test.fed.exports))}/data/0.0"
 
 
 def admin_current(test: Test, cache: Server, cache_id: str, cache_name: str) -> Row:
-    """The registry's admin declares the cache down now: within
+    """Check that a current downtime takes the cache out of routing.
+
+    The registry's admin declares the cache down now: within
     DOWNTIME_WAIT seconds, no director names it, and each lists it as
     filtered; once the admin ends it, every director names it again, as
-    soon."""
+    soon.
+    """
     fed, path = test.fed, routing_path(test)
 
     def named() -> list[str]:
@@ -1730,10 +1889,13 @@ def admin_current(test: Test, cache: Server, cache_id: str, cache_name: str) -> 
 def future(
     test: Test, cache: Server, cache_id: str, cache_name: str, later: tuple[int, int]
 ) -> Row:
-    """A downtime of the cache's that begins tomorrow, as the registry's
-    admin declares it: within DOWNTIME_WAIT seconds, every director lists
-    it among its downtimes, and among the cache's, with its severity and
-    who created it; and every director still names the cache."""
+    """Check that a downtime that begins tomorrow is listed, not applied.
+
+    A downtime of the cache's that begins tomorrow (later, in milliseconds),
+    as the registry's admin declares it: within DOWNTIME_WAIT seconds, every
+    director lists it among its downtimes, and among the cache's, with its
+    severity and who created it; and every director still names the cache.
+    """
     fed, path = test.fed, routing_path(test)
     downtime_id = str(uuid.uuid4())
     body = {
@@ -1794,9 +1956,19 @@ def future(
 
 
 def remove_downtime(test: Test, downtime_id: str, record: Mapping[str, Any]) -> Optional[str]:
-    """Remove downtime downtime_id (record, as the registry has it) from
-    the registry: the registry's own, as its admin; a server's, as that
-    server, by its token. What went wrong, or None."""
+    """Remove a downtime from the registry.
+
+    The registry's own is removed as its admin; a server's, as that server,
+    by its token.
+
+    Args:
+        test: The test.
+        downtime_id: The downtime's ID.
+        record: The downtime, as the registry has it.
+
+    Returns:
+        What went wrong, or None if nothing did.
+    """
     if str(record.get("source", "")).lower() == "registry":
         answer = test.admin().call("DELETE", f"{DOWNTIME}/{downtime_id}")
         return None if answer.ok else f"as the admin: {answer.describe()}"
@@ -1821,11 +1993,15 @@ def remove_downtime(test: Test, downtime_id: str, record: Mapping[str, Any]) -> 
 
 
 def sweep(test: Test) -> list[str]:
-    """Remove every registration, server, and downtime of the suite's
-    (MARKER), of any run: downtimes at each server, which would otherwise
-    tell the registry of them again, and at the registry; then
-    registrations and servers, as the registry's admin. What went
-    wrong."""
+    """Remove every registration, server, and downtime of the suite's.
+
+    It finds them, of any run, by MARKER. Remove downtimes at each server,
+    which would otherwise tell the registry of them again, and at the
+    registry; then registrations and servers, as the registry's admin.
+
+    Returns:
+        What went wrong.
+    """
     problems: list[str] = []
     for server in {s.web_url: s for s in test.servers}.values():
         try:
@@ -1886,14 +2062,18 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: a standalone origin has no
-    registry."""
+    """Return why there is nothing to test, or None if there is something.
+
+    A standalone origin has no registry.
+    """
     return "a standalone origin has no registry" if not fed.registry_url else None
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Remove what earlier runs left, run the selected scenarios, and
-    remove what they registered and declared."""
+    """Remove what earlier runs left, then run the selected scenarios.
+
+    Afterward, remove what they registered and declared.
+    """
     test = Test(session)
     errors = sweep(test)
     if errors:

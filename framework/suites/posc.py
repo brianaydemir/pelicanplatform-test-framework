@@ -1,11 +1,12 @@
-"""POSC (persist on successful close; `-p origin-posc`): interrupt
-uploads to an origin, or race two, and check what its store shows, and
-what it serves meanwhile. The same for XRootD's atomic uploads
-(`-p origin-atomic-uploads`), which stage each upload beside the exports'
-storage rather than inside it, and for a pstore origin
-(`-p origin-pstore`), which commits a new version only when an upload
-completes, judged by what the origins serve. None of the three: the
-suite is skipped.
+"""Uploads that an origin persists only on successful close (POSC).
+
+POSC (`-p origin-posc`): interrupt uploads to an origin, or race two, and
+check what its store shows, and what it serves meanwhile. The same for
+XRootD's atomic uploads (`-p origin-atomic-uploads`), which stage each
+upload beside the exports' storage rather than inside it, and for a pstore
+origin (`-p origin-pstore`), which commits a new version only when an upload
+completes, judged by what the origins serve. None of the three: the suite is
+skipped.
 
 Uploads go straight to the first origin in
 framework/var/generated/origins, under /protected-a/data/posc/. Only
@@ -107,7 +108,7 @@ MIB = 1 << 20
 
 
 class CouldNotConnect(Exception):
-    """partial_put() could not connect, or finish the TLS handshake."""
+    """partial_put()'s failure to connect, or finish the TLS handshake."""
 
 
 def partial_put(
@@ -120,12 +121,28 @@ def partial_put(
     sent: Optional[threading.Event] = None,
     release: Optional[threading.Event] = None,
 ) -> Optional[str]:
-    """An upload cut short: send the headers and `send` bytes, hold the
-    connection for `hold` seconds or until release is set, then close its
-    sending side as a dying client would (no TLS close_notify). mode is
-    `sized`, claiming a Content-Length of total, or `chunked`. Sets sent
-    once the bytes are out. Returns the status that comes back, if any;
-    raises CouldNotConnect if it never got as far as sending."""
+    """Start an upload to url, and cut it short.
+
+    Send the headers and `send` bytes, hold the connection for `hold`
+    seconds or until release is set, then close its sending side as a dying
+    client would (no TLS close_notify).
+
+    Args:
+        url: The object's URL.
+        mode: `sized`, claiming a Content-Length of total, or `chunked`.
+        total: The Content-Length to claim, if mode is `sized`.
+        send: How many bytes to send.
+        hold: How long to hold the connection, in seconds, at most.
+        token: The bearer token to present.
+        sent: An event to set once the bytes are out.
+        release: An event that, once set, ends the hold.
+
+    Returns:
+        The status that comes back, if any.
+
+    Raises:
+        CouldNotConnect: It never got as far as sending.
+    """
     u = urlsplit(url)
     try:
         sock = socket.create_connection((u.hostname, u.port or 443), timeout=60)
@@ -203,13 +220,16 @@ def partial_put(
 
 
 def http(status: Optional[str]) -> str:
-    """How partial_put's status reads in a note."""
+    """Return how partial_put's status reads in a note."""
     return f"HTTP {status}" if status else "no response"
 
 
 def wrong_answer(status: Optional[str]) -> Optional[str]:
-    """Why partial_put's status is the wrong answer to an upload cut
-    short, if it is."""
+    """Return why partial_put's status is wrong for an upload cut short.
+
+    Returns:
+        Why, or None if it is not wrong.
+    """
     if status and status.startswith("2"):
         return f"{http(status)} for an incomplete upload"
     if status == "405":
@@ -218,10 +238,31 @@ def wrong_answer(status: Optional[str]) -> Optional[str]:
 
 
 class Test:
-    """What every scenario needs: a token, the first origin, and the
-    stores to watch. The director may send `client` to any origin, so
-    every store is watched. A pstore origin's store is asked over HTTPS
-    what it holds."""
+    """What every scenario needs: a token, the first origin, and the stores.
+
+    The director may send `client` to any origin, so every store is watched.
+    A pstore origin's store is asked over HTTPS what it holds.
+
+    Attributes:
+        pelican: The path of the pelican client.
+        env: The environment to run the client in.
+        origin: The first origin, to which uploads go.
+        origin_web: The first origin's web URL, with no path.
+        kind: How uploads are staged: `posc`, `atomic` (XRootD's), or
+            `pstore`.
+        pstore: Whether kind is `pstore`.
+        origins: The origins, each store once.
+        stores: /protected-a's storage in each store.
+        roots: The stores themselves, where a pstore keeps its objects and
+            XRootD its staging files.
+        tmp: A directory of the suite's own, for files of its own.
+        run: The run's ID, with which each object's name begins.
+        base_url: Where the objects go, at the first origin.
+        token_file: A file that holds token.
+        token: The token for /protected-a.
+        before: The staging files there were at mark().
+        before_sizes: On pstore, the sizes of its objects' files at mark().
+    """
 
     def __init__(self, session: Session):
         fed = session.fed
@@ -230,7 +271,6 @@ class Test:
         self.env = session.env
         self.origin = fed.origins[0]
         self.origin_web = re.sub(r"^(https://[^/]*).*", r"\1", self.origin.url)
-        # How uploads are staged: `posc`, `atomic` (XRootD's), or `pstore`.
         if fed.posc:
             self.kind = "posc"
         elif fed.atomic_uploads:
@@ -239,8 +279,6 @@ class Test:
             self.kind = "pstore"
         self.pstore = self.kind == "pstore"
         self.origins = stores.unique(fed.origins)
-        # /protected-a's storage in each store, and the stores themselves,
-        # where a pstore keeps its objects and XRootD its staging files.
         self.stores = sorted({o.store_of("protected-a") for o in fed.origins})
         self.roots = sorted({o.store for o in fed.origins})
         self.tmp = session.path("posc")
@@ -257,11 +295,13 @@ class Test:
                 die(f"could not make /protected-a/data/posc: {errors[0]}")
 
     def staging(self) -> set[str]:
-        """Staging files. Under POSC,
-        <storage>/.pelican-posc/<user>/in_progress.*, where the storage is
-        /protected-a's, and the user the token's subject; under XRootD's
-        atomic uploads, whatever is under <store>/.in-progress/<user>/
-        (ATOMIC_DIR); on pstore, none."""
+        """Return the staging files.
+
+        Under POSC, they are <storage>/.pelican-posc/<user>/in_progress.*,
+        where the storage is /protected-a's, and the user the token's
+        subject; under XRootD's atomic uploads, whatever is under
+        <store>/.in-progress/<user>/ (ATOMIC_DIR); on pstore, none.
+        """
         found: set[str] = set()
         if self.kind == "posc":
             for store in self.stores:
@@ -274,7 +314,7 @@ class Test:
         return {f for f in found if os.path.isfile(f)}
 
     def pstore_sizes(self) -> dict[str, int]:
-        """The files of each pstore origin's objects, and their sizes."""
+        """Return each pstore origin's objects' files, and their sizes."""
         found: dict[str, int] = {}
         for root in self.roots:
             for path in glob.glob(f"{root}/pstore/objects/**", recursive=True):
@@ -283,27 +323,32 @@ class Test:
         return found
 
     def mark(self) -> None:
-        """Remember the staging files there are now, or on pstore, how big
-        its objects' files are."""
+        """Remember the staging files there are now.
+
+        On pstore, remember how big its objects' files are.
+        """
         self.before = self.staging()
         if self.pstore:
             self.before_sizes = self.pstore_sizes()
 
     def under_way(self) -> bool:
-        """Whether an upload has begun to arrive since mark(): a staging
-        file, or on pstore, an objects' file that is new or bigger."""
+        """Return whether an upload has begun to arrive since mark().
+
+        It has if there is a new staging file, or on pstore, an objects'
+        file that is new or bigger.
+        """
         if not self.pstore:
             return self.new_staging() is not None
         now = self.pstore_sizes()
         return any(size > self.before_sizes.get(path, -1) for path, size in now.items())
 
     def new_staging(self) -> Optional[str]:
-        """A staging file that has appeared since mark(), if any."""
+        """Return a staging file that has appeared since mark(), if any."""
         added = sorted(self.staging() - self.before)
         return added[0] if added else None
 
     def object_file(self, name: str) -> Optional[str]:
-        """The object's file in the first store that has it, if any."""
+        """Return the object's file in the first store with one, if any."""
         for store in self.stores:
             path = f"{store}/data/posc/{name}"
             if os.path.exists(path):
@@ -311,8 +356,16 @@ class Test:
         return None
 
     def found(self, name: str) -> Optional[str]:
-        """Where the object is, if anywhere: its file, or on pstore, the
-        first origin that serves it."""
+        """Return where the object is, if anywhere.
+
+        Returns:
+            Its file, or on pstore, its URL at the first origin that serves
+            it; None if it is nowhere.
+
+        Raises:
+            stores.Unreadable: On pstore, an origin answers a HEAD of it
+                with neither 200 nor 404.
+        """
         if not self.pstore:
             return self.object_file(name)
         for origin in self.origins:
@@ -325,13 +378,13 @@ class Test:
         return None
 
     def size(self, where: str) -> str:
-        """How big the object found() at where is."""
+        """Return how big the object found() at where is."""
         if not self.pstore:
             return str(size_of(where))
         return web.request("HEAD", where, token=self.token).header("Content-Length") or "?"
 
     def holds(self, name: str, data: bytes) -> bool:
-        """Whether the object that found() finds holds data."""
+        """Return whether the object that found() finds holds data."""
         if not self.pstore:
             path = self.object_file(name)
             return path is not None and holds(path, data)
@@ -358,9 +411,13 @@ class Test:
         sent: Optional[threading.Event] = None,
         release: Optional[threading.Event] = None,
     ) -> Optional[str]:
-        """partial_put() to object name. A connection that fails once the
-        upload is sent counts as no response; one that never connects
-        raises CouldNotConnect."""
+        """Make a partial_put() to object name, with the test's token.
+
+        A connection that fails once it is made counts as no response.
+
+        Raises:
+            CouldNotConnect: It never got as far as sending.
+        """
         try:
             return partial_put(
                 f"{self.base_url}/{name}", mode, total, send, hold, self.token, sent, release
@@ -371,10 +428,17 @@ class Test:
 
 
 class Upload:
-    """A Test.partial_put() in a thread of its own, so that the stores can
-    be watched while it is held open: until finish(), or for hold seconds
-    at most. Afterward, status is what came back, and error why it never
-    got under way, if it didn't."""
+    """A Test.partial_put() in a thread of its own.
+
+    That way, the stores can be watched while it is held open: until
+    finish(), or for hold seconds at most.
+
+    Attributes:
+        sent: Set once the bytes are out.
+        released: Set by finish(), to let the connection go.
+        status: Afterward, what came back.
+        error: Afterward, why it never got under way, if it didn't.
+    """
 
     def __init__(
         self, test: Test, name: str, mode: str, total: int, send: int, hold: float = 60
@@ -402,7 +466,7 @@ class Upload:
             self.error = f"{type(e).__name__}: {e}"
 
     def started(self, seconds: float = 30) -> bool:
-        """Whether the bytes are out within seconds."""
+        """Return whether the bytes are out within seconds."""
         wait_for(lambda: self.sent.is_set() or not self.thread.is_alive(), seconds, 0.1)
         return self.sent.is_set()
 
@@ -413,15 +477,20 @@ class Upload:
 
 
 def watch(test: Test, upload: Upload) -> bool:
-    """Whether upload is seen under way (Test.under_way()) within 10
-    seconds of its bytes going out, while it is held open."""
+    """Return whether upload is seen under way while it is held open.
+
+    It must be seen (Test.under_way()) within 10 seconds of its bytes going
+    out.
+    """
     return upload.started() and wait_for(test.under_way, 10)
 
 
 def unseen(test: Test, upload: Upload) -> str:
-    """Why an upload that was not seen under way fails, once finished: a
-    refusal (e.g. 400, 401, 403, or 411) or no answer leaves nothing to
-    judge the interruption by."""
+    """Return why an upload not seen under way fails, once finished.
+
+    A refusal (e.g. 400, 401, 403, or 411) or no answer leaves nothing to
+    judge the interruption by.
+    """
     if upload.error:
         return upload.error
     what = "pstore/objects did not grow" if test.pstore else "no staging file appeared"
@@ -429,22 +498,22 @@ def unseen(test: Test, upload: Upload) -> str:
 
 
 def holds(path: str, data: bytes) -> bool:
-    """Whether the file at path holds data."""
+    """Return whether the file at path holds data."""
     with open(path, "rb") as f:
         return f.read() == data
 
 
 def size_of(path: str) -> int:
-    """The size of the file at path."""
+    """Return the size of the file at path."""
     return os.path.getsize(path)
 
 
 # --------------------------------------------------------------------------
-# The scenarios. Each returns its result and a note.
+# The scenarios.
 
 
 def commit(test: Test) -> tuple[str, str]:
-    """A complete upload lands, and leaves no staging file."""
+    """Check that a complete upload lands, and leaves no staging file."""
     name = f"{test.run}-commit"
     data = os.urandom(MIB)
     test.mark()
@@ -462,8 +531,11 @@ def commit(test: Test) -> tuple[str, str]:
 
 
 def held_open(test: Test, name: str) -> tuple[str, str]:
-    """`stalled`'s verdict, while object name's upload is held open and its
-    staging file exists. Only POSC counts the upload in a metric."""
+    """Return `stalled`'s verdict on object name's upload.
+
+    Call it while the upload is held open and its staging file exists.
+    Only POSC counts the upload in a metric.
+    """
     answer = web.request("HEAD", f"{test.base_url}/{name}", token=test.token)
     path = test.object_file(name)
     if path is not None:
@@ -480,9 +552,11 @@ def held_open(test: Test, name: str) -> tuple[str, str]:
 
 
 def stalled(test: Test) -> tuple[str, str]:
-    """While an upload is held open, only its staging file exists: no
-    object, a HEAD answers 404, and under POSC, the origin counts the
-    upload as active."""
+    """Check that while an upload stalls, only its staging file exists.
+
+    While it is held open, there is no object, a HEAD answers 404, and
+    under POSC, the origin counts the upload as active.
+    """
     name = f"{test.run}-stalled"
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
@@ -498,9 +572,21 @@ def stalled(test: Test) -> tuple[str, str]:
 
 
 def interrupted(test: Test, scenario: str, mode: str, total: int, send: int) -> tuple[str, str]:
-    """An upload in mode (see partial_put()), held open until it is seen
-    under way, then cut short: nothing is left of it, and the answer, if
-    any, is not a success."""
+    """Check that an upload in mode, cut short, leaves nothing.
+
+    The upload is held open until it is seen under way, then cut short:
+    nothing may be left of it, and the answer, if any, may not be a success.
+
+    Args:
+        test: The test.
+        scenario: The scenario's name, which names the object.
+        mode: As for partial_put().
+        total: As for partial_put().
+        send: As for partial_put().
+
+    Returns:
+        The scenario's status and note.
+    """
     name = f"{test.run}-{scenario}"
     test.mark()
     upload = Upload(test, name, mode, total, send)
@@ -527,21 +613,26 @@ def interrupted(test: Test, scenario: str, mode: str, total: int, send: int) -> 
 
 
 def sized(test: Test) -> tuple[str, str]:
-    """An upload cut short of its Content-Length leaves nothing."""
+    """Check that an upload short of its Content-Length leaves nothing."""
     return interrupted(test, "sized", "sized", 2 * MIB, MIB)
 
 
 def chunked(test: Test) -> tuple[str, str]:
-    """A chunked upload cut short leaves nothing. It sends a bit more than
-    pstore buffers before spilling into pstore/objects, so that a pstore
-    origin shows the upload under way too."""
+    """Check that a chunked upload cut short leaves nothing.
+
+    It sends a bit more than pstore buffers before spilling into
+    pstore/objects, so that a pstore origin shows the upload under way too.
+    """
     return interrupted(test, "chunked", "chunked", 0, blocks.SPILL + 64 * 1024)
 
 
 def overwrite(test: Test) -> tuple[str, str]:
-    """An overwrite held open until it is seen under way, then cut short.
+    """Check that an overwrite cut short leaves the old object intact.
+
+    The overwrite is held open until it is seen under way, then cut short.
     Meanwhile, the origin must serve the old object; afterward, the old
-    object must be intact, and the answer, if any, not a success."""
+    object must be intact, and the answer, if any, not a success.
+    """
     name = f"{test.run}-overwrite"
     original = os.urandom(MIB)
     answer = test.full_put(original, name)
@@ -578,9 +669,12 @@ def overwrite(test: Test) -> tuple[str, str]:
 
 
 def concurrent(test: Test) -> tuple[str, str]:
-    """Two whole uploads of different bytes to one new object, started
-    together: once both are answered, the object must be all of one whose
-    upload succeeded, and no staging file may be left."""
+    """Check that two whole uploads of one object at once leave one, whole.
+
+    The uploads, of different bytes to one new object, start together: once
+    both are answered, the object must be all of one whose upload succeeded,
+    and no staging file may be left.
+    """
     name = f"{test.run}-concurrent"
     versions = [os.urandom(8 * MIB) for _ in range(2)]
     barrier = threading.Barrier(len(versions))
@@ -607,7 +701,7 @@ def concurrent(test: Test) -> tuple[str, str]:
 
 
 def client(test: Test) -> tuple[str, str]:
-    """Killing `pelican object put` midway leaves nothing."""
+    """Check that killing `pelican object put` midway leaves nothing."""
     name = f"{test.run}-client"
     total = 1 << 30
     # Sparse: the client reads 1 GiB of zeros, with no 1 GiB written first.
@@ -663,8 +757,11 @@ def client(test: Test) -> tuple[str, str]:
 
 
 class Links(HTMLParser):
-    """The names an HTML listing links to: the last segment of each
-    href's path, decoded."""
+    """The names an HTML listing links to.
+
+    Attributes:
+        names: The last segment of each href's path, decoded.
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -677,7 +774,7 @@ class Links(HTMLParser):
 
 
 def linked(body: bytes) -> set[str]:
-    """The names the HTML listing body links to."""
+    """Return the names the HTML listing body links to."""
     links = Links()
     links.feed(body.decode(errors="replace"))
     links.close()
@@ -685,13 +782,15 @@ def linked(body: bytes) -> set[str]:
 
 
 def hidden(test: Test) -> tuple[str, str]:
-    """Lists the export while an upload is held open, so that
-    .pelican-posc is there to hide: by PROPFIND (Depth 1), as `pelican
-    object ls` does, and as a browser does, by a GET for HTML, whose
-    listing links to each entry. The export holds data/, which both must
-    show. Pelican hides the staging directory from PROPFIND, but its HTML
-    listing reads the directory itself and shows it, so the row fails
-    there."""
+    """Check that no listing of the export shows .pelican-posc.
+
+    It lists the export while an upload is held open, so that .pelican-posc
+    is there to hide: by PROPFIND (Depth 1), as `pelican object ls` does,
+    and as a browser does, by a GET for HTML, whose listing links to each
+    entry. The export holds data/, which both must show. Pelican hides the
+    staging directory from PROPFIND, but its HTML listing reads the
+    directory itself and shows it, so the row fails there.
+    """
     name = f"{test.run}-hidden"
     posc_dir = f"{test.origin.store_of('protected-a')}/.pelican-posc"
     url = f"{test.origin.url}/protected-a/"
@@ -736,12 +835,14 @@ def hidden(test: Test) -> tuple[str, str]:
 
 
 class Problem(Exception):
-    """A row could not do what it needed to judge Pelican: it fails, with
-    this as its note."""
+    """A row's failure to do what it needs to judge Pelican.
+
+    The row fails, with this as its note.
+    """
 
 
 def guarded(check: Callable[[], Row]) -> Row:
-    """check's row; a FAIL if it could not set up, or raised."""
+    """Return check's row, or a FAIL if it could not set up, or raised."""
     try:
         return check()
     except Problem as e:
@@ -754,22 +855,32 @@ def guarded(check: Callable[[], Row]) -> Row:
 
 
 def staging_root(test: Test) -> str:
-    """POSC's staging directory in the first origin's /protected-a."""
+    """Return the first origin's POSC staging directory in /protected-a."""
     return f"{test.origin.store_of('protected-a')}/.pelican-posc"
 
 
 def planted_dir(test: Test) -> str:
-    """The staging directory of the suite's own, as if a user's, in which
-    posc-expiry plants staging files."""
+    """Return the staging directory of the suite's own, as if a user's.
+
+    posc-expiry plants staging files in it.
+    """
     return f"{staging_root(test)}/expiry-{test.run}"
 
 
 def plant(test: Test, age: float) -> str:
-    """A staging file in planted_dir(), last modified age seconds ago, as
-    an abandoned upload leaves; its path. Raises Problem if POSC has no
-    staging directory yet, which posc-expiry's first upload makes, as
-    that user's (see users' `posc-multiuser`); the suite does not make
-    it."""
+    """Plant a staging file in planted_dir(), as an abandoned upload leaves.
+
+    The file was last modified age seconds ago. The suite does not make
+    POSC's staging directory: posc-expiry's first upload makes it, as its
+    user's.
+
+    Returns:
+        The file's path.
+
+    Raises:
+        Problem: POSC has no staging directory yet, or the file could not
+            be written.
+    """
     if not os.path.isdir(staging_root(test)):
         raise Problem(
             f"{shown(staging_root(test))} does not exist, though an upload has been staged"
@@ -785,15 +896,21 @@ def plant(test: Test, age: float) -> str:
 
 
 def expired(test: Test) -> float:
-    """POSC_EXPIRED, at the first origin; 0 if it does not answer."""
+    """Return POSC_EXPIRED at the first origin; 0 if it does not answer."""
     return (metrics.fetch(test.origin_web) or metrics.EMPTY).value(POSC_EXPIRED)
 
 
 def reaped(test: Test, age: float, timeout: str) -> list[str]:
-    """Plant a staging file last modified age seconds ago, which the
-    reaper must remove within REAP_WAIT seconds, and count in POSC_EXPIRED,
-    since it is older than Origin.Posc.FileTimeout (timeout); what went
-    wrong."""
+    """Plant a stale staging file, and return what goes wrong in reaping it.
+
+    The reaper must remove the file within REAP_WAIT seconds, and count it
+    in POSC_EXPIRED, since it is older than Origin.Posc.FileTimeout.
+
+    Args:
+        test: The test.
+        age: How long ago the file was last modified, in seconds.
+        timeout: Origin.Posc.FileTimeout, as a note shows it.
+    """
     before = expired(test)
     path = plant(test, age)
     problems: list[str] = []
@@ -810,12 +927,14 @@ def reaped(test: Test, age: float, timeout: str) -> list[str]:
 
 
 def expiry_mode(test: Test) -> Row:
-    """A complete upload's object has mode 0644, as without POSC: the 0666
-    with which the WebDAV handler opens a PUT's file, less the origin's
-    umask, 022. POSC opens its staging file with the mode asked for, and
-    renames it into place (TestPoscFinalPermMatchesRequested). This
+    """Check that a complete upload's object has mode 0644, as without POSC.
+
+    0644 is the 0666 with which the WebDAV handler opens a PUT's file, less
+    the origin's umask, 022. POSC opens its staging file with the mode asked
+    for, and renames it into place (TestPoscFinalPermMatchesRequested). This
     upload, the scenario's first, also makes POSC's staging directory, if
-    there is none yet."""
+    there is none yet.
+    """
     name = f"{test.run}-mode"
     answer = test.full_put(os.urandom(4096), name)
     if not answer.ok:
@@ -830,9 +949,12 @@ def expiry_mode(test: Test) -> Row:
 
 
 def expiry_stale(test: Test) -> Row:
-    """A staging file abandoned two hours ago, past the default
-    Origin.Posc.FileTimeout of an hour, is reaped at the next sweep, and
-    counted (expireFiles in origin_serve/posc.go)."""
+    """Check that a staging file abandoned two hours ago is reaped.
+
+    Two hours is past the default Origin.Posc.FileTimeout of an hour, so the
+    file is reaped at the next sweep, and counted (expireFiles in
+    origin_serve/posc.go).
+    """
     problems = reaped(test, STALE_AGE, "1h, the default")
     if problems:
         return FAIL, first(problems)
@@ -840,9 +962,11 @@ def expiry_stale(test: Test) -> Row:
 
 
 def expiry_staging_put(test: Test) -> Row:
-    """A PUT straight into the staging directory: POSC hides it, so the
-    origin must answer as for a path whose parent is missing (409), and
-    write nothing there."""
+    """Check that a PUT straight into the staging directory writes nothing.
+
+    POSC hides the directory, so the origin must answer as for a path whose
+    parent is missing (409), and write nothing there.
+    """
     name = f"{test.run}-put"
     url = f"{test.origin.url}/protected-a/.pelican-posc/{name}"
     answer = web.request("PUT", url, token=test.token, upload=b"staged\n")
@@ -856,9 +980,11 @@ def expiry_staging_put(test: Test) -> Row:
 
 
 def expiry_staging_mkcol(test: Test) -> Row:
-    """A MKCOL straight into the staging directory: POSC refuses it
-    (poscFileSystem.Mkdir's EIO), so the origin must answer 405, and make
-    nothing there."""
+    """Check that a MKCOL straight into the staging directory makes nothing.
+
+    POSC refuses it (poscFileSystem.Mkdir's EIO), so the origin must answer
+    405, and make nothing there.
+    """
     name = f"{test.run}-mkcol"
     url = f"{test.origin.url}/protected-a/.pelican-posc/{name}"
     answer = web.request("MKCOL", url, token=test.token)
@@ -872,12 +998,15 @@ def expiry_staging_mkcol(test: Test) -> Row:
 
 
 def expiry_idle(test: Test) -> Row:
-    """With Origin.Posc.FileTimeout FILE_TIMEOUT and KeepaliveInterval
+    """Check that an idle upload outlives a short Origin.Posc.FileTimeout.
+
+    With Origin.Posc.FileTimeout FILE_TIMEOUT and KeepaliveInterval
     KEEPALIVE seconds: a planted staging file, stale under that timeout but
-    not the default, is reaped, so the restart's timeout is in force; and
-    an upload that sends half its bytes, then idles IDLE seconds, past the
-    timeout, keeps its staging file, whose keepalive refreshes its
-    mtime (touchOpenFiles), and completes whole once it sends the rest."""
+    not the default, is reaped, so the restart's timeout is in force; and an
+    upload that sends half its bytes, then idles IDLE seconds, past the
+    timeout, keeps its staging file, whose keepalive refreshes its mtime
+    (touchOpenFiles), and completes whole once it sends the rest.
+    """
     problems = reaped(test, SHORT_STALE_AGE, f"{FILE_TIMEOUT}s")
     if problems:
         return FAIL, f"the short timeout is not in force: {first(problems)}"
@@ -919,17 +1048,21 @@ def expiry_idle(test: Test) -> Row:
 
 
 def unrestartable(test: Test) -> Optional[str]:
-    """Why the first origin cannot be restarted with configuration of the
-    suite's own, or None."""
+    """Return why the first origin cannot be restarted, or None if it can.
+
+    The restart would give it configuration of the suite's own.
+    """
     if test.fed.tiny:
         return "the tiny topology's origin is the whole federation's process"
     return control.unavailable()
 
 
 def serving(test: Test) -> Optional[str]:
-    """Why the namespace is not served as before, or None: every origin
-    must answer a HEAD of the probe, every director name every origin for
-    it, and every federated cache answer a HEAD of it."""
+    """Return why the namespace is not served as before, or None if it is.
+
+    Every origin must answer a HEAD of the probe, every director name every
+    origin for it, and every federated cache answer a HEAD of it.
+    """
     path = f"/protected-a/data/posc/{test.run}-probe"
     for origin in test.fed.origins:
         answer = web.request("HEAD", f"{origin.url}{path}", token=test.token)
@@ -948,8 +1081,12 @@ def serving(test: Test) -> Optional[str]:
 
 
 def settle(test: Test) -> Optional[str]:
-    """Wait until the federation serves the namespace as before (see
-    serving()); why it doesn't within SETTLE_WAIT seconds, or None."""
+    """Wait until the federation serves the namespace as before.
+
+    Returns:
+        Why it doesn't within SETTLE_WAIT seconds (see serving()), or None
+        if it does.
+    """
     deadline = time.time() + SETTLE_WAIT
     why = serving(test)
     while why and time.time() < deadline:
@@ -959,9 +1096,11 @@ def settle(test: Test) -> Optional[str]:
 
 
 def idle_restarted(test: Test) -> Row:
-    """expiry_idle(), with the first origin restarted with the short
-    timeout and keepalive; then restore it, and wait until the federation
-    serves again."""
+    """Return expiry_idle()'s row, with the first origin restarted for it.
+
+    The restart gives the origin the short timeout and keepalive. Then
+    restore it, and wait until the federation serves again.
+    """
     why = unrestartable(test)
     if why:
         return SKIP, why
@@ -997,8 +1136,11 @@ def idle_restarted(test: Test) -> Row:
 
 
 def posc_expiry(test: Test) -> dict[str, Row]:
-    """The native POSC's reaping of abandoned staging files, and its guard
-    on its staging directory, by case."""
+    """Return posc-expiry's rows, by case.
+
+    The cases check the native POSC's reaping of abandoned staging files,
+    and its guard on its staging directory.
+    """
     return {
         "mode": guarded(lambda: expiry_mode(test)),
         "stale": guarded(lambda: expiry_stale(test)),
@@ -1008,6 +1150,8 @@ def posc_expiry(test: Test) -> dict[str, Row]:
     }
 
 
+# The scenarios but posc-expiry, by name. Each takes the Test, and
+# returns its status and note; it may raise CouldNotConnect.
 RUN = {
     "commit": commit,
     "stalled": stalled,
@@ -1021,7 +1165,10 @@ RUN = {
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no staging of uploads, or no writes."""
+    """Return why there is nothing to test, or None if there is something.
+
+    There is nothing without staging of uploads, or without writes.
+    """
     if not fed.posc and not fed.atomic_uploads and not fed.origins[0].pstore:
         return (
             "the origins stage no uploads: POSC and XRootD's atomic uploads are off, and they"

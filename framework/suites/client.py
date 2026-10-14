@@ -1,15 +1,15 @@
-"""The contracts between the clients and the servers that only show
-through the clients: the result ads that stash_plugin writes for
-HTCondor, which decide whether a job retries; failing over from one
-cache to another partway through a download, which needs the servers'
-ETags to agree; which token the client presents, of those its
-environment offers; how `pelican token create` finds an issuer; and
-the URL that `pelican object share` hands out. The `transfers` suite
-judges each batch by what moved; this one reads what the clients report.
+"""The client-server contracts that only show through the clients.
+
+These are the result ads that stash_plugin writes for HTCondor, which decide
+whether a job retries; failing over from one cache to another partway
+through a download, which needs the servers' ETags to agree; which token the
+client presents, of those its environment offers; how `pelican token create`
+finds an issuer; and the URL that `pelican object share` hands out. The
+suite reads what the clients report.
 
 The suite's objects go under /<namespace>/data/client/<run>/, put at
-every origin, and are removed afterward. It needs /protected-a, as
-`commands` does. The scenarios:
+every origin, and are removed afterward. It needs /protected-a. The
+scenarios:
 
   plugin-ads        stash_plugin's result ads: the bytes, URL, type,
                     name, and times of a download; its attempts, the
@@ -41,8 +41,9 @@ every origin, and are removed afterward. It needs /protected-a, as
   skipstat-failover with several origins: a direct read with ?skipstat
                     of an object one origin alone holds comes back
   multi-source      `get` and `put` with several sources (rows G8-G10
-                    and P8-P10 of Pelican's docs/object-transfer-semantics.md),
-                    and ?recursive in place of -r
+                    and P8-P10 of Pelican's
+                    docs/object-transfer-semantics.md), and ?recursive in
+                    place of -r
   preferred-cache-down
                     a preferred cache that is down: with `+`, a director's
                     cache serves instead; without, the client fails to
@@ -147,15 +148,20 @@ NO_TOKEN = 4010
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no /protected-a."""
+    """Return why there is nothing to test, or None if there is something.
+
+    The suite needs /protected-a.
+    """
     if NAMESPACE not in fed.exports:
         return "this shape does not export /protected-a"
     return None
 
 
 def outcome(problems: Sequence[str], note: str) -> Row:
-    """A row with no case: FAIL with the first of problems, or PASS with
-    note."""
+    """Return a row with no case: FAIL if there are problems, else PASS.
+
+    Its note is the first of problems, or else note.
+    """
     return ("", FAIL, first(problems)) if problems else ("", PASS, note)
 
 
@@ -170,7 +176,7 @@ class Ad(dict[str, Any]):
     """A parsed ClassAd: its attributes, by name as written."""
 
     def get_ci(self, name: str) -> Any:
-        """The attribute named name, in any case; None if there is none."""
+        """Return the attribute named name, in any case, or None."""
         for key, value in self.items():
             if key.lower() == name.lower():
                 return value
@@ -190,7 +196,7 @@ class _AdParser:
             self.at += 1
 
     def peek(self) -> str:
-        """The next character, or ""."""
+        """Return the next character, or ""."""
         self.skip_space()
         return self.text[self.at] if self.at < len(self.text) else ""
 
@@ -201,7 +207,7 @@ class _AdParser:
         self.at += 1
 
     def ad(self) -> Ad:
-        """An ad, from its `[` to its `]`."""
+        """Parse an ad, from its `[` to its `]`."""
         self.expect("[")
         found = Ad()
         while self.peek() != "]":
@@ -214,7 +220,7 @@ class _AdParser:
         return found
 
     def name(self) -> str:
-        """An attribute's name."""
+        """Parse an attribute's name."""
         self.skip_space()
         m = re.match(r"[A-Za-z_][A-Za-z0-9_.]*", self.text[self.at :])
         if not m:
@@ -223,7 +229,7 @@ class _AdParser:
         return m.group(0)
 
     def value(self) -> Any:
-        """A value."""
+        """Parse a value."""
         char = self.peek()
         if char == "[":
             return self.ad()
@@ -255,7 +261,7 @@ class _AdParser:
             return float(word)
 
     def string(self) -> str:
-        """A string in double quotes, with backslash escapes."""
+        """Parse a string in double quotes, with backslash escapes."""
         self.expect('"')
         found: list[str] = []
         while self.at < len(self.text):
@@ -273,8 +279,11 @@ class _AdParser:
 
 
 def parse_ads(text: str) -> list[Ad]:
-    """Every ad in text, the plugin's outfile. Raises ValueError if it
-    cannot be read."""
+    """Return every ad in text, the plugin's outfile.
+
+    Raises:
+        ValueError: The text cannot be read as ads.
+    """
     parser = _AdParser(text)
     found: list[Ad] = []
     while parser.peek() == "[":
@@ -285,14 +294,17 @@ def parse_ads(text: str) -> list[Ad]:
 
 
 def developer_data(ad: Ad) -> Ad:
-    """An ad's DeveloperData, or an empty ad."""
+    """Return an ad's DeveloperData, or an empty ad."""
     found = ad.get_ci("DeveloperData")
     return found if isinstance(found, Ad) else Ad()
 
 
 def error_types(ad: Ad) -> list[tuple[str, int]]:
-    """Each error of an ad's TransferErrorData: its ErrorType and its
-    PelicanErrorCode (0 if none)."""
+    """Return each error of an ad's TransferErrorData.
+
+    Returns:
+        Each error's ErrorType and its PelicanErrorCode (0 if none).
+    """
     found: list[tuple[str, int]] = []
     for item in common.as_array(ad.get_ci("TransferErrorData")) or []:
         if isinstance(item, Ad):
@@ -307,14 +319,20 @@ def error_types(ad: Ad) -> list[tuple[str, int]]:
 
 @dataclass
 class Fetched:
-    """How a client run went."""
+    """How a client run went.
+
+    Attributes:
+        status: Its exit status.
+        said: Its output (the plugin's ads, if it wrote any).
+        directory: The directory it ran in.
+    """
 
     status: int
-    said: str  # its output (the plugin's ads, if it wrote any)
+    said: str
     directory: str
 
     def files(self) -> list[str]:
-        """What the directory holds."""
+        """Return what the directory holds."""
         try:
             return sorted(os.listdir(self.directory))
         except FileNotFoundError:
@@ -322,7 +340,19 @@ class Fetched:
 
 
 class Test:
-    """The federation, the run's objects, and how the clients run."""
+    """The federation, the run's objects, and how the clients run.
+
+    Attributes:
+        base: Where the run's objects are in a namespace.
+        tmp: The run's local directory, for the clients' files.
+        token: The `server` token for /protected-a.
+        token_file: Its file.
+        caps: The capabilities of /protected-a.
+        direct: Whether /protected-a takes direct clients.
+        writes: Whether /protected-a takes writes.
+        objects: What the run put in /protected-a, by rel within the
+            namespace.
+    """
 
     def __init__(self, session: Session):
         self.session = session
@@ -336,19 +366,22 @@ class Test:
         self.caps = self.fed.exports[NAMESPACE]
         self.direct = "DirectReads" in self.caps
         self.writes = "Writes" in self.caps
-        self.objects: dict[str, bytes] = {}  # by rel within the namespace
+        self.objects: dict[str, bytes] = {}
         self._runs = 0
 
     def rel(self, name: str) -> str:
-        """Where object name of the run is in a namespace."""
+        """Return where object name of the run is in a namespace."""
         return f"{self.base}/{name}"
 
     def url(self, name: str, namespace: str = NAMESPACE, query: str = "") -> str:
-        """The federation URL of object name of the run in namespace."""
+        """Return the federation URL of object name of the run in namespace.
+
+        Its query string is query, if any.
+        """
         return f"{self.fed.url}/{namespace}/{self.rel(name)}" + (f"?{query}" if query else "")
 
     def path(self, name: str, namespace: str = NAMESPACE) -> str:
-        """Its path in the federation."""
+        """Return the path in the federation of object name of the run."""
         return f"/{namespace}/{self.rel(name)}"
 
     def put(
@@ -358,9 +391,11 @@ class Test:
         namespace: str = NAMESPACE,
         origins: Optional[Sequence[common.Origin]] = None,
     ) -> None:
-        """Put object name, holding data, in namespace's storage at every
-        origin, or at origins (see stores.seed()): on a pstore origin,
-        /public's is /protected-a's."""
+        """Put object name, holding data, in namespace's storage.
+
+        Put it at every origin, or at origins (see stores.seed()): on a
+        pstore origin, /public's is /protected-a's.
+        """
         target = self.fed.storage_namespace(namespace)
         token = self.session.token(target)
         caps = self.fed.exports[target]
@@ -378,14 +413,14 @@ class Test:
             self.objects[rel] = data
 
     def directory(self, name: str) -> str:
-        """A new directory of the run's for a client run."""
+        """Return a new directory of the run's for a client run."""
         self._runs += 1
         path = os.path.join(self.tmp, f"{self._runs:03d}-{name}")
         os.makedirs(path)
         return path
 
     def local(self, name: str, data: bytes) -> str:
-        """Write data to local file name: its path."""
+        """Write data to local file name; return its path."""
         path = os.path.join(self.tmp, name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
@@ -393,8 +428,10 @@ class Test:
         return path
 
     def creds(self, name: str, tokens: Mapping[str, str]) -> str:
-        """A credentials directory (_CONDOR_CREDS) of the run's, holding
-        each token under its file name: its path."""
+        """Make a credentials directory (_CONDOR_CREDS); return its path.
+
+        It is the run's, and holds each of tokens under its file name.
+        """
         path = os.path.join(self.tmp, f"{name}.creds")
         os.makedirs(path, exist_ok=True)
         for file_name, token in tokens.items():
@@ -409,8 +446,14 @@ class Test:
         env: Optional[Mapping[str, str]] = None,
         cwd: Optional[str] = None,
     ) -> Fetched:
-        """Run `pelican <args>` in a directory of its own, name, with env
-        (the session's, if none)."""
+        """Run `pelican <args>`, in a directory of its own.
+
+        Args:
+            name: The name of its directory.
+            args: The arguments.
+            env: Its environment, or None for the session's.
+            cwd: A directory to run in, in place of one of its own.
+        """
         directory = cwd or self.directory(name)
         status, out, err = self.session.pelican_cmd(
             *args, env=dict(env) if env is not None else None, cwd=directory
@@ -425,10 +468,20 @@ class Test:
         upload: bool = False,
         sources: Optional[Sequence[str]] = None,
     ) -> Fetched:
-        """stash_plugin's transfer of urls (each to, or for an upload from
-        sources, the file of its last component), in a directory of its
-        own, name, with env (the session's, if none): its exit status,
-        its ads (or its output, if it wrote none), and the directory."""
+        """Run stash_plugin's transfer of urls, in a directory of its own.
+
+        Args:
+            name: The name of its directory.
+            urls: What to transfer: each to the file of its last
+                component, or for an upload, from sources.
+            env: Its environment, or None for the session's.
+            upload: Whether it is an upload.
+            sources: For an upload, the local file of each of urls.
+
+        Returns:
+            Its exit status, its ads (or its output, if it wrote none), and
+            the directory.
+        """
         directory = self.directory(name)
         infile = os.path.join(self.tmp, f"{name}.in")
         outfile = os.path.join(self.tmp, f"{name}.ad")
@@ -462,39 +515,54 @@ class Test:
         return Fetched(status, ads or output, directory)
 
     def creds_env(self, creds: str, **extra: str) -> dict[str, str]:
-        """The session's environment, with _CONDOR_CREDS at creds, and
-        extra."""
+        """Return the session's environment, with _CONDOR_CREDS at creds.
+
+        Args:
+            creds: A credentials directory.
+            **extra: More variables to set.
+        """
         env = dict(self.session.env)
         env["_CONDOR_CREDS"] = creds
         env.update(extra)
         return env
 
     def server_creds(self, name: str) -> str:
-        """A credentials directory holding the server's token for
-        /protected-a as scitokens.use, which the plugin tries first."""
+        """Return a credentials directory holding the server's token.
+
+        It holds the token for /protected-a as scitokens.use, which the
+        plugin tries first.
+        """
         return self.creds(name, {"scitokens.use": self.token})
 
     def v2_caches(self) -> list[common.Cache]:
-        """The federated V2 caches."""
+        """Return the federated V2 caches."""
         return [c for c in self.fed.federated_caches if c.kind == "v2"]
 
     def ask(self, method: str, server_url: str, name: str) -> web.Response:
-        """method of object name of the run straight at the server at
-        server_url, with the token."""
+        """Request object name of the run, by method, straight at a server.
+
+        The server is at server_url; the request presents the token.
+        """
         return web.request(
             method, f"{server_url}{self.path(name)}", token=self.token, timeout=120
         )
 
     def held(self, cache: common.Cache, name: str) -> bool:
-        """Whether a V2 cache says, with Age, that it holds all of object
-        name."""
+        """Return whether a V2 cache says it holds all of object name.
+
+        A cache says so with Age.
+        """
         answer = web.request("HEAD", f"{cache.url}{self.path(name)}", token=self.token)
         return answer.status == 200 and answer.header("Age").strip().isdigit()
 
     def fill(self, cache: common.Cache, name: str) -> Optional[str]:
-        """Read object name whole through cache, which must serve it, and
-        for a V2 cache wait until it says it holds it all; what went
-        wrong, or None."""
+        """Read object name whole through cache, which must serve it.
+
+        For a V2 cache, wait until it says it holds it all.
+
+        Returns:
+            What went wrong, or None.
+        """
         answer = web.request(
             "GET", f"{cache.url}{self.path(name)}", token=self.token, timeout=120
         )
@@ -508,13 +576,16 @@ class Test:
 
 
 def crc32c_hex(data: bytes) -> str:
-    """data's CRC-32C, as `stat --checksums` and the ads print it."""
+    """Return data's CRC-32C, as `stat --checksums` and the ads print it."""
     return f"{blocks.crc32c(data):08x}"
 
 
 def stats_of(path: str) -> list[dict[str, Any]]:
-    """The results in a --transfer-stats file: each, with its attempts;
-    none if it is unreadable."""
+    """Return the results in the --transfer-stats file at path.
+
+    Returns:
+        Each result, with its attempts; none if the file is unreadable.
+    """
     try:
         with open(path, encoding="utf-8") as f:
             stats = json.load(f)
@@ -535,14 +606,14 @@ def stats_of(path: str) -> list[dict[str, Any]]:
 
 
 def attempts_of(result: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """A result's attempts, in order."""
+    """Return a result's attempts, in order."""
     found = [common.as_object(a) for a in common.as_array(result.get("attempts")) or []]
     tried = [a for a in found if a is not None]
     return sorted(tried, key=lambda a: int(a.get("attemptNumber") or 0))
 
 
 def endpoint_host(attempt: Mapping[str, Any]) -> str:
-    """The host of an attempt's endpoint, as the stats name it."""
+    """Return the host of an attempt's endpoint, as the stats name it."""
     return str(attempt.get("endpoint") or "").partition(":")[0]
 
 
@@ -551,8 +622,10 @@ def endpoint_host(attempt: Mapping[str, Any]) -> str:
 
 
 def ad_problems(ad: Ad, url: str, data: bytes) -> list[str]:
-    """What is wrong with the plugin's ad of a download of url, which
-    holds data, that succeeded."""
+    """Return what is wrong with the plugin's ad of a download of url.
+
+    The download must have succeeded, and url holds data.
+    """
     problems: list[str] = []
     name = transfers.local_name(url)
     if ad.get_ci("TransferSuccess") is not True:
@@ -581,7 +654,7 @@ def ad_problems(ad: Ad, url: str, data: bytes) -> list[str]:
 
 
 def last_attempt(ad: Ad) -> int:
-    """The number of the last attempt in an ad's DeveloperData."""
+    """Return the number of the last attempt in an ad's DeveloperData."""
     numbers = [
         int(m.group(1))
         for key in developer_data(ad)
@@ -594,10 +667,18 @@ def last_attempt(ad: Ad) -> int:
 def checksum_problems(
     fed: common.Federation, ad: Ad, data: bytes, cache: Optional[str]
 ) -> list[str]:
-    """What is wrong with an ad's ServerChecksums: whichever digests it
-    reports must be the object's, and after a whole read through a V2
-    cache there must be a crc32c, which the cache relays from the origin
-    or computes itself (local_cache/persistent_cache.go)."""
+    """Return what is wrong with an ad's ServerChecksums.
+
+    Whichever digests it reports must be the object's, and after a whole
+    read through a V2 cache there must be a crc32c, which the cache relays
+    from the origin or computes itself (local_cache/persistent_cache.go).
+
+    Args:
+        fed: The federation.
+        ad: The plugin's ad of a download.
+        data: The object's content.
+        cache: The host that served the download (served_by()), if known.
+    """
     name = ad.get_ci("TransferFileName")
     sums = developer_data(ad).get_ci("ServerChecksums")
     reported = {k.lower(): str(v) for k, v in sums.items()} if isinstance(sums, Ad) else {}
@@ -613,17 +694,19 @@ def checksum_problems(
 
 
 def served_by(ad: Ad) -> str:
-    """The host of the last attempt in an ad's DeveloperData."""
+    """Return the host of the last attempt in an ad's DeveloperData."""
     found = developer_data(ad).get_ci(f"Endpoint{last_attempt(ad)}")
     return str(found or "").partition(":")[0]
 
 
 def cache_hit_problems(fed: common.Federation, ad: Ad, cold_host: Optional[str]) -> list[str]:
-    """What is wrong with an ad's DataAge and CacheHit of its last
-    attempt, which a V2 cache's Age gives: on a cold read (cold_host is
-    None), no hit; on a warm one at the cache that the cold read filled
-    (cold_host), a hit, with an age. A warm read sent to another cache
-    is cold there, and says nothing."""
+    """Return what is wrong with an ad's DataAge and CacheHit.
+
+    Those of its last attempt, which a V2 cache's Age gives, must say: on
+    a cold read (cold_host is None), no hit; on a warm one at the cache
+    that the cold read filled (cold_host), a hit, with an age. A warm read
+    sent to another cache is cold there, and says nothing.
+    """
     name = ad.get_ci("TransferFileName")
     data_ad = developer_data(ad)
     n = last_attempt(ad)
@@ -639,9 +722,11 @@ def cache_hit_problems(fed: common.Federation, ad: Ad, cold_host: Optional[str])
 
 
 def exit_problem(fetch: Fetched, ads: Sequence[Ad]) -> Optional[str]:
-    """Why the plugin's exit status disagrees with its ads: 0 if every
-    transfer succeeded, else RETRYABLE_EXIT if any failure may be
-    retried, else 1 (writeOutfile in cmd/plugin.go)."""
+    """Return why the plugin's exit status disagrees with its ads, or None.
+
+    The status must be 0 if every transfer succeeded, else RETRYABLE_EXIT
+    if any failure may be retried, else 1 (writeOutfile in cmd/plugin.go).
+    """
     if all(ad.get_ci("TransferSuccess") is True for ad in ads):
         want = 0
     elif any(ad.get_ci("TransferRetryable") is True for ad in ads):
@@ -654,10 +739,13 @@ def exit_problem(fetch: Fetched, ads: Sequence[Ad]) -> Optional[str]:
 
 
 def plugin_ads(test: Test) -> list[Row]:
-    """stash_plugin's result ads (cmd/plugin.go), which HTCondor reads:
-    of a batch of two objects through a cache, cold and then warm; of an
-    object that does not exist; of a refused download; and of a batch
-    with one of each."""
+    """Check that stash_plugin's result ads agree with its transfers.
+
+    The ads (cmd/plugin.go), which HTCondor reads, are those of a batch of
+    two objects through a cache, cold and then warm; of an object that
+    does not exist; of a refused download; and of a batch with one of
+    each.
+    """
     if not test.fed.federated_caches:
         return [("", SKIP, "this shape has no cache for a download to go through")]
     names = ["ads-a", "ads-b"]
@@ -758,8 +846,10 @@ def plugin_ads(test: Test) -> list[Row]:
 
 
 def unknown_token(test: Test) -> str:
-    """A token like the server's, signed by a key no server knows (see
-    credentials.CREDENTIALS, `unknown`)."""
+    """Return a token like the server's, signed by a key no server knows.
+
+    See credentials.CREDENTIALS, `unknown`.
+    """
     path = test.session.path("tokens/client.unknown")
     credentials.mint(
         test.fed,
@@ -780,8 +870,13 @@ def unknown_token(test: Test) -> str:
 
 
 def spoil(test: Test, cache: common.Cache, name: str, block: int) -> Optional[str]:
-    """Have a V2 cache corrupt block of its copy of object name, through
-    its chaos API, as its admin; why that failed, or None."""
+    """Have a V2 cache corrupt block of its copy of object name.
+
+    Ask through its chaos API, as its admin.
+
+    Returns:
+        Why that failed, or None.
+    """
     token = cacheapi.admin_token(test.session, cache)
     answer = cacheapi.introspect(
         cache,
@@ -801,7 +896,9 @@ def spoil(test: Test, cache: common.Cache, name: str, block: int) -> Optional[st
 
 
 def failover(test: Test) -> list[Row]:
-    """A V2 cache and another cache (of either kind, as under
+    """Check that a download failing partway at a cache resumes at the next.
+
+    A V2 cache and another cache (of either kind, as under
     `-p cache-mixed`) hold an object whole; the first's copy has a block
     corrupted, which it cannot repair once the object is gone from every
     origin. `pelican object get --cache <first>,<second>` must then
@@ -810,7 +907,8 @@ def failover(test: Test) -> list[Row]:
     the client resumes with a Range from where it stopped, and refuses
     to if the ETag changed (downloadObject in client/handle_http.go).
     stash_plugin, with the same preferred caches, must record both
-    attempts."""
+    attempts.
+    """
     feds = test.fed.federated_caches
     v2 = [c for c in feds if c.kind == "v2"]
     if not v2 or len(feds) < 2:
@@ -880,7 +978,7 @@ def failover(test: Test) -> list[Row]:
 def get_failover_problems(
     fetch: Fetched, data: bytes, first_cache: common.Cache, second: common.Cache
 ) -> list[str]:
-    """What is wrong with how `pelican object get` failed over."""
+    """Return what is wrong with how `pelican object get` failed over."""
     if fetch.status != 0:
         return [f"exit {fetch.status}: {last_line(fetch.said)}"]
     problems: list[str] = []
@@ -913,7 +1011,7 @@ def get_failover_problems(
 def plugin_failover_problems(
     fetch: Fetched, data: bytes, first_cache: common.Cache, second: common.Cache
 ) -> list[str]:
-    """What is wrong with how stash_plugin failed over."""
+    """Return what is wrong with how stash_plugin failed over."""
     try:
         ads = parse_ads(fetch.said)
     except ValueError as e:
@@ -941,12 +1039,15 @@ def plugin_failover_problems(
 
 
 def etag_agreement(test: Test) -> tuple[str, str]:
-    """An object put at every origin: each origin that takes direct
+    """Check that each server gives an object one ETag, by HEAD and GET.
+
+    An object put at every origin: each origin that takes direct
     clients, and each federated cache, must report one ETag for it by
     HEAD and by GET, and a cache's must be one of the origins', since it
     relays the origin's (local_cache/persistent_cache_api.go). Origins
     that share a store must agree; those with stores of their own hold
-    copies of their own, and may not, which the note says."""
+    copies of their own, and may not, which the note says.
+    """
     name = "etag"
     test.put(name, os.urandom(OBJECT_SIZE))
     problems: list[str] = []
@@ -1010,15 +1111,19 @@ def etag_agreement(test: Test) -> tuple[str, str]:
 
 
 def discovery_get(test: Test, name: str, url: str, env: Mapping[str, str]) -> Fetched:
-    """`pelican object get` of url into a directory of its own, with env.
+    """Run `pelican object get` of url, with env, into a new directory.
+
     Into a directory, since a refusal of a get into a file path shows
-    only as a probe no server answered (see testlib/transfers.py)."""
+    only as a probe no server answered (see testlib/transfers.py).
+    """
     return test.pelican(name, ["object", "get", url, "."], env)
 
 
 def got(fetch: Fetched, data: bytes, local: str = "object") -> Optional[str]:
-    """Why the download did not bring data, to file local in the
-    directory, or None."""
+    """Return why the download did not bring data, or None if it did.
+
+    It must bring it to file local in its directory.
+    """
     if fetch.status != 0:
         return f"exit {fetch.status}: {last_line(fetch.said)}"
     if common.sha256(os.path.join(fetch.directory, local)) != common.digest(data):
@@ -1027,12 +1132,12 @@ def got(fetch: Fetched, data: bytes, local: str = "object") -> Optional[str]:
 
 
 def got_named(fetch: Fetched, data: bytes) -> Optional[str]:
-    """got(), of the discovery object, which lands under its own name."""
+    """Return got() of the discovery object, under its own name."""
     return got(fetch, data, "discovery")
 
 
 def refused(fetch: Fetched) -> Optional[str]:
-    """Why the download was not refused, or None."""
+    """Return why the download was not refused, or None."""
     if fetch.status == 0:
         return "succeeded, but should have been refused"
     if transfers.refused(fetch.said) is None:
@@ -1041,20 +1146,21 @@ def refused(fetch: Fetched) -> Optional[str]:
 
 
 def token_discovery(test: Test) -> list[Row]:
-    """Which token the client presents, of those its environment offers
-    (tokenContentIterator in client/acquire_token.go): BEARER_TOKEN,
-    BEARER_TOKEN_FILE, and _CONDOR_CREDS/scitokens.use, each alone, with
-    the server's token (`bearer-token`, `bearer-token-file`,
+    """Check which token the client presents, of those in its environment.
+
+    The cases (tokenContentIterator in client/acquire_token.go):
+    BEARER_TOKEN, BEARER_TOKEN_FILE, and _CONDOR_CREDS/scitokens.use, each
+    alone, with the server's token (`bearer-token`, `bearer-token-file`,
     `condor-creds`); a token scoped elsewhere in BEARER_TOKEN beside the
-    server's in _CONDOR_CREDS, which the client must pass over, since
-    the director's hints say it would not do (`skips-unacceptable`); a
-    token signed by a key no server knows, beside the server's, which
-    looks acceptable and so is presented, and refused
-    (`acceptable-wins`); and a URL whose scheme names a token file
-    (`<name>+pelican://`, `prefix`), or with `_` for `.` in the name
-    (`<na_me>+pelican://`, `prefix-underscore`), which selects
-    `<name>.use` in _CONDOR_CREDS before scitokens.use (GetTokenName in
-    pelican_url/parse.go)."""
+    server's in _CONDOR_CREDS, which the client must pass over, since the
+    director's hints say it would not do (`skips-unacceptable`); a token
+    signed by a key no server knows, beside the server's, which looks
+    acceptable and so is presented, and refused (`acceptable-wins`); and a
+    URL whose scheme names a token file (`<name>+pelican://`, `prefix`), or
+    with `_` for `.` in the name (`<na_me>+pelican://`,
+    `prefix-underscore`), which selects `<name>.use` in _CONDOR_CREDS before
+    scitokens.use (GetTokenName in pelican_url/parse.go).
+    """
     name = "discovery"
     data = os.urandom(OBJECT_SIZE)
     test.put(name, data)
@@ -1116,9 +1222,14 @@ def token_discovery(test: Test) -> list[Row]:
 def create_token(
     test: Test, name: str, url: str, key: str, *flags: str
 ) -> tuple[Optional[dict[str, Any]], str, Fetched]:
-    """`pelican token create url --read --private-key key` with no
-    --issuer or --scope-path: the token's claims and the token, if it
-    printed one, and the run."""
+    """Run `pelican token create url --read --private-key key`.
+
+    It runs with flags, and with no --issuer or --scope-path.
+
+    Returns:
+        The token's claims and the token, if it printed one (else None and
+        ""), and the run.
+    """
     args = ["token", "create", url, "--read", "--lifetime", "300"]
     args += ["--private-key", os.path.abspath(key), *flags]
     fetch = test.pelican(name, args)
@@ -1133,20 +1244,22 @@ def create_token(
 
 
 def token_create_discovery(test: Test) -> list[Row]:
-    """`pelican token create` without --issuer or --scope-path
-    (cmd/token.go): with the origins' key, for a path in /protected-a, the
-    issuer is the namespace's, found as the first of the director's
-    whose JWKS holds the signing key's public key, and the scope the
-    path within the namespace (`origin-key`); the token reads the object
-    (`reads`); with the namespace's own test key, listed only in its
-    export's IssuerJwks, the issuer is found through that JWKS
-    (`namespace-key`); with a key no server knows, it fails, saying that
-    no issuer matches the key (`unknown-key`); for /public, which has no
+    """Check how `pelican token create` finds an issuer and a scope.
+
+    Without --issuer or --scope-path (cmd/token.go): with the origins' key,
+    for a path in /protected-a, the issuer is the namespace's, found as the
+    first of the director's whose JWKS holds the signing key's public key,
+    and the scope the path within the namespace (`origin-key`); the token
+    reads the object (`reads`); with the namespace's own test key, listed
+    only in its export's IssuerJwks, the issuer is found through that JWKS
+    (`namespace-key`); with a key no server knows, it fails, saying that no
+    issuer matches the key (`unknown-key`); for /public, which has no
     issuer, it fails, asking whether a token is needed at all, but where
-    /public takes writes (`-p origin-public-writes`), and so has an
-    issuer, the token's issuer is /public's (`public`); and under
+    /public takes writes (`-p origin-public-writes`), and so has an issuer,
+    the token's issuer is /public's (`public`); and under
     `-p topo-multi-owner`, with origin-2's key for /other, the issuer is
-    origin-2's (`other-owner`)."""
+    origin-2's (`other-owner`).
+    """
     rows: list[Row] = []
     name = "token-create/obj"
     data = os.urandom(OBJECT_SIZE)
@@ -1257,7 +1370,9 @@ def token_create_discovery(test: Test) -> list[Row]:
 
 
 def share_url(test: Test) -> list[Row]:
-    """`pelican object share [--write]` of a collection in /protected-a,
+    """Check the URL that `pelican object share` hands out, and its token.
+
+    `pelican object share [--write]` of a collection in /protected-a,
     its device flow approved as the admin, whom the issuer grants the
     namespace (client/sharing_url.go, cmd/object_share.go): the URL must
     be the collection's with `?authz=<token>`, whose scope is the
@@ -1266,7 +1381,8 @@ def share_url(test: Test) -> list[Row]:
     route, with the token in the query as curl sends it, must redirect
     with `authz` in Location and no token in Link, and the redirect
     followed must serve the object (`curl`); and `pelican object get` of
-    the URL, with no other token, must serve it too (`get`)."""
+    the URL, with no other token, must serve it too (`get`).
+    """
     if not test.fed.embedded_issuer or test.fed.external_issuer:
         return [("", SKIP, "the share's token comes from the origins' embedded issuer")]
     if test.fed.standalone:
@@ -1368,11 +1484,14 @@ def share_url(test: Test) -> list[Row]:
 
 
 def director_decision(test: Test) -> tuple[str, str]:
-    """With Plugin.DirectorDecisionPercentage at 100, the plugin asks the
+    """Check that the plugin records the director's decision when asked.
+
+    With Plugin.DirectorDecisionPercentage at 100, the plugin asks the
     director to explain its decision (X-Pelican-Debug), and records it
     in the ad's DeveloperData.DirectorDecision: the sort method, the
     client's coordinate, and each server's weights
-    (redirectInfoToClassAd in cmd/plugin.go)."""
+    (redirectInfoToClassAd in cmd/plugin.go).
+    """
     if test.fed.standalone:
         return SKIP, "a standalone origin has no director"
     if not test.fed.federated_caches:
@@ -1408,14 +1527,17 @@ def director_decision(test: Test) -> tuple[str, str]:
 
 
 def skipstat_failover(test: Test) -> tuple[str, str]:
-    """With several origins, an object put in the last origin's store
+    """Check that a direct ?skipstat read finds the one origin holding it.
+
+    With several origins, an object put in the last origin's store
     alone: `pelican object get --direct` of it with ?skipstat, which
     keeps the director from asking the origins which holds it, must
     still bring it, since the client tries the origins the director
     lists until one serves (getObjectServersToTry in
     client/handle_http.go). The note says whether the client's stats
     show a failed try at an origin that lacks it, or the client's probes
-    put the holder first."""
+    put the holder first.
+    """
     origins = stores.unique(test.fed.origins)
     if len(origins) < 2:
         return SKIP, "one origin, or origins sharing a store ('-p topo-multi-origin')"
@@ -1459,9 +1581,12 @@ def skipstat_failover(test: Test) -> tuple[str, str]:
 
 
 def multi_source(test: Test) -> list[Row]:
-    """`get` and `put` with several sources (rows G8-G10 and P8-P10 of
-    Pelican's docs/object-transfer-semantics.md; cmd/object_get.go and
-    object_put.go), and `?recursive` in place of -r (P6)."""
+    """Check `get` and `put` with several sources, and `?recursive`.
+
+    These are rows G8-G10 and P8-P10 of Pelican's
+    docs/object-transfer-semantics.md (cmd/object_get.go and
+    object_put.go), and `?recursive` in place of -r (P6).
+    """
     names = ["multi-a", "multi-b"]
     for name in names:
         test.put(name, os.urandom(OBJECT_SIZE))
@@ -1600,11 +1725,14 @@ def multi_source(test: Test) -> list[Row]:
 
 
 def preferred_cache_down(test: Test) -> list[Row]:
-    """`pelican object get --cache https://<cache>:1,+`: a preferred
+    """Check a preferred cache that is down, with `+` and without.
+
+    `pelican object get --cache https://<cache>:1,+`: a preferred
     cache that answers nothing, and then the director's caches, which
     `+` adds, one of which must serve; without `+`, the client has only
     the dead cache, and must fail to reach it, by something other than a
-    refusal (getPreferredCaches in client/)."""
+    refusal (getPreferredCaches in client/).
+    """
     caches = test.fed.federated_caches
     if not caches:
         return [("", SKIP, "this shape has no cache")]
@@ -1683,8 +1811,10 @@ COMPLETED = "completed"
 
 
 def agent_env(test: Test) -> dict[str, str]:
-    """The session's environment, with the agent's files (AGENT_FILES) in
-    the suite's directory."""
+    """Return the session's environment, naming the agent's files.
+
+    They (AGENT_FILES) are in the suite's directory.
+    """
     directory = os.path.join(test.tmp, "agent")
     os.makedirs(directory, exist_ok=True)
     env = dict(test.session.env)
@@ -1694,9 +1824,14 @@ def agent_env(test: Test) -> dict[str, str]:
 
 
 def last_json_value(text: str) -> Any:
-    """The last JSON value in text, which may span lines, as the job
-    commands print theirs (json.MarshalIndent); ValueError if there is
-    none."""
+    """Return the last JSON value in text.
+
+    It may span lines, as the job commands print theirs
+    (json.MarshalIndent).
+
+    Raises:
+        ValueError: There is no JSON value in text.
+    """
     decoder = json.JSONDecoder()
     found: list[Any] = []
     at = 0
@@ -1718,7 +1853,7 @@ def last_json_value(text: str) -> Any:
 
 
 def job_id(out: str) -> str:
-    """The job ID that an --async command printed, or ""."""
+    """Return the job ID that an --async command printed, or ""."""
     m = re.search(r"Job created: (\S+)", out)
     return m.group(1) if m else ""
 
@@ -1726,8 +1861,12 @@ def job_id(out: str) -> str:
 def job_status(
     pelican: Callable[..., tuple[int, str, str]], job: str
 ) -> tuple[Optional[dict[str, Any]], str]:
-    """What `pelican job status --json` says of job (JobStatus in
-    client_agent/models.go), or None and why not."""
+    """Return what `pelican job status --json` says of job.
+
+    Returns:
+        Its JobStatus (client_agent/models.go), and "", or else None and
+        why not.
+    """
     code, out, err = pelican("job", "status", "--json", job)
     if code != 0:
         return None, f"`job status`: exit {code}: {last_line(err or out)}"
@@ -1741,8 +1880,11 @@ def job_status(
 
 
 def status_problems(found: Mapping[str, Any], job: str, size: int) -> list[str]:
-    """What is wrong with a finished job's status: it must be completed,
-    name the job, hold one transfer, and count the object's bytes."""
+    """Return what is wrong with a finished job's status.
+
+    It must be completed, name the job, hold one transfer, and count the
+    object's bytes.
+    """
     problems: list[str] = []
     if found.get("status") != COMPLETED:
         problems.append(f"status {found.get('status')!r}, not {COMPLETED!r}")
@@ -1758,8 +1900,14 @@ def status_problems(found: Mapping[str, Any], job: str, size: int) -> list[str]:
 
 
 def stop_agent(pelican: Callable[..., tuple[int, str, str]]) -> tuple[str, str]:
-    """`pelican client-agent stop`, after which `client-agent status`
-    must say, within AGENT_STOP_WAIT seconds, that no agent runs."""
+    """Run `pelican client-agent stop`, and check that the agent stopped.
+
+    `client-agent status` must say, within AGENT_STOP_WAIT seconds, that
+    no agent runs.
+
+    Returns:
+        A row's status and note.
+    """
     code, out, err = pelican("client-agent", "stop")
     if code != 0:
         return FAIL, f"exit {code}: {last_line(err or out)}"
@@ -1775,7 +1923,9 @@ def stop_agent(pelican: Callable[..., tuple[int, str, str]]) -> tuple[str, str]:
 
 
 def async_job(test: Test) -> list[Row]:
-    """`pelican object get --async --wait` and `object copy --async
+    """Check `get --async` and `copy --async`, which the client agent runs.
+
+    `pelican object get --async --wait` and `object copy --async
     --wait`, which hand a transfer to the client agent (`pelican
     client-agent`, a daemon of the client's own, which the first starts;
     cmd/object_get.go and client_agent/ in Pelican) and wait for it: the
@@ -1786,7 +1936,8 @@ def async_job(test: Test) -> list[Row]:
     list it (`list`); `job cancel` of the finished job must leave it
     completed (`cancel-finished`); and `client-agent stop` must stop the
     agent (`stop`), which runs whatever else happened. The agent's
-    socket, PID file, and database are the run's own (agent_env())."""
+    socket, PID file, and database are the run's own (agent_env()).
+    """
     env = agent_env(test)
     name = "async"
     data = os.urandom(OBJECT_SIZE)
@@ -1906,6 +2057,8 @@ def async_job(test: Test) -> list[Row]:
     return rows
 
 
+# What a scenario of RUN, given the Test, returns: its rows, or for one
+# row with no case, its status and note.
 Rows = Union[tuple[str, str], list[Row]]
 
 RUN: dict[str, Callable[[Test], Rows]] = {
@@ -1924,7 +2077,7 @@ RUN: dict[str, Callable[[Test], Rows]] = {
 
 
 def guarded(name: str, test: Test) -> list[Row]:
-    """Scenario name's rows; one failing row if it raised."""
+    """Return scenario name's rows, or one failing row if it raised."""
     try:
         found = RUN[name](test)
     except Exception as e:  # pylint: disable=broad-exception-caught

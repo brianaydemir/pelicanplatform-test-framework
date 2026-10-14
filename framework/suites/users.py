@@ -1,7 +1,8 @@
-"""Which Unix user the origins act as, under `-p origin-multiuser` or
-`-p server-unprivileged`: requests straight to each POSIX origin
-(posixv2, or XRootD's posix), and the owners of the files they leave in
-the store.
+"""Which Unix user the origins act as.
+
+Under `-p origin-multiuser` or `-p server-unprivileged`: requests straight
+to each POSIX origin (posixv2, or XRootD's posix), and the owners of the
+files they leave in the store.
 
   owner             with the tests' token: the `pelican` user (uid
                     10941). Under multiuser, fed.sh maps the tests'
@@ -177,8 +178,11 @@ UNAUTHORIZED = (401, 403)
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no user switching, or no posixv2
-    writes."""
+    """Return why there is nothing to test, or None if there is something.
+
+    There is nothing if the origins neither switch users nor drop
+    privileges, are not POSIX, or take no writes in /protected-a.
+    """
     if not fed.multiuser and not fed.drop_privileges:
         return (
             "the origins neither switch users nor drop privileges"
@@ -192,8 +196,12 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 
 def shows_owners(store: str, base: str) -> Optional[str]:
-    """Why the store at framework/var/<store> does not show who owns a
-    file, or None if it does."""
+    """Return why store does not show a file's owner, or None if it does.
+
+    Args:
+        store: The store's path, under framework/var.
+        base: A directory in the store, in which to make a probe file.
+    """
     probe = f"{store}/{base}/owner-probe"
     try:
         with open(probe, "wb"):
@@ -213,7 +221,10 @@ def shows_owners(store: str, base: str) -> Optional[str]:
 
 
 def described(path: str) -> str:
-    """Who owns path, under framework/var, and its mode, for a message."""
+    """Return who owns path, and its mode, for a message.
+
+    The path is under framework/var.
+    """
     try:
         found = os.stat(path)
     except OSError as e:
@@ -224,8 +235,10 @@ def described(path: str) -> str:
 
 
 def owned(origin: common.Origin, rel: str, token: str, uid: int) -> Row:
-    """PUT a new object at rel in /protected-a straight to origin, and
-    check that uid owns the file it leaves."""
+    """PUT a new object at rel in /protected-a, and check that uid owns it.
+
+    The PUT goes straight to origin, and uid must own the file it leaves.
+    """
     url = stores.url(origin, NAMESPACE, rel)
     answer = web.request("PUT", url, token=token, upload=os.urandom(4096))
     if not answer.ok:
@@ -241,11 +254,17 @@ def owned(origin: common.Origin, rel: str, token: str, uid: int) -> Row:
 
 
 def unmapped(origin: common.Origin, rel: str, token: str) -> Optional[str]:
-    """A control for a mapfile rule: PUT a new object at rel in
-    /protected-a straight to origin, with a token that the rule does not
-    map; why the pelican user owns what it leaves, or None. The default
-    user, xrootd, may own it, or the PUT may be refused: under POSC, the
-    xrootd user may be unable to stage (see posc_multiuser())."""
+    """PUT a new object with a token that a mapfile rule does not map.
+
+    This is a control for the rule. The PUT, at rel in /protected-a, goes
+    straight to origin. The default user, xrootd, may own the object, or the
+    PUT may be refused: under POSC, the xrootd user may be unable to stage
+    (see posc_multiuser()).
+
+    Returns:
+        Why the pelican user owns what the PUT leaves, or None if it does
+        not.
+    """
     url = stores.url(origin, NAMESPACE, rel)
     answer = web.request("PUT", url, token=token, upload=os.urandom(4096))
     path = f"{origin.store_of(NAMESPACE)}/{rel}"
@@ -255,8 +274,11 @@ def unmapped(origin: common.Origin, rel: str, token: str) -> Optional[str]:
 
 
 def made_private(path: str, mode: int) -> Optional[str]:
-    """Give path to the pelican user, with mode; why that did not take,
-    or None."""
+    """Give path to the pelican user, with mode.
+
+    Returns:
+        Why that did not take, or None if it did.
+    """
     try:
         os.chown(path, PELICAN_UID, PELICAN_GID)
         os.chmod(path, mode)
@@ -269,9 +291,11 @@ def made_private(path: str, mode: int) -> Optional[str]:
 
 
 def loosen(path: str) -> None:
-    """Make every directory in path writable by any uid again, so that
-    the private ones the suite made can be emptied, whoever the host
-    makes their owner."""
+    """Make every directory in path writable by any uid again.
+
+    Then the private ones the suite made can be emptied, whoever the host
+    makes their owner.
+    """
     try:
         os.chmod(path, 0o777)  # nosec B103
         names = os.listdir(path)
@@ -285,8 +309,16 @@ def loosen(path: str) -> None:
 
 @dataclass(frozen=True)
 class Test:
-    """What the scenarios need: the origins, the run's collection, the
-    two tokens, and why the stores do not show who owns a file."""
+    """What the scenarios need.
+
+    Attributes:
+        origins: The origins, each store once.
+        base: The run's collection, as a path in /protected-a.
+        token: The tests' token for /protected-a.
+        other_token: A token for /protected-a for another subject.
+        unshown: Why the stores do not show who owns a file; empty if they
+            do.
+    """
 
     session: Session
     fed: common.Federation
@@ -297,29 +329,33 @@ class Test:
     unshown: list[str]
 
     def rel(self, origin: common.Origin, name: str) -> str:
-        """The path, in /protected-a, of an object of origin's named
-        name."""
+        """Return the path in /protected-a of origin's object named name."""
         return f"{self.base}/{name}-{origin.svc}"
 
     def mint(self, subject: str, extra: Optional[Mapping[str, Any]] = None) -> str:
-        """A token like the tests' for /protected-a, but for subject, with
-        claims extra; each call's is new, since an origin maps a token to
-        a user once, and keeps it. It is signed with the origins' key under
-        the tests' token's header, whose kid is the key's in the issuer's
-        JWKS."""
+        """Return a token like the tests' for /protected-a, but for subject.
+
+        It also has the claims in extra. Each call's is new, since an origin
+        maps a token to a user once, and keeps it. It is signed with the
+        origins' key under the tests' token's header, whose kid is the key's
+        in the issuer's JWKS.
+        """
         claims = credentials.server_claims(self.fed, NAMESPACE, subject=subject)
         claims.update(extra or {})
         return jwt.encode(jwt.decode(self.token)[0], claims, key=self.fed.origin_key)
 
     def multiuser(self) -> Optional[str]:
-        """Why the origins do not switch users, or None."""
+        """Return why the origins do not switch users; None if they do."""
         if not self.fed.multiuser:
             return "only under multiuser ('-p origin-multiuser')"
         return None
 
 
 def uploads_owned(test: Test, name: str, token: str, uid: int) -> Row:
-    """owned() at every origin, of an object named for scenario name."""
+    """Return one row of owned() at every origin, for scenario name.
+
+    The object at each origin is named for the scenario.
+    """
     if test.unshown:
         return INCONCLUSIVE, first(test.unshown)
     found = [owned(o, test.rel(o, name), token, uid) for o in test.origins]
@@ -330,12 +366,12 @@ def uploads_owned(test: Test, name: str, token: str, uid: int) -> Row:
 
 
 def owner(test: Test) -> dict[str, Row]:
-    """An upload with the tests' token is the pelican user's."""
+    """Check that an upload with the tests' token is the pelican user's."""
     return {"owner": uploads_owned(test, "owner", test.token, PELICAN_UID)}
 
 
 def default_user(test: Test) -> dict[str, Row]:
-    """Under multiuser, one with another subject's token is xrootd's."""
+    """Check that under multiuser, another subject's upload is xrootd's."""
     why = test.multiuser()
     if why:
         return {"default-user": (SKIP, why)}
@@ -343,10 +379,12 @@ def default_user(test: Test) -> dict[str, Row]:
 
 
 def primary_group(test: Test) -> dict[str, Row]:
-    """An upload with the tests' token, which names no group, is in the
-    pelican user's own group. A native multiuser origin takes the group
-    to act as from the token's first group, and acts as gid 0 if it has
-    none (resolveIdentity in origin_serve/multiuser_fs.go)."""
+    """Check that the tests' upload is in the pelican user's own group.
+
+    The tests' token names no group. A native multiuser origin takes the
+    group to act as from the token's first group, and acts as gid 0 if it
+    has none (resolveIdentity in origin_serve/multiuser_fs.go).
+    """
     if test.unshown:
         return {"primary-group": (INCONCLUSIVE, first(test.unshown))}
     found = Findings()
@@ -373,14 +411,17 @@ def primary_group(test: Test) -> dict[str, Row]:
 
 
 def public_tokenless(test: Test) -> dict[str, Row]:
-    """Under multiuser, at each origin, with no token: a GET of an object
+    """Check that /public is read and listed with no token.
+
+    Under multiuser, at each origin, with no token: a GET of an object
     in /public must serve its bytes, and a Depth 1 PROPFIND of its
     collection must answer 207 and name it. Pelican's documentation says
     such requests run as `nobody` (Origin.ScitokensUnauthenticatedUser);
     a native origin attaches a user only from a token
     (authorizeWithContext in origin_serve/authz.go), and its filesystem
     refuses a request without one (resolveIdentity in
-    origin_serve/multiuser_fs.go). An XRootD origin is the control."""
+    origin_serve/multiuser_fs.go). An XRootD origin is the control.
+    """
     rows = ROWS["public-tokenless"]
     why = test.multiuser()
     if not why and "public" not in test.fed.exports:
@@ -422,10 +463,17 @@ def public_tokenless(test: Test) -> dict[str, Row]:
 
 
 def hidden(answer: web.Response, what: str, name: str = "", sent: bytes = b"") -> list[str]:
-    """What answer, to the xrootd user's request for what, shows of a
-    file it can't read: a status other than a refusal; an ETag,
-    Last-Modified, or Digest; or in its body, the file's name or its
-    bytes."""
+    """Return what answer shows of a file that the xrootd user can't read.
+
+    That is, a status other than a refusal; an ETag, Last-Modified, or
+    Digest; or in its body, the file's name or its bytes.
+
+    Args:
+        answer: The answer to the xrootd user's request.
+        what: The request, as a note names it.
+        name: The file's name, if the body must not hold it.
+        sent: The file's bytes, if the body must not hold them.
+    """
     found: list[str] = []
     if answer.status not in REFUSED:
         found.append(f"{what} got {answer.describe()}, not 403 or 404")
@@ -442,7 +490,9 @@ def hidden(answer: web.Response, what: str, name: str = "", sent: bytes = b"") -
 
 
 def bypass(test: Test) -> dict[str, Row]:
-    """Under multiuser, at each origin, the pelican user's file (0600) in
+    """Check that the xrootd user learns nothing of the pelican user's file.
+
+    Under multiuser, at each origin, the pelican user's file (0600) in
     its directory (0700), which the suite makes in the store. The
     pelican user must read it (or the rows are inconclusive), and the
     xrootd user must be refused it, and learn nothing of it:
@@ -458,7 +508,8 @@ def bypass(test: Test) -> dict[str, Row]:
     it asks the filesystem, which acts as the user (handleGetWithETag,
     streamDirectoryListing, and handleHeadWithChecksum in
     origin_serve/handlers.go). An XRootD origin is the control, but for
-    `staging`, which is native POSC's."""
+    `staging`, which is native POSC's.
+    """
     rows = ROWS["bypass"]
     why = test.multiuser()
     if not why and test.unshown:
@@ -515,15 +566,20 @@ def bypass(test: Test) -> dict[str, Row]:
 
 
 def staging_hidden(test: Test) -> Row:
-    """bypass's `staging` row: under POSC, at each origin, a file the
-    suite makes (0600) in POSC's staging directory for the pelican user,
-    <storage>/.pelican-posc/pelican/ (0700), which an upload of the
-    pelican user's first makes, if there is none. The xrootd user must be
-    refused an HTML listing of that directory, and the file with
-    `If-None-Match: *`, and with `Want-Digest: crc32c`, and learn nothing
-    of it, as bypass's other rows say. Pelican's POSC hides the staging
-    directory from its filesystem, but the paths of bypass read the store
-    themselves."""
+    """Return bypass's `staging` row.
+
+    Under POSC, at each origin, a file the suite makes (0600) in POSC's
+    staging directory for the pelican user, <storage>/.pelican-posc/pelican/
+    (0700), which an upload of the pelican user's first makes, if there is
+    none. The xrootd user must be refused an HTML listing of that directory,
+    and the file with `If-None-Match: *`, and with `Want-Digest: crc32c`,
+    and learn nothing of it, as bypass's other rows say. Pelican's POSC
+    hides the staging directory from its filesystem, but the paths of bypass
+    read the store themselves.
+
+    Raises:
+        SetupError: The file could not be written.
+    """
     if not test.fed.posc:
         return SKIP, "only under POSC ('-p origin-posc')"
     name = f"in_progress.users-{test.session.run}"
@@ -567,7 +623,9 @@ def staging_hidden(test: Test) -> Row:
 
 
 def posc_multiuser(test: Test) -> dict[str, Row]:
-    """Under POSC and multiuser, at each native origin:
+    """Check that each user's upload and staging directory are its own.
+
+    Under POSC and multiuser, at each native origin:
 
       first          an upload with the tests' token succeeds, and is
                      the pelican user's, as is its staging directory,
@@ -585,7 +643,8 @@ def posc_multiuser(test: Test) -> dict[str, Row]:
     user out of it. The rename into place, when the upload completes,
     runs as the origin's own process (poscFile.Close), which may write
     where the user may not. read-only-dir uploads as the pelican user,
-    who can stage, rather than as the xrootd user, who may not."""
+    who can stage, rather than as the xrootd user, who may not.
+    """
     rows = ROWS["posc-multiuser"]
     why = test.multiuser()
     if not why and not test.fed.posc:
@@ -602,9 +661,11 @@ def posc_multiuser(test: Test) -> dict[str, Row]:
 
 
 def staged(test: Test, name: str, token: str, user: str, uid: int) -> Row:
-    """posc-multiuser's `first` and `second` rows: at each origin, an
-    upload with token is uid's, and so is its staging directory,
-    .pelican-posc/<user>/, mode 0700."""
+    """Return posc-multiuser's `first` or `second` row.
+
+    At each origin, an upload with token is uid's, and so is its staging
+    directory, .pelican-posc/<user>/, mode 0700.
+    """
     found = Findings()
     for origin in test.origins:
         store = origin.store_of(NAMESPACE)
@@ -628,7 +689,11 @@ def staged(test: Test, name: str, token: str, user: str, uid: int) -> Row:
 
 
 def read_only_dir(test: Test) -> Row:
-    """posc-multiuser's `read-only-dir` row (see posc_multiuser())."""
+    """Return posc-multiuser's `read-only-dir` row (see posc_multiuser()).
+
+    Raises:
+        SetupError: The directory could not be made.
+    """
     found = Findings()
     for origin in test.origins:
         store = origin.store_of(NAMESPACE)
@@ -654,12 +719,15 @@ def read_only_dir(test: Test) -> Row:
 
 
 def min_id(test: Test) -> dict[str, Row]:
-    """Under multiuser, at each origin, an upload with a token that the
+    """Check that tokens mapped to root and daemon are refused.
+
+    Under multiuser, at each origin, an upload with a token that the
     mapfile maps to `root`, and one to `daemon`, must be refused (403),
     and leave no file, owned by anyone below Origin.MultiuserMinID or
     not; under POSC, nor a staging directory for the user. Pelican's
     lookup refuses the user (identity.WithMinID in
-    origin_serve/handlers.go)."""
+    origin_serve/handlers.go).
+    """
     rows = ROWS["min-id"]
     why = test.multiuser()
     if why:
@@ -685,7 +753,9 @@ def min_id(test: Test) -> dict[str, Row]:
 
 
 def mapfile(test: Test) -> dict[str, Row]:
-    """Under multiuser, at each origin, uploads whose owners show the
+    """Check the mapfile's rules, by the owners of uploads.
+
+    Under multiuser, at each origin, uploads whose owners show the
     mapfile's rules at work (fed.sh's, but `edited`'s):
 
       path            with a token for users-path, one under
@@ -706,7 +776,8 @@ def mapfile(test: Test) -> dict[str, Row]:
 
     A native origin maps a token to a user with no path, so `path`
     rules never match (UserMapper.MapTokenToUser in
-    origin_serve/user_mapfile.go)."""
+    origin_serve/user_mapfile.go).
+    """
     rows = ROWS["mapfile"]
     why = test.multiuser()
     if why:
@@ -725,7 +796,7 @@ def mapfile(test: Test) -> dict[str, Row]:
 
 
 def mapped_path(test: Test) -> Row:
-    """mapfile's `path` row (see mapfile())."""
+    """Return mapfile's `path` row (see mapfile())."""
     token = test.mint(PATH_SUBJECT)
     found = Findings()
     for origin in test.origins:
@@ -740,16 +811,22 @@ def mapped_path(test: Test) -> Row:
 
 
 def grouped(test: Test) -> Row:
-    """mapfile's `group` row (see mapfile()). The group is a Unix group
-    (gid 10940), since a native origin acts as the token's first group,
-    and refuses one that it can't find (resolveIdentity)."""
+    """Return mapfile's `group` row (see mapfile()).
+
+    The group is a Unix group (gid 10940), since a native origin acts as
+    the token's first group, and refuses one that it can't find
+    (resolveIdentity).
+    """
     token = test.mint(GROUP_SUBJECT, {"wlcg.groups": [MAPPED_GROUP]})
     return uploads_owned(test, "group", token, PELICAN_UID)
 
 
 def edited(test: Test) -> Row:
-    """mapfile's `edited` row (see mapfile()): the mapfile is rewritten
-    in place, and restored afterward, even on failure."""
+    """Return mapfile's `edited` row (see mapfile()).
+
+    The mapfile is rewritten in place, and restored afterward, even on
+    failure.
+    """
     subject = f"users-edited-{test.session.run}"
     try:
         with open(MAPFILE, encoding="utf-8") as f:
@@ -798,8 +875,10 @@ def edited(test: Test) -> Row:
 
 
 def unrestartable(test: Test) -> Optional[str]:
-    """Why the origins cannot be restarted with a username claim and no
-    default user, or None."""
+    """Return why the origins cannot be restarted, or None if they can.
+
+    The restart would be with a username claim and no default user.
+    """
     if test.fed.tiny:
         return "the tiny topology's origin is the whole federation's process"
     return control.unavailable()
@@ -807,8 +886,11 @@ def unrestartable(test: Test) -> Optional[str]:
 
 @contextlib.contextmanager
 def restarted(test: Test) -> Generator[None, None, None]:
-    """Restart every origin with RESTART_CONFIG, and afterward, as it
-    was."""
+    """Restart every origin with RESTART_CONFIG, and afterward, as it was.
+
+    Raises:
+        control.ControlError: Restarting, or restoring, failed.
+    """
     with contextlib.ExitStack() as stack:
         for origin in test.fed.origins:
             stack.enter_context(
@@ -818,8 +900,10 @@ def restarted(test: Test) -> Generator[None, None, None]:
 
 
 def serving_data(test: Test, token: str) -> Optional[str]:
-    """Why an origin does not yet answer a HEAD of the probe, or None:
-    any answer but a 5xx will do."""
+    """Return why an origin does not yet answer the probe; None if all do.
+
+    A HEAD of the probe may get any answer but a 5xx.
+    """
     for origin in test.fed.origins:
         answer = web.request(
             "HEAD", stores.url(origin, NAMESPACE, f"{test.base}/{PROBE}"), token
@@ -830,9 +914,11 @@ def serving_data(test: Test, token: str) -> Optional[str]:
 
 
 def serving(test: Test) -> Optional[str]:
-    """Why /protected-a is not served as before, or None: every origin
-    must answer a HEAD of the probe, every director name every origin
-    for it, and every federated cache answer a HEAD of it."""
+    """Return why /protected-a is not served as before, or None if it is.
+
+    Every origin must answer a HEAD of the probe, every director name every
+    origin for it, and every federated cache answer a HEAD of it.
+    """
     rel = f"{test.base}/{PROBE}"
     for origin in test.fed.origins:
         answer = web.request("HEAD", stores.url(origin, NAMESPACE, rel), token=test.token)
@@ -852,8 +938,13 @@ def serving(test: Test) -> Optional[str]:
 
 
 def wait(problem: Callable[[], Optional[str]], seconds: float) -> Optional[str]:
-    """Ask problem() what is wrong, every 5 seconds until it finds
-    nothing, or seconds have passed: what it last found, or None."""
+    """Ask problem() what is wrong, every 5 seconds, until it finds nothing.
+
+    Stop asking once seconds have passed.
+
+    Returns:
+        What it last found, or None if it found nothing.
+    """
     deadline = time.time() + seconds
     found = problem()
     while found and time.time() < deadline:
@@ -863,8 +954,11 @@ def wait(problem: Callable[[], Optional[str]], seconds: float) -> Optional[str]:
 
 
 def restarted_rows(test: Test) -> dict[str, Row]:
-    """mapfile's `username-claim` and `unmatched` rows (see mapfile()),
-    with the origins restarted, and afterward restored."""
+    """Return mapfile's `username-claim` and `unmatched` rows, by name.
+
+    The origins are restarted for them (see mapfile()), and afterward
+    restored.
+    """
     why = unrestartable(test)
     if why:
         why = (
@@ -907,21 +1001,25 @@ def restarted_rows(test: Test) -> dict[str, Row]:
 
 
 def claimed(test: Test, token: str) -> Row:
-    """mapfile's `username-claim` row: an upload with token, whose
-    username claim names the pelican user, is the pelican user's.
-    Pelican's documentation says that the claim overrides
-    Origin.ScitokensDefaultUser (docs/parameters.yaml); a native origin
-    with a mapfile takes it only where a rule maps it
-    (UserMapper.MapTokenToUser)."""
+    """Return mapfile's `username-claim` row.
+
+    An upload with token, whose username claim names the pelican user, is
+    the pelican user's. Pelican's documentation says that the claim
+    overrides Origin.ScitokensDefaultUser (docs/parameters.yaml); a native
+    origin with a mapfile takes it only where a rule maps it
+    (UserMapper.MapTokenToUser).
+    """
     return uploads_owned(test, "username-claim", token, PELICAN_UID)
 
 
 def unmatched(test: Test) -> Row:
-    """mapfile's `unmatched` row: an upload with a token whose subject
-    matches no rule, and which has no username claim, with no default
-    user, is refused (401 or 403), and writes nothing. A native origin
-    drops the token (authConfig.loader in origin_serve/authz.go); XRootD
-    refuses it for lacking the claim."""
+    """Return mapfile's `unmatched` row.
+
+    An upload with a token whose subject matches no rule, and which has no
+    username claim, with no default user, is refused (401 or 403), and
+    writes nothing. A native origin drops the token (authConfig.loader in
+    origin_serve/authz.go); XRootD refuses it for lacking the claim.
+    """
     token = test.mint(UNMATCHED_SUBJECT)
     found = Findings()
     for origin in test.origins:
@@ -937,11 +1035,11 @@ def unmatched(test: Test) -> Row:
 
 
 class SetupError(Exception):
-    """A scenario could not put in place what it needs."""
+    """A scenario's failure to put in place what it needs."""
 
 
 def attempt(check: Callable[[], Row]) -> Row:
-    """check's row; a FAIL if it could not set up, or raised."""
+    """Return check's row, or a FAIL if it could not set up, or raised."""
     try:
         return check()
     except SetupError as e:
@@ -954,7 +1052,10 @@ def attempt(check: Callable[[], Row]) -> Row:
 
 
 def attempt_all(rows: tuple[str, ...], check: Callable[[], dict[str, Row]]) -> dict[str, Row]:
-    """check's rows; each a FAIL if it could not set up, or raised."""
+    """Return check's rows.
+
+    If it could not set up, or raised, each of rows is a FAIL.
+    """
     try:
         return check()
     except SetupError as e:
@@ -964,6 +1065,8 @@ def attempt_all(rows: tuple[str, ...], check: Callable[[], dict[str, Row]]) -> d
         return {row: (FAIL, f"{type(e).__name__}: {e}") for row in rows}
 
 
+# Each scenario takes the Test, and returns its rows (ROWS), by name, each
+# a status and a note; it raises SetupError if it cannot set up.
 RUN: dict[str, Callable[[Test], dict[str, Row]]] = {
     "owner": owner,
     "default-user": default_user,
@@ -977,8 +1080,10 @@ RUN: dict[str, Callable[[Test], dict[str, Row]]] = {
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Run the selected scenarios in a collection of the run's, and empty
-    it."""
+    """Run the selected scenarios in a collection of the run's.
+
+    Empty it before and after.
+    """
     fed = session.fed
     origins = stores.unique(fed.origins)
     base = f"data/users/{session.run}"

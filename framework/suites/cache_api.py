@@ -1,6 +1,7 @@
-"""A V2 cache's own HTTP APIs, beside the objects it serves
-(local_cache/persistent_cache_api.go and prestage_evict_api.go in
-Pelican): who may call each, and what each does.
+"""A V2 cache's own HTTP APIs, beside the objects it serves.
+
+Who may call each API (local_cache/persistent_cache_api.go and
+prestage_evict_api.go in Pelican), and what each does:
 
   prestage             each cache fetches an object whole for whoever may
                        read it, and for no one else; `pelican object
@@ -90,7 +91,20 @@ Row = tuple[str, str]
 
 
 class Test:
-    """The run's objects in /protected-a, the tokens, and the shape."""
+    """The run's objects in /protected-a, the tokens, and the shape.
+
+    Attributes:
+        base: Where the run's objects are in /protected-a.
+        token: The `server` token for /protected-a.
+        token_file: The file that holds token.
+        read_token: A read-only token for /protected-a.
+        caps: The capabilities of /protected-a.
+        caches: The federated caches.
+        v2: The federated V2 caches.
+        made: The collections made so far, by rel.
+        corrupted: The rows of `consistency` that corrupted() decides,
+            once it has.
+    """
 
     def __init__(self, session: Session):
         self.session = session
@@ -106,24 +120,28 @@ class Test:
         self.made: set[str] = set()
         self._admin: dict[tuple[str, tuple[str, ...]], str] = {}
         self._elsewhere: Optional[str] = None
-        # The rows of `consistency` that corrupted() decides, once it has.
         self.corrupted: Optional[dict[str, Row]] = None
 
     def rel(self, *parts: str) -> str:
-        """Where parts are, under the run's collection."""
+        """Return where parts are, under the run's collection."""
         return "/".join([self.base, *parts])
 
     def path(self, rel: str) -> str:
-        """rel's path in the federation."""
+        """Return rel's path in the federation."""
         return f"/{NAMESPACE}/{rel}"
 
     def url(self, server_url: str, rel: str) -> str:
-        """rel in /protected-a at the server at server_url."""
+        """Return rel's URL in /protected-a at the server at server_url."""
         return f"{server_url}/{NAMESPACE}/{quote(rel)}"
 
     def put(self, objects: Mapping[str, bytes]) -> Optional[str]:
-        """Put objects, by rel, at every origin, making their collections
-        first; what went wrong, or None."""
+        """Put objects, by rel, at every origin.
+
+        Their collections are made first.
+
+        Returns:
+            What went wrong, or None if nothing did.
+        """
         for rel, data in objects.items():
             parent = rel.rsplit("/", 1)[0]
             if parent not in self.made:
@@ -139,12 +157,17 @@ class Test:
         return None
 
     def get(self, cache: common.Cache, rel: str) -> web.Response:
-        """A GET of rel through cache, with the token."""
+        """GET rel through cache, with the token."""
         return web.request("GET", self.url(cache.url, rel), token=self.token, timeout=120)
 
     def held(self, cache: common.Cache, rel: str) -> Optional[bool]:
-        """Whether a V2 cache holds all of rel, as a HEAD with
-        only-if-cached says (504 if not); None if it says neither."""
+        """Return whether a V2 cache holds all of rel.
+
+        It asks with a HEAD with only-if-cached, which gets 504 if not.
+
+        Returns:
+            Whether it does, or None if the HEAD says neither.
+        """
         answer = web.request(
             "HEAD", self.url(cache.url, rel), token=self.token, headers=ONLY_IF_CACHED
         )
@@ -155,8 +178,13 @@ class Test:
         return None
 
     def fill(self, cache: common.Cache, rel: str, data: bytes) -> Optional[str]:
-        """Read rel whole through a V2 cache, which must serve data, until
-        it says it holds it all; what went wrong, or None."""
+        """Read rel whole through a V2 cache until it says it holds it all.
+
+        The cache must serve data.
+
+        Returns:
+            What went wrong, or None if nothing did.
+        """
         answer = self.get(cache, rel)
         if answer.status != 200 or answer.body != data:
             return f"{cache.svc}: a GET of {leaf(rel)} got {served(answer, data)}"
@@ -165,18 +193,21 @@ class Test:
         return None
 
     def admin(self, cache: common.Cache, extra_scopes: tuple[str, ...] = ()) -> str:
-        """The admin's token for cache (see cacheapi.admin_token())."""
+        """Return the admin's token for cache, with extra_scopes.
+
+        See cacheapi.admin_token().
+        """
         key = (cache.svc, extra_scopes)
         if key not in self._admin:
             self._admin[key] = cacheapi.admin_token(self.session, cache, extra_scopes)
         return self._admin[key]
 
     def purger(self, cache: common.Cache) -> str:
-        """The admin's token for cache, with localcache.purge."""
+        """Return the admin's token for cache, with localcache.purge."""
         return self.admin(cache, (cacheapi.PURGE_SCOPE,))
 
     def elsewhere(self) -> str:
-        """A token like the `server` token, but scoped to /elsewhere/."""
+        """Return a token like the `server` token, scoped to /elsewhere/."""
         if self._elsewhere is None:
             self._elsewhere = credentials.mint_server(
                 self.fed,
@@ -187,34 +218,37 @@ class Test:
         return self._elsewhere
 
     def object_url(self, rel: str) -> str:
-        """The URL by which a V2 cache keys rel (see cacheapi.object_url())."""
+        """Return the URL by which a V2 cache keys rel.
+
+        See cacheapi.object_url().
+        """
         return cacheapi.object_url(self.fed, self.path(rel))
 
 
 def holds(test: Test, cache: common.Cache, rel: str) -> bool:
-    """Whether a V2 cache holds all of rel (see Test.held())."""
+    """Return whether a V2 cache holds all of rel (see Test.held())."""
     return test.held(cache, rel) is True
 
 
 def leaf(rel: str) -> str:
-    """rel's last segment, for a message."""
+    """Return rel's last segment, for a message."""
     return rel.rsplit("/", 1)[-1]
 
 
 def served(answer: web.Response, data: bytes) -> str:
-    """What answer was, briefly, given that it should have held data."""
+    """Return what answer was, briefly, given it should have held data."""
     if answer.status != 200:
         return answer.describe()
     return "the object" if answer.body == data else f"{len(answer.body)} bytes, not the object"
 
 
 def text(answer: web.Response) -> str:
-    """answer's body, decoded, briefly."""
+    """Return answer's body, decoded, briefly."""
     return answer.body[:300].decode(errors="replace").strip()
 
 
 def held_word(found: Optional[bool]) -> str:
-    """What Test.held() found, for a message."""
+    """Return what Test.held() found, for a message."""
     if found is None:
         return "neither held nor not (only-if-cached got no 200 or 504)"
     return "held" if found else "not held"
@@ -225,8 +259,16 @@ def held_word(found: Optional[bool]) -> str:
 
 
 def prestage(cache: common.Cache, path: Optional[str], token: Optional[str]) -> web.Response:
-    """GET the prestage API of cache for path (none: no `path` at all),
-    with token, which streams its progress until the object is whole."""
+    """GET the prestage API of cache for path, with token.
+
+    The API streams its progress until the object is whole.
+
+    Args:
+        cache: The cache to ask.
+        path: The object's path in the federation; None for no `path` at
+            all.
+        token: The token to present, if any.
+    """
     query = "" if path is None else "?" + urlencode({"path": path})
     return web.request(
         "GET", f"{cache.web_url}{cacheapi.PRESTAGE}{query}", token=token, timeout=120
@@ -234,7 +276,7 @@ def prestage(cache: common.Cache, path: Optional[str], token: Optional[str]) -> 
 
 
 def lines(answer: web.Response) -> list[str]:
-    """The lines of answer's body that aren't blank."""
+    """Return the lines of answer's body that aren't blank."""
     return [
         line.strip()
         for line in answer.body.decode(errors="replace").splitlines()
@@ -243,9 +285,12 @@ def lines(answer: web.Response) -> list[str]:
 
 
 def progress_problem(answer: web.Response) -> Optional[str]:
-    """Why answer is not a prestage that went well: 200, chunked
-    text/plain, `status: queued` and `status: active,offset=N` lines,
-    and last `success: ok` (prestageHandler); or None."""
+    """Return why answer is not a prestage that went well, or None if it is.
+
+    One that went well is 200, chunked text/plain, with `status: queued`
+    and `status: active,offset=N` lines, and last `success: ok`
+    (prestageHandler).
+    """
     if answer.status != 200:
         return f"{answer.describe()}: {text(answer)}"
     if not answer.header("Content-Type").startswith("text/plain"):
@@ -265,8 +310,11 @@ def progress_problem(answer: web.Response) -> Optional[str]:
 
 
 def prestage_probe(test: Test) -> Row:
-    """At each V2 cache: no `path` (how the client asks whether a cache
-    has the API) and a relative path must each get 400."""
+    """Check that each V2 cache's prestage takes only an absolute path.
+
+    No `path` (how the client asks whether a cache has the API) and a
+    relative path must each get 400.
+    """
     problems: list[str] = []
     for cache in test.v2:
         for what, path in (("no path", None), ("a relative path", test.rel("probe"))):
@@ -279,8 +327,11 @@ def prestage_probe(test: Test) -> Row:
 
 
 def prestage_refused(test: Test) -> Row:
-    """At each V2 cache, an object it lacks: a prestage with no token, and
-    with one scoped elsewhere, must get 403, and leave it uncached."""
+    """Check that each V2 cache refuses a prestage by one who cannot read.
+
+    At each V2 cache, an object it lacks: a prestage with no token, and
+    with one scoped elsewhere, must get 403, and leave it uncached.
+    """
     rels = {c.svc: test.rel("prestage", f"refused-{c.svc}") for c in test.v2}
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
     why = test.put(objects)
@@ -303,10 +354,13 @@ def prestage_refused(test: Test) -> Row:
 
 
 def prestage_object(test: Test) -> Row:
-    """At each V2 cache, an object it lacks (only-if-cached: 504): a
+    """Check that each V2 cache prestages an object for a read token.
+
+    At each V2 cache, an object it lacks (only-if-cached: 504): a
     prestage with a read token must stream its progress and succeed
     (progress_problem()), after which the cache must hold the object,
-    and serve it; and a prestage of it again must succeed too."""
+    and serve it; and a prestage of it again must succeed too.
+    """
     rels = {c.svc: test.rel("prestage", f"object-{c.svc}") for c in test.v2}
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
     why = test.put(objects)
@@ -339,10 +393,13 @@ def prestage_object(test: Test) -> Row:
 
 
 def prestage_missing(test: Test) -> Row:
-    """At each V2 cache, a prestage of an object that no origin holds: it
+    """Check that each V2 cache's prestage of a missing object ends in 404.
+
+    At each V2 cache, a prestage of an object that no origin holds: it
     has already said 200 by the time it knows, so its last line must say
     the fetch failed, as the origin did: `failure: 404(Not Found): ...`
-    (prestageHandler, and the xrdhttp-pelican plugin's protocol)."""
+    (prestageHandler, and the xrdhttp-pelican plugin's protocol).
+    """
     problems: list[str] = []
     for cache in test.v2:
         answer = prestage(
@@ -362,11 +419,14 @@ def prestage_missing(test: Test) -> Row:
 
 
 def prestage_name(test: Test) -> Row:
-    """At each V2 cache, an object named with a `+` beside a decoy named
+    """Check that each V2 cache prestages an object with a `+` in its name.
+
+    At each V2 cache, an object named with a `+` beside a decoy named
     with a space there, both uncached: a prestage of the first, its path
     encoded once in the query, as the client sends it, must leave the
     cache holding it, and not the decoy. A server that decoded the path
-    twice would take the `+` for a space."""
+    twice would take the `+` for a space.
+    """
     names = {c.svc: (f"plus+{c.svc}", f"plus {c.svc}") for c in test.v2}
     objects = {
         test.rel("prestage", name): os.urandom(OBJECT_SIZE)
@@ -396,8 +456,11 @@ def prestage_name(test: Test) -> Row:
 
 
 def whole_at(test: Test, cache: common.Cache, rel: str) -> bool:
-    """Whether cache holds all of rel: a V2 cache by only-if-cached, an
-    XRootD cache by its .cinfo (blocks.read_cinfo())."""
+    """Return whether cache holds all of rel.
+
+    A V2 cache is asked by only-if-cached, an XRootD cache judged by its
+    .cinfo (blocks.read_cinfo()).
+    """
     if cache.kind == "v2":
         return test.held(cache, rel) is True
     cinfo, _ = read_cinfo(cache, rel)
@@ -405,8 +468,11 @@ def whole_at(test: Test, cache: common.Cache, rel: str) -> bool:
 
 
 def client_prestage(test: Test, cache: common.Cache, rel: str) -> tuple[int, str]:
-    """`pelican object prestage` of rel through cache: its exit status,
-    and the last line it printed."""
+    """Run `pelican object prestage` of rel through cache.
+
+    Returns:
+        Its exit status, and the last line it printed.
+    """
     code, out, err = test.session.pelican_cmd(
         "object",
         "prestage",
@@ -420,11 +486,14 @@ def client_prestage(test: Test, cache: common.Cache, rel: str) -> tuple[int, str
 
 
 def prestage_client(test: Test) -> Row:
-    """At each cache, V2 or XRootD: `pelican object prestage` of an object
-    must exit 0, and leave the cache holding it (an XRootD cache's .cinfo
-    showing every block); of a collection, where /protected-a lists and
-    takes direct clients, so that the client can list it, every object in
-    it; and of a missing object it must exit non-zero."""
+    """Check that `pelican object prestage` fills each cache, V2 or XRootD.
+
+    At each cache, `pelican object prestage` of an object must exit 0,
+    and leave the cache holding it (an XRootD cache's .cinfo showing
+    every block); of a collection, where /protected-a lists and takes
+    direct clients, so that the client can list it, every object in it;
+    and of a missing object it must exit non-zero.
+    """
     listable = {"Listings", "DirectReads"} <= test.caps
     rels: dict[str, list[str]] = {}
     for cache in test.caches:
@@ -474,7 +543,7 @@ def evict(
     immediate: bool = True,
     method: str = "POST",
 ) -> web.Response:
-    """method of the eviction API of cache for path, with token."""
+    """Send method to the eviction API of cache for path, with token."""
     query = {"path": path, **({"immediate": "true"} if immediate else {})}
     return web.request(
         method, f"{cache.web_url}{cacheapi.EVICT}?{urlencode(query)}", token=token
@@ -482,7 +551,7 @@ def evict(
 
 
 def evicted_message(path: str, count: int, immediate: bool) -> str:
-    """What the eviction API says it did (evictHandler)."""
+    """Return what the eviction API says it did (evictHandler)."""
     if immediate:
         return f"Evicted {count} objects under {path}"
     return f"Marked {count} objects for priority eviction under {path}"
@@ -491,8 +560,11 @@ def evicted_message(path: str, count: int, immediate: bool) -> str:
 def fill_all(
     test: Test, objects: Mapping[str, bytes], caches: Sequence[common.Cache]
 ) -> Optional[str]:
-    """Put objects at every origin, and have each of caches hold every one;
-    what went wrong, or None."""
+    """Put objects at every origin, and have each of caches hold every one.
+
+    Returns:
+        What went wrong, or None if nothing did.
+    """
     why = test.put(objects)
     if why:
         return why
@@ -505,11 +577,14 @@ def fill_all(
 
 
 def evict_refused(test: Test) -> Row:
-    """At each V2 cache, an object it holds: an immediate eviction with no
+    """Check that each V2 cache refuses an unauthorized eviction.
+
+    At each V2 cache, an object it holds: an immediate eviction with no
     token, a read-only token, or one scoped elsewhere must get 403, and
     leave it held; as must one of an object in /public, with no token,
     and with /protected-a's, which is for another namespace, whether or
-    not /public takes writes (`-p origin-public-writes`)."""
+    not /public takes writes (`-p origin-public-writes`).
+    """
     problems: list[str] = []
     rels = {c.svc: test.rel("evict", f"refused-{c.svc}") for c in test.v2}
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
@@ -556,9 +631,14 @@ def evict_refused(test: Test) -> Row:
 
 
 def public_object(test: Test) -> tuple[Optional[tuple[str, bytes]], str]:
-    """An object of the run's own in /public, put at every origin (with
-    /public's own token, where it takes writes): its path in the
-    federation, and its bytes; or None, and why not."""
+    """Return an object of the run's own in /public, put at every origin.
+
+    It is put with /public's own token, where /public takes writes.
+
+    Returns:
+        Its path in the federation and its bytes, and ""; or None, and
+        why not.
+    """
     caps = test.fed.exports.get("public")
     if caps is None:
         return None, "/public is not exported"
@@ -575,10 +655,13 @@ def public_object(test: Test) -> tuple[Optional[tuple[str, bytes]], str]:
 
 
 def evict_immediate(test: Test) -> Row:
-    """At each V2 cache, three objects it holds: an immediate eviction of
+    """Check that each V2 cache evicts an object at once, by any method.
+
+    At each V2 cache, three objects it holds: an immediate eviction of
     each, by GET, POST, and DELETE, with the `server` token (which has
     storage.modify) must get 200, `Evicted 1 objects under <path>`, after
-    which the cache must not hold it, and a GET must fetch it again."""
+    which the cache must not hold it, and a GET must fetch it again.
+    """
     methods = ("GET", "POST", "DELETE")
     rels = {
         (c.svc, m): test.rel("evict", f"now-{m.lower()}-{c.svc}")
@@ -616,9 +699,12 @@ def evict_immediate(test: Test) -> Row:
 
 
 def evict_marked(test: Test) -> Row:
-    """At each V2 cache, an object it holds: an eviction without
+    """Check that each V2 cache marks an object for eviction, and keeps it.
+
+    At each V2 cache, an object it holds: an eviction without
     `immediate` must get 200, `Marked 1 objects for priority eviction
-    under <path>`, and leave it held until the cache next evicts."""
+    under <path>`, and leave it held until the cache next evicts.
+    """
     rels = {c.svc: test.rel("evict", f"marked-{c.svc}") for c in test.v2}
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
     problems: list[str] = []
@@ -643,17 +729,23 @@ def evict_marked(test: Test) -> Row:
 
 
 def unmark(test: Test, rel: str) -> None:
-    """Evict rel at once from every V2 cache, which drops its mark for
-    priority eviction too, so that `purge first` finds only its own."""
+    """Evict rel at once from every V2 cache.
+
+    That drops its mark for priority eviction too, so that `purge first`
+    finds only its own.
+    """
     for cache in test.v2:
         evict(cache, test.path(rel), test.token)
 
 
 def evict_prefix(test: Test) -> Row:
-    """At each V2 cache, objects foo/a, foo/b, and foobar that it holds: an
+    """Check that each V2 cache evicts a prefix by whole path segments.
+
+    At each V2 cache, objects foo/a, foo/b, and foobar that it holds: an
     immediate eviction of foo must get `Evicted 2 objects`, and leave the
-    cache holding foobar alone, since a prefix matches whole path segments
-    (EvictPrefix)."""
+    cache holding foobar alone, since a prefix matches whole path
+    segments (EvictPrefix).
+    """
     problems: list[str] = []
     for cache in test.v2:
         base = test.rel("evict", f"prefix-{cache.svc}")
@@ -677,9 +769,12 @@ def evict_prefix(test: Test) -> Row:
 
 
 def evict_name(test: Test) -> Row:
-    """At each V2 cache, an object named with a `+` and a decoy named with
-    a space there, both held: an immediate eviction of the first, its path
-    encoded once, must evict it, and not the decoy (see prestage_name())."""
+    """Check that each V2 cache evicts an object with a `+` in its name.
+
+    At each V2 cache, an object named with a `+` and a decoy named with
+    a space there, both held: an immediate eviction of the first, its
+    path encoded once, must evict it, and not the decoy.
+    """
     problems: list[str] = []
     for cache in test.v2:
         wanted, decoy = (
@@ -704,8 +799,13 @@ def evict_name(test: Test) -> Row:
 
 
 def client_evict(test: Test, rel: str, immediate: bool) -> tuple[int, str]:
-    """`pelican object evict` of rel, which asks the first cache the
-    director names: its exit status, and its output's last line."""
+    """Run `pelican object evict` of rel.
+
+    The client asks the first cache the director names.
+
+    Returns:
+        Its exit status, and its output's last line.
+    """
     args = ["object", "evict", "--token", test.token_file]
     if immediate:
         args.append("--immediate")
@@ -714,12 +814,15 @@ def client_evict(test: Test, rel: str, immediate: bool) -> tuple[int, str]:
 
 
 def evict_client(test: Test) -> Row:
-    """`pelican object evict --immediate` of an object that every V2 cache
+    """Check that `pelican object evict` evicts, or marks, an object.
+
+    `pelican object evict --immediate` of an object that every V2 cache
     holds must exit 0, print `Evicted 1 objects under <path>`, and leave
     one cache without it (the client asks the first that the director
     names), and the others holding it; without --immediate, of another,
     it must print `Marked 1 objects ...`, and leave every cache holding
-    it. Each marked object is then evicted (see unmark())."""
+    it. Each marked object is then evicted (see unmark()).
+    """
     rels = {flag: test.rel("evict", f"client-{flag}") for flag in ("now", "marked")}
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
     why = fill_all(test, objects, test.v2)
@@ -752,10 +855,13 @@ def evict_client(test: Test) -> Row:
 
 
 def other_admin(test: Test, cache: common.Cache) -> tuple[str, str]:
-    """Another server's admin token, which cache must take for no one, and
-    whose it is: the first origin's, whose local issuer and key are its
-    own; or, where every server shares one process or key (`tiny`), one
-    naming cache's local issuer but signed by test-keys/unknown.pem."""
+    """Return another server's admin token, and whose it is.
+
+    The cache must take it for no one. It is the first origin's, whose
+    local issuer and key are its own; or, where every server shares one
+    process or key (`tiny`), one naming cache's local issuer but signed
+    by test-keys/unknown.pem.
+    """
     own = jwt.public_jwk(common.signing_key(f"issuer-keys/{cache.svc}"))
     for origin in test.origins:
         key = common.signing_key(f"issuer-keys/{origin.svc}")
@@ -804,7 +910,7 @@ ADMIN_ROUTES: tuple[AdminRoute, ...] = (
 
 
 def send(route: AdminRoute, url: str, token: Optional[str]) -> web.Response:
-    """route's request, to url, with token."""
+    """Send route's request to url, with token."""
     _, method, _, body, _, _ = route
     return web.request(
         method, url, token=token, upload=body, headers=cacheapi.JSON if body else None
@@ -812,14 +918,21 @@ def send(route: AdminRoute, url: str, token: Optional[str]) -> web.Response:
 
 
 def admin_authz(test: Test, results: common.Results) -> None:
-    """At each V2 cache, each admin route (ADMIN_ROUTES), with a request
+    """Check that each V2 cache's admin routes answer its admin alone.
+
+    At each V2 cache, each admin route (ADMIN_ROUTES), with a request
     that would harm nothing were it let through: with no token, it must
     get 401; with the namespace's `server` token, and another server's
-    admin token, 401 or 403; with the cache's admin token, the route's own
-    answer to the request, but at a purge route, 403, since purging also
-    takes localcache.purge; and with that scope too, the route's own
-    answer. A row per cache and route; `chaos` skips at a cache whose
-    admin finds no such route, as where Cache.EnableChaosAPI is off."""
+    admin token, 401 or 403; with the cache's admin token, the route's
+    own answer to the request, but at a purge route, 403, since purging
+    also takes localcache.purge; and with that scope too, the route's
+    own answer. `chaos` skips at a cache whose admin finds no such
+    route, as where Cache.EnableChaosAPI is off.
+
+    Args:
+        test: The test, as a case takes it.
+        results: Where to record a row per cache and route.
+    """
     nowhere = quote(test.object_url(test.rel("admin-authz", "nowhere")), safe="")
     for cache in test.v2:
         other, whose = other_admin(test, cache)
@@ -874,8 +987,10 @@ MARKED_PURGES = 3
 
 
 def total_usage(cache: common.Cache) -> Optional[int]:
-    """What cache says it holds, in bytes (TotalUsage, from its counters in
-    memory), or None."""
+    """Return how many bytes cache says it holds, or None if it doesn't say.
+
+    That is its TotalUsage, from its counters in memory.
+    """
     found = cacheapi.stats(cache)
     if found is None or not isinstance(found.get("TotalUsage"), int):
         return None
@@ -883,10 +998,16 @@ def total_usage(cache: common.Cache) -> Optional[int]:
 
 
 def charged(cache: common.Cache) -> Optional[int]:
-    """What cache charges its storage directories, in bytes, by the usage
-    counters in its database (NamespaceUsage, keyed `s<storage>:ns<ID>`,
-    of the storage that DirStats names, not inline storage, s0), which
-    its purges go by (getDirUsage in local_cache/eviction.go); or None."""
+    """Return what cache charges its storage directories, in bytes.
+
+    The charge is by the usage counters in its database (NamespaceUsage,
+    keyed `s<storage>:ns<ID>`, of the storage that DirStats names, not
+    inline storage, s0), which its purges go by (getDirUsage in
+    local_cache/eviction.go).
+
+    Returns:
+        The charge, or None if the cache's stats do not give it.
+    """
     found = cacheapi.stats(cache) or {}
     dirs = common.as_object(found.get("DirStats"))
     usage = common.as_object(found.get("NamespaceUsage"))
@@ -900,10 +1021,12 @@ def charged(cache: common.Cache) -> Optional[int]:
 
 
 def purge_request(test: Test, cache: common.Cache, path: str, body: Any) -> web.Response:
-    """A POST of body, as JSON (none for None), to purge route path at
-    cache, with its admin's token with localcache.purge. A cache already
-    evicting answers a purge 500 (forcePurgeToTargets), so one that does
-    is asked again, up to PURGE_TRIES times."""
+    """POST body, as JSON (none for None), to purge route path at cache.
+
+    It presents the cache's admin's token with localcache.purge. A cache
+    already evicting answers a purge 500 (forcePurgeToTargets), so one
+    that does is asked again, up to PURGE_TRIES times.
+    """
     data = None if body is None else json.dumps(body).encode()
     answer = web.Response(None)
     for n in range(PURGE_TRIES):
@@ -923,10 +1046,13 @@ def purge_request(test: Test, cache: common.Cache, path: str, body: Any) -> web.
 
 
 def purge_to_target(test: Test) -> Row:
-    """At each V2 cache, holding objects of the run's: purge_to_target with
+    """Check that each V2 cache purges to a target.
+
+    At each V2 cache, holding objects of the run's: purge_to_target with
     a target of 0 must get 400; with a target a byte below what it holds
     (charged()), 200 with `freed_bytes` above 0, after which it must hold
-    no more than the target."""
+    no more than the target.
+    """
     problems: list[str] = []
     notes: list[str] = []
     for cache in test.v2:
@@ -962,11 +1088,14 @@ def purge_to_target(test: Test) -> Row:
 
 
 def purge_first(test: Test) -> Row:
-    """At each V2 cache, holding three objects of the run's, read in turn:
+    """Check that an object marked purge-first goes first at each V2 cache.
+
+    At each V2 cache, holding three objects of the run's, read in turn:
     purge_first of the last read must get 200; then a purge to a byte
-    below what the cache holds must evict that object first, and leave the
-    other two held (EvictByLRU in local_cache/database.go drains objects
-    marked purge-first before its LRU walk)."""
+    below what the cache holds must evict that object first, and leave
+    the other two held (EvictByLRU in local_cache/database.go drains
+    objects marked purge-first before its LRU walk).
+    """
     problems: list[str] = []
     notes: list[str] = []
     for cache in test.v2:
@@ -996,11 +1125,15 @@ def purge_first(test: Test) -> Row:
 
 
 def purge_marked(test: Test, cache: common.Cache, marked: str) -> tuple[Optional[str], int]:
-    """Purge cache to a byte below what it holds, which evicts an object
-    marked purge-first, until it no longer holds marked, up to
+    """Purge cache to a byte below what it holds, until marked is gone.
+
+    Such a purge evicts an object marked purge-first. It is made up to
     MARKED_PURGES times, since an object that an earlier run marked, and
-    left, may go first: why that failed, if it did, and how many purges
-    it took."""
+    left, may go first.
+
+    Returns:
+        Why that failed, if it did, and how many purges it took.
+    """
     for n in range(1, MARKED_PURGES + 1):
         usage = charged(cache)
         if not usage:
@@ -1016,9 +1149,12 @@ def purge_marked(test: Test, cache: common.Cache, marked: str) -> tuple[Optional
 
 
 def purge_all(test: Test) -> Row:
-    """At each V2 cache, a purge (POST /api/v1.0/cache/purge) must get
-    200; where its store is bounded (`-p cache-small`), it must then hold
-    no more than its low water mark, to which a purge evicts."""
+    """Check that each V2 cache purges, to its low water mark if bounded.
+
+    At each V2 cache, a purge (POST /api/v1.0/cache/purge) must get 200;
+    where its store is bounded (`-p cache-small`), it must then hold no
+    more than its low water mark, to which a purge evicts.
+    """
     problems: list[str] = []
     notes: list[str] = []
     for cache in test.v2:
@@ -1045,17 +1181,23 @@ def purge_all(test: Test) -> Row:
 
 
 def data_route(cache: common.Cache, discovery: str, path: str) -> str:
-    """The URL of path at cache's data route for federation discovery
-    (/api/v1.0/cache/data/<discovery>/<path>), discovery as given."""
+    """Return path's URL at cache's data route for federation discovery.
+
+    The route is /api/v1.0/cache/data/<discovery>/<path>, with discovery
+    as given.
+    """
     return f"{cache.web_url}/api/v1.0/cache/data/{discovery}{quote(path)}"
 
 
 def foreign_federation(test: Test) -> Row:
-    """At each V2 cache, an object it lacks, asked for under a federation
+    """Check that each V2 cache serves no object for another federation.
+
+    At each V2 cache, an object it lacks, asked for under a federation
     that is not its own (evil.invalid:443, its colon escaped): 403, with
     JSON whose `error` is `federation_not_allowed`, and none of the
     object, which the cache must not then hold (Cache.AllowedFederations,
-    empty by default, allows only the cache's own federation)."""
+    empty by default, allows only the cache's own federation).
+    """
     rels = {c.svc: test.rel("federations", f"foreign-{c.svc}") for c in test.v2}
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
     why = test.put(objects)
@@ -1082,10 +1224,13 @@ def foreign_federation(test: Test) -> Row:
 
 
 def own_federation(test: Test) -> Row:
-    """At each V2 cache, an object asked for under its own federation's
+    """Check that each V2 cache serves its own federation, however spelled.
+
+    At each V2 cache, an object asked for under its own federation's
     discovery host, as is, with its colon escaped, and in upper case:
     each must get the object's bytes (isFederationAllowed compares hosts
-    without regard to case)."""
+    without regard to case).
+    """
     discovery = urlsplit(str(test.fed.discovery["discovery_endpoint"])).netloc
     spellings = (discovery, quote(discovery, safe=""), discovery.upper())
     rels = {c.svc: test.rel("federations", f"own-{c.svc}") for c in test.v2}
@@ -1115,10 +1260,15 @@ def own_federation(test: Test) -> Row:
 
 
 def namespace_usage(test: Test, cache: common.Cache) -> tuple[Optional[int], str]:
-    """How many bytes cache charges /protected-a, from its stats'
-    NamespaceUsage (keyed `s<storage>:ns<namespace ID>`), summed over its
-    storage, and the IDs' names from introspect/stats; or None, and why
-    it could not say."""
+    """Return how many bytes cache charges /protected-a.
+
+    The count is from its stats' NamespaceUsage (keyed
+    `s<storage>:ns<namespace ID>`), summed over its storage, and the IDs'
+    names from introspect/stats.
+
+    Returns:
+        The count, and ""; or None, and why the cache could not say.
+    """
     found = cacheapi.stats(cache)
     if found is None:
         return None, "its stats answered no JSON object"
@@ -1138,8 +1288,11 @@ def namespace_usage(test: Test, cache: common.Cache) -> tuple[Optional[int], str
 
 
 def disk_usage(test: Test, cache: common.Cache) -> Optional[int]:
-    """How many bytes cache's store's files take, as its introspection
-    says (introspect/disk-usage), or None."""
+    """Return how many bytes cache's store's files take, or None.
+
+    The count is what its introspection (introspect/disk-usage) says;
+    None, if it gives none.
+    """
     answer = cacheapi.introspect(cache, test.admin(cache), "POST", "disk-usage")
     found = common.as_object(cacheapi.decoded(answer)) or {}
     value = found.get("total_bytes_on_disk")
@@ -1147,15 +1300,19 @@ def disk_usage(test: Test, cache: common.Cache) -> Optional[int]:
 
 
 def usage_accounting(test: Test) -> Row:
-    """At each V2 cache, USAGE_COUNT cold whole reads of objects of
+    """Check that each V2 cache's usage grows by what it stores.
+
+    At each V2 cache, USAGE_COUNT cold whole reads of objects of
     USAGE_SIZE bytes. What the cache charges /protected-a
-    (NamespaceUsage) must grow by exactly their stored size (blocks.stored()),
-    and what it holds in all (TotalUsage) by at least that; its store's
-    object files on disk (data/cache/<N>/persistent-cache/objects/) by
-    that, give or take USAGE_SLACK; and its introspection's measure of
-    those files (introspect/disk-usage) must agree with the files'. A
-    bounded cache (`-p cache-small`) is purged first, to its low water
-    mark, so that the reads make it evict nothing."""
+    (NamespaceUsage) must grow by exactly their stored size
+    (blocks.stored()), and what it holds in all (TotalUsage) by at least
+    that; its store's object files on disk
+    (data/cache/<N>/persistent-cache/objects/) by that, give or take
+    USAGE_SLACK; and its introspection's measure of those files
+    (introspect/disk-usage) must agree with the files'. A bounded cache
+    (`-p cache-small`) is purged first, to its low water mark, so that
+    the reads make it evict nothing.
+    """
     want = USAGE_COUNT * blocks.stored(USAGE_SIZE)
     problems: list[str] = []
     notes: list[str] = []
@@ -1215,8 +1372,11 @@ def usage_accounting(test: Test) -> Row:
 
 
 def water_marks(test: Test) -> Row:
-    """At each V2 cache whose store is bounded (`-p cache-small`), its
-    stats' DirStats must give its high and low water marks."""
+    """Check that each bounded V2 cache's stats give its water marks.
+
+    At each V2 cache whose store is bounded (`-p cache-small`), its
+    stats' DirStats must give its high and low water marks.
+    """
     bounded = [c for c in test.v2 if c.svc in test.fed.eviction]
     if not bounded:
         return SKIP, "no V2 cache has a bounded store ('-p cache-small')"
@@ -1243,10 +1403,15 @@ def water_marks(test: Test) -> Row:
 def consistency_check(
     test: Test, cache: common.Cache, **query: str
 ) -> tuple[Optional[dict[str, Any]], str]:
-    """Run cache's consistency check (introspect/consistency, an event
-    stream) with query, and return what its last event, `done`, says
-    (ConsistencyCheckResult; its counts are the cache's since it
-    started), or None and why."""
+    """Run cache's consistency check with query, and return what it says.
+
+    The check (introspect/consistency) is an event stream; what it says
+    is in its last event, `done` (ConsistencyCheckResult; its counts are
+    the cache's since it started).
+
+    Returns:
+        What `done` says, and ""; or None, and why.
+    """
     answer = cacheapi.introspect(cache, test.admin(cache), "POST", "consistency", **query)
     if answer.status != 200:
         return None, f"{answer.describe()} {text(answer)}"
@@ -1264,7 +1429,7 @@ def consistency_check(
 
 
 def consistency_stats(cache: common.Cache) -> dict[str, Any]:
-    """The cache's ConsistencyStats, from its stats; {} if none."""
+    """Return the cache's ConsistencyStats, from its stats; {} if none."""
     return common.as_object((cacheapi.stats(cache) or {}).get("ConsistencyStats")) or {}
 
 
@@ -1272,7 +1437,11 @@ INCONSISTENT = "pelican_cache_data_scan_inconsistent_objects_total"
 
 
 def scan_metric(cache: common.Cache) -> Optional[float]:
-    """The cache's count of objects its data scans found inconsistent."""
+    """Return how many objects the cache's data scans found inconsistent.
+
+    Returns:
+        The count, or None if the cache's metrics do not answer 200.
+    """
     found = metrics.fetch(cache.web_url)
     return None if found is None else found.value(INCONSISTENT)
 
@@ -1282,7 +1451,9 @@ CORRUPTED_CASES = ("verify", "scan-counts", "scan-drops")
 
 
 def corrupted(test: Test) -> dict[str, Row]:
-    """At each V2 cache, an object it holds whole, whose block 1 its chaos
+    """Check that each V2 cache catches an object corrupted in its store.
+
+    At each V2 cache, an object it holds whole, whose block 1 its chaos
     API then corrupts in its store; a row for each of CORRUPTED_CASES:
 
       verify       its verify (introspect/verify) must say `valid: false`
@@ -1295,7 +1466,11 @@ def corrupted(test: Test) -> dict[str, Row]:
     A cache whose verify finds the object valid has not seen the
     corruption (it may hold the block in memory, `-p cache-memory`), and
     leaves every row inconclusive. Run once, by the first of the rows
-    (see Test.corrupted)."""
+    (see Test.corrupted).
+
+    Returns:
+        The row of each of CORRUPTED_CASES, by case.
+    """
     found = {case: Findings() for case in CORRUPTED_CASES}
     verify, counts, drops = (found[case] for case in CORRUPTED_CASES)
 
@@ -1370,7 +1545,7 @@ def corrupted(test: Test) -> dict[str, Row]:
 
 
 def corrupted_case(case: str) -> Callable[[Test], Row]:
-    """The case of `consistency` named case, among CORRUPTED_CASES."""
+    """Return the `consistency` case named case, among CORRUPTED_CASES."""
 
     def run_it(test: Test) -> Row:
         if test.corrupted is None:
@@ -1386,11 +1561,17 @@ STRAY_AGE = 3600
 
 
 def plant_stray(cache: common.Cache) -> tuple[Optional[str], str]:
-    """Write a stray file in cache's store of object files, named as an
-    object's would be (64 hex digits, split as objects/<2>/<2>/<60>; see
-    GetInstanceStoragePath), in a directory the cache made if there is
-    one, so that it may remove it, and STRAY_AGE seconds old: its path,
-    under framework/var, or None and why it could not."""
+    """Write a stray file in cache's store of object files.
+
+    It is named as an object's would be (64 hex digits, split as
+    objects/<2>/<2>/<60>; see GetInstanceStoragePath), in a directory the
+    cache made if there is one, so that it may remove it, and STRAY_AGE
+    seconds old.
+
+    Returns:
+        Its path, under framework/var, and ""; or None, and why it could
+        not.
+    """
     root = f"{cache_dir(cache)}/persistent-cache/objects"
     if not os.path.isdir(root):
         return None, f"framework/var/{root} is missing"
@@ -1422,10 +1603,13 @@ def plant_stray(cache: common.Cache) -> tuple[Optional[str], str]:
 
 
 def orphan(test: Test) -> Row:
-    """At each V2 cache, a stray file planted in its store of object files
+    """Check that each V2 cache's metadata scan removes a stray file.
+
+    At each V2 cache, a stray file planted in its store of object files
     (plant_stray()), which no object of its claims: its metadata scan
     (introspect/consistency, data=false) must remove it, and count an
-    orphaned file more than before (`orphaned_files`)."""
+    orphaned file more than before (`orphaned_files`).
+    """
     problems: list[str] = []
     notes: list[str] = []
     for cache in test.v2:
@@ -1518,7 +1702,7 @@ def run_case(
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no /protected-a, or no cache."""
+    """Return why there is nothing to test: no /protected-a, or no cache."""
     if NAMESPACE not in fed.exports:
         return "this shape does not export /protected-a"
     if not fed.federated_caches:

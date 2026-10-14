@@ -40,7 +40,14 @@ failed_once: set[str] = set()
 
 
 def parse_multipart(content_type: str, body: bytes) -> list[tuple[dict[str, str], bytes]]:
-    """Return the parts of a multipart body as (headers, payload) pairs."""
+    """Return the parts of a multipart body as (headers, payload) pairs.
+
+    Returns:
+        Each part's headers, by lowercased name, and its payload.
+
+    Raises:
+        ValueError: The content type names no boundary.
+    """
     m = re.search(r'boundary="?([^";]+)"?', content_type)
     if not m:
         raise ValueError("multipart body without a boundary")
@@ -64,7 +71,11 @@ def parse_multipart(content_type: str, body: bytes) -> list[tuple[dict[str, str]
 
 
 def split_event(content_type: str, body: bytes) -> tuple[bytes, Optional[bytes]]:
-    """Return the event's JSON bytes and the blob (or None)."""
+    """Return the event's JSON bytes and the blob (or None).
+
+    Raises:
+        ValueError: A multipart body has no boundary, or no JSON part.
+    """
     if not content_type.lower().startswith("multipart/"):
         return body, None
     event: Optional[bytes] = None
@@ -80,8 +91,12 @@ def split_event(content_type: str, body: bytes) -> tuple[bytes, Optional[bytes]]
 
 
 def field(event: Any, *keys: str) -> str:
-    """The event's value at keys (e.g. "object", "path") as a string, or
-    "-" if it has none."""
+    """Return the event's value at keys as a string, or "-" if it has none.
+
+    Args:
+        event: The decoded event, or None if it could not be read.
+        *keys: The path to the value, e.g. "object", "path".
+    """
     value: Any = event
     for key in keys:
         if not isinstance(value, dict):
@@ -94,7 +109,7 @@ def field(event: Any, *keys: str) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
-    """Records each POST, and answers health checks."""
+    """A handler that records each POST, and answers health checks."""
 
     protocol_version = "HTTP/1.1"
 
@@ -110,7 +125,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def read_body(self) -> bytes:
-        """The request's body, whether chunked or of a declared length."""
+        """Return the request's body, chunked or of a declared length."""
         if "chunked" not in self.headers.get("Transfer-Encoding", "").lower():
             return self.rfile.read(int(self.headers.get("Content-Length") or 0))
         data = b""
@@ -136,7 +151,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(503, f"verifier: {err}\n".encode())
 
     def forward(self, body: bytes) -> tuple[int, bytes]:
-        """Pass the request to the upstream: its status and answer."""
+        """Pass the request upstream, and return its status and answer."""
         headers = {h: self.headers[h] for h in FORWARDED if self.headers.get(h)}
         request = urllib.request.Request(UPSTREAM, data=body, headers=headers, method="POST")
         try:

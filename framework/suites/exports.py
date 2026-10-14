@@ -1,9 +1,10 @@
-"""What a native origin does with each export's capabilities, on its own:
-Listings, DirectReads, and Copies (which Origin.DisableCopies turns
-off); a third-party COPY's whole contract, its progress and its
-failures, and what a failed one leaves; and a PUT of a multipart body.
-These are where an origin could serve, or destroy, more than its
-configuration allows.
+"""What a native origin does with each export's capabilities, on its own.
+
+The capabilities are Listings, DirectReads, and Copies (which
+Origin.DisableCopies turns off). The suite also checks a third-party
+COPY's whole contract, its progress and its failures, and what a failed
+one leaves; and a PUT of a multipart body. These are where an origin
+could serve, or destroy, more than its configuration allows.
 
   multipart-put            with metadata off, a PUT typed
                            multipart/form-data is stored as sent, shaped
@@ -99,6 +100,7 @@ SCENARIOS = {
     ),
 }
 
+# A row's status, and its note.
 Row = tuple[str, str]
 
 NAMESPACE = "protected-a"
@@ -132,9 +134,9 @@ SOURCE_SIZE = 8 << 20
 # How long a COPY may go without a byte of its answer.
 COPY_TIMEOUT = 300
 
-# Pelican's metadata parts, by their names
-# (Origin.Metadata.MetadataPartName and ObjectPartName; splitMultipartParts
-# in origin_serve/metadata_multipart.go), and a part an HTML form sends.
+# The `metadata` part of a body shaped as Pelican's metadata uploads are
+# (Origin.Metadata.MetadataPartName and ObjectPartName name the parts;
+# splitMultipartParts in origin_serve/metadata_multipart.go).
 METADATA_PART = b'<?xml version="1.0"?><manifest experiment="pelican-testing"/>'
 
 # mid-stream's source claims SHORT_CLAIMED bytes, and sends SHORT_SENT.
@@ -145,7 +147,7 @@ EVENT_WAIT = 15
 
 # How long the federation may take to serve again after the origins
 # restart: every director must name every origin, and every cache
-# answer, as the freshness suite waits.
+# answer.
 SETTLE_WAIT = 150
 
 # The capability restart's configuration layer: the exports restated,
@@ -197,14 +199,21 @@ class SetupError(Exception):
 
 @dataclass
 class Test:
-    """What every scenario needs: the federation, the `server` token for
-    /protected-a, the run's collection, and the stub source."""
+    """What every scenario needs.
+
+    That is the federation, the `server` token for /protected-a, the
+    run's collection, and the stub source.
+
+    Attributes:
+        token_file: The file that holds token.
+        stub_down: Why the stub does not serve, if it does not.
+    """
 
     session: Session
     stub: Stub
     token: str
     token_file: str
-    stub_down: Optional[str] = None  # why the stub does not serve, if it does not
+    stub_down: Optional[str] = None
 
     @property
     def fed(self) -> common.Federation:
@@ -217,19 +226,20 @@ class Test:
         return f"data/exports/{self.session.run}"
 
     def rel(self, origin: common.Origin, name: str) -> str:
-        """Object name in origin's collection of the run, in /protected-a."""
+        """Return object name's path in origin's collection of the run.
+
+        The path is within /protected-a.
+        """
         return f"{self.base}/{origin.svc}/{name}"
 
     def native(self) -> Optional[str]:
-        """Why the origins are not Pelican's native origins, if they are
-        not."""
+        """Return why the origins are not Pelican's native ones, or None."""
         if self.fed.native_origins:
             return None
         return f"XRootD serves the origins ({self.fed.origin_variant}), not Pelican"
 
     def writable(self) -> Optional[str]:
-        """Why /protected-a cannot be written straight at the origins, if
-        it cannot."""
+        """Return why direct clients cannot write /protected-a, or None."""
         caps = self.fed.exports[NAMESPACE]
         if "DirectReads" not in caps:
             return "the origins take no direct clients"
@@ -238,7 +248,11 @@ class Test:
         return None
 
     def put(self, origin: common.Origin, rel: str, data: bytes) -> None:
-        """Put data at rel in /protected-a at origin."""
+        """Put data at rel in /protected-a at origin.
+
+        Raises:
+            SetupError: The PUT failed.
+        """
         error = stores.put(origin, NAMESPACE, rel, data, self.token)
         if error:
             raise SetupError(f"{origin.svc}: could not put {rel} in place ({error})")
@@ -251,8 +265,14 @@ class Test:
         want: Optional[bytes],
         what: str,
     ) -> Optional[str]:
-        """What is wrong with what origin holds at rel in namespace, which
-        should be want (None: nothing), calling it what."""
+        """Return what is wrong with what origin holds at rel in namespace.
+
+        origin should hold want there (None: nothing); the answer calls
+        that what, and is None if nothing is wrong.
+
+        Raises:
+            stores.Unreadable: The origin could not say what it holds.
+        """
         storage = origin.storage_namespace(namespace)
         token = None if storage == "public" else self.session.token(storage)
         have = stores.held(origin, namespace, rel, token)
@@ -272,11 +292,14 @@ class Test:
         source: str,
         source_token: Optional[str] = None,
     ) -> web.Response:
-        """A third-party COPY to rel in namespace at origin, pulling from
-        source, with the `server` token for /protected-a, and source_token
-        for the source, if any (TransferHeaderAuthorization, which the
-        origin sends the source as Authorization; forwardTransferHeaders
-        in origin_serve/tpc_handler.go)."""
+        """Send a third-party COPY to rel in namespace at origin.
+
+        The origin pulls from source. The COPY carries the `server` token
+        for /protected-a, and source_token for the source, if any
+        (TransferHeaderAuthorization, which the origin sends the source as
+        Authorization; forwardTransferHeaders in
+        origin_serve/tpc_handler.go).
+        """
         headers = {"Source": source}
         if source_token is not None:
             headers["TransferHeaderAuthorization"] = f"Bearer {source_token}"
@@ -290,7 +313,7 @@ class Test:
 
 
 def snippet(body: bytes) -> str:
-    """The start of an answer's body, for a message."""
+    """Return the start of an answer's body, for a message."""
     text = body.decode("utf-8", "replace").strip().replace("\n", " ")
     return text[:120] + ("..." if len(text) > 120 else "")
 
@@ -300,8 +323,10 @@ def snippet(body: bytes) -> str:
 
 
 def multipart(boundary: str, parts: Sequence[tuple[str, bytes]]) -> bytes:
-    """A multipart/form-data body (RFC 7578) of parts, each a form field's
-    name and its bytes."""
+    """Return a multipart/form-data body (RFC 7578) of parts.
+
+    Each of parts is a form field's name and its bytes.
+    """
     body = b""
     for name, data in parts:
         body += (
@@ -317,7 +342,7 @@ def multipart(boundary: str, parts: Sequence[tuple[str, bytes]]) -> bytes:
 
 
 def multipart_case(test: Test, case: str) -> Row:
-    """multipart_put()'s case, at each origin."""
+    """Return the row of multipart_put()'s case, at each origin."""
     found = Findings()
     for origin in test.fed.origins:
         data = os.urandom(65536)
@@ -356,21 +381,24 @@ def multipart_case(test: Test, case: str) -> Row:
 
 
 def multipart_put(test: Test) -> dict[str, Row]:
-    """At each origin, PUT an object typed `multipart/form-data;
-    boundary=...`, whose body is a well-formed multipart document:
+    """At each origin, PUT a multipart/form-data object, then GET it.
+
+    The object is typed `multipart/form-data; boundary=...`, and its body
+    is a well-formed multipart document:
 
       pelican-shaped  a `metadata` part, then an `object` part, as
                       Pelican's metadata uploads are
       form-shaped     one `file` part, as an HTML form sends
 
-    then GET it: with metadata off, an origin must store each byte for
-    byte as sent, as a PUT stores its body (RFC 9110, section 9.3.4).
+    With metadata off, an origin must store each byte for byte as sent,
+    as a PUT stores its body (RFC 9110, section 9.3.4).
     Pelican's native origin takes every such PUT apart
     (rewriteMultipartPUT in origin_serve/metadata_multipart.go), gated
     by Origin.Metadata.AllowMultipart, which is on by default, but not by
     Origin.Metadata.Enabled, so it stores only the first's `object`
     part, and refuses the second (400), and the rows fail there. An
-    XRootD origin stores either as sent, and is the control."""
+    XRootD origin stores either as sent, and is the control.
+    """
     rows = ROWS["multipart-put"]
     why = test.writable()
     if not why and test.fed.metadata != "off":
@@ -401,16 +429,24 @@ def multipart_put(test: Test) -> dict[str, Row]:
 
 @dataclass
 class Progress:
-    """What a COPY's answer said."""
+    """What a COPY's answer said.
 
-    markers: list[int]  # each Perf Marker's Stripe Bytes Transferred, in order
-    last: str  # its last line that isn't blank, or ""
-    problems: list[str]  # what is malformed in it
+    Attributes:
+        markers: Each Perf Marker's Stripe Bytes Transferred, in order.
+        last: Its last line that isn't blank, or "".
+        problems: What is malformed in it.
+    """
+
+    markers: list[int]
+    last: str
+    problems: list[str]
 
 
 def progress(body: bytes) -> Progress:
-    """Read a COPY's answer: its Perf Markers, and its last line, which
-    alone may be `success: ...` or `failure: ...`."""
+    """Read a COPY's answer: its Perf Markers, and its last line.
+
+    Only the last line may be `success: ...` or `failure: ...`.
+    """
     lines = [line.strip() for line in body.decode("utf-8", "replace").splitlines()]
     lines = [line for line in lines if line]
     markers: list[int] = []
@@ -443,8 +479,11 @@ def progress(body: bytes) -> Progress:
 
 
 def failed(answer: web.Response) -> Optional[str]:
-    """Why a COPY's answer does not report a failure, or None: an error
-    status, or a 2xx whose last line is `failure: ...`."""
+    """Return why a COPY's answer does not report a failure, or None.
+
+    It reports one by an error status, or a 2xx whose last line is
+    `failure: ...`.
+    """
     if not answer.ok:
         return None
     last = progress(answer.body).last
@@ -454,9 +493,12 @@ def failed(answer: web.Response) -> Optional[str]:
 
 
 def source_of(test: Test, origin: common.Origin) -> tuple[str, str]:
-    """Where origin pulls a COPY's source in /protected-a from: the first
-    federated cache's data URL, or another origin's, or its own; and its
-    name."""
+    """Return where origin pulls a COPY's source in /protected-a from.
+
+    Returns:
+        The first federated cache's data URL, or another origin's, or its
+        own; and that server's name.
+    """
     caches = test.fed.federated_caches
     if caches:
         return caches[0].url, caches[0].svc
@@ -470,15 +512,17 @@ def source_of(test: Test, origin: common.Origin) -> tuple[str, str]:
 
 
 def tpc_body(test: Test) -> dict[str, Row]:
-    """At each native origin, a third-party COPY of an 8 MiB object in
-    /protected-a, from the first federated cache (or another origin, or
-    itself), with the `server` token for the destination and, for the
-    source, in TransferHeaderAuthorization: 201, and an answer of Perf
-    Markers whose Stripe Bytes Transferred never fall, nor exceed the
-    object, the last the object's size, then `success: Created`; and the
-    destination must then hold the object (Pelican's
-    client/http_copy_test.go, TestMonitorTPC). The row's note counts the
-    markers."""
+    """Check a third-party COPY of an 8 MiB object at each native origin.
+
+    The COPY is in /protected-a, from the first federated cache (or
+    another origin, or itself), with the `server` token for the
+    destination and, for the source, in TransferHeaderAuthorization. It
+    must get 201, and an answer of Perf Markers whose Stripe Bytes
+    Transferred never fall, nor exceed the object, the last the object's
+    size, then `success: Created`; and the destination must then hold the
+    object (Pelican's client/http_copy_test.go, TestMonitorTPC). The
+    row's note counts the markers.
+    """
     (row,) = ROWS["tpc-body"]
     why = test.native() or test.writable()
     if why:
@@ -531,8 +575,10 @@ def tpc_body(test: Test) -> dict[str, Row]:
 
 
 def bad_source(test: Test, found: Findings) -> None:
-    """A Source that is not an http or https URL: 400 ("Invalid Source
-    URL"), and nothing written."""
+    """Check a COPY from a Source that is not an http or https URL.
+
+    It must get 400 ("Invalid Source URL"), and write nothing.
+    """
     for origin in test.fed.origins:
         for name, source in (("ftp", f"ftp://{STUB_HOST}/x"), ("file", "file:///etc/passwd")):
             rel = test.rel(origin, f"bad-source-{name}")
@@ -547,10 +593,12 @@ def bad_source(test: Test, found: Findings) -> None:
 
 
 def source_error(test: Test, found: Findings) -> None:
-    """A Source that answers 404, and one that answers 500, at the stub:
-    502 ("Source returned HTTP ..."), and nothing written. If the origin
-    never asked the stub, its 502 shows nothing, and the row is
-    inconclusive."""
+    """Check COPYs from a Source at the stub that answers 404, or 500.
+
+    Each must get 502 ("Source returned HTTP ..."), and write nothing. If
+    the origin never asked the stub, its 502 shows nothing, and the row
+    is inconclusive.
+    """
     for origin in test.fed.origins:
         for code in (404, 500):
             path = f"/{test.session.run}/{origin.svc}/status-{code}"
@@ -574,12 +622,14 @@ def source_error(test: Test, found: Findings) -> None:
 
 
 def missing_source(test: Test, found: Findings) -> None:
-    """A Source in /protected-a, at the first federated cache (or another
-    origin, or itself), of an object that no origin holds: a failure,
-    whether an error status (Pelican's is 502) or a last line of
-    `failure: ...`, and nothing written. Then `pelican object copy` of
-    such an object to /protected-a must exit non-zero, and no origin
-    hold the destination."""
+    """Check a COPY from a Source of an object that no origin holds.
+
+    The Source is in /protected-a, at the first federated cache (or
+    another origin, or itself). The COPY must fail, whether by an error
+    status (Pelican's is 502) or a last line of `failure: ...`, and write
+    nothing. Then `pelican object copy` of such an object to /protected-a
+    must exit non-zero, and no origin hold the destination.
+    """
     missing = f"{test.base}/missing"
     for origin in test.fed.origins:
         source_url, source_name = source_of(test, origin)
@@ -618,9 +668,11 @@ def missing_source(test: Test, found: Findings) -> None:
 
 
 def mid_stream(test: Test, found: Findings) -> None:
-    """Over an object X, a COPY from a stub that claims SHORT_CLAIMED
-    bytes and sends SHORT_SENT, then hangs up: a failure (a 2xx whose
-    last line is `failure: ...`, or an error status), and then:
+    """Check a COPY over an object X from a Source that fails partway.
+
+    The Source is a stub that claims SHORT_CLAIMED bytes and sends
+    SHORT_SENT, then hangs up. The COPY must fail (a 2xx whose last line
+    is `failure: ...`, or an error status), and then:
 
       where uploads are staged (POSC, or a pstore origin)
                      X intact
@@ -633,7 +685,8 @@ def mid_stream(test: Test, found: Findings) -> None:
     destination anyway (RemoveAll, in handleCopyTPC's failure path,
     origin_serve/tpc_handler.go), so the row fails under `-p
     origin-posc` and `-p origin-pstore`. Under `-p origin-metadata`, an
-    origin that kept X must publish no object.deleted for it."""
+    origin that kept X must publish no object.deleted for it.
+    """
     kept: list[str] = []
     for origin in test.fed.origins:
         rel = test.rel(origin, "mid-stream")
@@ -675,6 +728,8 @@ def mid_stream(test: Test, found: Findings) -> None:
                 found.problems.append(f"the origin kept {path}, but published object.deleted")
 
 
+# Each of FAILURE_CASES: its check, which adds what it finds at every
+# origin to the Findings it is given.
 FAILURE_CHECKS: dict[str, Callable[[Test, Findings], None]] = {
     "bad-source": bad_source,
     "source-error": source_error,
@@ -684,7 +739,7 @@ FAILURE_CHECKS: dict[str, Callable[[Test, Findings], None]] = {
 
 
 def failure_case(test: Test, case: str) -> Row:
-    """tpc_failures()'s case, at each native origin."""
+    """Return the row of tpc_failures()'s case, at each native origin."""
     if test.stub_down and case in ("source-error", "mid-stream"):
         return FAIL, test.stub_down
     found = Findings()
@@ -693,9 +748,11 @@ def failure_case(test: Test, case: str) -> Row:
 
 
 def tpc_failures(test: Test) -> dict[str, Row]:
-    """A row for each of FAILURE_CASES, at each native origin; see each
-    case's function. Pelican's origin_serve/tpc_handler_test.go,
-    TestHandleCopyTPCMidTransferFailures."""
+    """Check each of FAILURE_CASES at each native origin.
+
+    Each case has a row; see its function, and Pelican's
+    origin_serve/tpc_handler_test.go, TestHandleCopyTPCMidTransferFailures.
+    """
     rows = ROWS["tpc-failures"]
     why = test.native() or test.writable()
     if why:
@@ -711,12 +768,15 @@ def tpc_failures(test: Test) -> dict[str, Row]:
 
 
 def copies_to_public(test: Test) -> Row:
-    """At each origin, a third-party COPY to /public, which takes no
-    writes, and so has no Copies (a native origin turns Copies on only
-    for an export with Writes; server_utils/origin.go), from the probe,
-    with /protected-a's `server` token: refused (404 or 405, as a native
-    origin routes no COPY there, or 401 or 403), and nothing written.
-    An XRootD origin is asked too, as a control."""
+    """Check a third-party COPY to /public at each origin.
+
+    /public takes no writes, and so has no Copies (a native origin turns
+    Copies on only for an export with Writes; server_utils/origin.go).
+    The COPY, from the probe, with /protected-a's `server` token, must be
+    refused (404 or 405, as a native origin routes no COPY there, or 401
+    or 403), and write nothing. An XRootD origin is asked too, as a
+    control.
+    """
     if "public" not in test.fed.exports:
         return SKIP, "this shape does not export /public"
     if "Writes" in test.fed.exports["public"]:
@@ -748,15 +808,24 @@ def copies_to_public(test: Test) -> Row:
 
 @dataclass(frozen=True)
 class Layout:
-    """The exports that the restart changes."""
+    """The exports that the restart changes.
 
-    listless: str  # the namespace without Listings
-    directless: Optional[str]  # the namespace without DirectReads, if any
-    caps: dict[str, list[str]]  # each changed export's capabilities, by prefix
+    Attributes:
+        listless: The namespace without Listings.
+        directless: The namespace without DirectReads, if any.
+        caps: Each changed export's capabilities, by prefix.
+    """
+
+    listless: str
+    directless: Optional[str]
+    caps: dict[str, list[str]]
 
 
 def unrestartable(test: Test) -> Optional[str]:
-    """Why the origins cannot be restarted with other exports, or None."""
+    """Return why the origins cannot be restarted with other exports.
+
+    Return None if they can.
+    """
     fed = test.fed
     if not fed.native_origins:
         return (
@@ -773,9 +842,11 @@ def unrestartable(test: Test) -> Optional[str]:
 
 
 def layout_of(fed: common.Federation) -> Layout:
-    """The restart's exports: /protected-b without Listings (or, where it
-    is not exported, /protected-a), and /public, if exported, without
-    DirectReads."""
+    """Return the restart's exports.
+
+    They are /protected-b without Listings (or, where it is not exported,
+    /protected-a), and /public, if exported, without DirectReads.
+    """
     listless = "protected-b" if "protected-b" in fed.exports else NAMESPACE
     caps = {f"/{listless}": sorted(fed.exports[listless] - {"Listings"})}
     directless = "public" if "public" in fed.exports else None
@@ -785,9 +856,15 @@ def layout_of(fed: common.Federation) -> Layout:
 
 
 def restate(text: str, caps: Mapping[str, Sequence[str]]) -> str:
-    """fed.sh's Origin.Exports (text), with the Capabilities of each
-    export in caps, by prefix, replaced. Everything else stays as fed.sh
-    wrote it, since a later layer replaces a list whole."""
+    """Return text, fed.sh's Origin.Exports, with Capabilities replaced.
+
+    The Capabilities of each export in caps, by prefix, are replaced.
+    Everything else stays as fed.sh wrote it, since a later layer
+    replaces a list whole.
+
+    Raises:
+        SetupError: text has no Capabilities for an export in caps.
+    """
     lines: list[str] = []
     prefix = ""
     changed: set[str] = set()
@@ -810,7 +887,15 @@ def restate(text: str, caps: Mapping[str, Sequence[str]]) -> str:
 
 
 def restart_files(svc: str, layout: Layout) -> dict[str, str]:
-    """The configuration of origin svc's restart."""
+    """Return the configuration of origin svc's restart.
+
+    Returns:
+        YAML text, by file name.
+
+    Raises:
+        SetupError: fed.sh's Origin.Exports is missing, or lacks an
+            export's Capabilities.
+    """
     for pattern in GENERATED_EXPORTS:
         path = pattern.format(svc=svc)
         if os.path.exists(path):
@@ -821,10 +906,18 @@ def restart_files(svc: str, layout: Layout) -> dict[str, str]:
 
 
 def seed_restart(test: Test, layout: Layout) -> dict[str, bytes]:
-    """Put what the restart's checks read in place, while the exports are
-    as the shape has them: an object in a collection of the export
-    without Listings, `tree/obj`, at every origin; and one in /public's
-    storage, `public-obj`, at every store. Their bytes, by name."""
+    """Put what the restart's checks read in place.
+
+    Do so while the exports are as the shape has them: an object in a
+    collection of the export without Listings, `tree/obj`, at every
+    origin; and one in /public's storage, `public-obj`, at every store.
+
+    Returns:
+        Their bytes, by name.
+
+    Raises:
+        SetupError: An object could not be put in place.
+    """
     fed = test.fed
     tree = f"{test.base}/tree"
     data = {"tree/obj": os.urandom(3000), "public-obj": os.urandom(4000)}
@@ -861,7 +954,15 @@ def seed_restart(test: Test, layout: Layout) -> dict[str, bytes]:
 def restarted(
     test: Test, files: Mapping[str, Mapping[str, str]]
 ) -> Generator[None, None, None]:
-    """Restart every origin with its files, and afterward, as it was."""
+    """Restart every origin with its files, and afterward, as it was.
+
+    files maps each origin's service name to its files: YAML text, by
+    file name.
+
+    Raises:
+        control.ControlError: An origin could not be restarted or
+            restored.
+    """
     with contextlib.ExitStack() as stack:
         for origin in test.fed.origins:
             stack.enter_context(control.restart_with(origin.svc, files[origin.svc]))
@@ -869,9 +970,12 @@ def restarted(
 
 
 def serving(test: Test) -> Optional[str]:
-    """Why /protected-a is not served as before, or None: every origin
-    must answer a HEAD of the probe, every director name every origin
-    for it, and every federated cache answer a HEAD of it."""
+    """Return why /protected-a is not served as before, or None.
+
+    To be served, every origin must answer a HEAD of the probe, every
+    director name every origin for it, and every federated cache answer
+    a HEAD of it.
+    """
     rel = f"{test.base}/{PROBE}"
     for origin in test.fed.origins:
         answer = web.request("HEAD", stores.url(origin, NAMESPACE, rel), token=test.token)
@@ -891,8 +995,13 @@ def serving(test: Test) -> Optional[str]:
 
 
 def settle(test: Test) -> Optional[str]:
-    """Wait until the federation serves /protected-a as before (see
-    serving()); why it doesn't within SETTLE_WAIT seconds, or None."""
+    """Wait until the federation serves /protected-a as before.
+
+    See serving().
+
+    Returns:
+        Why it doesn't within SETTLE_WAIT seconds, or None.
+    """
     deadline = time.time() + SETTLE_WAIT
     why = serving(test)
     while why and time.time() < deadline:
@@ -902,14 +1011,17 @@ def settle(test: Test) -> Optional[str]:
 
 
 def copies_disabled(test: Test, _layout: Layout, _data: Mapping[str, bytes]) -> Row:
-    """Under Origin.DisableCopies, at each native origin: a third-party
-    COPY to /protected-a, which takes writes, from the probe, must be
-    refused (404 or 405: Pelican then gives no export Copies, and routes
-    no COPY; server_utils/origin.go, RegisterHandlers in
+    """Check a native origin's COPY and OPTIONS under Origin.DisableCopies.
+
+    At each native origin, a third-party COPY to /protected-a, which
+    takes writes, from the probe, must be refused (404 or 405: Pelican
+    then gives no export Copies, and routes no COPY;
+    server_utils/origin.go, RegisterHandlers in
     origin_serve/handlers.go), with nothing written; and OPTIONS of the
     server's root, with no token, must answer 200, with an Allow that
     names no COPY (registerRootOptions; Pelican's
-    origin_serve/root_options_test.go)."""
+    origin_serve/root_options_test.go).
+    """
     found = Findings()
     for origin in test.fed.origins:
         rel = test.rel(origin, "no-copy")
@@ -933,17 +1045,19 @@ def copies_disabled(test: Test, _layout: Layout, _data: Mapping[str, bytes]) -> 
 
 
 def listings_capability(test: Test, layout: Layout, data: Mapping[str, bytes]) -> Row:
-    """At each native origin, of the export without Listings, with its
-    `server` token: a PROPFIND of Depth 1 of a collection, and a GET of
-    it with `Accept: text/html`, must be refused (401, 403, or 405); a
-    PROPFIND of Depth 0 of the object in it, a stat, must answer 207,
-    with its size. A PROPFIND of Depth 1 in /protected-a, which keeps
-    Listings, must answer 207, so that a refusal is the export's alone.
-    Nothing in Pelican's origin_serve/ reads Listings (authz.go builds
-    its ACLs from PublicReads, Reads, and Writes alone), so the row fails
-    there. The director already sends no deeper PROPFIND to an export
-    without Listings (director/sort.go), which the listings suite
-    checks; this is the origin's own check."""
+    """Check the export without Listings at each native origin.
+
+    With the export's `server` token, a PROPFIND of Depth 1 of a
+    collection, and a GET of it with `Accept: text/html`, must be refused
+    (401, 403, or 405); a PROPFIND of Depth 0 of the object in it, a
+    stat, must answer 207, with its size. A PROPFIND of Depth 1 in
+    /protected-a, which keeps Listings, must answer 207, so that a
+    refusal is the export's alone. Nothing in Pelican's origin_serve/
+    reads Listings (authz.go builds its ACLs from PublicReads, Reads, and
+    Writes alone), so the row fails there. The director already sends no
+    deeper PROPFIND to an export without Listings (director/sort.go);
+    this is the origin's own check.
+    """
     namespace = layout.listless
     token = test.session.token(namespace)
     found = Findings()
@@ -986,14 +1100,15 @@ def listings_capability(test: Test, layout: Layout, data: Mapping[str, bytes]) -
 
 
 def direct_reads_capability(test: Test, layout: Layout, data: Mapping[str, bytes]) -> Row:
-    """With /public without DirectReads, while /protected-a keeps them
-    (Origin.DisableDirectClients stays off): a GET of an object in
-    /public straight to each native origin must be refused (401 or
-    403), with none of its bytes, while one of the probe in /protected-a
-    is served; and a GET of it through each federated cache must be
-    served. Pelican checks DirectReads only through
-    Origin.DisableDirectClients, and that only at startup
-    (origin_serve/handlers.go), so the row fails there."""
+    """Check /public without DirectReads, while /protected-a keeps them.
+
+    Origin.DisableDirectClients stays off. A GET of an object in /public
+    straight to each native origin must be refused (401 or 403), with
+    none of its bytes, while one of the probe in /protected-a is served;
+    and a GET of it through each federated cache must be served. Pelican
+    checks DirectReads only through Origin.DisableDirectClients, and that
+    only at startup (origin_serve/handlers.go), so the row fails there.
+    """
     if layout.directless is None:
         return SKIP, "this shape does not export /public"
     namespace = layout.directless
@@ -1035,10 +1150,13 @@ def direct_reads_capability(test: Test, layout: Layout, data: Mapping[str, bytes
 
 
 def ungated(test: Test, passthrough: bool) -> Optional[str]:
-    """Why the origins cannot reach their backend through the gate, or
-    None: their storage is no HTTPS backend; for passthrough, XRootD's
-    HTTPS plugin, which has none; /protected-a that cannot be written
-    straight at the origins; or no control helper."""
+    """Return why the origins cannot reach their backend through the gate.
+
+    It is that their storage is no HTTPS backend; for passthrough, that
+    XRootD's HTTPS plugin has none; that /protected-a cannot be written
+    straight at the origins; or that there is no control helper. It is
+    None if they can.
+    """
     fed = test.fed
     if fed.origin_variant not in ("https", "httpsv2"):
         return f"the origins' storage ({fed.origin_variant}) is no HTTPS backend"
@@ -1051,7 +1169,11 @@ def ungated(test: Test, passthrough: bool) -> Optional[str]:
 
 
 def static_token() -> str:
-    """The static token that fed.sh made for the origins (TOKEN_FILE)."""
+    """Return the static token fed.sh made for the origins (TOKEN_FILE).
+
+    Raises:
+        SetupError: TOKEN_FILE cannot be read.
+    """
     try:
         with open(TOKEN_FILE, encoding="utf-8") as f:
             return f.read().strip()
@@ -1060,8 +1182,14 @@ def static_token() -> str:
 
 
 def backend_files(svc: str, passthrough: bool) -> dict[str, str]:
-    """The configuration of origin svc's restart: its backend through the
-    gate, reached with the client's token, or with the static one."""
+    """Return the configuration of origin svc's restart.
+
+    The origin reaches its backend through the gate, with the client's
+    token if passthrough, or else with the static one.
+
+    Returns:
+        YAML text, by file name.
+    """
     lines = ["Origin:", f"  HttpServiceUrl: {GATE_URL}/{svc}"]
     if passthrough:
         lines.append("  HttpAuthTokenPassthrough: true")
@@ -1071,7 +1199,7 @@ def backend_files(svc: str, passthrough: bool) -> dict[str, str]:
 
 
 def gate_log() -> list[str]:
-    """The gate's log, line by line; none if there is none yet."""
+    """Return the gate's log, line by line; none if there is none yet."""
     try:
         with open(GATE_LOG, encoding="utf-8", errors="replace") as f:
             return f.read().splitlines()
@@ -1080,7 +1208,7 @@ def gate_log() -> list[str]:
 
 
 def log_entries(lines: Sequence[str]) -> list[tuple[str, str, str]]:
-    """Each line's method, path, and Authorization (`-` for none)."""
+    """Return each line's method, path, and Authorization (`-` for none)."""
     found: list[tuple[str, str, str]] = []
     for line in lines:
         m = re.match(r'\S+ (\S+) (\S+) "(.*)"$', line)
@@ -1090,7 +1218,7 @@ def log_entries(lines: Sequence[str]) -> list[tuple[str, str, str]]:
 
 
 def describe_auth(auth: str, static: str, client: str) -> str:
-    """What an Authorization in the log was, without repeating a token."""
+    """Return what an Authorization in the log was, repeating no token."""
     if auth == "-":
         return "no token"
     if auth == f"Bearer {static}":
@@ -1101,13 +1229,18 @@ def describe_auth(auth: str, static: str, client: str) -> str:
 
 
 def gated_exercise(test: Test, origin: common.Origin, mode: str) -> tuple[list[str], list[str]]:
-    """Use origin's backend through the gate, straight at origin, with the
-    `server` token: PUT an object with a length and one in chunks; GET
-    the first whole, and a range of it, and HEAD it; PROPFIND Depth 1 of
-    the run's collection, which must list both; and at a native origin,
-    MKCOL a collection, MOVE the second object, and DELETE what it moved,
-    which the store on disk, which the backend serves, must show. What
-    went wrong, and the paths it asked for, under /protected-a."""
+    """Use origin's backend through the gate, straight at origin.
+
+    With the `server` token, PUT an object with a length and one in
+    chunks; GET the first whole, and a range of it, and HEAD it; PROPFIND
+    Depth 1 of the run's collection, which must list both; and at a
+    native origin, MKCOL a collection, MOVE the second object, and DELETE
+    what it moved, which the store on disk, which the backend serves,
+    must show.
+
+    Returns:
+        What went wrong, and the paths it asked for, under /protected-a.
+    """
     problems: list[str] = []
     collection = f"{test.base}/{origin.svc}"
     declared, chunked = f"{collection}/{mode}-put", f"{collection}/{mode}-chunked"
@@ -1178,12 +1311,17 @@ def gated_exercise(test: Test, origin: common.Origin, mode: str) -> tuple[list[s
 
 
 def gated_clients(test: Test, mode: str) -> tuple[list[str], str]:
-    """Through the federation, with the `server` token: `pelican object
-    get` of the object that gated_exercise() put at every origin, which
-    a cache, or without one an origin, fetches from an origin, and so
-    through the gate; and `pelican object put` of a new object, which
-    lands at an origin through it. What went wrong, and the put's path
-    under /protected-a."""
+    """Get and put objects through the federation, and so through the gate.
+
+    With the `server` token, run `pelican object get` of the object that
+    gated_exercise() put at every origin, which a cache, or without one
+    an origin, fetches from an origin, and so through the gate; and
+    `pelican object put` of a new object, which lands at an origin
+    through it.
+
+    Returns:
+        What went wrong, and the put's path under /protected-a.
+    """
     problems: list[str] = []
     fed = test.fed
     origin = fed.origins[0]
@@ -1227,14 +1365,17 @@ def log_problems(
     passthrough: bool,
     direct: Sequence[str],
 ) -> tuple[list[str], str]:
-    """What is wrong with what the gate logged since the origins were
-    restarted (entries), and a note on it. With the static token, every
-    request must carry it, and none a client's. With passthrough, each
+    """Return what is wrong with what the gate logged, and a note on it.
+
+    entries are what it logged since the origins were restarted. With the
+    static token, every request must carry it, and none a client's. With
+    passthrough, each
     request for a path the test asked an origin for straight (direct)
     must carry the client's token, and none may carry the static one;
     the rest (the origin's own probes, and what it fetched for a cache)
     are counted. Either way, the gate must have seen a GET, a PUT, and
-    a DELETE."""
+    a DELETE.
+    """
     client = test.token
     if not entries:
         return [
@@ -1274,10 +1415,14 @@ def log_problems(
 
 
 def gated_checks(test: Test, passthrough: bool, static: str, before: int) -> Row:
-    """With the origins restarted to reach their backend through the
-    gate: once the federation serves as before, use the backend straight
-    at each origin (gated_exercise()) and through the federation
-    (gated_clients()), then judge what the gate logged (log_problems())."""
+    """Use the backend through the gate, and judge what the gate logged.
+
+    The origins are restarted to reach their backend through the gate.
+    Once the federation serves as before, use the backend straight at
+    each origin (gated_exercise()) and through the federation
+    (gated_clients()), then judge what the gate logged (log_problems()).
+    before is how many lines the gate had logged before the restart.
+    """
     why = settle(test)
     if why:
         return FAIL, f"with the origins restarted, {why}"
@@ -1302,9 +1447,11 @@ def gated_checks(test: Test, passthrough: bool, static: str, before: int) -> Row
 
 
 def gated(test: Test, passthrough: bool) -> Row:
-    """backend-token, or with passthrough backend-passthrough: restart
-    every origin to reach its backend through the gate (see ungated()),
-    check (gated_checks()), and restore them."""
+    """Check backend-token, or with passthrough backend-passthrough.
+
+    Restart every origin to reach its backend through the gate (see
+    ungated()), check (gated_checks()), and restore them.
+    """
     why = ungated(test, passthrough)
     if why:
         return SKIP, why
@@ -1329,6 +1476,9 @@ def gated(test: Test, passthrough: bool) -> Row:
     return row
 
 
+# Each of the RESTARTED rows: its check, which, given the restart's
+# Layout and the bytes of what seed_restart() put, by name, returns the
+# row.
 RESTART_CHECKS: dict[str, Callable[[Test, Layout, Mapping[str, bytes]], Row]] = {
     "disable-copies disabled": copies_disabled,
     "listings-capability": listings_capability,
@@ -1337,8 +1487,11 @@ RESTART_CHECKS: dict[str, Callable[[Test, Layout, Mapping[str, bytes]], Row]] = 
 
 
 def run_restarted(test: Test, rows: Sequence[str], record: Callable[[str, Row], None]) -> None:
-    """Run the RESTARTED rows, with the origins restarted with the
-    capability layout, and afterward restore them."""
+    """Run the RESTARTED rows with the origins restarted, then restore them.
+
+    The origins are restarted with the capability layout, and each of
+    rows goes to record with its result.
+    """
     why = unrestartable(test)
     if why:
         for row in rows:
@@ -1379,7 +1532,7 @@ def run_restarted(test: Test, rows: Sequence[str], record: Callable[[str, Row], 
 
 
 def attempt(check: Callable[[], Row]) -> Row:
-    """check's row; a FAIL if it could not set up, or raised."""
+    """Return check's row; a FAIL if it could not set up, or raised."""
     try:
         return check()
     except (SetupError, stores.Unreadable) as e:
@@ -1392,7 +1545,7 @@ def attempt(check: Callable[[], Row]) -> Row:
 
 
 def attempt_all(rows: Sequence[str], check: Callable[[], dict[str, Row]]) -> dict[str, Row]:
-    """check's rows; each a FAIL if it could not set up, or raised."""
+    """Return check's rows; each a FAIL if it could not set up or raised."""
     try:
         return check()
     except (SetupError, stores.Unreadable) as e:
@@ -1402,6 +1555,9 @@ def attempt_all(rows: Sequence[str], check: Callable[[], dict[str, Row]]) -> dic
         return {row: (FAIL, f"{type(e).__name__}: {e}") for row in rows}
 
 
+# Each scenario checked whole: its check, which returns a Row for each of
+# the scenario's ROWS, by row. A check may raise SetupError or
+# stores.Unreadable, which fails its rows.
 SCENARIO_CHECKS: dict[str, Callable[[Test], dict[str, Row]]] = {
     "multipart-put": multipart_put,
     "tpc-body": tpc_body,
@@ -1410,15 +1566,21 @@ SCENARIO_CHECKS: dict[str, Callable[[Test], dict[str, Row]]] = {
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no /protected-a."""
+    """Return why there is nothing to test, or None if there is something.
+
+    There is nothing without /protected-a.
+    """
     if NAMESPACE not in fed.exports:
         return f"this shape does not export /{NAMESPACE}"
     return None
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Put the probe in place, run the selected scenarios, those that
-    need the origins restarted last, and remove what they wrote."""
+    """Put the probe in place, run the selected scenarios, and clean up.
+
+    Those that need the origins restarted run last; cleaning up removes
+    what they wrote.
+    """
     fed = session.fed
     tokens = session.tokens()
     test = Test(session, Stub(), session.token(NAMESPACE), session.token_file(NAMESPACE))

@@ -1,11 +1,12 @@
-"""A small OpenID Connect provider, the `idp` service, which stands in
-for an identity provider such as CILogon under `-p auth-oidc`: the
-servers send their users here to log in (OIDC.Issuer), and the registry
-asks it for a user's identity by the device flow (`pelican namespace
-register --with-identity`). Python's standard library alone: the servers
-read its ID tokens without checking their signatures, so it signs them
-itself, RS256 with a key it makes as it starts, and serves the public
-key as its JWKS.
+"""A small OpenID Connect provider, the `idp` service.
+
+It stands in for an identity provider such as CILogon under
+`-p auth-oidc`: the servers send their users here to log in
+(OIDC.Issuer), and the registry asks it for a user's identity by the
+device flow (`pelican namespace register --with-identity`). Python's
+standard library alone: the servers read its ID tokens without checking
+their signatures, so it signs them itself, RS256 with a key it makes as
+it starts, and serves the public key as its JWKS.
 
 Users come from a JSON file (IDP_USERS), by username:
 
@@ -17,10 +18,10 @@ Every field but the password is optional: preferred_username is the
 username, sub is <issuer>/users/<username>, groups are none, and claims
 are added to what userinfo and the ID token say. The groups come
 whatever the scope, as CILogon's isMemberOf does, since Pelican asks a
-provider it does not know for `openid email profile` alone. One client is registered, whose ID
-and secret are in IDP_CLIENT_ID_FILE and IDP_CLIENT_SECRET_FILE (the
-files that Pelican's servers read), and whose redirect URIs are any
-server's OAuth callback (REDIRECT_URI).
+provider it does not know for `openid email profile` alone. One client
+is registered, whose ID and secret are in IDP_CLIENT_ID_FILE and
+IDP_CLIENT_SECRET_FILE (the files that Pelican's servers read), and
+whose redirect URIs are any server's OAuth callback (REDIRECT_URI).
 
   GET  /.well-known/openid-configuration   discovery
   GET  /jwks                               the signing key
@@ -96,22 +97,22 @@ SMALL_PRIMES = [
 
 
 def b64(data: bytes) -> str:
-    """data in base64url, unpadded (RFC 7515)."""
+    """Return data in base64url, unpadded (RFC 7515)."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
 def now() -> int:
-    """The time, in whole seconds."""
+    """Return the time, in whole seconds."""
     return int(time.time())
 
 
 def as_dict(value: Any) -> dict[str, Any]:
-    """value, a parsed JSON value, if it is an object; else {}."""
+    """Return value, a parsed JSON value, if it is an object; else {}."""
     return cast(dict[str, Any], value) if isinstance(value, dict) else {}
 
 
 def as_list(value: Any) -> list[Any]:
-    """value, a parsed JSON value, if it is an array; else []."""
+    """Return value, a parsed JSON value, if it is an array; else []."""
     if not isinstance(value, list):
         return []
     # mypy takes value for a list[Any] here, and so would call a cast
@@ -125,7 +126,10 @@ def as_list(value: Any) -> list[Any]:
 
 
 def is_probable_prime(n: int) -> bool:
-    """Whether n is prime: trial division, then Miller-Rabin, 32 rounds."""
+    """Return whether n is prime, by trial division, then Miller-Rabin.
+
+    Miller-Rabin runs 32 rounds.
+    """
     if n < 2:
         return False
     for p in SMALL_PRIMES:
@@ -149,8 +153,10 @@ def is_probable_prime(n: int) -> bool:
 
 
 def random_prime(bits: int) -> int:
-    """A prime of bits bits, its top two bits set, so that a product of
-    two has 2 * bits bits."""
+    """Return a prime of bits bits, its top two bits set.
+
+    With them set, a product of two has 2 * bits bits.
+    """
     while True:
         candidate = secrets.randbits(bits) | (3 << (bits - 2)) | 1
         if is_probable_prime(candidate):
@@ -158,7 +164,13 @@ def random_prime(bits: int) -> int:
 
 
 class RsaKey:
-    """An RSA key pair, and what signs and publishes with it."""
+    """An RSA key pair, and what signs and publishes with it.
+
+    Attributes:
+        size: The modulus's length, in bytes.
+        kid: The key's ID: its RFC 7638 thumbprint.
+        jwk: The public key, as a JWK.
+    """
 
     def __init__(self, bits: int):
         e = 65537
@@ -173,24 +185,24 @@ class RsaKey:
         self.size = (self.n.bit_length() + 7) // 8
         members = {"e": b64(self.bytes_of(e)), "kty": "RSA", "n": b64(self.bytes_of(self.n))}
         serialized = json.dumps(members, separators=(",", ":"), sort_keys=True)
-        # The RFC 7638 thumbprint, as Pelican names its own keys.
+        # As Pelican names its own keys.
         self.kid = b64(hashlib.sha256(serialized.encode()).digest())
         self.jwk = {**members, "kid": self.kid, "alg": "RS256", "use": "sig"}
 
     @staticmethod
     def bytes_of(value: int) -> bytes:
-        """value, big-endian, as short as can be."""
+        """Return value, big-endian, as short as can be."""
         return value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
 
     def sign(self, data: bytes) -> bytes:
-        """data's RSASSA-PKCS1-v1_5 signature over SHA-256 (RFC 8017)."""
+        """Return data's RSASSA-PKCS1-v1_5 SHA-256 signature (RFC 8017)."""
         digest_info = SHA256_PREFIX + hashlib.sha256(data).digest()
         padding = b"\xff" * (self.size - len(digest_info) - 3)
         encoded = b"\x00\x01" + padding + b"\x00" + digest_info
         return pow(int.from_bytes(encoded, "big"), self.d, self.n).to_bytes(self.size, "big")
 
     def jwt(self, claims: dict[str, Any]) -> str:
-        """claims as a compact JWS, RS256, naming the key."""
+        """Return claims as a compact JWS, RS256, naming the key."""
         header = {"alg": "RS256", "kid": self.kid, "typ": "JWT"}
         signing_input = (
             b64(json.dumps(header, separators=(",", ":")).encode())
@@ -205,14 +217,20 @@ class RsaKey:
 
 
 def read_file(path: str) -> str:
-    """The stripped contents of the file at path."""
+    """Return the stripped contents of the file at path."""
     with open(path, encoding="utf-8") as f:
         return f.read().strip()
 
 
 class Users:
-    """The users, from USERS_FILE, read again whenever it changes, so
-    that a user added while the provider runs may log in."""
+    """The users, from USERS_FILE, read again whenever it changes.
+
+    Rereading it lets a user added while the provider runs log in.
+
+    Attributes:
+        stamp: The file's modification time when last read; None before.
+        found: The users as last read, by username.
+    """
 
     def __init__(self, path: str):
         self.path = path
@@ -220,7 +238,7 @@ class Users:
         self.found: dict[str, dict[str, Any]] = {}
 
     def load(self) -> dict[str, dict[str, Any]]:
-        """The users, by username."""
+        """Return the users, by username."""
         try:
             stamp = os.stat(self.path).st_mtime
         except OSError:
@@ -237,7 +255,7 @@ class Users:
         return self.found
 
     def authenticate(self, username: str, password: str) -> Optional[str]:
-        """username, if password is theirs; None otherwise."""
+        """Return username, if password is theirs; None otherwise."""
         user = self.load().get(username)
         if user is None or not password:
             return None
@@ -246,12 +264,15 @@ class Users:
         return username
 
     def claims(self, username: str, scope: list[str]) -> dict[str, Any]:
-        """What userinfo and the ID token say of username, for the scopes
-        granted: profile claims with `profile`, and email with `email`;
-        sub, iss, and groups always, since Pelican asks a provider it
-        does not know for `openid email profile` alone (OIDC.Scopes), and
-        reads the groups from whatever claim Issuer.OIDCGroupClaim names,
-        as CILogon sends isMemberOf unasked."""
+        """Return what userinfo and the ID token say of username.
+
+        Which claims depends on scope, the scopes granted: profile claims
+        with `profile`, and email with `email`; sub, iss, and groups
+        always, since Pelican asks a provider it does not know for
+        `openid email profile` alone (OIDC.Scopes), and reads the groups
+        from whatever claim Issuer.OIDCGroupClaim names, as CILogon sends
+        isMemberOf unasked.
+        """
         user = self.load().get(username, {})
         sub = str(user.get("sub") or f"{ISSUER}/users/{username}")
         found: dict[str, Any] = {"sub": sub, "iss": ISSUER}
@@ -267,8 +288,11 @@ class Users:
 
 
 def wanted_scope(asked: str) -> list[str]:
-    """The scopes granted of those asked for: those in SCOPES; all of
-    them when none is asked for."""
+    """Return the scopes granted of those asked, a space-separated list.
+
+    Those granted are those in SCOPES, or all of SCOPES if none of them
+    is asked for.
+    """
     found = [s for s in asked.split() if s in SCOPES]
     return found or list(SCOPES)
 
@@ -278,7 +302,15 @@ def wanted_scope(asked: str) -> list[str]:
 
 
 class Provider:
-    """The key, the users, the client, and what has been issued."""
+    """The key, the users, the client, and what has been issued.
+
+    Attributes:
+        codes: Authorization codes' grants, by code.
+        access: Access tokens' grants, by token.
+        refresh: Refresh tokens' grants, by token.
+        devices: Device flows, by device code.
+        user_codes: The device flows' device codes, by user code.
+    """
 
     def __init__(self) -> None:
         self.key = RsaKey(RSA_BITS)
@@ -286,8 +318,6 @@ class Provider:
         self.client_id = read_file(CLIENT_ID_FILE)
         self.client_secret = read_file(CLIENT_SECRET_FILE)
         self.lock = threading.Lock()
-        # Each by its value: a code, a token, or a device code; a device
-        # flow also by its user code.
         self.codes: dict[str, dict[str, Any]] = {}
         self.access: dict[str, dict[str, Any]] = {}
         self.refresh: dict[str, dict[str, Any]] = {}
@@ -295,8 +325,10 @@ class Provider:
         self.user_codes: dict[str, str] = {}
 
     def client_ok(self, client_id: str, client_secret: Optional[str]) -> bool:
-        """Whether client_id is the client, and client_secret, if one is
-        given, its secret."""
+        """Return whether client_id and client_secret are the client's.
+
+        client_secret is checked only if one is given.
+        """
         if client_id != self.client_id:
             return False
         if client_secret is None:
@@ -314,7 +346,7 @@ class Provider:
             del self.devices[value]
 
     def issue_code(self, user: str, redirect_uri: str, scope: list[str], nonce: str) -> str:
-        """A code for user, to be redeemed at redirect_uri."""
+        """Return a code for user, to be redeemed at redirect_uri."""
         code = secrets.token_urlsafe(32)
         with self.lock:
             self.sweep()
@@ -328,8 +360,12 @@ class Provider:
         return code
 
     def redeem_code(self, code: str, redirect_uri: str) -> Optional[dict[str, Any]]:
-        """The code's grant, once; None if there is none, or redirect_uri
-        is not the one it was issued for."""
+        """Return the code's grant, once.
+
+        Returns:
+            The grant; None if there is none, or if redirect_uri is not
+            the one it was issued for.
+        """
         with self.lock:
             self.sweep()
             found = self.codes.pop(code, None)
@@ -338,8 +374,12 @@ class Provider:
         return found
 
     def issue_tokens(self, user: str, scope: list[str], nonce: str = "") -> dict[str, Any]:
-        """The token endpoint's answer for user: an access token, a
-        refresh token, and with `openid` an ID token."""
+        """Return the token endpoint's answer for user.
+
+        Returns:
+            The answer: an access token, a refresh token, and with
+            `openid` an ID token.
+        """
         access = secrets.token_urlsafe(32)
         refresh = secrets.token_urlsafe(32)
         moment = now()
@@ -376,19 +416,19 @@ class Provider:
         return answer
 
     def redeem_refresh(self, token: str) -> Optional[dict[str, Any]]:
-        """The refresh token's grant, once; None if there is none."""
+        """Return the refresh token's grant, once; None if there is none."""
         with self.lock:
             self.sweep()
             return self.refresh.pop(token, None)
 
     def bearer(self, token: str) -> Optional[dict[str, Any]]:
-        """The access token's grant; None if there is none."""
+        """Return the access token's grant; None if there is none."""
         with self.lock:
             self.sweep()
             return self.access.get(token)
 
     def start_device(self, scope: list[str]) -> dict[str, Any]:
-        """A device flow's codes (RFC 8628, section 3.2)."""
+        """Return a new device flow's codes (RFC 8628, section 3.2)."""
         device_code = secrets.token_urlsafe(32)
         user_code = "-".join(secrets.token_hex(2).upper() for _ in range(2))
         with self.lock:
@@ -410,8 +450,11 @@ class Provider:
         }
 
     def approve_device(self, user_code: str, user: str) -> bool:
-        """Approve the device flow with user_code as user; whether there
-        was one to approve."""
+        """Approve the device flow with user_code as user.
+
+        Returns:
+            Whether there was one to approve.
+        """
         with self.lock:
             self.sweep()
             device_code = self.user_codes.get(user_code.strip().upper())
@@ -421,8 +464,12 @@ class Provider:
             return True
 
     def redeem_device(self, device_code: str) -> tuple[str, Optional[dict[str, Any]]]:
-        """The device flow's state: `pending`, `expired`, `invalid`, or
-        `approved` with its grant, once."""
+        """Return the device flow's state, and once approved, its grant.
+
+        Returns:
+            The state, `pending`, `expired`, `invalid`, or `approved`; and
+            with `approved`, once, the grant, else None.
+        """
         with self.lock:
             moment = now()
             found = self.devices.get(device_code)
@@ -441,7 +488,7 @@ class Provider:
 
 @functools.lru_cache(maxsize=None)
 def provider() -> Provider:
-    """The provider, made once."""
+    """Return the provider, made once."""
     return Provider()
 
 
@@ -457,7 +504,10 @@ input{{width:100%;box-sizing:border-box}}.error{{color:#b00}}</style></head>
 
 
 def login_form(action: str, fields: dict[str, str], error: str = "") -> str:
-    """A page with a login form posting fields, hidden, to action."""
+    """Return a page with a login form posting fields, hidden, to action.
+
+    Any user_code among fields is shown instead, for the user to edit.
+    """
     hidden = "".join(
         f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">'
         for k, v in fields.items()
@@ -481,7 +531,7 @@ def login_form(action: str, fields: dict[str, str], error: str = "") -> str:
 
 
 def message_page(title: str, text: str) -> str:
-    """A page that says text."""
+    """Return a page that says text."""
     return PAGE.format(title=html.escape(title), body=f"<p>{html.escape(text)}</p>")
 
 
@@ -490,15 +540,19 @@ def message_page(title: str, text: str) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
-    """One request."""
+    """One request.
+
+    Attributes:
+        noted: What record() says of this request, beyond the method and
+            path.
+    """
 
     protocol_version = "HTTP/1.1"
     server_version = "pelican-testing-idp/1"
 
     def log_message(self, format: str, *args: Any) -> None:  # pylint: disable=redefined-builtin
-        """Quiet: record() logs."""
+        """Log nothing: record() logs."""
 
-    # What record() says of this request, beyond the method and path.
     noted: dict[str, Any]
 
     def record(self, status: int) -> None:
@@ -549,24 +603,27 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(status, page.encode(), "text/html; charset=utf-8")
 
     def oauth_error(self, status: int, error: str, description: str) -> None:
-        """An OAuth error (RFC 6749, section 5.2)."""
+        """Send an OAuth error (RFC 6749, section 5.2)."""
         self.noted["error"] = error
         self.reply_json(status, {"error": error, "error_description": description})
 
     def read_form(self) -> dict[str, str]:
-        """The request's body, a form, by field: the first value of each."""
+        """Return the request's body, a form: each field's first value."""
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
         return {k: v[0] for k, v in parse_qs(body.decode(errors="replace")).items()}
 
     def query(self) -> dict[str, str]:
-        """The request's query, by field: the first value of each."""
+        """Return the request's query: each field's first value."""
         return {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
 
     def client_credentials(self, form: dict[str, str]) -> tuple[str, Optional[str]]:
-        """The client's ID and secret, from HTTP Basic authentication or
-        the form (RFC 6749, section 2.3.1); the secret None if none
-        came."""
+        """Return the client's ID and secret (RFC 6749, section 2.3.1).
+
+        Returns:
+            The ID and the secret, from HTTP Basic authentication or the
+            form; the secret None if none came.
+        """
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Basic "):
             try:
@@ -580,7 +637,7 @@ class Handler(BaseHTTPRequestHandler):
     # Routing.
 
     def do_GET(self) -> None:  # pylint: disable=invalid-name
-        """A GET."""
+        """Answer a GET."""
         self.noted = {}
         path = urlsplit(self.path).path
         if path == "/.well-known/openid-configuration":
@@ -601,11 +658,11 @@ class Handler(BaseHTTPRequestHandler):
             self.reply_json(404, {"error": "not_found"})
 
     def do_HEAD(self) -> None:  # pylint: disable=invalid-name
-        """A HEAD: as a GET, without the body."""
+        """Answer a HEAD: as a GET, without the body."""
         self.do_GET()
 
     def do_POST(self) -> None:  # pylint: disable=invalid-name
-        """A POST."""
+        """Answer a POST."""
         self.noted = {}
         path = urlsplit(self.path).path
         form = self.read_form()
@@ -625,7 +682,7 @@ class Handler(BaseHTTPRequestHandler):
     # The endpoints.
 
     def discovery(self) -> None:
-        """The provider's metadata (OpenID Connect Discovery 1.0)."""
+        """Send the provider's metadata (OpenID Connect Discovery 1.0)."""
         self.reply_json(
             200,
             {
@@ -661,8 +718,12 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def authorize_fields(self, given: dict[str, str]) -> Optional[dict[str, str]]:
-        """The authorization request's parameters, checked (RFC 6749,
-        section 4.1.1): None, having answered, if any is wrong."""
+        """Check and return the authorization request's parameters.
+
+        Returns:
+            The parameters (RFC 6749, section 4.1.1); None, having
+            answered, if any is wrong.
+        """
         fields = {
             k: given.get(k, "") for k in ("response_type", "client_id", "redirect_uri", "scope")
         }
@@ -701,13 +762,13 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(302, b"", "text/plain", {"Location": location})
 
     def authorize_page(self, query: dict[str, str]) -> None:
-        """GET /authorize: the login form."""
+        """Answer GET /authorize with the login form."""
         fields = self.authorize_fields(query)
         if fields is not None:
             self.reply_html(200, login_form("/authorize", fields))
 
     def authorize_login(self, form: dict[str, str]) -> None:
-        """POST /authorize: a login, and the code it earns."""
+        """Answer POST /authorize, a login, with the code it earns."""
         fields = self.authorize_fields(form)
         if fields is None:
             return
@@ -725,7 +786,7 @@ class Handler(BaseHTTPRequestHandler):
         self.redirect(fields["redirect_uri"], {"code": code, "state": fields.get("state", "")})
 
     def token(self, form: dict[str, str]) -> None:
-        """POST /token: the grants."""
+        """Answer POST /token, by its grant type."""
         grant = form.get("grant_type", "")
         self.noted["grant_type"] = grant
         client_id, secret = self.client_credentials(form)
@@ -775,9 +836,11 @@ class Handler(BaseHTTPRequestHandler):
             self.oauth_error(400, "unsupported_grant_type", f"no such grant: {grant}")
 
     def userinfo(self, params: dict[str, str]) -> None:
-        """GET or POST /userinfo: the claims of the token's user. The token
-        comes in the Authorization header, or as access_token in the form
-        or the query (RFC 6750)."""
+        """Answer GET or POST /userinfo with the claims of the token's user.
+
+        The token comes in the Authorization header, or as access_token in
+        params, the form or the query (RFC 6750).
+        """
         auth = self.headers.get("Authorization", "")
         token = auth[7:] if auth.startswith("Bearer ") else params.get("access_token", "")
         found = provider().bearer(token) if token else None
@@ -793,7 +856,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply_json(200, provider().users.claims(found["user"], found["scope"]))
 
     def device_code(self, form: dict[str, str]) -> None:
-        """POST /device/code: start a device flow (RFC 8628)."""
+        """Answer POST /device/code: start a device flow (RFC 8628)."""
         client_id, secret = self.client_credentials(form)
         self.noted["client_id"] = client_id
         if not provider().client_ok(client_id, secret):
@@ -802,12 +865,14 @@ class Handler(BaseHTTPRequestHandler):
         self.reply_json(200, provider().start_device(wanted_scope(form.get("scope", ""))))
 
     def device_page(self, query: dict[str, str]) -> None:
-        """GET /device: the verification page, with the user code filled
-        in if the query names one."""
+        """Answer GET /device with the verification page.
+
+        The user code is filled in if the query names one.
+        """
         self.reply_html(200, login_form("/device", {"user_code": query.get("user_code", "")}))
 
     def device_login(self, form: dict[str, str]) -> None:
-        """POST /device: a login that approves a user code."""
+        """Answer POST /device, a login that approves a user code."""
         fields = {"user_code": form.get("user_code", "")}
         user = provider().users.authenticate(form.get("username", ""), form.get("password", ""))
         if user is None:

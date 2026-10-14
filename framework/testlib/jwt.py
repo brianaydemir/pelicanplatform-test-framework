@@ -1,13 +1,15 @@
-"""JSON Web Tokens of any header and claims, for the tokens that
-`pelican token create` cannot make (credentials.mint()): one that lacks
-a claim, or has one of any JSON type (`aud` as a list, numeric times);
-one with any `kid`, or none; and one signed with HS256 or `none`, as an
-attacker might send.
+"""JSON Web Tokens of any header and claims.
+
+They are for the tokens that `pelican token create` cannot make
+(credentials.mint()): one that lacks a claim, or has one of any JSON
+type (`aud` as a list, numeric times); one with any `kid`, or none; and
+one signed with HS256 or `none`, as an attacker might send.
 
 encode() signs ES256 and RS256 with the openssl CLI, since the standard
 library cannot, and HS256 with hmac; verify() checks an ES256 token's
-signature against a JWKS, with the openssl CLI too. The keys that the federation's
-servers and the tests sign with are EC P-256 PEM files (ES256).
+signature against a JWKS, with the openssl CLI too. The keys that the
+federation's servers and the tests sign with are EC P-256 PEM files
+(ES256).
 """
 
 import base64
@@ -37,12 +39,12 @@ _RSA_KEY = bytes.fromhex("2a864886f70d010101")  # rsaEncryption
 
 
 def b64(data: bytes) -> str:
-    """data in base64url, unpadded, as JWS encodes each part."""
+    """Return data in base64url, unpadded, as JWS encodes each part."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
 def unb64(text: str) -> bytes:
-    """The bytes that b64() made text from."""
+    """Return the bytes that b64() made text from."""
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
@@ -51,7 +53,7 @@ def _json(value: Mapping[str, Any]) -> bytes:
 
 
 def _openssl(args: list[str], data: bytes = b"") -> bytes:
-    """What `openssl <args>` writes, given data; it must succeed."""
+    """Return what `openssl <args>` writes, given data; it must succeed."""
     if shutil.which("openssl") is None:
         common.die("the openssl command is missing, which signs ES256 and RS256 tokens")
     done = subprocess.run(  # nosec B603 B607
@@ -63,7 +65,7 @@ def _openssl(args: list[str], data: bytes = b"") -> bytes:
 
 
 def _der(data: bytes) -> list[bytes]:
-    """The contents of each DER element in data, in order."""
+    """Return the contents of each DER element in data, in order."""
     found: list[bytes] = []
     at = 0
     while at < len(data):
@@ -79,8 +81,7 @@ def _der(data: bytes) -> list[bytes]:
 
 
 def _pair(data: bytes) -> tuple[bytes, bytes]:
-    """The contents of the two elements of the DER SEQUENCE that data
-    is."""
+    """Return the contents of the two elements of the DER SEQUENCE data."""
     found = _der(_der(data)[0])
     if len(found) != 2:
         raise ValueError(f"a DER SEQUENCE of {len(found)} elements, not 2")
@@ -88,16 +89,22 @@ def _pair(data: bytes) -> tuple[bytes, bytes]:
 
 
 def _public_key(key: str) -> tuple[list[bytes], bytes]:
-    """The algorithm's object identifier and parameters, and the contents
-    of the BIT STRING, of PEM private key file key's public key (its
-    SubjectPublicKeyInfo)."""
+    """Return the parts of PEM private key file key's public key.
+
+    Returns:
+        The algorithm's object identifier and parameters, and the
+        contents of the BIT STRING, of its SubjectPublicKeyInfo.
+    """
     spki, bits = _pair(_openssl(["pkey", "-in", key, "-pubout", "-outform", "DER"]))
     return _der(spki), bits[1:]
 
 
 def public_jwk(key: str) -> dict[str, str]:
-    """PEM private key file key's public key, as a JWK's members that its
-    RFC 7638 thumbprint covers: an EC P-256 or an RSA key's."""
+    """Return PEM private key file key's public key, as a JWK.
+
+    The JWK has only the members that its RFC 7638 thumbprint covers: an
+    EC P-256 or an RSA key's.
+    """
     oids, bits = _public_key(key)
     if oids == [_EC_KEY, _P256] and len(bits) == 65 and bits[0] == 4:
         return {"crv": "P-256", "kty": "EC", "x": b64(bits[1:33]), "y": b64(bits[33:])}
@@ -108,17 +115,22 @@ def public_jwk(key: str) -> dict[str, str]:
 
 
 def thumbprint(jwk: Mapping[str, str]) -> str:
-    """The RFC 7638 thumbprint (SHA-256) of a public_jwk(): the kid that
-    Pelican gives a key (jwk.AssignKeyID)."""
+    """Return the RFC 7638 thumbprint (SHA-256) of a public_jwk().
+
+    It is the kid that Pelican gives a key (jwk.AssignKeyID).
+    """
     members = json.dumps(dict(sorted(jwk.items())), separators=(",", ":"))
     return b64(hashlib.sha256(members.encode()).digest())
 
 
 def key_id(key: str, jwks: Optional[bytes] = None) -> str:
-    """The kid to name PEM private key file key by, as `pelican token
-    create` picks it: the kid of the key in JWKS document jwks (e.g. an
-    issuer's, or framework/var/issuer-jwks/) with the same public key,
-    if there is one; otherwise the key's thumbprint()."""
+    """Return the kid to name PEM private key file key by.
+
+    Pick it as `pelican token create` does: the kid of the key in JWKS
+    document jwks (e.g. an issuer's, or framework/var/issuer-jwks/) with
+    the same public key, if there is one; otherwise the key's
+    thumbprint().
+    """
     jwk = public_jwk(key)
     if jwks is not None:
         parsed = common.as_object(json.loads(jwks)) or {}
@@ -130,13 +142,18 @@ def key_id(key: str, jwks: Optional[bytes] = None) -> str:
 
 
 def algorithm(key: str) -> str:
-    """The algorithm that PEM private key file key signs with: ES256 for an
-    EC P-256 key, RS256 for an RSA one."""
+    """Return the algorithm that PEM private key file key signs with.
+
+    That is ES256 for an EC P-256 key, RS256 for an RSA one.
+    """
     return ES256 if public_jwk(key)["kty"] == "EC" else RS256
 
 
 def header(alg: str = ES256, kid: Optional[str] = None) -> dict[str, Any]:
-    """A JWS header, as Pelican writes one: alg, kid (unless None), and typ."""
+    """Return a JWS header, as Pelican writes one.
+
+    It has alg, kid (unless None), and typ.
+    """
     found: dict[str, Any] = {"alg": alg}
     if kid is not None:
         found["kid"] = kid
@@ -145,8 +162,11 @@ def header(alg: str = ES256, kid: Optional[str] = None) -> dict[str, Any]:
 
 
 def _ecdsa(der: bytes) -> bytes:
-    """An ECDSA P-256 signature in the raw form JWS requires (r || s, 32
-    bytes each), from the DER form openssl writes."""
+    """Return an ECDSA P-256 signature in the raw form JWS requires.
+
+    The raw form is r || s, 32 bytes each; der is the form openssl
+    writes.
+    """
     r, s = _pair(der)
     return int.from_bytes(r, "big").to_bytes(32, "big") + int.from_bytes(s, "big").to_bytes(
         32, "big"
@@ -160,9 +180,10 @@ def encode(
     secret: Optional[bytes] = None,
     alg: Optional[str] = None,
 ) -> str:
-    """A compact JWT of header head and claims, both as they are, signed
-    by alg, or by the header's own "alg" if alg is None (so a header may
-    name an algorithm other than the one that signed it):
+    """Return a compact JWT of header head and claims, both as they are.
+
+    Sign it by alg, or by the header's own "alg" if alg is None (so a
+    header may name an algorithm other than the one that signed it):
 
       ES256, RS256  with key, a PEM private key file's path (under
                     framework/var), whose kind must suit
@@ -191,8 +212,11 @@ def encode(
 
 
 def decode(token: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    """A compact JWT's header and claims, unverified. Raises ValueError if
-    it isn't one."""
+    """Return a compact JWT's header and claims, unverified.
+
+    Raises:
+        ValueError: token is not a compact JWT.
+    """
     parts = token.strip().split(".")
     if len(parts) != 3:
         raise ValueError("not a compact JWT")
@@ -209,7 +233,7 @@ _P256_SPKI = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200
 
 
 def _der_integer(value: bytes) -> bytes:
-    """A DER INTEGER of the unsigned big-endian value."""
+    """Return a DER INTEGER of the unsigned big-endian value."""
     value = value.lstrip(b"\0") or b"\0"
     if value[0] & 0x80:
         value = b"\0" + value
@@ -217,11 +241,16 @@ def _der_integer(value: bytes) -> bytes:
 
 
 def verify(token: str, jwks: bytes) -> Optional[str]:
-    """The kid of the key in JWKS document jwks that signed token, a
-    compact JWT signed by ES256, as its header names it; None if its alg is
-    not ES256, or none of the keys with its kid (or, without one, none of
-    the EC P-256 keys) signed it. The openssl command checks each
-    signature."""
+    """Return the kid of the key in JWKS document jwks that signed token.
+
+    token is a compact JWT signed by ES256, as its header names it. The
+    openssl command checks each signature.
+
+    Returns:
+        The kid, or None if token's alg is not ES256, or none of the keys
+        with its kid (or, without one, none of the EC P-256 keys) signed
+        it.
+    """
     head, _ = decode(token)
     if head.get("alg") != ES256:
         return None
@@ -249,7 +278,7 @@ def verify(token: str, jwks: bytes) -> Optional[str]:
 
 
 def _openssl_verifies(pem: str, signature: bytes, data: bytes) -> bool:
-    """Whether DER signature is of data's SHA-256 by public key pem."""
+    """Return whether DER signature is of data's SHA-256 by key pem."""
     if shutil.which("openssl") is None:
         common.die("the openssl command is missing, which checks ES256 signatures")
     with tempfile.TemporaryDirectory() as tmp:

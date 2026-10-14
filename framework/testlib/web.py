@@ -23,29 +23,34 @@ CA_FILE = "/certs/ca.crt"
 
 @functools.lru_cache(maxsize=None)
 def tls_context() -> ssl.SSLContext:
-    """A TLS context that trusts the federation's CA, made once."""
+    """Return a TLS context that trusts the federation's CA, made once."""
     return ssl.create_default_context(cafile=CA_FILE)
 
 
 @dataclass
 class Response:
-    """A server's answer, or the lack of one."""
+    """A server's answer, or the lack of one.
 
-    status: Optional[int]  # None if no response came
+    Attributes:
+        status: Its status; None if no response came.
+        trailers: Those after a chunked body.
+    """
+
+    status: Optional[int]
     body: bytes = b""
     headers: tuple[tuple[str, str], ...] = ()
-    trailers: tuple[tuple[str, str], ...] = ()  # those after a chunked body
+    trailers: tuple[tuple[str, str], ...] = ()
 
     def header(self, name: str) -> str:
-        """The last value of header name, or ""."""
+        """Return the last value of header name, or ""."""
         return _last(self.headers, name)
 
     def trailer(self, name: str) -> str:
-        """The last value of trailer name, or ""."""
+        """Return the last value of trailer name, or ""."""
         return _last(self.trailers, name)
 
     def cookie(self, name: str) -> str:
-        """The value of cookie name that the answer set, or ""."""
+        """Return the value of cookie name that the answer set, or ""."""
         for key, value in self.headers:
             if key.lower() == "set-cookie" and value.startswith(f"{name}="):
                 return value[len(name) + 1 :].split(";", 1)[0]
@@ -57,11 +62,11 @@ class Response:
         return self.status is not None and 200 <= self.status < 300
 
     def describe(self) -> str:
-        """The status, for a message."""
+        """Return the status, for a message."""
         return "no response" if self.status is None else f"HTTP {self.status}"
 
     def json(self) -> Any:
-        """The body, as JSON; None if it is not JSON."""
+        """Return the body, as JSON; None if it is not JSON."""
         try:
             return json.loads(self.body)
         except ValueError:
@@ -69,14 +74,16 @@ class Response:
 
 
 def _last(fields: tuple[tuple[str, str], ...], name: str) -> str:
-    """The last value of field name in fields, or ""."""
+    """Return the last value of field name in fields, or ""."""
     values = [v for k, v in fields if k.lower() == name.lower()]
     return values[-1] if values else ""
 
 
 def save(path: str, answer: Response) -> None:
-    """Keep answer's body at path, or if it has none (a HEAD's), its
-    headers."""
+    """Keep answer's body at path.
+
+    If it has none (a HEAD's), keep its headers.
+    """
     with open(path, "wb") as f:
         if answer.body:
             f.write(answer.body)
@@ -85,10 +92,12 @@ def save(path: str, answer: Response) -> None:
 
 
 class _Answer(http.client.HTTPResponse):
-    """An HTTPResponse that keeps the trailers after a chunked body, which
-    HTTPResponse reads and throws away, in _read_and_discard_trailer() (so
-    named in Python 3.9 through 3.14, at least). Reading the body to its
-    end, with read(), reads them."""
+    """An HTTPResponse that keeps the trailers after a chunked body.
+
+    HTTPResponse reads them and throws them away, in
+    _read_and_discard_trailer() (so named in Python 3.9 through 3.14, at
+    least). Reading the body to its end, with read(), reads them.
+    """
 
     trailers: tuple[tuple[str, str], ...] = ()
 
@@ -112,13 +121,13 @@ class _HTTPSConnection(http.client.HTTPSConnection):
 
 
 def _pieces(data: bytes, size: int = 1 << 16) -> Iterator[bytes]:
-    """data, size bytes at a time."""
+    """Yield data, size bytes at a time."""
     for start in range(0, len(data), size):
         yield data[start : start + size]
 
 
 def _connect(url: str, timeout: float) -> tuple[http.client.HTTPConnection, str]:
-    """A connection to url's server, and the target to ask it for."""
+    """Return a connection to url's server, and the target to ask it for."""
     parts = urlsplit(url)
     if parts.scheme == "https":
         conn: http.client.HTTPConnection = _HTTPSConnection(
@@ -138,12 +147,21 @@ def request(
     timeout: float = 60,
     chunked: bool = False,
 ) -> Response:
-    """Send method to url, presenting bearer token (the token itself, not
-    a file), with upload (bytes, or the path of a file) as the body. With
-    chunked, the body goes in chunks with no Content-Length, as the
-    Pelican client sends it. timeout is for each read or write of the
-    socket, not the whole exchange. A chunked answer's trailers are in
-    the response's trailers."""
+    """Send method to url, and return the answer.
+
+    A chunked answer's trailers are in the response's trailers.
+
+    Args:
+        method: The HTTP method (e.g. `GET`).
+        url: Where to send it.
+        token: A bearer token to present: the token itself, not a file.
+        upload: The body: bytes, or the path of a file.
+        headers: More headers to send.
+        timeout: Seconds for each read or write of the socket, not the
+            whole exchange.
+        chunked: Whether to send the body in chunks with no
+            Content-Length, as the Pelican client sends it.
+    """
     conn, target = _connect(url, timeout)
     sent = dict(headers or {})
     if token is not None:
@@ -171,11 +189,16 @@ def request(
 
 @dataclass
 class Timed:
-    """A GET, and when its body came, in seconds from when it was sent."""
+    """A GET, and when its body came, in seconds from when it was sent.
+
+    Attributes:
+        first: When the first bytes asked for had come, if they did.
+        whole: When the whole body had come, if it did.
+    """
 
     response: Response
-    first: Optional[float]  # when the first bytes asked for had come, if they did
-    whole: Optional[float]  # when the whole body had come, if it did
+    first: Optional[float]
+    whole: Optional[float]
 
 
 def timed_get(
@@ -185,9 +208,11 @@ def timed_get(
     headers: Optional[Mapping[str, str]] = None,
     timeout: float = 60,
 ) -> Timed:
-    """GET url, as request() does, timing when the first `first` bytes of
-    the body come, and when the rest do, as a client that reads a body as
-    it streams in sees them."""
+    """GET url, as request() does, timing the first `first` bytes, then all.
+
+    The times are as a client that reads a body as it streams in sees
+    them.
+    """
     conn, target = _connect(url, timeout)
     sent = dict(headers or {})
     if token is not None:
@@ -216,13 +241,19 @@ def statuses_before_body(
     headers: Optional[Mapping[str, str]] = None,
     timeout: float = 10,
 ) -> tuple[int, ...]:
-    """Send method's request line and headers to url, but none of the
-    body they announce, as a client waiting on `Expect: 100-continue`
-    does, and read what the server answers meanwhile: each status it
-    sends, any interim one (100 Continue) first, up to the first final
-    one. Fewer if the server says nothing more within timeout, or hangs
-    up; none if it never answers. http.client can't say: it passes over
-    a 100 Continue, and sends a body whole."""
+    """Return the statuses that url's server sends before a request's body.
+
+    Send method's request line and headers to url, but none of the body
+    they announce, as a client waiting on `Expect: 100-continue` does,
+    and read what the server answers meanwhile. http.client can't say:
+    it passes over a 100 Continue, and sends a body whole.
+
+    Returns:
+        Each status the server sends, any interim one (100 Continue)
+        first, up to the first final one. Fewer if the server says
+        nothing more within timeout, or hangs up; none if it never
+        answers.
+    """
     parts = urlsplit(url)
     host = parts.hostname or ""
     port = parts.port or (443 if parts.scheme == "https" else 80)
@@ -266,10 +297,15 @@ def read_part(
     timeout: float = 60,
     headers: Optional[Mapping[str, str]] = None,
 ) -> Response:
-    """GET url, with headers, and hang up once size bytes of the body
-    have come, as a client that gives up does: the response, with those
-    bytes. Also how to ask for a range of an object too large to read
-    whole, from a server that might ignore Range and send it all."""
+    """GET url, with headers, and hang up once size bytes of the body come.
+
+    So does a client that gives up. This is also how to ask for a range
+    of an object too large to read whole, from a server that might
+    ignore Range and send it all.
+
+    Returns:
+        The response, with those bytes.
+    """
     conn, target = _connect(url, timeout)
     sent = dict(headers or {})
     if token is not None:

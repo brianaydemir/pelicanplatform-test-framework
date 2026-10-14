@@ -1,20 +1,22 @@
-"""Objects and byte ranges at the block boundaries of pstore (an origin's
-encrypted store), the V2 cache, and the XRootD cache: write objects of
-sizes on either side of each boundary, then read them back, whole and in
-ranges, from each origin, through each cache, through each director's
-redirect as a plain HTTP client follows it, and through both clients;
-the digests that each server reports of them, asked for by default or
-several at once, and an upload the client must verify by one;
-conditional reads and writes, and the ETags they name, which every
-method must report alike; and objects that caches read in overlapping
-pieces or give up on, that are overwritten once cached, that are
-corrupted in a cache's store, or that are written through a cache; and
-an object past 4 GiB, as a sparse file, whose length and whose ranges
-across 2 GiB and 4 GiB every server must get right. Also the signals by
-which a client trusts what a cache gives it: the X-Transfer-Status trailer, which reports a failure after
-the headers; the digests a V2 cache relays from the origins, and its
-refusal to keep an object whose bytes fail them; and that a cache
-fetches an object that many clients read at once from the origins once.
+"""Objects and byte ranges at the block boundaries of pstore and caches.
+
+That is, at those of pstore (an origin's encrypted store), the V2 cache,
+and the XRootD cache: write objects of sizes on either side of each
+boundary, then read them back, whole and in ranges, from each origin,
+through each cache, through each director's redirect as a plain HTTP
+client follows it, and through both clients; the digests that each
+server reports of them, asked for by default or several at once, and an
+upload the client must verify by one; conditional reads and writes, and
+the ETags they name, which every method must report alike; and objects
+that caches read in overlapping pieces or give up on, that are
+overwritten once cached, that are corrupted in a cache's store, or that
+are written through a cache; and an object past 4 GiB, as a sparse file,
+whose length and whose ranges across 2 GiB and 4 GiB every server must
+get right. Also the signals by which a client trusts what a cache gives
+it: the X-Transfer-Status trailer, which reports a failure after the
+headers; the digests a V2 cache relays from the origins, and its refusal
+to keep an object whose bytes fail them; and that a cache fetches an
+object that many clients read at once from the origins once.
 
 The sizes, ranges, and the layout facts behind them are in
 framework/testlib/blocks.py. Objects go under
@@ -153,12 +155,28 @@ PSTORE_WRITES = "pelican_pstore_writes_total"
 
 
 def origin_root(url: str) -> str:
-    """The scheme and host of url, without its path."""
+    """Return the scheme and host of url, without its path."""
     return re.sub(r"^(https://[^/]*).*", r"\1", url)
 
 
 class Test:
-    """The objects of every set, the token, and how the uploads went."""
+    """The objects of every set, the token, and how the uploads went.
+
+    Attributes:
+        origins: The origins, each store once.
+        tmp: A local directory for the suite's files.
+        base: Where the run's objects go in /protected-a.
+        token_file: The file of the server's token for /protected-a.
+        token: The server's token for /protected-a.
+        caps: The capabilities of /protected-a.
+        writes: Whether /protected-a takes writes.
+        direct: Whether /protected-a takes direct clients.
+        data: Each set's object of each size, by set and size.
+        uploads: How each kind of upload went, by "declared" or "chunked".
+        digests: The digests the origins' storage reports.
+        no_digests: Why the storage does not report the rest, or None.
+        admins: Each V2 cache's admin token, by service (see summary()).
+    """
 
     def __init__(self, session: Session):
         self.session = session
@@ -175,30 +193,35 @@ class Test:
         self.writes = "Writes" in self.caps
         self.direct = "DirectReads" in self.caps
         self.data = {(s, size): os.urandom(size) for s in SETS for size in blocks.SIZES}
-        # How each kind of upload went, by "declared" or "chunked".
         self.uploads: dict[str, tuple[str, str]] = {}
-        # The digests the origins' storage reports, and why not the rest.
         self.digests, self.no_digests = stores.digests(session.fed)
-        # Each V2 cache's admin token, by service (see summary()).
         self.admins: dict[str, str] = {}
 
     def rel(self, set_name: str, size: int) -> str:
-        """Where a set's object of size is in /protected-a."""
+        """Return where a set's object of size is in /protected-a."""
         return f"{self.base}/{set_name}/{size}"
 
     def tiers(self, origin: common.Origin) -> Optional[dict[str, float]]:
-        """pstore's writes by tier, or None if /metrics has none, as before
-        an origin's first write."""
+        """Return pstore's writes at origin, by tier, or None.
+
+        None means /metrics has none, as before an origin's first write.
+        """
         found = metrics.fetch(origin_root(origin.url)) or metrics.EMPTY
         if not found.has(PSTORE_WRITES):
             return None
         return {t: found.value(PSTORE_WRITES, tier=t) for t in TIERS}
 
     def upload(self, declared: bool) -> tuple[str, str]:
-        """Upload every set uploaded this way to every origin, one object at
-        a time, and check each store holds them; on a pstore origin, check
-        the tiers they landed in. Where /protected-a takes no writes, put
-        them straight in each store instead."""
+        """Upload each set uploaded this way to every origin, and check it.
+
+        Upload the objects one at a time, and check that each store holds
+        them; on a pstore origin, check the tiers they landed in. Where
+        /protected-a takes no writes, put them straight in each store
+        instead.
+
+        Returns:
+            The result and a note.
+        """
         names = [s for s, d in SETS.items() if d == declared]
         if not self.writes:
             for origin in self.origins:
@@ -276,7 +299,12 @@ class Test:
         return self.uploads[key]
 
     def not_uploaded(self, *kinds: bool) -> Optional[str]:
-        """Why an upload that a scenario needs failed, if one did."""
+        """Return why an upload that a scenario needs failed, or None.
+
+        Args:
+            *kinds: The uploads that the scenario needs, each by whether it
+                declares a length (see ensure()).
+        """
         for declared in kinds:
             status, note = self.ensure(declared)
             if status != PASS:
@@ -287,8 +315,14 @@ class Test:
     def judge(
         answer: web.Response, data: bytes, request: Optional[blocks.Request]
     ) -> Optional[str]:
-        """What is wrong with answer, to a GET of an object that should
-        hold data, or of a range of it; None if nothing."""
+        """Return what is wrong with answer to a GET of data, or None.
+
+        Args:
+            answer: The answer to a GET of an object that should hold
+                data, or of a range of it.
+            data: The object's bytes.
+            request: The ranges asked for, or None for the whole object.
+        """
         if request is None:
             if answer.status != 200:
                 return f"{answer.describe()}, not 200"
@@ -300,8 +334,12 @@ class Test:
     def get(
         self, base_url: str, rel: str, data: bytes, request: Optional[blocks.Request]
     ) -> Optional[str]:
-        """Read rel in /protected-a (or a range of it), which should hold
-        data; what went wrong, or None."""
+        """Read rel in /protected-a, or a range of it, from base_url.
+
+        Returns:
+            What is wrong with the answer, given that rel should hold
+            data, or None if nothing is.
+        """
         headers = {"Range": blocks.header(request)} if request else {}
         answer = web.request(
             "GET",
@@ -315,11 +353,13 @@ class Test:
     def get_through(
         self, director_url: str, rel: str, data: bytes, request: Optional[blocks.Request]
     ) -> Optional[str]:
-        """get(), through the object route of the director at
-        director_url, as a plain HTTP client reads: the director's
-        redirect (307) must lead to a federated cache, or, with no cache,
-        to an origin, and the same request, token and Range and all, is
-        then sent there, as curl -L sends it."""
+        """Read as get() does, but through the director at director_url.
+
+        Read through its object route, as a plain HTTP client reads: the
+        director's redirect (307) must lead to a federated cache, or, with
+        no cache, to an origin, and the same request, token and Range and
+        all, is then sent there, as curl -L sends it.
+        """
         headers = {"Range": blocks.header(request)} if request else {}
         route = f"{director_url}/api/v1.0/director/object/protected-a/{rel}"
         answer = web.request("GET", route, token=self.token, headers=headers)
@@ -342,9 +382,14 @@ class Test:
         request: Optional[blocks.Request],
         through: bool = False,
     ) -> Optional[str]:
-        """Read an object of a set (or a range of it), straight from the
-        server at base_url, or, with through, through the director there
-        (see get_through()); what went wrong, or None."""
+        """Read an object of a set (or a range of it).
+
+        Read it straight from the server at base_url, or, with through,
+        through the director there (see get_through()).
+
+        Returns:
+            What went wrong, or None if nothing did.
+        """
         reader = self.get_through if through else self.get
         why = reader(base_url, self.rel(set_name, size), self.data[(set_name, size)], request)
         if not why:
@@ -352,7 +397,11 @@ class Test:
         return f"{set_name}/{size}{' ' + blocks.header(request) if request else ''}: {why}"
 
     def read_all(self, base_url: str, set_name: str, through: bool = False) -> list[str]:
-        """Every range of every size in a set, 8 at a time (see read())."""
+        """Read every range of every size in a set, 8 at a time.
+
+        Returns:
+            What went wrong with each read (see read()) that failed.
+        """
         jobs = [(size, r) for size in blocks.SIZES for r in blocks.requests(size)]
 
         def one(job: tuple[int, blocks.Request]) -> Optional[str]:
@@ -364,8 +413,13 @@ class Test:
 
 
 def upload_each(test: Test, base: str, objects: dict[str, bytes]) -> list[str]:
-    """Put objects, by name, at <base>/<name> at every origin (see
-    stores.seed_everywhere()); what went wrong."""
+    """Put objects, by name, at <base>/<name> at every origin.
+
+    See stores.seed_everywhere() for how.
+
+    Returns:
+        What went wrong; empty if nothing did.
+    """
     errors = stores.make_dirs(test.origins, "protected-a", base, test.token)
     for name, data in objects.items():
         if errors:
@@ -377,8 +431,11 @@ def upload_each(test: Test, base: str, objects: dict[str, bytes]) -> list[str]:
 
 
 def at_once(jobs: list[Callable[[], Optional[str]]]) -> list[Optional[str]]:
-    """Run jobs together, each started once all are ready; each one's
-    problem, or None."""
+    """Run jobs together, each started once all are ready.
+
+    Returns:
+        Each job's problem, or None, in the order of jobs.
+    """
     barrier = threading.Barrier(len(jobs))
 
     def start(job: Callable[[], Optional[str]]) -> Optional[str]:
@@ -393,7 +450,7 @@ def at_once(jobs: list[Callable[[], Optional[str]]]) -> list[Optional[str]]:
 
 
 # --------------------------------------------------------------------------
-# The scenarios. Each returns its result and a note.
+# The scenarios.
 
 NO_WRITES = "/protected-a takes no writes"
 
@@ -411,8 +468,13 @@ def put_chunked(test: Test) -> tuple[str, str]:
 
 
 def local_sizes(test: Test, name: str) -> tuple[str, dict[int, bytes]]:
-    """A local directory, name, holding a new file of each size, named
-    for its size: its path, and each file's bytes, by size."""
+    """Make a local directory, name, holding a new file of each size.
+
+    Each file is named for its size.
+
+    Returns:
+        The directory's path, and each file's bytes, by size.
+    """
     directory = os.path.join(test.tmp, name)
     os.makedirs(directory)
     files = {size: os.urandom(size) for size in blocks.SIZES}
@@ -423,13 +485,16 @@ def local_sizes(test: Test, name: str) -> tuple[str, dict[int, bytes]]:
 
 
 def pstore_tiers(test: Test) -> dict[str, dict[str, float]]:
-    """Each pstore origin's writes by tier, so far."""
+    """Return each pstore origin's writes by tier, so far."""
     return {o.svc: test.tiers(o) or dict.fromkeys(TIERS, 0.0) for o in test.origins if o.pstore}
 
 
 def uploaded(test: Test, files: dict[int, bytes], collection: str) -> Optional[str]:
-    """Why some origin does not hold each of files (bytes by size) intact,
-    as collection/<size> in /protected-a, if one does not."""
+    """Return why no origin holds one of files intact, or None.
+
+    Each of files (bytes by size) should be at collection/<size> in
+    /protected-a.
+    """
     for size, data in files.items():
         held = stores.held_anywhere(
             test.origins,
@@ -443,9 +508,14 @@ def uploaded(test: Test, files: dict[int, bytes], collection: str) -> Optional[s
 
 
 def tiers_landed(test: Test, before: dict[str, dict[str, float]]) -> tuple[Optional[str], str]:
-    """On pstore origins, why the writes since before are not one of every
-    size in the tier its size predicts for an upload of no declared
-    length, as the clients upload, if they are not; and a note."""
+    """Return why pstore origins' writes since before are not as predicted.
+
+    They should be one of every size, in the tier its size predicts for an
+    upload of no declared length, as the clients upload.
+
+    Returns:
+        Why not, or None if they are as predicted; and a note.
+    """
     if not before:
         return None, ""
     got = {t: 0 for t in TIERS}
@@ -466,7 +536,7 @@ def tiers_landed(test: Test, before: dict[str, dict[str, float]]) -> tuple[Optio
 
 
 def put_client(test: Test) -> tuple[str, str]:
-    """`pelican object put` of every size, into a collection."""
+    """Upload every size, into a collection, by `pelican object put`."""
     if not test.writes:
         return SKIP, NO_WRITES
     collection = f"{test.base}/put-client"
@@ -503,11 +573,21 @@ def plugin(
     upload: bool,
     cache: Optional[str] = None,
 ) -> tuple[bool, str]:
-    """Run stash_plugin on urls, each object's local file named as its
-    URL ends, in directory, with the server's token for /protected-a, and
-    through cache alone (Client.PreferredCaches), if one is named:
-    whether it says every transfer succeeded, and its result ads (or,
-    where it wrote none, its output)."""
+    """Run stash_plugin on urls, with the server's token for /protected-a.
+
+    Args:
+        test: The test.
+        name: A name for the plugin's files in test.tmp.
+        urls: The objects' URLs.
+        directory: Where each object's local file is, named as its URL
+            ends.
+        upload: Whether to upload, rather than download.
+        cache: The cache to use alone (Client.PreferredCaches), if any.
+
+    Returns:
+        Whether it says every transfer succeeded, and its result ads (or,
+        where it wrote none, its output).
+    """
     creds = os.path.join(test.tmp, f"{name}.creds")
     os.makedirs(creds)
     shutil.copyfile(test.token_file, os.path.join(creds, "server.use"))
@@ -542,7 +622,7 @@ def plugin(
 
 
 def put_plugin(test: Test) -> tuple[str, str]:
-    """stash_plugin's upload of every size."""
+    """Upload every size by stash_plugin."""
     if not test.writes:
         return SKIP, NO_WRITES
     collection = f"{test.base}/put-plugin"
@@ -565,14 +645,16 @@ def put_plugin(test: Test) -> tuple[str, str]:
 
 
 def put_checksum(test: Test) -> tuple[str, str]:
-    """`pelican object put --require-checksum` of every size: the client
-    verifies each upload against a digest the origin reports (a HEAD with
-    Want-Digest after the PUT; client/handle_http.go in Pelican), asking
-    for the first algorithm the origins' storage reports (it asks for
-    crc32c otherwise), so it must succeed, and leave the objects intact,
-    for the objects whose digests the storage reports
+    """Check `pelican object put --require-checksum` of every size.
+
+    The client verifies each upload against a digest the origin reports (a
+    HEAD with Want-Digest after the PUT; client/handle_http.go in
+    Pelican), asking for the first algorithm the origins' storage reports
+    (it asks for crc32c otherwise), so it must succeed, and leave the
+    objects intact, for the objects whose digests the storage reports
     (stores.has_digests(); the client declares no length), and fail for
-    the rest, rather than report an unverified upload as a success."""
+    the rest, rather than report an unverified upload as a success.
+    """
     if not test.writes:
         return SKIP, NO_WRITES
     collection = f"{test.base}/put-checksum"
@@ -621,7 +703,7 @@ def put_checksum(test: Test) -> tuple[str, str]:
 
 
 def origin_read(test: Test) -> tuple[str, str]:
-    """Each origin returns every object whole, and every range."""
+    """Check that each origin returns each object whole, and every range."""
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
     if why := test.not_uploaded(True, False):
@@ -641,8 +723,11 @@ def origin_read(test: Test) -> tuple[str, str]:
 
 
 def downloaded(test: Test, set_name: str, directory: str) -> Optional[str]:
-    """Why directory does not hold the set's object of each size, named
-    for its size, and nothing else, if it does not."""
+    """Return why directory does not hold just the set's objects, or None.
+
+    It should hold the set's object of each size, named for its size, and
+    nothing else.
+    """
     names = {str(size) for size in blocks.SIZES}
     extra = sorted(set(os.listdir(directory)) - names)
     if extra:
@@ -655,17 +740,20 @@ def downloaded(test: Test, set_name: str, directory: str) -> Optional[str]:
 
 
 def named_caches(test: Test) -> list[common.Cache]:
-    """The caches that a client's named reads name, each in turn: every
-    federated one, so that each kind of cache the shape has
-    (`-p cache-mixed`) serves a client that names it; the transfers
-    suite names the first alone."""
+    """Return the caches that a client's named reads name, each in turn.
+
+    That is every federated one, so that each kind of cache the shape has
+    (`-p cache-mixed`) serves a client that names it.
+    """
     return list(test.fed.federated_caches)
 
 
 def served_elsewhere(hosts: list[str], cache: common.Cache) -> Optional[str]:
-    """Why hosts, which served a named read's objects, are not all the
-    named cache's; None if they are. A client that fell back to the
-    director's choice would otherwise pass."""
+    """Return why hosts are not all the named cache's, or None if they are.
+
+    hosts served a named read's objects. A client that fell back to the
+    director's choice would otherwise pass.
+    """
     if not hosts:
         return "no server recorded"
     want = director.host(cache.url)
@@ -676,8 +764,11 @@ def served_elsewhere(hosts: list[str], cache: common.Cache) -> Optional[str]:
 
 
 def stats_hosts(path: str) -> list[str]:
-    """The host that served each object in the pelican client's transfer
-    stats at path (--transfer-stats); none if it wrote none."""
+    """Return the host that served each object, by the stats at path.
+
+    path holds the pelican client's transfer stats (--transfer-stats);
+    there are no hosts if it wrote none.
+    """
     try:
         with open(path, encoding="utf-8") as f:
             return transfers.stats_endpoints(json.load(f))
@@ -686,8 +777,11 @@ def stats_hosts(path: str) -> list[str]:
 
 
 def ad_hosts(ads: str) -> list[str]:
-    """The host that served each transfer that stash_plugin's result ads
-    call a success: the highest-numbered EndpointN of each."""
+    """Return the host that served each successful transfer in ads.
+
+    ads are stash_plugin's result ads; a transfer's host is the
+    highest-numbered EndpointN of its ad.
+    """
     hosts: list[str] = []
     for ad in ads.splitlines():
         if "TransferSuccess = true" not in ad:
@@ -699,10 +793,13 @@ def ad_hosts(ads: str) -> list[str]:
 
 
 def client_get(test: Test) -> tuple[str, str]:
-    """`pelican object get` of every size, three ways: through the cache
-    the director picks, with --direct, which must be refused where
-    /protected-a takes no direct clients, and from each federated cache
-    in turn, named (--cache), which alone may serve it."""
+    """Check `pelican object get` of every size, three ways.
+
+    The ways are through the cache the director picks; with --direct,
+    which must be refused where /protected-a takes no direct clients; and
+    from each federated cache in turn, named (--cache), which alone may
+    serve it.
+    """
     if why := test.not_uploaded(True):
         return FAIL, why
     urls = [f"{test.fed.url}/protected-a/{test.rel('client', size)}" for size in blocks.SIZES]
@@ -757,11 +854,14 @@ def client_get(test: Test) -> tuple[str, str]:
 
 
 def plugin_get(test: Test) -> tuple[str, str]:
-    """stash_plugin's download of every size, three ways: through the
-    cache the director picks; direct (?directread, the plugin's only way
-    to ask for it), which must be refused where /protected-a takes no
-    direct clients; and from each federated cache in turn, preferred
-    (Client.PreferredCaches), which alone may serve it."""
+    """Check stash_plugin's download of every size, three ways.
+
+    The ways are through the cache the director picks; direct
+    (?directread, the plugin's only way to ask for it), which must be
+    refused where /protected-a takes no direct clients; and from each
+    federated cache in turn, preferred (Client.PreferredCaches), which
+    alone may serve it.
+    """
     if why := test.not_uploaded(True):
         return FAIL, why
     notes: list[str] = []
@@ -810,7 +910,7 @@ def plugin_get(test: Test) -> tuple[str, str]:
 
 
 def cache_whole_first(test: Test) -> tuple[str, str]:
-    """Each cache: a cold whole read, a warm one, then every range."""
+    """Check each cache: a cold whole read, a warm one, then every range."""
     if why := test.not_uploaded(True):
         return FAIL, why
     problems: list[str] = []
@@ -827,10 +927,13 @@ def cache_whole_first(test: Test) -> tuple[str, str]:
 
 
 def director_read(test: Test) -> tuple[str, str]:
-    """Each director's object route, followed as a plain HTTP client
-    follows it (see Test.get_through()), returns every object of the set
-    read whole first, whole and in every range, from the federated cache
-    the redirect leads to, or, with no cache, the origin."""
+    """Check that each director's object route returns every object.
+
+    The route, followed as a plain HTTP client follows it (see
+    Test.get_through()), must return every object of the set read whole
+    first, whole and in every range, from the federated cache the redirect
+    leads to, or, with no cache, the origin.
+    """
     if not test.fed.directors:
         return SKIP, "a standalone origin has no director"
     if why := test.not_uploaded(True):
@@ -853,7 +956,7 @@ def director_read(test: Test) -> tuple[str, str]:
 
 
 def cache_range_first(test: Test) -> tuple[str, str]:
-    """Each cache: a cold range first, then every range, then the whole."""
+    """Check each cache: a cold range, then every range, then the whole."""
     if why := test.not_uploaded(False):
         return FAIL, why
     problems: list[str] = []
@@ -875,11 +978,14 @@ def cache_range_first(test: Test) -> tuple[str, str]:
 
 
 def cache_overlap(test: Test) -> tuple[str, str]:
-    """Each plan of blocks.overlap_plans, read in turn from an object of
-    its own: every read after the first covers blocks that the cache
-    fetched for an earlier one and blocks that it must fetch now. Then
+    """Check ranges that overlap what each cache holds, in turn and at once.
+
+    Read each plan of blocks.overlap_plans in turn, from an object of its
+    own: every read after the first covers blocks that the cache fetched
+    for an earlier one and blocks that it must fetch now. Then read
     blocks.concurrent_reads, all at once, of one more cold object. After
-    each, the whole object must come back intact."""
+    each, the whole object must come back intact.
+    """
     plans = blocks.overlap_plans()
     base = f"{test.base}/overlap"
     objects = {
@@ -927,8 +1033,11 @@ def cache_overlap(test: Test) -> tuple[str, str]:
 
 
 def has_age(test: Test, cache: common.Cache, rel: str) -> Optional[bool]:
-    """Whether a V2 cache says, with Age, that it holds all of rel; None
-    if a HEAD of it fails."""
+    """Return whether a V2 cache says, with Age, that it holds all of rel.
+
+    Returns:
+        Whether it does, or None if a HEAD of rel fails.
+    """
     answer = web.request("HEAD", f"{cache.url}/protected-a/{rel}", token=test.token)
     return bool(answer.header("Age")) if answer.status == 200 else None
 
@@ -936,8 +1045,14 @@ def has_age(test: Test, cache: common.Cache, rel: str) -> Optional[bool]:
 def wait_cinfo(
     cache: common.Cache, rel: str, want: Callable[[blocks.Cinfo], bool], seconds: float
 ) -> tuple[Optional[blocks.Cinfo], str]:
-    """blocks.read_cinfo(), until what it finds is wanted or seconds
-    pass: the cache writes its .cinfo some time after the blocks."""
+    """Run blocks.read_cinfo() until what it finds is wanted.
+
+    The cache writes its .cinfo some time after the blocks; give up once
+    seconds pass.
+
+    Returns:
+        What blocks.read_cinfo() returned last.
+    """
     last: list[tuple[Optional[blocks.Cinfo], str]] = []
 
     def wanted() -> bool:
@@ -950,8 +1065,13 @@ def wait_cinfo(
 
 
 class Findings:
-    """What a scenario found: problems, which fail it; doubts, which leave
-    it inconclusive; and notes on what went right."""
+    """What a scenario found.
+
+    Attributes:
+        problems: What fails it.
+        doubts: What leaves it inconclusive.
+        notes: What went right.
+    """
 
     def __init__(self) -> None:
         self.problems: list[str] = []
@@ -971,7 +1091,7 @@ class Findings:
         self.notes.append(what)
 
     def verdict(self) -> tuple[str, str]:
-        """FAIL, INCONCLUSIVE, or PASS, and a note."""
+        """Return FAIL, INCONCLUSIVE, or PASS, and a note."""
         if self.problems:
             return FAIL, first(self.problems)
         if self.doubts:
@@ -980,9 +1100,13 @@ class Findings:
 
 
 def summary(test: Test, cache: common.Cache, rel: str) -> tuple[Optional[cacheapi.Blocks], str]:
-    """Which blocks of rel in /protected-a a V2 cache holds, as its admin
-    asks its introspection (cacheapi.blocks_held()); or None, and why it
-    did not say."""
+    """Return which blocks of rel in /protected-a a V2 cache holds.
+
+    Its admin asks its introspection (cacheapi.blocks_held()).
+
+    Returns:
+        The blocks it holds, or None; and why it did not say.
+    """
     if cache.svc not in test.admins:
         test.admins[cache.svc] = cacheapi.admin_token(test.session, cache)
     url = cacheapi.object_url(test.fed, f"/protected-a/{rel}")
@@ -990,11 +1114,17 @@ def summary(test: Test, cache: common.Cache, rel: str) -> tuple[Optional[cacheap
 
 
 def assembled_part(test: Test, cache: common.Cache, rel: str, found: Findings) -> bool:
-    """After cache_assemble's first range, which a V2 cache fetches block by
-    block (initObjectFromStat in local_cache/persistent_cache.go): its
-    introspection must show the range's blocks held, and not block 0,
-    since it fills no object from the start for a range in its middle.
-    Whether its introspection said: if not, the caller falls back to Age."""
+    """Check a V2 cache's blocks after cache_assemble's first range.
+
+    The cache fetches that range block by block (initObjectFromStat in
+    local_cache/persistent_cache.go): its introspection must show the
+    range's blocks held, and not block 0, since it fills no object from
+    the start for a range in its middle.
+
+    Returns:
+        Whether its introspection said: if not, the caller falls back to
+        Age.
+    """
     held, why = summary(test, cache, rel)
     if held is None:
         found.note(f"{cache.svc}: no block summary ({why}), so Age")
@@ -1013,7 +1143,7 @@ def assembled_part(test: Test, cache: common.Cache, rel: str, found: Findings) -
 
 
 def assemble(test: Test, cache: common.Cache, rel: str, data: bytes, found: Findings) -> None:
-    """cache_assemble at one cache, of rel, which holds data."""
+    """Run cache_assemble at one cache, of rel, which holds data."""
     ranges = [(r,) for r in blocks.ASSEMBLE]
     why = test.get(cache.url, rel, data, ranges[0])
     if why:
@@ -1079,7 +1209,9 @@ def assemble(test: Test, cache: common.Cache, rel: str, data: bytes, found: Find
 
 
 def cache_assemble(test: Test) -> tuple[str, str]:
-    """blocks.ASSEMBLE, read in its order from a cold object: ranges that
+    """Check that ranges adding up to an object leave a cache holding all.
+
+    Read blocks.ASSEMBLE in its order from a cold object: ranges that
     overlap, and add up to the object. The cache must hold part of it
     after the first, and all of it after the last: a V2 cache's
     introspection says which blocks it holds (assembled_part()), and an
@@ -1089,7 +1221,8 @@ def cache_assemble(test: Test) -> tuple[str, str]:
     the partial state after the first (with Age and no block summary,
     with no .cinfo, or with a .cinfo showing none or all of the blocks)
     leaves the result unsure; an XRootD cache whose .cinfo could be read
-    then must still have one, showing every block, after the last."""
+    then must still have one, showing every block, after the last.
+    """
     base = f"{test.base}/assemble"
     objects = {c.svc: os.urandom(blocks.ASSEMBLE_SIZE) for c in test.caches}
     errors = upload_each(test, base, objects)
@@ -1123,7 +1256,7 @@ WARM_SLACK = 64 << 10
 
 
 def origin_metrics(test: Test) -> Optional[list[metrics.Snapshot]]:
-    """Every origin's metrics, or None if one did not answer."""
+    """Return every origin's metrics, or None if one did not answer."""
     found: list[metrics.Snapshot] = []
     for origin in test.fed.origins:
         snapshot = metrics.fetch(origin.web_url)
@@ -1139,14 +1272,21 @@ def risen(
     name: str,
     labels: dict[str, str],
 ) -> float:
-    """How much metric name's series with labels rose at the origins, in
-    all, from before to after."""
+    """Return how much metric name's series with labels rose at the origins.
+
+    That is in all, from before to after.
+    """
     return sum(metrics.delta(b, a, name, **labels) for b, a in zip(before, after))
 
 
 def read_at_once(test: Test, cache: common.Cache, rel: str, data: bytes) -> Optional[str]:
-    """COALESCE_READERS whole reads of rel in /protected-a, which holds
-    data, through cache, all at once: the first thing wrong, or None."""
+    """Make COALESCE_READERS whole reads of rel through cache, all at once.
+
+    rel is in /protected-a, and holds data.
+
+    Returns:
+        The first thing wrong, or None if nothing is.
+    """
     found = at_once(
         [
             functools.partial(test.get, cache.url, rel, data, None)
@@ -1158,7 +1298,7 @@ def read_at_once(test: Test, cache: common.Cache, rel: str, data: bytes) -> Opti
 
 
 def coalesced(test: Test, cache: common.Cache, rel: str, data: bytes, found: Findings) -> None:
-    """coalescing at one cache, of rel, which holds data."""
+    """Run coalescing at one cache, of rel, which holds data."""
     cold = origin_metrics(test)
     if cold is None:
         found.fail("an origin's /metrics did not answer")
@@ -1221,17 +1361,19 @@ def coalesced(test: Test, cache: common.Cache, rel: str, data: bytes, found: Fin
 
 
 def coalescing(test: Test) -> tuple[str, str]:
-    """Each federated cache: COALESCE_READERS cold whole reads of an
-    object of its own, all at once, must have the origins send it about
-    once, as their counters show (SENT_BYTES): not once per reader, which
-    a cache is there to spare them. A V2 cache fetches an object whole in
-    one GET, and may make no more than COALESCE_GETS for it under the
-    tests' username (GETS); an XRootD cache fetches it block by block,
-    so only the bytes are judged. Then as many warm reads must have the
-    origins serve no GET of the tests', and send no more than the
-    directors' health tests do (WARM_SLACK). Only a native origin keeps
-    the counters. A site-local cache reads through another cache, and is
-    left to the sitelocal suite."""
+    """Check that concurrent cold reads of an object fetch it only once.
+
+    Each federated cache: COALESCE_READERS cold whole reads of an object
+    of its own, all at once, must have the origins send it about once, as
+    their counters show (SENT_BYTES): not once per reader, which a cache
+    is there to spare them. A V2 cache fetches an object whole in one GET,
+    and may make no more than COALESCE_GETS for it under the tests'
+    username (GETS); an XRootD cache fetches it block by block, so only
+    the bytes are judged. Then as many warm reads must have the origins
+    serve no GET of the tests', and send no more than the directors'
+    health tests do (WARM_SLACK). Only a native origin keeps the counters.
+    A site-local cache reads through another cache, and is passed over.
+    """
     if not test.fed.native_origins:
         return SKIP, f"XRootD serves the origins ({test.fed.origin_variant}), not Pelican"
     caches = test.fed.federated_caches
@@ -1254,11 +1396,14 @@ ABANDON_AFTER = 50000
 
 
 def cache_abandoned(test: Test) -> tuple[str, str]:
-    """Each cache: a cold whole read of an object of its own, which its
+    """Check that a cold read that its client gives up on spoils nothing.
+
+    Each cache gets a cold whole read of an object of its own, which its
     client gives up on after ABANDON_AFTER bytes. Those bytes must be the
     object's; and afterward, its last block, then the whole object, must
     come back intact, however far the cache had fetched it. A V2 cache's
-    introspection says how far that was (abandoned_blocks())."""
+    introspection says how far that was (abandoned_blocks()).
+    """
     base = f"{test.base}/abandoned"
     objects = {c.svc: os.urandom(blocks.OVERLAP_SIZE) for c in test.caches}
     errors = upload_each(test, base, objects)
@@ -1295,10 +1440,15 @@ def cache_abandoned(test: Test) -> tuple[str, str]:
 def abandoned_blocks(
     test: Test, cache: common.Cache, rel: str, notes: list[str]
 ) -> Optional[str]:
-    """What a V2 cache's introspection says it holds of rel once its
-    client has given up, added to notes: the cache may go on fetching the
-    object, or not, so either is accepted, but a summary that contradicts
-    itself is not. What is wrong with it, or None."""
+    """Check what a V2 cache holds of rel once its client has given up.
+
+    Add to notes what its introspection says it holds: the cache may go
+    on fetching the object, or not, so either is accepted, but a summary
+    that contradicts itself is not.
+
+    Returns:
+        What is wrong with the summary, or None if nothing is.
+    """
     held, why = summary(test, cache, rel)
     if held is None:
         notes.append(f"{cache.svc}: no block summary ({why})")
@@ -1325,8 +1475,10 @@ class NoChaos(Exception):
 
 
 def admin_token(test: Test, cache: common.Cache) -> str:
-    """A token that cache's web API takes as its admin's (see
-    credentials.mint_admin()), signed with the cache's own key."""
+    """Return a token that cache's web API takes as its admin's.
+
+    It is signed with the cache's own key (see credentials.mint_admin()).
+    """
     web_url = origin_root(cache.url)
     issuer = credentials.local_issuer(test.fed, web_url)
     key = common.signing_key(f"issuer-keys/{cache.svc}")
@@ -1338,11 +1490,24 @@ def admin_token(test: Test, cache: common.Cache) -> str:
 def spoil(
     test: Test, cache: common.Cache, token: str, rel: str, op: str, **params: str
 ) -> None:
-    """Have cache spoil its copy of rel in /protected-a: op `corrupt`
-    (a block, with `block` and `bytes`) or `truncate` (a chunk file, with
-    `chunk` and `drop-bytes`). The cache keys an object by its URL at the
-    director (normalizePath in local_cache/persistent_cache.go). Raises
-    NoChaos if the cache has no such API, and ValueError if it refused."""
+    """Have cache spoil its copy of rel in /protected-a.
+
+    The cache keys an object by its URL at the director (normalizePath in
+    local_cache/persistent_cache.go).
+
+    Args:
+        test: The test.
+        cache: The V2 cache.
+        token: Its admin's token.
+        rel: The object, in /protected-a.
+        op: Either `corrupt` (a block, with `block` and `bytes`) or
+            `truncate` (a chunk file, with `chunk` and `drop-bytes`).
+        **params: The parameters of op.
+
+    Raises:
+        NoChaos: The cache has no such API.
+        ValueError: The cache refused.
+    """
     director_host = urlsplit(str(test.fed.discovery["director_endpoint"])).netloc
     query = {"op": op, "url": f"pelican://{director_host}/protected-a/{rel}", **params}
     answer = web.request(
@@ -1358,19 +1523,24 @@ def spoil(
 
 
 def holds_all(test: Test, cache: common.Cache, rel: str) -> bool:
-    """Whether a V2 cache says, with Age, that it holds all of rel."""
+    """Return whether a V2 cache says, with Age, it holds all of rel."""
     return bool(has_age(test, cache, rel))
 
 
 def never_spoiled(
     test: Test, cache: common.Cache, rel: str, data: bytes, request: blocks.Request
 ) -> Optional[str]:
-    """Read request of rel in /protected-a through cache, then the whole
-    object: each must be the object's bytes, or fail, but never be other
-    bytes; and within REPAIR_WAIT seconds the whole object must come back
-    intact, the cache having fetched the spoiled blocks again (a V2 cache
-    repairs a block that fails its authentication tag;
-    local_cache/range_reader.go). What went wrong, or None."""
+    """Read request of rel through cache, then the whole object.
+
+    rel is in /protected-a, and holds data. Each read must be the object's
+    bytes, or fail, but never be other bytes; and within REPAIR_WAIT
+    seconds the whole object must come back intact, the cache having
+    fetched the spoiled blocks again (a V2 cache repairs a block that
+    fails its authentication tag; local_cache/range_reader.go).
+
+    Returns:
+        What went wrong, or None if nothing did.
+    """
     url = f"{cache.url}/protected-a/{rel}"
     first_byte, last_byte = blocks.resolve(len(data), request[0])
     for what, headers, want in (
@@ -1398,12 +1568,15 @@ def never_spoiled(
 
 
 def cache_corrupted(test: Test) -> tuple[str, str]:
-    """Each V2 cache: once it holds an object whole, a block of it is
+    """Check that a block spoiled in a V2 cache's store is never served.
+
+    Each V2 cache: once it holds an object whole, a block of it is
     corrupted in the cache's store, and once it holds another, bytes are
     cut from the end of its chunk file (see spoil()). A read of the
     spoiled part, and of the whole object, must then never be other bytes
     (see never_spoiled()). An XRootD cache has no such API, and is passed
-    over."""
+    over.
+    """
     caches = [c for c in test.caches if c.kind == "v2"]
     if not caches:
         return SKIP, "no V2 cache, whose chaos API alone can spoil a block"
@@ -1488,8 +1661,10 @@ FAILED_BLOCK = 3
 
 
 def status_failed(said: str) -> bool:
-    """Whether an X-Transfer-Status trailer, as said, reports a failure: a
-    status other than 2xx."""
+    """Return whether an X-Transfer-Status trailer reports a failure.
+
+    said is the trailer; a failure is a status other than 2xx.
+    """
     found = re.match(r"\s*(\d{3})\b", said)
     return found is not None and not found.group(1).startswith("2")
 
@@ -1502,10 +1677,15 @@ def read_status(
     request: Optional[blocks.Request],
     ask: bool = True,
 ) -> Optional[str]:
-    """GET rel in /protected-a (or a range of it), which holds data, at
-    url's server, asking for the transfer's status if ask (ASK_STATUS):
-    what is wrong, or None. So asked, the answer must announce the
-    trailer and end with it, STATUS_OK; unasked, no trailer may come."""
+    """GET rel in /protected-a (or a range of it) at url's server.
+
+    rel holds data. Ask for the transfer's status if ask (ASK_STATUS). So
+    asked, the answer must announce the trailer and end with it,
+    STATUS_OK; unasked, no trailer may come.
+
+    Returns:
+        What is wrong, or None if nothing is.
+    """
     headers = dict(ASK_STATUS) if ask else {}
     if request:
         headers["Range"] = blocks.header(request)
@@ -1534,14 +1714,17 @@ def read_status(
 
 
 def transfer_status(test: Test) -> tuple[str, str]:
-    """Each federated cache, V2 or XRootD, asked for a transfer's status
+    """Check that each federated cache, asked, ends a GET with its status.
+
+    Each federated cache, V2 or XRootD, asked for a transfer's status
     (local_cache/persistent_cache_api.go in Pelican; XrdHttpReq.cc in
     XRootD, 5.6 on): each of STATUS_READS, cold and then warm, must
     announce the trailer and end with it, STATUS_OK (read_status()).
     Unasked, a GET of the whole object must come with no trailer. A HEAD
     so asked has no body, and so no trailer, but must be answered as any
     HEAD, with the object's length. A site-local cache reads through
-    another cache, and is left to the sitelocal suite."""
+    another cache, and is passed over.
+    """
     caches = test.fed.federated_caches
     if not caches:
         return SKIP, "this shape has no federated cache"
@@ -1586,12 +1769,15 @@ def transfer_status(test: Test) -> tuple[str, str]:
 
 
 def origin_transfer_status(test: Test) -> tuple[str, str]:
-    """Each origin, asked for a transfer's status, by a GET of a whole
+    """Check that each origin, asked, ends a GET with its status.
+
+    Each origin is asked for a transfer's status, by a GET of a whole
     object of the run's (read_status()): Pelican's
     docs/pelican-http-headers.md says that caches and origins alike send
-    the trailer. XRootD's origins do (XrdHttpReq.cc); nothing in
-    Pelican's origin_serve/ does, so the row fails at a native origin.
-    The origins are asked only if they take direct clients."""
+    the trailer. XRootD's origins do (XrdHttpReq.cc); nothing in Pelican's
+    origin_serve/ does, so the row fails at a native origin. The origins
+    are asked only if they take direct clients.
+    """
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
     base = f"{test.base}/origin-transfer-status"
@@ -1612,10 +1798,15 @@ def origin_transfer_status(test: Test) -> tuple[str, str]:
 def client_failed(
     test: Test, cache: common.Cache, rel: str, name: str
 ) -> tuple[Optional[str], str]:
-    """`pelican object get --cache` of rel in /protected-a through cache
-    alone, into a directory of its own, name: it must fail, by something
-    other than a refusal, and leave nothing. What is wrong, or None, and
-    how it failed."""
+    """Check that `pelican object get --cache` of rel through cache fails.
+
+    The client reads rel in /protected-a through cache alone, into a
+    directory of its own, name: it must fail, by something other than a
+    refusal, and leave nothing.
+
+    Returns:
+        What is wrong, or None if nothing is; and how it failed.
+    """
     directory = os.path.join(test.tmp, name)
     os.makedirs(directory)
     code, out, err = test.session.pelican_cmd(
@@ -1642,12 +1833,17 @@ def client_failed(
 def plugin_failed(
     test: Test, cache: common.Cache, rel: str, name: str
 ) -> tuple[Optional[str], str]:
-    """stash_plugin's download of rel in /protected-a through cache alone,
-    into a directory of its own, name: it must say that the transfer
-    failed, and leave nothing; and, unless it found no such object (as
-    where the director, asking every origin, found none), that the
-    failure may be retried, since it came after the transfer began. What
-    is wrong, or None, and how it failed."""
+    """Check that stash_plugin's download of rel through cache fails.
+
+    The plugin reads rel in /protected-a through cache alone, into a
+    directory of its own, name: it must say that the transfer failed, and
+    leave nothing; and, unless it found no such object (as where the
+    director, asking every origin, found none), that the failure may be
+    retried, since it came after the transfer began.
+
+    Returns:
+        What is wrong, or None if nothing is; and how it failed.
+    """
     directory = os.path.join(test.tmp, name)
     os.makedirs(directory)
     url = f"{test.fed.url}/protected-a/{rel}"
@@ -1671,8 +1867,13 @@ def plugin_failed(
 def unrepairable(
     test: Test, cache: common.Cache, rel: str, data: bytes, token: str, found: Findings
 ) -> None:
-    """transfer_status_failure at one V2 cache, of rel, which holds data:
-    token is the cache's admin's. Raises NoChaos if it has no chaos API."""
+    """Run transfer_status_failure at one V2 cache, of rel.
+
+    rel holds data, and token is the cache's admin's.
+
+    Raises:
+        NoChaos: The cache has no chaos API.
+    """
     why = test.get(cache.url, rel, data, None)
     if why:
         found.fail(f"{cache.svc}: before spoiling: {why}")
@@ -1733,19 +1934,22 @@ def unrepairable(
 
 
 def transfer_status_failure(test: Test) -> tuple[str, str]:
-    """Each federated V2 cache: once it holds an object of its own whole,
-    its chaos API corrupts block FAILED_BLOCK in its store (see spoil()),
-    and every origin's copy is removed, so that it cannot repair the
-    block, which it otherwise would. A GET asked for the transfer's
-    status must then end with a trailer that reports a failure (Pelican
-    sends `500: ...`), since the headers, 200, went out before the cache
-    read the block; or, as where the cache revalidates first, fail before
-    the body. Through that cache alone, `pelican object get` must then
-    fail, by something other than a refusal, and leave nothing; and so
-    must stash_plugin, whose ad must say the failure may be retried,
-    unless it found no such object (plugin_failed()). A cache that serves
-    the object intact never read the block, as where it holds it in
-    memory, and leaves the row inconclusive."""
+    """Check that a block a V2 cache cannot repair fails the transfer.
+
+    Each federated V2 cache: once it holds an object of its own whole, its
+    chaos API corrupts block FAILED_BLOCK in its store (see spoil()), and
+    every origin's copy is removed, so that it cannot repair the block,
+    which it otherwise would. A GET asked for the transfer's status must
+    then end with a trailer that reports a failure (Pelican sends
+    `500: ...`), since the headers, 200, went out before the cache read
+    the block; or, as where the cache revalidates first, fail before the
+    body. Through that cache alone, `pelican object get` must then fail,
+    by something other than a refusal, and leave nothing; and so must
+    stash_plugin, whose ad must say the failure may be retried, unless it
+    found no such object (plugin_failed()). A cache that serves the object
+    intact never read the block, as where it holds it in memory, and
+    leaves the row inconclusive.
+    """
     caches = [c for c in test.fed.federated_caches if c.kind == "v2"]
     if not caches:
         return SKIP, "no federated V2 cache, whose chaos API alone can spoil a block"
@@ -1785,9 +1989,15 @@ DIGEST_SIZES = (
 def reported(
     test: Test, url: str, rel: str, data: bytes, algorithms: tuple[str, ...]
 ) -> tuple[list[str], set[str]]:
-    """Ask url's server for each of algorithms in turn of rel in
-    /protected-a, which holds data, with a HEAD and Want-Digest: what is
-    wrong with what it reports, and the algorithms it reports rightly."""
+    """Ask url's server for rel's digest by each of algorithms in turn.
+
+    rel is in /protected-a, and holds data; each ask is a HEAD with
+    Want-Digest.
+
+    Returns:
+        What is wrong with what it reports, and the algorithms it reports
+        rightly.
+    """
     problems: list[str] = []
     right: set[str] = set()
     for algorithm in algorithms:
@@ -1809,15 +2019,25 @@ def reported(
 def server_digests(
     test: Test, url: str, origin: bool, relays: bool = False
 ) -> tuple[list[str], set[str]]:
-    """What is wrong with the digests that url's server reports of the
-    objects of DIGEST_SIZES in the `whole` and `ranged` sets: asked by
-    HEAD for each of digests.ALGORITHMS in turn, and by GET for crc32c,
-    the client's default. An origin must report each of those its
-    storage holds for the object (test.digests, where
-    stores.has_digests() says so for its size and how it was uploaded);
-    so must a server that relays the origins' (a V2 cache), of the
-    `whole` set, which it holds, if at all, as it read it whole. Also
-    the algorithms it reports rightly."""
+    """Check the digests that url's server reports of the sets' objects.
+
+    The objects are those of DIGEST_SIZES in the `whole` and `ranged`
+    sets, and the server is asked by HEAD for each of digests.ALGORITHMS
+    in turn, and by GET for crc32c, the client's default. An origin must
+    report each of those its storage holds for the object (test.digests,
+    where stores.has_digests() says so for its size and how it was
+    uploaded); so must a server that relays the origins' (a V2 cache), of
+    the `whole` set, which it holds, if at all, as it read it whole.
+
+    Args:
+        test: The test.
+        url: The server's URL.
+        origin: Whether the server is an origin.
+        relays: Whether it relays the origins' digests.
+
+    Returns:
+        What is wrong, and the algorithms it reports rightly.
+    """
     problems: list[str] = []
     given: set[str] = set()
     for set_name in ("whole", "ranged"):
@@ -1851,7 +2071,9 @@ def server_digests(
 
 
 def digests_scenario(test: Test) -> tuple[str, str]:
-    """Each server's digests (see server_digests()): every one it reports
+    """Check that every digest that a server reports is the object's.
+
+    Each server's digests (see server_digests()): every one it reports
     must be the object's, as the client checks it. Each origin must report
     stores.ORIGIN_DIGESTS of each object, but for those its storage cannot
     (stores.digests()); so must a federated V2 cache of the `whole` set,
@@ -1860,7 +2082,8 @@ def digests_scenario(test: Test) -> tuple[str, str]:
     none (digest_range_first()), so of it, as of any object at an XRootD
     or site-local cache, a cache need report none. The note names the
     servers that report none. The origins are asked only if they take
-    direct clients."""
+    direct clients.
+    """
     if why := test.not_uploaded(True, False):
         return FAIL, why
     servers = [(o.svc, o.url, True, False) for o in test.origins] if test.direct else []
@@ -1885,9 +2108,19 @@ def digests_scenario(test: Test) -> tuple[str, str]:
 def write_version(
     test: Test, origin: common.Origin, rel: str, how: str, data: bytes
 ) -> Optional[str]:
-    """Put data at rel in /protected-a at origin: `seed` it (see
-    stores.seed()), `put` it, or write it in the store's `file` a second
-    after the last write; why that failed, or None."""
+    """Put data at rel in /protected-a at origin, as how says.
+
+    Args:
+        test: The test.
+        origin: The origin.
+        rel: The object, in /protected-a.
+        how: Whether to `seed` it (see stores.seed()), `put` it, or write
+            it in the store's `file` a second after the last write.
+        data: The version to put.
+
+    Returns:
+        Why that failed, or None if nothing did.
+    """
     if how == "file":
         time.sleep(1.1)
         return stores.write_file(origin.store_of("protected-a"), rel, data)
@@ -1897,10 +2130,15 @@ def write_version(
 
 
 def digests_after_writes(test: Test, origin: common.Origin, rel: str) -> tuple[list[str], int]:
-    """Write versions of rel in /protected-a at origin, as digest_overwrite
-    says, and after each, check that origin serves it, and reports each
-    digest its storage can (test.digests) of it: what was wrong, and how
-    many versions there were."""
+    """Write versions of rel in /protected-a at origin, checking each.
+
+    Write them as digest_overwrite says, and after each, check that origin
+    serves it, and reports each digest its storage can (test.digests) of
+    it.
+
+    Returns:
+        What was wrong, and how many versions there were.
+    """
     steps = [("the first version", "seed")]
     if test.writes:
         steps.append(("a PUT at once", "put"))
@@ -1928,14 +2166,17 @@ def digests_after_writes(test: Test, origin: common.Origin, rel: str) -> tuple[l
 
 
 def digest_overwrite(test: Test) -> tuple[str, str]:
-    """Each origin, once it has reported the digests of an object of its
-    own: after a PUT of another version, at once, and in a store on disk,
-    after a write there a second later, which it must notice (a native
-    origin keeps digests by the file's modification time, to the second;
+    """Check that each origin's digests and ETags follow overwrites.
+
+    Each origin, once it has reported the digests of an object of its own:
+    after a PUT of another version, at once, and in a store on disk, after
+    a write there a second later, which it must notice (a native origin
+    keeps digests by the file's modification time, to the second;
     origin_serve/checksum.go). Each time, the digests it reports must be
     those of the version it serves, and its ETag, if it sends one, must
     differ from every earlier version's, since by it a cache tells that an
-    object has changed."""
+    object has changed.
+    """
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
     if not test.digests:
@@ -1964,9 +2205,12 @@ DIGEST_WAIT = 10
 
 
 def relayed(answer: web.Response, data: bytes, want: tuple[str, ...]) -> Optional[str]:
-    """What is wrong with the digests in answer, to a HEAD or GET of an
-    object holding data: it must succeed; every digest it reports must be
-    the object's; and it must report each of want. None if nothing."""
+    """Return what is wrong with the digests in answer, or None.
+
+    answer is to a HEAD or GET of an object holding data: it must succeed;
+    every digest it reports must be the object's; and it must report each
+    of want.
+    """
     if answer.status != 200:
         return f"{answer.describe()}, not 200"
     header = answer.header("Digest")
@@ -1980,11 +2224,13 @@ def relayed(answer: web.Response, data: bytes, want: tuple[str, ...]) -> Optiona
 
 
 def relay_problem(test: Test, url: str, data: bytes, method: str) -> Optional[str]:
-    """What is wrong with what url's server reports of the digests of the
-    object there, which holds data, to method (HEAD or GET), asked by
-    Want-Digest for each of stores.ORIGIN_DIGESTS in turn: it must report
-    those the origins' storage does (test.digests; see relayed()), and a
-    GET must bring the object. None if nothing."""
+    """Return what is wrong with the digests url's server reports, or None.
+
+    They are of the object there, which holds data, to method (HEAD or
+    GET), asked by Want-Digest for each of stores.ORIGIN_DIGESTS in turn:
+    it must report those the origins' storage does (test.digests; see
+    relayed()), and a GET must bring the object.
+    """
     for algorithm in stores.ORIGIN_DIGESTS:
         answer = web.request(
             method, url, token=test.token, headers={"Want-Digest": algorithm}, timeout=120
@@ -1998,8 +2244,10 @@ def relay_problem(test: Test, url: str, data: bytes, method: str) -> Optional[st
 
 
 def relayed_soon(test: Test, url: str, data: bytes) -> Optional[str]:
-    """relay_problem() for HEAD, asked again for DIGEST_WAIT seconds while
-    it finds one."""
+    """Return relay_problem() for HEAD, asked again while it finds one.
+
+    Give up after DIGEST_WAIT seconds.
+    """
     last: list[Optional[str]] = [None]
 
     def right() -> bool:
@@ -2011,9 +2259,13 @@ def relayed_soon(test: Test, url: str, data: bytes) -> Optional[str]:
 
 
 def stats_checksums(path: str) -> tuple[dict[str, bytes], str]:
-    """The checksums that the client's --transfer-stats file says a server
-    gave it, by algorithm (digests.ALGORITHMS' names); or nothing, and
-    why."""
+    """Return the checksums a server gave, by the client's stats at path.
+
+    Returns:
+        The checksums that the client's --transfer-stats file says a
+        server gave it, by algorithm (digests.ALGORITHMS' names), and "";
+        or nothing, and why.
+    """
     try:
         with open(path, encoding="utf-8") as f:
             found = json.load(f)
@@ -2037,11 +2289,16 @@ def stats_checksums(path: str) -> tuple[dict[str, bytes], str]:
 
 
 def client_digests(test: Test, cache: common.Cache, rel: str, data: bytes) -> Optional[str]:
-    """`pelican object get --cache` of rel in /protected-a, which holds
-    data, through cache alone: it must bring the object, and its transfer
-    statistics show the digests that it then asked the cache for, which
-    must be the object's, and include each of test.digests. What is
-    wrong, or None."""
+    """Check the digests that `pelican object get --cache` gets from cache.
+
+    The client reads rel in /protected-a, which holds data, through cache
+    alone: it must bring the object, and its transfer statistics show the
+    digests that it then asked the cache for, which must be the object's,
+    and include each of test.digests.
+
+    Returns:
+        What is wrong, or None if nothing is.
+    """
     name = f"relay-get-{cache.svc}"
     directory = os.path.join(test.tmp, name)
     os.makedirs(directory)
@@ -2080,8 +2337,11 @@ def client_digests(test: Test, cache: common.Cache, rel: str, data: bytes) -> Op
 def relayed_at(
     test: Test, cache: common.Cache, rel: str, data: bytes
 ) -> tuple[Optional[str], str]:
-    """digest_relay at one V2 cache, of rel, which holds data: what is
-    wrong, or None, and a note."""
+    """Run digest_relay at one V2 cache, of rel, which holds data.
+
+    Returns:
+        What is wrong, or None if nothing is; and a note.
+    """
     url = f"{cache.url}/protected-a/{rel}"
     why = relay_problem(test, url, data, "HEAD")
     if why:
@@ -2105,20 +2365,23 @@ def relayed_at(
 
 
 def digest_relay(test: Test) -> tuple[str, str]:
-    """Each federated V2 cache relays the origins' digests of an object of
-    its own, as an RFC 3230 Digest (local_cache/persistent_cache_api.go
-    in Pelican), so that a client can check what it downloads through a
+    """Check that each federated V2 cache relays the origins' digests.
+
+    Each federated V2 cache relays the origins' digests of an object of
+    its own, as an RFC 3230 Digest (local_cache/persistent_cache_api.go in
+    Pelican), so that a client can check what it downloads through a
     cache: a cold HEAD, from the origin's answer, and once the cache has
     read the object whole, a HEAD and a GET, from what it recorded, must
     each report the digests that the origins' storage holds
     (test.digests), each the object's, whatever Want-Digest asks for
     (relay_problem()). A cold GET may come before the cache knows them,
-    and the note says whether it carried them. Then `pelican object get
-    --cache` must get them from the cache (client_digests()). Over XRootD
-    origins, which answer a Want-Digest of several algorithms with one,
-    the cache, which asks for all at once, relays only that one to a
-    cold HEAD, and the row fails there. A site-local cache reads through
-    another cache, and is left to the sitelocal suite."""
+    and the note says whether it carried them. Then
+    `pelican object get --cache` must get them from the cache
+    (client_digests()). Over XRootD origins, which answer a Want-Digest of
+    several algorithms with one, the cache, which asks for all at once,
+    relays only that one to a cold HEAD, and the row fails there. A
+    site-local cache reads through another cache, and is passed over.
+    """
     caches = [c for c in test.fed.federated_caches if c.kind == "v2"]
     if not caches:
         return SKIP, "no federated V2 cache; an XRootD cache need relay no digest"
@@ -2143,15 +2406,18 @@ def digest_relay(test: Test) -> tuple[str, str]:
 
 
 def digest_range_first(test: Test) -> tuple[str, str]:
-    """Each federated V2 cache relays the origins' digests (relay_problem())
+    """Check a V2 cache's digests of an object it first read in a range.
+
+    Each federated V2 cache relays the origins' digests (relay_problem())
     of an object of its own that it first read through a range, of its
     second block: by HEAD once it has, and again once it has read the
     object whole, and holds it all (it sends Age). A V2 cache fills a
-    range of an object it lacks block by block, and records only what
-    the origin's stat says of it (initObjectFromStat in
+    range of an object it lacks block by block, and records only what the
+    origin's stat says of it (initObjectFromStat in
     local_cache/persistent_cache.go), which asks for no digest; so it
     relays none of that object, and the row fails, on main and
-    v26.0.0-rc.3 alike."""
+    v26.0.0-rc.3 alike.
+    """
     caches = [c for c in test.fed.federated_caches if c.kind == "v2"]
     if not caches:
         return SKIP, "no federated V2 cache; an XRootD cache need relay no digest"
@@ -2206,8 +2472,12 @@ EVERY_DIGEST = "md5,crc32c,crc32,sha"
 
 
 def lacks_xattrs(path: str) -> Optional[list[str]]:
-    """Which of CHECKSUM_XATTRS the file at path lacks; None if nothing
-    here can read extended attributes (os.getxattr is Linux's alone)."""
+    """Return which of CHECKSUM_XATTRS the file at path lacks.
+
+    Returns:
+        Those it lacks, or None if nothing here can read extended
+        attributes (os.getxattr is Linux's alone).
+    """
     getxattr = vars(os).get("getxattr")
     if getxattr is None:
         return None
@@ -2223,12 +2493,16 @@ def lacks_xattrs(path: str) -> Optional[list[str]]:
 def stale_trap(
     test: Test, origin: common.Origin, rel: str, a: bytes, b: bytes
 ) -> tuple[Optional[str], Optional[str]]:
-    """At origin, which holds a at rel in /protected-a: have it record a's
-    digests (a HEAD with Want-Digest of EVERY_DIGEST), then write b over
-    a in its store, and give the file back its modification time, so
-    that the origin serves b and reports a's digests. What went wrong,
-    and why the trap could not be set (where the origin keeps no digest
-    in the store, or noticed), each or None."""
+    """Make origin serve b at rel in /protected-a but report a's digests.
+
+    origin holds a at rel. Have it record a's digests (a HEAD with
+    Want-Digest of EVERY_DIGEST), then write b over a in its store, and
+    give the file back its modification time.
+
+    Returns:
+        What went wrong, and why the trap could not be set (where the
+        origin keeps no digest in the store, or noticed), each or None.
+    """
     target = stores.url(origin, "protected-a", rel)
     answer = web.request(
         "HEAD", target, token=test.token, headers={"Want-Digest": EVERY_DIGEST}
@@ -2265,8 +2539,10 @@ def stale_trap(
 
 
 def stale_digest(test: Test, cache: common.Cache, rel: str, a: bytes, found: Findings) -> None:
-    """stale_origin_digest at one V2 cache, of rel, which every origin
-    holds as a."""
+    """Run stale_origin_digest at one V2 cache, of rel.
+
+    Every origin holds rel as a.
+    """
     b = bytes(x ^ 0xFF for x in a)
     for origin in test.origins:
         why, doubt = stale_trap(test, origin, rel, a, b)
@@ -2311,22 +2587,25 @@ def stale_digest(test: Test, cache: common.Cache, rel: str, a: bytes, found: Fin
 
 
 def stale_origin_digest(test: Test) -> tuple[str, str]:
-    """Each federated V2 cache, reading an object of its own that the
-    origins serve with digests that are not its own, must neither pass
-    it off as good nor keep it (Pelican's
+    """Check that a V2 cache keeps and serves nothing that fails its digest.
+
+    Each federated V2 cache, reading an object of its own that the origins
+    serve with digests that are not its own, must neither pass it off as
+    good nor keep it (Pelican's
     TestTransferStatus_Failure_OriginChecksumMismatch). A posixv2 origin
-    keeps an object's digests in its file's extended attributes, with
-    the file's modification time, to the second, and reports them while
-    that is unchanged; so each origin records the digests of one
-    version, and the test then writes another of the same size over it
-    in the store, and restores its time (stale_trap()). A GET through
-    the cache, asked for the transfer's status, must then report a
-    failure in its trailer, or fail; a GET with only-if-cached must get
-    504, within 10 seconds; and `pelican object get --cache` must fail,
-    by something other than a refusal, and leave nothing. Where the
-    store keeps no extended attributes, or the origin notices the
-    overwrite, the row is inconclusive. The origins are first asked
-    directly, so it skips where they take no direct clients."""
+    keeps an object's digests in its file's extended attributes, with the
+    file's modification time, to the second, and reports them while that
+    is unchanged; so each origin records the digests of one version, and
+    the test then writes another of the same size over it in the store,
+    and restores its time (stale_trap()). A GET through the cache, asked
+    for the transfer's status, must then report a failure in its trailer,
+    or fail; a GET with only-if-cached must get 504, within 10 seconds;
+    and `pelican object get --cache` must fail, by something other than a
+    refusal, and leave nothing. Where the store keeps no extended
+    attributes, or the origin notices the overwrite, the row is
+    inconclusive. The origins are first asked directly, so it skips where
+    they take no direct clients.
+    """
     if test.fed.origin_variant != "posixv2":
         return SKIP, (
             "only a posixv2 origin keeps digests by modification time in its store,"
@@ -2361,9 +2640,13 @@ XRDCKS_LENGTH = 31
 
 
 def xattr_digests(path: str) -> Optional[dict[str, Optional[bytes]]]:
-    """The digest that the file at path keeps in each of DIGEST_XATTRS, by
-    algorithm, or None for one it lacks; None if nothing here can read
-    extended attributes (os.getxattr is Linux's alone)."""
+    """Return the digests that the file at path keeps in DIGEST_XATTRS.
+
+    Returns:
+        Each digest, by algorithm, or None for one it lacks; or None if
+        nothing here can read extended attributes (os.getxattr is Linux's
+        alone).
+    """
     getxattr = vars(os).get("getxattr")
     if getxattr is None:
         return None
@@ -2380,23 +2663,25 @@ def xattr_digests(path: str) -> Optional[dict[str, Optional[bytes]]]:
 
 
 def digest_fields(answer: web.Response) -> list[str]:
-    """The values of each Digest field of answer."""
+    """Return the values of each Digest field of answer."""
     return [v for k, v in answer.headers if k.lower() == "digest"]
 
 
 def defaults_at(
     test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings
 ) -> None:
-    """digest_defaults's HEADs of rel in /protected-a at origin, which
-    holds data. Each asks for digests in its own way: with no Want-Digest,
-    with WANT_BOTH, and with WANT_WEIGHTED. Every digest it reports must be
-    the object's, in one Digest field, which is all the Pelican client
-    reads. Unasked, a native origin must report crc32c, the first of
-    Origin.DefaultChecksumTypes, which the framework leaves at its
-    default. Asked for both, a native origin must report each, and an
+    """Send digest_defaults's HEADs of rel in /protected-a at origin.
+
+    rel holds data. Each HEAD asks for digests in its own way: with no
+    Want-Digest, with WANT_BOTH, and with WANT_WEIGHTED. Every digest it
+    reports must be the object's, in one Digest field, which is all the
+    Pelican client reads. Unasked, a native origin must report crc32c, the
+    first of Origin.DefaultChecksumTypes, which the framework leaves at
+    its default. Asked for both, a native origin must report each, and an
     XRootD origin, which reports the one it prefers, at least one. Asked
     with q-values, every origin must report at least one. Each only of
-    what its storage reports (test.digests)."""
+    what its storage reports (test.digests).
+    """
     native = test.fed.native_origins
     asks = (
         ("unasked", None, ("crc32c",) if native else (), False),
@@ -2430,10 +2715,16 @@ def defaults_at(
 def kept_digests(
     test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings
 ) -> bool:
-    """Whether a posixv2 origin keeps the digests of rel in /protected-a,
-    which holds data, in its file's extended attributes, each the
-    object's, once it has reported them. Where they cannot be read, a
-    doubt; where one is wrong or missing, a problem."""
+    """Check that a posixv2 origin keeps rel's digests in its xattrs.
+
+    rel is in /protected-a, and holds data. Once the origin has reported
+    its digests, its file's extended attributes must hold each, the
+    object's. Where they cannot be read, record a doubt; where one is
+    wrong or missing, a problem.
+
+    Returns:
+        Whether it found any there to check.
+    """
     path = f"{origin.store_of('protected-a')}/{rel}"
     kept = xattr_digests(path)
     if kept is None:
@@ -2460,13 +2751,16 @@ def kept_digests(
 def digests_rewritten(
     test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings
 ) -> None:
-    """At a posixv2 origin, of rel in /protected-a, which holds data, and
-    whose digests it has recorded: write bytes of the same length over it
-    in the store, and give the file back its modification time. The origin
-    keeps digests by that time, to the second (origin_serve/checksum.go),
-    so it may report the old version's, which is accepted, as XRootD does
-    the same; or the new bytes', if it noticed. Any other digest, or none,
-    is a problem. The note says which."""
+    """Overwrite rel in a posixv2 origin's store, and check its digests.
+
+    rel is in /protected-a, holds data, and the origin has recorded its
+    digests. Write bytes of the same length over it in the store, and give
+    the file back its modification time. The origin keeps digests by that
+    time, to the second (origin_serve/checksum.go), so it may report the
+    old version's, which is accepted, as XRootD does the same; or the new
+    bytes', if it noticed. Any other digest, or none, is a problem. The
+    note says which.
+    """
     target = stores.url(origin, "protected-a", rel)
     path = f"{origin.store_of('protected-a')}/{rel}"
     rewrite = os.urandom(len(data))
@@ -2501,11 +2795,14 @@ def digests_rewritten(
 def xattrs_at(
     test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings
 ) -> None:
-    """digest_defaults at a posixv2 origin, of rel in /protected-a, which
-    holds data, and whose digests it has just reported: its file's
-    extended attributes must hold them (kept_digests()). A PUT of another
-    version must clear them, or replace them with its digests, which the
-    origin must then report. Last, digests_rewritten()."""
+    """Check the extended attributes of rel at a posixv2 origin.
+
+    For digest_defaults, rel is in /protected-a, holds data, and the
+    origin has just reported its digests: its file's extended attributes
+    must hold them (kept_digests()). A PUT of another version must clear
+    them, or replace them with its digests, which the origin must then
+    report. Last, digests_rewritten().
+    """
     if not kept_digests(test, origin, rel, data, found):
         return
     if test.writes:
@@ -2539,14 +2836,17 @@ def xattrs_at(
 
 
 def digest_defaults(test: Test) -> tuple[str, str]:
-    """Each origin, of an object of its own: the digests it reports
-    unasked, asked for two, and asked with q-values (defaults_at()). On a
-    posixv2 origin, it must then keep them in its file's extended
-    attributes, and follow a PUT; and after a rewrite in the store that
-    keeps the file's modification time, it may report the old digests,
-    but no others (xattrs_at()). Where the store's extended attributes
-    cannot be read, the row is inconclusive. The origins are asked only
-    if they take direct clients."""
+    """Check the digests each origin reports unasked, and asked in two ways.
+
+    Each origin, of an object of its own: the digests it reports unasked,
+    asked for two, and asked with q-values (defaults_at()). On a posixv2
+    origin, it must then keep them in its file's extended attributes, and
+    follow a PUT; and after a rewrite in the store that keeps the file's
+    modification time, it may report the old digests, but no others
+    (xattrs_at()). Where the store's extended attributes cannot be read,
+    the row is inconclusive. The origins are asked only if they take
+    direct clients.
+    """
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
     if not test.digests:
@@ -2575,12 +2875,15 @@ PAST_END_SIZES = (1, blocks.BLOCK, blocks.XROOTD_BLOCK + 1, blocks.SPILL + 1)
 
 
 def past_end(test: Test) -> tuple[str, str]:
-    """Each server, asked for ranges that start at or past the end of
-    objects of PAST_END_SIZES in the `whole` and `ranged` sets
+    """Check each server's answer to a range at or past an object's end.
+
+    Each server, asked for ranges that start at or past the end of objects
+    of PAST_END_SIZES in the `whole` and `ranged` sets
     (blocks.past_end()): 416, with Content-Range `bytes */<size>` if it
-    says, and none of the object's bytes; or, if it ignores Range, as RFC
-    9110 lets it, 200 with the whole object. The origins are asked only
-    if they take direct clients."""
+    says, and none of the object's bytes; or, if it ignores Range, as
+    RFC 9110 lets it, 200 with the whole object. The origins are asked
+    only if they take direct clients.
+    """
     if why := test.not_uploaded(True, False):
         return FAIL, why
     servers = [(o.svc, o.url) for o in test.origins] if test.direct else []
@@ -2612,10 +2915,12 @@ def past_end(test: Test) -> tuple[str, str]:
 
 
 def empty(test: Test) -> tuple[str, str]:
-    """Every server answers a GET of an empty object with 200 and no body,
-    and a range of it with 200 and no body (RFC 7233 lets it ignore Range)
-    or with 416, since no range of it is satisfiable. The origins are
-    asked only if they take direct clients."""
+    """Check that every server answers an empty object's GET with no body.
+
+    It must answer with 200, and a range of it with 200 and no body
+    (RFC 7233 lets it ignore Range) or with 416, since no range of it is
+    satisfiable. The origins are asked only if they take direct clients.
+    """
     if why := test.not_uploaded(True, False):
         return FAIL, why
     servers = [(o.svc, o.url) for o in test.origins] if test.direct else []
@@ -2687,14 +2992,17 @@ HUGE_TIMEOUT = 300
 
 
 def huge_pattern(run_id: str, offset: int) -> bytes:
-    """The marker at offset: MARKER bytes from a digest of the run and the
-    offset, so that no two markers, and no two runs', are alike."""
+    """Return the marker at offset.
+
+    It is MARKER bytes from a digest of the run and the offset, so that no
+    two markers, and no two runs', are alike.
+    """
     seed = hashlib.sha256(f"huge:{run_id}:{offset}".encode()).digest()
     return (seed * (MARKER // len(seed) + 1))[:MARKER]
 
 
 def huge_expected(run_id: str, low: int, high: int) -> bytes:
-    """Bytes low through high of the object."""
+    """Return bytes low through high of the object."""
     found = bytearray(high - low + 1)
     for offset in HUGE_MARKERS:
         start, end = max(low, offset), min(high, offset + MARKER - 1)
@@ -2705,10 +3013,15 @@ def huge_expected(run_id: str, low: int, high: int) -> bytes:
 
 
 def huge_file(run_id: str, path: str) -> tuple[Optional[str], bool]:
-    """Write the object to path (under framework/var) as a sparse file,
-    the markers written and the rest left as holes: why that failed, if
-    it did, and whether the file is sparse there, which a store on a
-    filesystem without holes cannot keep it."""
+    """Write the object to path (under framework/var) as a sparse file.
+
+    The markers are written, and the rest left as holes.
+
+    Returns:
+        Why that failed, or None if it did not; and whether the file is
+        sparse there, which a store on a filesystem without holes cannot
+        keep it.
+    """
     try:
         with open(path, "wb") as f:
             for offset in HUGE_MARKERS:
@@ -2725,9 +3038,11 @@ def huge_file(run_id: str, path: str) -> tuple[Optional[str], bool]:
 
 
 def huge_range_problem(run_id: str, answer: web.Response, r: blocks.Range) -> Optional[str]:
-    """What is wrong with an answer to a request for range r of the
-    object, or None: 206, a Content-Range of the bytes asked for out of
-    the object's size, and exactly those bytes."""
+    """Return what is wrong with answer to a request for range r, or None.
+
+    It must be 206, with a Content-Range of the bytes asked for out of the
+    object's size, and exactly those bytes.
+    """
     low, high = blocks.resolve(HUGE_SIZE, r)
     if answer.status != 206:
         return f"{answer.describe()}, not 206"
@@ -2746,11 +3061,20 @@ def huge_at(
     get: Callable[[str], web.Response],
     size_of: Optional[Callable[[], tuple[Optional[int], str]]] = None,
 ) -> list[str]:
-    """What is wrong with how a server serves the object, asked through
-    head() (a HEAD), get(range header) (a GET of a range, read only in
-    part), and size_of() (what it says the object's size is, and why not,
-    if it says none): the HEAD must give the object's length, each range
-    must come back right, and the size must be the object's."""
+    """Return what is wrong with how a server serves the object.
+
+    The HEAD must give the object's length, each range must come back
+    right, and the size must be the object's.
+
+    Args:
+        test: The test.
+        what: The server, as the problems name it.
+        head: Sends a HEAD.
+        get: Sends a GET of the range in a Range header, read only in
+            part.
+        size_of: Says what the server says the object's size is, and why
+            not, if it says none.
+    """
     problems: list[str] = []
     answer = head()
     if answer.status != 200:
@@ -2771,7 +3095,12 @@ def huge_at(
 
 
 def huge_propfind(target: str, token: str) -> tuple[Optional[int], str]:
-    """What a PROPFIND of Depth 0 of target says the object's size is."""
+    """Return the object's size, as a PROPFIND of Depth 0 of target says.
+
+    Returns:
+        The size, or None; and what the PROPFIND said, or why it said no
+        size.
+    """
     answer = webdav.propfind(target, "0", token)
     if answer.status != 207:
         return None, f"PROPFIND got {answer.describe()}"
@@ -2786,7 +3115,7 @@ def huge_propfind(target: str, token: str) -> tuple[Optional[int], str]:
 
 
 def huge_server(test: Test, svc: str, url: str, rel: str) -> list[str]:
-    """huge_at() for a server, asked straight."""
+    """Return huge_at() for a server, asked straight."""
     target = f"{url}/protected-a/{rel}"
     return huge_at(
         test,
@@ -2800,9 +3129,12 @@ def huge_server(test: Test, svc: str, url: str, rel: str) -> list[str]:
 
 
 def huge_through_director(test: Test, director_url: str, rel: str) -> list[str]:
-    """huge_at() through the director's object route, which sends a
-    client to a cache: each request is sent there, and then again to
-    wherever the redirect leads, with the token, as a client does."""
+    """Return huge_at() through the director's object route.
+
+    The route sends a client to a cache: each request is sent there, and
+    then again to wherever the redirect leads, with the token, as a client
+    does.
+    """
     route = f"{director_url}/api/v1.0/director/object/protected-a/{rel}"
     name = f"{director.host(director_url)} (object route)"
 
@@ -2826,9 +3158,12 @@ def huge_through_director(test: Test, director_url: str, rel: str) -> list[str]:
 
 
 def huge_client_sizes(test: Test, rel: str) -> list[str]:
-    """What is wrong with what the client says the object's size is, by
-    `pelican object stat --json`, and, where /protected-a has Listings,
-    `pelican object ls -l --json` of its collection."""
+    """Return what is wrong with the object's size as the client says it.
+
+    The client says it by `pelican object stat --json`, and, where
+    /protected-a has Listings, `pelican object ls -l --json` of its
+    collection.
+    """
     problems: list[str] = []
     url = f"{test.fed.url}/protected-a/{rel}"
     code, out, err = test.session.pelican_cmd(
@@ -2863,8 +3198,10 @@ def huge_client_sizes(test: Test, rel: str) -> list[str]:
 
 
 def huge_evict(test: Test, rel: str) -> list[str]:
-    """Evict the object from each V2 cache, which may have charged its
-    store the whole of it: what went wrong."""
+    """Evict the object from each V2 cache, and return what went wrong.
+
+    A V2 cache may have charged its store the whole of it.
+    """
     path = f"/protected-a/{rel}"
     problems: list[str] = []
     for cache in test.caches:
@@ -2880,15 +3217,17 @@ def huge_evict(test: Test, rel: str) -> list[str]:
 
 
 def huge_ranges(test: Test) -> tuple[str, str]:
-    """An object past 4 GiB, as a sparse file in each origin's store on
-    disk: at each origin that takes direct clients, through each
-    director's object route (a cache), and at each cache, a HEAD must
-    give its length, and each of HUGE_RANGES come back right, with its
-    Content-Range; a PROPFIND at each origin and cache must say its size,
-    as must `pelican object stat` and `ls`. A pstore origin's store is
-    encrypted, so the object would have to go over HTTPS, whole: the
-    scenario skips there. Afterward, the object is evicted from each V2
-    cache."""
+    """Check the length and ranges of an object past 4 GiB at every server.
+
+    The object is a sparse file in each origin's store on disk: at each
+    origin that takes direct clients, through each director's object route
+    (a cache), and at each cache, a HEAD must give its length, and each of
+    HUGE_RANGES come back right, with its Content-Range; a PROPFIND at
+    each origin and cache must say its size, as must `pelican object stat`
+    and `ls`. A pstore origin's store is encrypted, so the object would
+    have to go over HTTPS, whole: the scenario skips there. Afterward, the
+    object is evicted from each V2 cache.
+    """
     if any(o.pstore for o in test.origins):
         return (
             SKIP,
@@ -2947,10 +3286,15 @@ LONG_AGO = "Thu, 01 Jan 2015 00:00:00 GMT"
 
 
 def conditions(etag: str, modified: str) -> list[tuple[str, str, bool]]:
-    """The conditions to send for an object whose ETag and Last-Modified
-    these are (RFC 9110): each header, its value, and whether it holds for
-    the object as it is, in which case a server may answer 304. Without
-    an ETag or a Last-Modified, the conditions on it are left out."""
+    """Return the conditions to send for an object with etag and modified.
+
+    etag and modified are its ETag and Last-Modified (RFC 9110). Without
+    an ETag or a Last-Modified, the conditions on it are left out.
+
+    Returns:
+        Each condition's header, its value, and whether it holds for the
+        object as it is, in which case a server may answer 304.
+    """
     found: list[tuple[str, str, bool]] = []
     if etag:
         strong = etag[2:] if etag.startswith("W/") else etag
@@ -2974,9 +3318,14 @@ def conditions(etag: str, modified: str) -> list[tuple[str, str, bool]]:
 def conditional_problems(
     test: Test, svc: str, url: str, rel: str, data: bytes
 ) -> tuple[list[str], set[str], set[str]]:
-    """Send each of conditions() for rel in /protected-a, which holds data,
-    to url's server: what is wrong, the headers it honored (304), and
-    those of ETag and Last-Modified it never sent."""
+    """Send each of conditions() for rel in /protected-a to url's server.
+
+    rel holds data.
+
+    Returns:
+        What is wrong, the headers it honored (304), and those of ETag and
+        Last-Modified it never sent.
+    """
     target = f"{url}/protected-a/{rel}"
     answer = web.request("GET", target, token=test.token)
     if answer.status != 200 or answer.body != data:
@@ -3003,7 +3352,9 @@ def conditional_problems(
 
 
 def conditional(test: Test) -> tuple[str, str]:
-    """Each server, asked for objects of the `whole` set with a condition
+    """Check that a server answers 304 only when a GET's condition holds.
+
+    Each server, asked for objects of the `whole` set with a condition
     (RFC 9110, which lets a server ignore a condition on a GET, but never
     answer 304 to one that does not hold): with If-None-Match naming the
     ETag it sent, among others, weakened (W/), or as *, and with
@@ -3011,7 +3362,8 @@ def conditional(test: Test) -> tuple[str, str]:
     304, or 200 with the whole object; with If-None-Match naming another
     ETag, or If-Modified-Since long ago, it must answer 200 with the whole
     object. The origins are asked only if they take direct clients. The
-    note says what each server honored, and what it never sent."""
+    note says what each server honored, and what it never sent.
+    """
     if why := test.not_uploaded(True):
         return FAIL, why
     servers = [(o.svc, o.url) for o in test.origins] if test.direct else []
@@ -3040,8 +3392,10 @@ def conditional(test: Test) -> tuple[str, str]:
 def cas_put(
     test: Test, origin: common.Origin, rel: str, data: bytes, header: str, value: str
 ) -> web.Response:
-    """PUT data to rel in /protected-a at origin, on the condition header:
-    value."""
+    """PUT data to rel in /protected-a at origin, on a condition.
+
+    The condition is header: value.
+    """
     return web.request(
         "PUT",
         stores.url(origin, "protected-a", rel),
@@ -3052,16 +3406,21 @@ def cas_put(
 
 
 def cas_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str], str]:
-    """conditional_put at one origin, of rel: what is wrong, and a note."""
+    """Run conditional_put at one origin, of rel.
+
+    Returns:
+        What is wrong, and a note.
+    """
     v1, v2, v3 = (os.urandom(4096) for _ in range(3))
     problems: list[str] = []
 
     def check(
         what: str, answer: web.Response, allowed: bool, where: str, want: Optional[bytes]
     ) -> None:
-        """The write what must have succeeded if allowed, and otherwise
-        been refused (412); either way the store must then hold want at
-        where (None: nothing)."""
+        """Check that the write what succeeded if allowed, or else got 412.
+
+        Either way the store must then hold want at where (None: nothing).
+        """
         if allowed and not answer.ok:
             problems.append(f"{what}: {answer.describe()}")
         elif not allowed and answer.status != 412:
@@ -3123,14 +3482,17 @@ def cas_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str]
 
 
 def conditional_put(test: Test) -> tuple[str, str]:
-    """Each origin that takes writes from direct clients: a PUT with
+    """Check that a PUT is refused (412) unless its condition holds.
+
+    Each origin that takes writes from direct clients: a PUT with
     If-None-Match: * creates an object, and a second one is refused (412)
     and changes nothing; one with If-Match naming the object's ETag
     replaces it, and one naming the ETag it replaced, or another, is
     refused and changes nothing; and one with If-Match: * of an object
     that does not exist is refused, and stores nothing (RFC 9110). A
     server that ignores a condition on a PUT would let two writers
-    overwrite each other unawares."""
+    overwrite each other unawares.
+    """
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
     if not test.writes:
@@ -3156,14 +3518,22 @@ IF_RANGE = (100, blocks.BLOCK + 99)
 
 
 def unweakened(etag: str) -> str:
-    """etag without a weak prefix (W/), as a weak comparison sees it."""
+    """Return etag without a weak prefix (W/).
+
+    That is how a weak comparison sees it.
+    """
     return etag[2:] if etag.startswith("W/") else etag
 
 
 def method_etags(test: Test, target: str, data: bytes, problems: list[str]) -> dict[str, str]:
-    """The ETag that each of GET, HEAD, and PROPFIND (Depth 0, its
-    getetag) reports of target, which holds data, by method; "" for one
-    that reports none. What goes wrong goes in problems."""
+    """Return the ETag that each method reports of target, by method.
+
+    The methods are GET, HEAD, and PROPFIND (Depth 0, its getetag); target
+    holds data. What goes wrong goes in problems.
+
+    Returns:
+        Each method's ETag, or "" for one that reports none.
+    """
     found: dict[str, str] = {}
     answer = web.request("GET", target, token=test.token)
     if answer.status != 200 or answer.body != data:
@@ -3196,13 +3566,18 @@ def etag_conditions(
     source: str,
     problems: list[str],
 ) -> tuple[bytes, Optional[str]]:
-    """Conditions on rel in /protected-a at origin, which holds data and
-    has etag, a strong one, which source reported: a GET with If-Match,
-    which must serve the object; a GET of IF_RANGE with If-Range, which
-    must serve the range (206); and, where /protected-a takes writes, a
-    PUT of another version with If-Match, which must replace it. What goes
-    wrong goes in problems. Returns what the object holds afterward, and
-    the ETag of the PUT's answer, if it replaced it."""
+    """Check conditions that name etag on rel in /protected-a at origin.
+
+    rel holds data and has etag, a strong one, which source reported. Send
+    a GET with If-Match, which must serve the object; a GET of IF_RANGE
+    with If-Range, which must serve the range (206); and, where
+    /protected-a takes writes, a PUT of another version with If-Match,
+    which must replace it. What goes wrong goes in problems.
+
+    Returns:
+        What the object holds afterward, and the ETag of the PUT's answer,
+        if it replaced it, or None.
+    """
     target = stores.url(origin, "protected-a", rel)
     what = f"with If-Match: {etag} ({source}'s)"
     answer = web.request("GET", target, token=test.token, headers={"If-Match": etag})
@@ -3235,7 +3610,11 @@ def etag_conditions(
 
 
 def etag_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str], str]:
-    """etag_agreement at one origin, of rel: what is wrong, and a note."""
+    """Run etag_agreement at one origin, of rel.
+
+    Returns:
+        What is wrong, and a note.
+    """
     target = stores.url(origin, "protected-a", rel)
     data = os.urandom(ETAG_SIZE)
     problems: list[str] = []
@@ -3270,14 +3649,17 @@ def etag_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str
 
 
 def etag_agreement(test: Test) -> tuple[str, str]:
-    """Each origin, of an object of its own, written by a PUT (or, where
+    """Check that each origin gives one version one ETag, by every method.
+
+    Each origin, of an object of its own, written by a PUT (or, where
     /protected-a takes no writes, put in its store): the ETags that the
     PUT's answer, a GET, a HEAD, and PROPFIND's getetag report must be
     one, since they name one version (RFC 9110, section 8.8.3), by which a
     cache revalidates and a writer compares and swaps. Then the ETags of
     GET and of PUT must each hold as conditions (etag_conditions()). The
     origins are asked only if they take direct clients. The note says
-    which methods reported none."""
+    which methods reported none.
+    """
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
     base = f"{test.base}/etag-agreement"
@@ -3300,10 +3682,15 @@ RACERS = 8
 
 
 def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
-    """RACERS PUTs at once, each with If-None-Match: * and bytes of its
-    own, of rel in /protected-a at origin, which does not exist: exactly
-    one must succeed, and the rest be refused (412), and the store must
-    then hold the winner's bytes. What is wrong."""
+    """Race RACERS PUTs that create rel in /protected-a at origin.
+
+    Each has If-None-Match: * and bytes of its own, and rel does not
+    exist: exactly one must succeed, and the rest be refused (412), and
+    the store must then hold the winner's bytes.
+
+    Returns:
+        What is wrong; empty if nothing is.
+    """
     bodies = [os.urandom(1 << 16) for _ in range(RACERS)]
     answers = [web.Response(None) for _ in range(RACERS)]
 
@@ -3334,8 +3721,11 @@ def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
 
 
 def edge_problems(test: Test, origin: common.Origin, base: str) -> tuple[list[str], str]:
-    """conditional_edges at one origin, of objects under base: what is
-    wrong, and a note."""
+    """Run conditional_edges at one origin, of objects under base.
+
+    Returns:
+        What is wrong, and a note.
+    """
     rel = f"{base}/object"
     data = os.urandom(blocks.BLOCK + 1)
     error = stores.seed(origin, "protected-a", rel, data, test.token, test.caps)
@@ -3388,8 +3778,10 @@ def edge_problems(test: Test, origin: common.Origin, base: str) -> tuple[list[st
 
 
 def conditional_edges(test: Test) -> tuple[str, str]:
-    """Each origin, of objects of its own (RFC 9110, section 13): a GET of
-    an object that does not exist, with If-None-Match naming an ETag or *,
+    """Check each origin's answers to edge cases of conditions.
+
+    Each origin, of objects of its own (RFC 9110, section 13): a GET of an
+    object that does not exist, with If-None-Match naming an ETag or *,
     must get 404, not 304; one with an invalid If-Modified-Since, which is
     ignored, the object; one with If-None-Match that does not hold, beside
     If-Modified-Since that would, the object, since If-None-Match decides;
@@ -3399,7 +3791,8 @@ def conditional_edges(test: Test) -> tuple[str, str]:
     refused (412), changing nothing, since * in a list still means any
     object; and of RACERS PUTs at once of a new object, each with
     If-None-Match: *, exactly one may succeed (race()). The origins are
-    asked only if they take direct clients."""
+    asked only if they take direct clients.
+    """
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
     base = f"{test.base}/conditional-edges"
@@ -3426,10 +3819,13 @@ MIXED_LATER = -(-2 * blocks.XROOTD_BLOCK // blocks.BLOCK) * blocks.BLOCK
 
 
 def mixed_version(test: Test) -> tuple[str, str]:
-    """Each cache reads the first block of an object, and the origins then
-    take another version of it. Every later response, to a range the
-    cache has yet to fetch and to the whole object, must be entirely one
-    version, and the same one."""
+    """Check that an object overwritten mid-way comes back as one version.
+
+    Each cache reads the first block of an object, and the origins then
+    take another version of it. Every later response, to a range the cache
+    has yet to fetch and to the whole object, must be entirely one
+    version, and the same one.
+    """
     size = MIXED_SIZE
     rel = f"{test.base}/mixed"
     v1, v2 = os.urandom(size), os.urandom(size)
@@ -3510,8 +3906,16 @@ REVALIDATION_MARGIN = 45
 
 
 class Versions:
-    """Two versions of each cache's objects for the overwrite scenarios,
-    under base, by name: v2 is as long as v1, longer, or shorter."""
+    """Two versions of each cache's objects for the overwrite scenarios.
+
+    Attributes:
+        CHANGES: How much longer v2 is than v1, by kind of change.
+        NAMES: The kinds of change.
+        base: Where the objects are, in /protected-a.
+        v1: Each object's first version, by name (<cache>-<kind>).
+        v2: Each object's second version, by name: as long as v1, longer,
+            or shorter.
+    """
 
     CHANGES = {"same": 0, "grown": blocks.OVERWRITE_CHANGE, "shrunk": -blocks.OVERWRITE_CHANGE}
     NAMES = tuple(CHANGES)
@@ -3530,11 +3934,16 @@ class Versions:
     def which(
         self, cache: common.Cache, key: str, request: Optional[blocks.Request]
     ) -> tuple[Optional[str], str]:
-        """Which version a read of object key (or a range of it) through
-        cache came back as (see blocks.which_version()). A whole read asks
-        for a digest too (Want-Digest), which, if one comes, must be that
-        version's: a stale one would fail the client's check of bytes that
-        are right."""
+        """Return which version a read of key through cache came back as.
+
+        The read is of object key (or a range of it; see
+        blocks.which_version()). A whole read asks for a digest too
+        (Want-Digest), which, if one comes, must be that version's: a stale
+        one would fail the client's check of bytes that are right.
+
+        Returns:
+            The version, or None; and why it is none.
+        """
         headers = {"Range": blocks.header(request)} if request else {"Want-Digest": "crc32c"}
         url = f"{cache.url}/protected-a/{self.base}/{key}"
         answer = web.request("GET", url, token=self.test.token, headers=headers, timeout=120)
@@ -3552,14 +3961,15 @@ class Versions:
         return version, why
 
     def now(self, cache: common.Cache) -> list[Optional[str]]:
-        """Which version a whole read of each of cache's objects came back
-        as."""
+        """Return the version of a whole read of each of cache's objects."""
         return [self.which(cache, f"{cache.svc}-{n}", None)[0] for n in self.NAMES]
 
     def battery(self, cache: common.Cache) -> tuple[Counter[str], list[str]]:
-        """Every read of cache's objects, whole and in every range of
-        either version: how many came back as each version, and what was
-        wrong."""
+        """Read cache's objects whole, and in every range of either version.
+
+        Returns:
+            How many reads came back as each version, and what was wrong.
+        """
         jobs: list[tuple[str, Optional[blocks.Request]]] = []
         for n in self.NAMES:
             key = f"{cache.svc}-{n}"
@@ -3583,8 +3993,10 @@ class Versions:
 
 
 def cache_control_problem(test: Test, rel: str, control: str) -> Optional[str]:
-    """Why an origin does not send Cache-Control control for rel in
-    /protected-a, if one does not."""
+    """Return why an origin does not send Cache-Control control for rel.
+
+    rel is in /protected-a. None if every origin sends it.
+    """
     for origin in test.origins:
         answer = web.request(
             "GET",
@@ -3599,15 +4011,22 @@ def cache_control_problem(test: Test, rel: str, control: str) -> Optional[str]:
 
 
 def overwrite(test: Test, range_first: bool) -> tuple[str, str]:
-    """Each cache reads v1 of three objects of its own, whole twice or a
+    """Check that each cache serves an overwritten object as one version.
+
+    Each cache reads v1 of three objects of its own, whole twice or a
     range then whole, and the origins then take v2: of the same size,
-    larger, or smaller. Every response must then be all v1 or all v2,
-    with that version's size. With ORIGIN_CACHE_CONTROL
-    (`-p origin-max-age`) at native origins, every origin must send it,
-    and each cache, once its copy is stale, must serve v2, and only v2.
-    Without it, and at XRootD origins, which send none, a cache decides
-    for itself how long its copy stays fresh. The origins are asked only
-    if they take direct clients."""
+    larger, or smaller. Every response must then be all v1 or all v2, with
+    that version's size. With ORIGIN_CACHE_CONTROL (`-p origin-max-age`)
+    at native origins, every origin must send it, and each cache, once its
+    copy is stale, must serve v2, and only v2. Without it, and at XRootD
+    origins, which send none, a cache decides for itself how long its copy
+    stays fresh. The origins are asked only if they take direct clients.
+
+    Args:
+        test: The test.
+        range_first: Whether each cache first reads a range, then the
+            whole, rather than the whole twice.
+    """
     kind = "range-first" if range_first else "cached"
     versions = Versions(test, f"{test.base}/overwrite-{kind}")
     errors = upload_each(test, versions.base, versions.v1)
@@ -3672,24 +4091,29 @@ def overwrite(test: Test, range_first: bool) -> tuple[str, str]:
 
 
 def overwrite_cached(test: Test) -> tuple[str, str]:
-    """overwrite(), of objects first read whole."""
+    """Check overwrite(), of objects first read whole."""
     return overwrite(test, False)
 
 
 def overwrite_range_first(test: Test) -> tuple[str, str]:
-    """overwrite(), of objects first read through a range."""
+    """Check overwrite(), of objects first read through a range."""
     return overwrite(test, True)
 
 
 def held_everywhere(test: Test, rel: str, data: bytes) -> bool:
-    """Whether every origin holds data at rel in /protected-a."""
+    """Return whether every origin holds data at rel in /protected-a."""
     held = stores.held_anywhere(test.origins, "protected-a", rel, {"protected-a": test.token})
     return all(h == common.digest(data) for h in held)
 
 
 def put_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> Optional[str]:
-    """write_through()'s PUTs through cache of rel in /protected-a, which
-    every origin holds as v1; what went wrong, or None."""
+    """Send write_through()'s PUTs through cache of rel in /protected-a.
+
+    Every origin holds rel as v1.
+
+    Returns:
+        What went wrong, or None if nothing did.
+    """
     url = f"{cache.url}/protected-a/{rel}"
     v2 = os.urandom(len(v1) - blocks.OVERWRITE_CHANGE)
     why = test.get(cache.url, rel, v1, None)
@@ -3724,8 +4148,13 @@ def put_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> Optiona
 
 
 def delete_through(test: Test, cache: common.Cache, rel: str) -> Optional[str]:
-    """write_through()'s DELETE through cache of rel in /protected-a,
-    which every origin holds; what went wrong, or None."""
+    """Send write_through()'s DELETE through cache of rel in /protected-a.
+
+    Every origin holds rel.
+
+    Returns:
+        What went wrong, or None if nothing did.
+    """
     url = f"{cache.url}/protected-a/{rel}"
     answer = web.request("DELETE", url, token=test.token)
     if not answer.ok:
@@ -3745,9 +4174,14 @@ def delete_through(test: Test, cache: common.Cache, rel: str) -> Optional[str]:
 
 
 def refused_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> Optional[str]:
-    """write_through()'s PUT through an XRootD cache of rel in
-    /protected-a, which every origin holds as v1: it must be refused, and
-    change no origin; what went wrong, or None."""
+    """Check that an XRootD cache refuses write_through()'s PUT of rel.
+
+    rel is in /protected-a, and every origin holds it as v1. The PUT must
+    be refused, and change no origin.
+
+    Returns:
+        What went wrong, or None if nothing did.
+    """
     answer = web.request(
         "PUT", f"{cache.url}/protected-a/{rel}", token=test.token, upload=os.urandom(len(v1))
     )
@@ -3761,16 +4195,19 @@ def refused_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> Opt
 
 
 def write_through(test: Test) -> tuple[str, str]:
-    """Each V2 cache takes writes of /protected-a, which it relays to an
+    """Check that V2 caches relay writes, and XRootD caches refuse them.
+
+    Each V2 cache takes writes of /protected-a, which it relays to an
     origin through the director, and then drops its copy (proxyWrite in
     Pelican's local_cache/persistent_cache_api.go). Of an object it holds:
     a PUT with a read-only token must be refused, and change nothing; one
     with the server's token must reach an origin; and once every origin
-    holds what was written, the cache must serve it at once. Then
-    likewise a DELETE, after which the cache must serve nothing, unless
-    the origins' storage cannot delete. Where /protected-a takes no
-    writes, the PUT must be refused. An XRootD cache takes no writes, so
-    its PUT must be refused, and change no origin."""
+    holds what was written, the cache must serve it at once. Then likewise
+    a DELETE, after which the cache must serve nothing, unless the
+    origins' storage cannot delete. Where /protected-a takes no writes,
+    the PUT must be refused. An XRootD cache takes no writes, so its PUT
+    must be refused, and change no origin.
+    """
     base = f"{test.base}/write-through"
     v1 = {c.svc: os.urandom(blocks.OVERWRITE_SIZE) for c in test.caches}
     errors = upload_each(test, base, v1)
@@ -3819,15 +4256,23 @@ LRU_NEWEST = 3
 
 
 def evict_object(run_id: str, n: int) -> bytes:
-    """The bytes of cache-evicted's object n: made anew from the run and n
-    each time, since holding every object would take as much memory as
-    the caches' bound. Test data, so not a cryptographic generator."""
+    """Return the bytes of cache-evicted's object n.
+
+    They are made anew from the run and n each time, since holding every
+    object would take as much memory as the caches' bound. Test data, so
+    not a cryptographic generator.
+    """
     return random.Random(f"{run_id}/{n}").randbytes(EVICT_OBJECT)  # nosec B311
 
 
 def cached(test: Test, cache: common.Cache, rel: str) -> Optional[bool]:
-    """Whether a V2 cache holds all of rel, as a HEAD with only-if-cached
-    says (504 if not); None if it says neither."""
+    """Return whether a V2 cache holds all of rel.
+
+    A HEAD with only-if-cached says (504 if not).
+
+    Returns:
+        Whether it does, or None if the HEAD says neither.
+    """
     answer = web.request(
         "HEAD",
         f"{cache.url}/protected-a/{rel}",
@@ -3838,9 +4283,11 @@ def cached(test: Test, cache: common.Cache, rel: str) -> Optional[bool]:
 
 
 def reread_at(high: int, count: int) -> int:
-    """After how many of cache_evicted's objects it reads object 0 again:
-    as many as fit under the high water mark high, less one, so that the
-    cache holds object 0 still, and evicts nothing yet."""
+    """Return after how many objects cache_evicted reads object 0 again.
+
+    That is as many as fit under the high water mark high, less one, so
+    that the cache holds object 0 still, and evicts nothing yet.
+    """
     fit = high // blocks.stored(EVICT_OBJECT) - 1
     return max(1, min(count - LRU_NEWEST - 1, fit))
 
@@ -3848,13 +4295,19 @@ def reread_at(high: int, count: int) -> int:
 def lru_order(
     test: Test, cache: common.Cache, base: str, count: int, again: int, was_held: Optional[bool]
 ) -> tuple[Optional[str], str]:
-    """After cache_evicted's reads: the LRU_NEWEST objects read last must
-    still be held, and at least two of the oldest (1 to again - 1) gone.
-    Object 0, read again after again objects, while held (was_held), may
-    be held or gone: the cache records an access for its LRU at most once
-    in ten minutes (UpdateLRU's debounce in local_cache/database.go), so
-    the read again may move it nowhere. What is wrong, or None, and a
-    note of what the cache held."""
+    """Check which objects a cache holds after cache_evicted's reads.
+
+    The LRU_NEWEST objects read last must still be held, and at least two
+    of the oldest (1 to again - 1) gone. Object 0, read again after again
+    objects, while held (was_held), may be held or gone: the cache records
+    an access for its LRU at most once in ten minutes (UpdateLRU's
+    debounce in local_cache/database.go), so the read again may move it
+    nowhere.
+
+    Returns:
+        What is wrong, or None if nothing is; and a note of what the cache
+        held.
+    """
     found = {n: cached(test, cache, f"{base}/{n}") for n in range(count)}
     unsure = [n for n, held in found.items() if held is None]
     if unsure:
@@ -3876,8 +4329,14 @@ def lru_order(
 def evicted(
     test: Test, cache: common.Cache, base: str, count: int
 ) -> tuple[Optional[str], str]:
-    """cache_evicted at one cache, whose store is bounded (test.fed.eviction):
-    what went wrong, or None, and a note of what it held (see lru_order())."""
+    """Run cache_evicted at one cache, whose store is bounded.
+
+    Its bounds are in test.fed.eviction.
+
+    Returns:
+        What went wrong, or None if nothing did; and a note of what it
+        held (see lru_order()).
+    """
     high, low = test.fed.eviction[cache.svc]
     again = reread_at(high, count)
     was_held: Optional[bool] = None
@@ -3942,17 +4401,20 @@ def evicted(
 
 
 def cache_evicted(test: Test) -> tuple[str, str]:
-    """Each V2 cache whose store is bounded (`-p cache-small`): a cold whole
+    """Check that a bounded V2 cache evicts the oldest objects first.
+
+    Each V2 cache whose store is bounded (`-p cache-small`): a cold whole
     read of each of enough objects of EVICT_OBJECT bytes to exceed its
     high water mark by half, reading the first again once as many as fit
     under the mark have been read (reread_at()); then, within EVICT_WAIT
     seconds, its store must have come back under the mark, and not below
     its low one by more than an object; it must have evicted the oldest
     objects and kept the newest (lru_order()); and every object must
-    still come back whole and in a range, as must the first by `pelican
-    object get --cache`. The objects are one set, read cold by each
-    cache. An XRootD cache's usage is its filesystem's, which the
-    framework cannot bound, and is passed over."""
+    still come back whole and in a range, as must the first by
+    `pelican object get --cache`. The objects are one set, read cold by
+    each cache. An XRootD cache's usage is its filesystem's, which the
+    framework cannot bound, and is passed over.
+    """
     caches = [c for c in test.caches if c.kind == "v2" and c.svc in test.fed.eviction]
     if not caches:
         return SKIP, "no V2 cache has a bounded store ('-p cache-small')"
@@ -3988,6 +4450,8 @@ def cache_evicted(test: Test) -> tuple[str, str]:
     )
 
 
+# Each scenario, by name: it takes the Test, and returns its result and a
+# note.
 RUN = {
     "put-declared": put_declared,
     "put-chunked": put_chunked,
@@ -4030,7 +4494,7 @@ RUN = {
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no /protected-a."""
+    """Return why there is nothing to test (no /protected-a), or None."""
     if "protected-a" not in fed.exports:
         return "this shape does not export /protected-a"
     return None

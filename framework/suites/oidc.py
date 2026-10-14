@@ -1,10 +1,12 @@
-"""Logging in through an identity provider (`-p auth-oidc`): what every
-server does with a user that the provider vouches for, through the
-OAuth2 authorization code flow that a browser follows (testlib/oidc.py);
-what the servers make of the provider's claims, a username and groups;
-and the registry's use of the provider's device flow to learn who
-registers a prefix (`pelican namespace register --with-identity`). The
-provider is the `idp` service (framework/idp/idp.py), whose users are
+"""Logging in through an identity provider (`-p auth-oidc`).
+
+What every server does with a user that the provider vouches for,
+through the OAuth2 authorization code flow that a browser follows
+(testlib/oidc.py); what the servers make of the provider's claims, a
+username and groups; and the registry's use of the provider's device
+flow to learn who registers a prefix
+(`pelican namespace register --with-identity`). The provider is the
+`idp` service (framework/idp/idp.py), whose users are
 framework/etc/idp-users.json.
 
   enabled            each server lists the modules it logs in through
@@ -112,6 +114,8 @@ SCENARIOS = {
     ),
 }
 
+# A row: its case (appended to the scenario's name, if any), its status,
+# and its note.
 Row = tuple[str, str, str]
 
 # The provider's users (framework/etc/idp-users.json), by what each is
@@ -138,12 +142,12 @@ TOKEN_LIFETIME = 3600
 
 
 def row(case: str, problems: Sequence[str], note: str) -> Row:
-    """A row of case: FAIL with the first problem, or PASS with note."""
+    """Return case's row: FAIL with the first problem, or PASS with note."""
     return (case, FAIL, first(problems)) if problems else (case, PASS, note)
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no identity provider."""
+    """Return why there is nothing to test (no provider), or None."""
     if fed.oidc_issuer is None:
         return "the servers log in through no identity provider ('-p auth-oidc')"
     return None
@@ -151,16 +155,23 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 @dataclass
 class Test:
-    """The provider, its users, the servers, and what the scenarios
-    share."""
+    """The provider, its users, the servers, and what the scenarios share.
+
+    Attributes:
+        issuer: The provider's issuer URL.
+        users: The provider's users, by name.
+        client_id: The servers' client at the provider.
+        namespace: The first protected namespace exported, if any.
+        registry_ids: The provider's users' IDs at the registry, by name.
+    """
 
     session: Session
-    issuer: str  # the provider's issuer URL
+    issuer: str
     users: dict[str, IdpUser]
     servers: list[Server]
     client_id: str
-    namespace: Optional[str]  # the first protected namespace exported, if any
-    registry_ids: dict[str, str] = field(default_factory=dict[str, str])  # at the registry
+    namespace: Optional[str]
+    registry_ids: dict[str, str] = field(default_factory=dict[str, str])
     _admins: dict[str, Api] = field(default_factory=dict[str, Api])
 
     @property
@@ -184,11 +195,14 @@ class Test:
         return self.fed.origin_web_url
 
     def user(self, name: str) -> IdpUser:
-        """The provider's user named name."""
+        """Return the provider's user named name."""
         return self.users[name]
 
     def admin(self, server: Server) -> Api:
-        """server's web API as its admin, who has agreed to its AUP."""
+        """Return server's web API as its admin.
+
+        The admin has agreed to its AUP.
+        """
         if server.web_url not in self._admins:
             token = credentials.mint_admin(
                 self.fed,
@@ -202,17 +216,21 @@ class Test:
         return self._admins[server.web_url]
 
     def server_at(self, web_url: str) -> Server:
-        """The server whose web URL is web_url."""
+        """Return the server whose web URL is web_url."""
         return next(s for s in self.servers if s.web_url == web_url)
 
     def login(self, web_url: str, name: str) -> str:
-        """The login cookie of the provider's user name at the server at
-        web_url."""
+        """Return a login cookie of the provider's user name at web_url."""
         return oidc.login(web_url, self.user(name))
 
     def record_of(self, server: Server, username: str) -> list[dict[str, Any]]:
-        """server's records of the users named username, as its admin
-        lists them."""
+        """Return server's records of the users named username.
+
+        Its admin lists them.
+
+        Raises:
+            ApiError: The admin could not list them.
+        """
         listed = accounts.must(
             self.admin(server).call("GET", accounts.USERS), f"listing {server.name}'s users"
         ).array
@@ -225,13 +243,16 @@ class Test:
 
 
 def enabled(test: Test) -> list[Row]:
-    """At each server: /api/v1.0/auth/oauth must list each module it runs
+    """Check that each server lists its OIDC modules, and begins a login.
+
+    At each server, /api/v1.0/auth/oauth must list each module it runs
     (listOIDCEnabledServersHandler in web_ui/authentication.go); and a
     GET of /api/v1.0/auth/oauth/login must answer 307 to the provider's
     authorization endpoint, asking for a code for the servers' client,
     to be sent back to the server's callback on
     OIDC.ClientRedirectHostname, with a state, which a session cookie
-    keeps too (handleOAuthLogin)."""
+    keeps too (handleOAuthLogin).
+    """
     rows: list[Row] = []
     for server in test.servers:
         problems: list[str] = []
@@ -273,7 +294,7 @@ def enabled(test: Test) -> list[Row]:
 
 
 def parsed(answer: web.Response) -> Any:
-    """answer's body as JSON, or None if it is none."""
+    """Return answer's body as JSON, or None if it is none."""
     try:
         return json.loads(answer.body) if answer.body else None
     except ValueError:
@@ -285,12 +306,14 @@ def parsed(answer: web.Response) -> Any:
 
 
 def login(test: Test) -> list[Row]:
-    """At each server, MEMBER logs in through the provider: whoami must
-    then name them by their preferred_username, as no admin; a second
-    login must find the same user; the server's admin must list one such
-    user, linked to the provider's subject and issuer; and the provider
-    must have been asked for the code's tokens, as the servers' client,
-    and for who the user is (its log)."""
+    """Check that MEMBER logs in at each server through the provider.
+
+    whoami must then name them by their preferred_username, as no admin;
+    a second login must find the same user; the server's admin must list
+    one such user, linked to the provider's subject and issuer; and the
+    provider must have been asked for the code's tokens, as the servers'
+    client, and for who the user is (its log).
+    """
     rows: list[Row] = []
     member = test.user(MEMBER)
     for server in test.servers:
@@ -349,11 +372,13 @@ def login(test: Test) -> list[Row]:
 
 
 def callback(test: Test) -> list[Row]:
-    """At the issuer origin: a login's callback sent without its session
-    cookie must be refused (400), as must one whose state is not the
-    cookie's (handleOAuthCallback); with the cookie, it must log the
-    user in; sent again, with the code used, it must fail, and log no
-    one in."""
+    """Check how the issuer origin takes a login's callback.
+
+    A callback sent without its session cookie must be refused (400), as
+    must one whose state is not the cookie's (handleOAuthCallback); with
+    the cookie, it must log the user in; sent again, with the code used,
+    it must fail, and log no one in.
+    """
     web_url = test.web
     try:
         started = oidc.begin(web_url)
@@ -404,11 +429,14 @@ def callback(test: Test) -> list[Row]:
 
 
 def collision(test: Test) -> list[Row]:
-    """COLLIDER, whose preferred_username is `admin`, the built-in
+    """Check that a user whose preferred_username is `admin` gets no admin.
+
+    COLLIDER, whose preferred_username is `admin`, the built-in
     administrator's, logs in at the issuer origin: the server must walk
-    to the next claim (Server.AutoEnrollUsernameClaims: their email)
-    for the username (LookupOrBootstrapUser in database/collection.go),
-    and give them no admin role, nor the admin's routes."""
+    to the next claim (Server.AutoEnrollUsernameClaims: their email) for
+    the username (LookupOrBootstrapUser in database/collection.go), and
+    give them no admin role, nor the admin's routes.
+    """
     user = test.user(COLLIDER)
     try:
         cookie = test.login(test.web, COLLIDER)
@@ -438,9 +466,11 @@ def collision(test: Test) -> list[Row]:
 
 
 def registry_env(test: Test, key_dir: str) -> dict[str, str]:
-    """The environment for `pelican namespace` to register with the keys
-    in key_dir alone, under a site name of the run's, at the shape's
-    registry (as the registry suite's cli_env())."""
+    """Return an environment for `pelican namespace` to register with.
+
+    It registers at the shape's registry, with the keys in key_dir
+    alone, under a site name of the run's.
+    """
     env = dict(test.session.env)
     env["PELICAN_ISSUERKEYSDIRECTORY"] = os.path.abspath(key_dir)
     env["PELICAN_ISSUERKEY"] = os.path.abspath(os.path.join(key_dir, "absent.jwk"))
@@ -452,10 +482,15 @@ def registry_env(test: Test, key_dir: str) -> dict[str, str]:
 def register_with_identity(
     test: Test, env: dict[str, str], prefix: str, approver: IdpUser
 ) -> tuple[int, str, int, list[str]]:
-    """Run `pelican namespace register --with-identity` for prefix,
-    approving the provider's device flow that it announces, by its
-    verification URL, as approver: its exit status, its output, how many
-    flows were approved, and what went wrong approving."""
+    """Run `pelican namespace register --with-identity` for prefix.
+
+    Approve the provider's device flow that it announces, by its
+    verification URL, as approver.
+
+    Returns:
+        Its exit status, its output, how many flows were approved, and
+        what went wrong approving.
+    """
     problems: list[str] = []
     approvals = [0]
     with subprocess.Popen(  # nosec B603
@@ -497,14 +532,16 @@ def register_with_identity(
 
 
 def registry_identity(test: Test) -> list[Row]:
-    """`pelican namespace register --with-identity` of a prefix of the
-    run's: the registry starts the provider's device flow and hands the
-    client the verification URL (cliRegisterNamespace in
-    registry/registry.go), which the test approves as MEMBER; the client
-    then registers, and the registration must record MEMBER's identity,
-    the provider's userinfo (sub, preferred_username), and name the
-    registry's user of that identity as its owner, where `login` found
-    one. Then `pelican namespace delete` removes it."""
+    """Check `pelican namespace register --with-identity` of a run's prefix.
+
+    The registry starts the provider's device flow and hands the client
+    the verification URL (cliRegisterNamespace in registry/registry.go),
+    which the test approves as MEMBER; the client then registers, and
+    the registration must record MEMBER's identity, the provider's
+    userinfo (sub, preferred_username), and name the registry's user of
+    that identity as its owner, where `login` found one. Then
+    `pelican namespace delete` removes it.
+    """
     fed = test.fed
     if not fed.registry_url:
         return [("", SKIP, "a standalone origin has no registry")]
@@ -561,15 +598,17 @@ def registry_identity(test: Test) -> list[Row]:
 
 
 def unrestartable(test: Test) -> Optional[str]:
-    """Why origin-0 cannot be restarted here, or None."""
+    """Return why origin-0 cannot be restarted here, or None if it can."""
     if test.fed.tiny:
         return "the tiny topology's origin is the whole federation's process"
     return control.unavailable()
 
 
 def no_issuer(test: Test) -> Optional[str]:
-    """Why the issuer origin's embedded issuer cannot grant anything
-    here, or None."""
+    """Return why the issuer origin's embedded issuer cannot grant anything.
+
+    Return None if it can.
+    """
     fed = test.fed
     if fed.external_issuer:
         return "the exports trust the external issuer ('-p auth-external-issuer')"
@@ -586,10 +625,15 @@ def no_issuer(test: Test) -> Optional[str]:
 
 
 def settle(test: Test, rel: str) -> Optional[str]:
-    """Wait until the federation serves the issuer origin again (within
-    SETTLE_WAIT seconds): it answers a HEAD of rel in the namespace,
-    every director names it for the path, and every federated cache
-    answers a HEAD of it; why not, or None."""
+    """Wait until the federation serves the issuer origin again.
+
+    Wait up to SETTLE_WAIT seconds, until it answers a HEAD of rel in
+    the namespace, every director names it for the path, and every
+    federated cache answers a HEAD of it.
+
+    Returns:
+        Why it does not, or None if it does.
+    """
     namespace = test.namespace or ""
     token = test.session.token(namespace)
     path = f"/{namespace}/{rel}"
@@ -620,16 +664,29 @@ def settle(test: Test, rel: str) -> Optional[str]:
 
 @dataclass
 class Restarted:
-    """What the restart scenarios share: the objects in the groups'
-    project prefixes, by group, and the issuer's client."""
+    """What the restart scenarios share.
 
-    objects: dict[str, tuple[str, bytes]]  # by group: its path in the namespace, and bytes
+    Attributes:
+        objects: The objects in the groups' project prefixes, by group:
+            each one's path in the namespace, and its bytes.
+        client: The issuer's client, once `groups` makes it.
+    """
+
+    objects: dict[str, tuple[str, bytes]]
     client: Optional[issuer.Client] = None
 
 
 def seed(test: Test) -> Restarted:
-    """Put an object in each group's project prefix at every origin, so
-    that a token for the group may read it (testlib.issuer.project())."""
+    """Put an object in each group's project prefix at every origin.
+
+    A token for the group may then read it (testlib.issuer.project()).
+
+    Returns:
+        What was put, by group.
+
+    Raises:
+        ApiError: An object could not be put in place.
+    """
     namespace = test.namespace or ""
     token = test.session.token(namespace)
     caps = test.fed.exports[namespace]
@@ -657,12 +714,14 @@ def unseed(test: Test, made: Restarted) -> None:
 
 
 def admin_rows(test: Test, when: str) -> list[Row]:
-    """With origin-0 restarted (when `restarted`): OWNER, named in
-    Server.UIAdminUsers, must be its admin by whoami, and may list its
-    users; ADMIN, whose claimed group test-server-admins is in
-    Server.AdminGroups, likewise (RecordAssertedGroups in
-    web_ui/oauth2_client.go); MEMBER must be no admin, and refused the
-    users. Once restored (when `restored`), OWNER must be no admin."""
+    """Check who is origin-0's admin, when `restarted` or `restored`.
+
+    With origin-0 restarted: OWNER, named in Server.UIAdminUsers, must
+    be its admin by whoami, and may list its users; ADMIN, whose claimed
+    group test-server-admins is in Server.AdminGroups, likewise
+    (RecordAssertedGroups in web_ui/oauth2_client.go); MEMBER must be no
+    admin, and refused the users. Once restored, OWNER must be no admin.
+    """
     rows: list[Row] = []
     if when == "restored":
         cases = [(OWNER, False)]
@@ -692,21 +751,27 @@ def admin_rows(test: Test, when: str) -> list[Row]:
 
 
 def expected_scopes(group: str) -> frozenset[str]:
-    """The data scopes that the templates give a member of group alone
-    (framework/config.d/base/40-origin.yaml): read and create in its
-    project, and read in the archive."""
+    """Return the data scopes the templates give a member of group alone.
+
+    The templates (framework/config.d/base/40-origin.yaml) give read and
+    create in its project, and read in the archive.
+    """
     return frozenset(
         {scope("read", project(group)), scope("create", project(group)), scope("read", ARCHIVE)}
     )
 
 
 def group_rows(test: Test, made: Restarted) -> list[Row]:
-    """With origin-0 taking groups from the provider: MEMBER's device
-    flow must be granted exactly the templates' scopes for test-project-a,
+    """Check what the issuer grants for the groups that the provider claims.
+
+    With origin-0 taking groups from the provider: MEMBER's device flow
+    must be granted exactly the templates' scopes for test-project-a,
     and its token name the group; ADMIN's those for test-project-b;
     OUTSIDER's none for data; and MEMBER's token must read the object in
     test-project-a's project, at the origin and through the federation,
-    and be refused test-project-b's."""
+    and be refused test-project-b's. The flows use made.client, which
+    this makes.
+    """
     rows: list[Row] = []
     namespace = test.namespace or ""
     admin_token = test.admin(test.server_at(test.web)).token or ""
@@ -788,10 +853,13 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
 
 
 def client_rows(test: Test, made: Restarted) -> list[Row]:
-    """`pelican object get` of test-project-a's object, with no token: the
-    client registers itself with the issuer and starts a device flow,
-    which the test approves as MEMBER, logged in through the provider;
-    the client must then get the object, and the file be the object."""
+    """Check `pelican object get` of test-project-a's object, with no token.
+
+    The client registers itself with the issuer and starts a device
+    flow, which the test approves as MEMBER, logged in through the
+    provider; the client must then get the object, and the file be the
+    object.
+    """
     namespace = test.namespace or ""
     rel, data = made.objects[PROJECT_A]
     try:
@@ -824,8 +892,11 @@ def client_rows(test: Test, made: Restarted) -> list[Row]:
 def run_restarted(
     test: Test, selected: Sequence[str], record: Callable[[str, Row], None]
 ) -> None:
-    """Run the restart scenarios that are selected, with origin-0
-    restarted with RESTART_CONFIG, and afterward restored."""
+    """Run the selected restart scenarios, with origin-0 restarted.
+
+    origin-0 is restarted with RESTART_CONFIG, and afterward restored.
+    Each row goes to record, with its scenario's name.
+    """
     wanted = [s for s in ("admin", "groups", "client") if s in selected]
     if not wanted:
         return
@@ -899,6 +970,8 @@ def run_restarted(
 # --------------------------------------------------------------------------
 
 
+# The scenarios that need no restart: each takes the Test, and returns
+# its rows.
 RUN: dict[str, Callable[[Test], list[Row]]] = {
     "enabled": enabled,
     "login": login,

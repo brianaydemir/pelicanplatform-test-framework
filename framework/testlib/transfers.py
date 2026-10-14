@@ -1,7 +1,8 @@
-"""What the transfers suite runs, and what it expects of each run: the
-one place that says so. The suite builds its batches from it, runs them,
-and judges the results with it; framework/init-data.py writes the
-objects that the gets fetch.
+"""What the transfers suite runs, and what it expects of each run.
+
+This is the one place that says so. The suite builds its batches from
+it, runs them, and judges the results with it; framework/init-data.py
+writes the objects that the gets fetch.
 
 A scenario is a set of transfers through one client, in one namespace,
 with one credential. Each runs through `pelican object get` or `put`,
@@ -17,9 +18,9 @@ batch_count()).
 
 What a scenario should do depends on the namespace's capabilities in
 the shape (see outcome()). /public, which has no keys of its own, gets
-only the credentials that apply to it (see credentials.applies()). A shape that
-exports one namespace has batches only for its scenarios (see
-exported()), except `dne` and its twins, which move to a protected
+only the credentials that apply to it (see credentials.applies()). A
+shape that exports one namespace has batches only for its scenarios
+(see exported()), except `dne` and its twins, which move to a protected
 namespace where /public isn't exported (see placed()).
 """
 
@@ -39,35 +40,54 @@ Exports = Mapping[str, AbstractSet[str]]
 
 
 class Outcome(enum.Enum):
-    """What a scenario should do."""
+    """What a scenario should do.
 
-    PASS = "pass"  # nosec B105  # every transfer succeeds, byte for byte
-    NOT_FOUND = "not found"  # every transfer fails: there is no such object
-    REFUSED = "refused"  # every transfer is refused, and nothing moves
+    Attributes:
+        PASS: Every transfer succeeds, byte for byte.
+        NOT_FOUND: Every transfer fails: there is no such object.
+        REFUSED: Every transfer is refused, and nothing moves.
+    """
+
+    PASS = "pass"  # nosec B105
+    NOT_FOUND = "not found"
+    REFUSED = "refused"
 
 
 @dataclass(frozen=True)
 class Scenario:
-    """A set of transfers through one client, in one namespace, with one
-    credential."""
+    """A set of transfers through one client, namespace, and credential.
+
+    Attributes:
+        client: "pelican" or "plugin".
+        route: A get's: "cache" (the director's choice), "direct" (an
+            origin), or "named" (a cache the client names); a put's:
+            "origin".
+        op: "get" or "put".
+        namespace: One of NAMESPACES.
+        credential: Its credential, or None: no token, and no refusal
+            expected.
+        missing: Whether the objects never exist.
+        collection: Where its objects are, e.g. /public/data/.
+        stem: What a get's objects are named after: <stem>.<n>.
+    """
 
     name: str
-    client: str  # "pelican" or "plugin"
-    # A get's route: "cache" (the director's choice), "direct" (an
-    # origin), or "named" (a cache the client names); a put's: "origin".
+    client: str
     route: str
-    op: str  # "get" or "put"
-    namespace: str  # one of NAMESPACES
-    credential: Optional[Credential]  # None: no token, and no refusal expected
-    missing: bool  # the objects never exist
-    collection: str  # where its objects are, e.g. /public/data/
-    stem: str  # a get's objects are <stem>.<n>
+    op: str
+    namespace: str
+    credential: Optional[Credential]
+    missing: bool
+    collection: str
+    stem: str
     description: str
 
     @property
     def store_dir(self) -> str:
-        """Its collection in an origin's store, e.g.
-        data/put/put-protected-a-jwks."""
+        """Its collection in an origin's store.
+
+        For example, data/put/put-protected-a-jwks.
+        """
         return rel_path(self.collection).rstrip("/")
 
     @property
@@ -82,16 +102,20 @@ class Scenario:
 
 
 def exported(scenario: Scenario, exports: Exports) -> bool:
-    """Whether the federation exports scenario's namespace: not every
-    shape exports every one (ORIGIN_NAMESPACES in fed.sh)."""
+    """Return whether the federation exports scenario's namespace.
+
+    Not every shape exports every one (ORIGIN_NAMESPACES in fed.sh).
+    """
     return scenario.namespace in exports
 
 
 def outcome(scenario: Scenario, exports: Exports) -> Outcome:
-    """What scenario should do in a federation with these exports. A
-    refusal comes before anything else, even a missing object's: e.g. a
+    """Return what scenario should do in a federation with these exports.
+
+    A refusal comes before anything else, even a missing object's: e.g. a
     namespace without DirectReads refuses every direct read. A scenario
-    with no token expects no refusal but that one."""
+    with no token expects no refusal but that one.
+    """
     verdict = scenario.credential.verdict if scenario.credential else ALLOW
     if (
         credentials.decide(verdict, exports[scenario.namespace], scenario.op, scenario.direct)
@@ -206,8 +230,11 @@ def _puts() -> list[Scenario]:
 
 
 def plugin_twin(scenario: Scenario) -> Scenario:
-    """The same scenario through stash_plugin. Only its uploads go
-    elsewhere, so that the two clients never write the same object."""
+    """Return the same scenario through stash_plugin.
+
+    Only its uploads go elsewhere, so that the two clients never write
+    the same object.
+    """
     name = f"plugin-{scenario.name}"
     collection = scenario.collection
     description = scenario.description
@@ -226,11 +253,13 @@ BY_NAME = {s.name: s for s in SCENARIOS}
 
 
 def placed(scenario: Scenario, exports: Exports) -> Scenario:
-    """scenario as it runs in a federation with these exports. Where
-    /public isn't exported (e.g. `-p origin-httpsv2`), `dne` and its
+    """Return scenario as it runs in a federation with these exports.
+
+    Where /public isn't exported (e.g. `-p origin-httpsv2`), `dne` and its
     twins get from the first protected namespace that is instead, with
     its `server` token, which a refusal can't explain: the objects never
-    exist there either. The rest run as they are."""
+    exist there either. The rest run as they are.
+    """
     if not scenario.missing or exported(scenario, exports):
         return scenario
     namespace = next((ns for ns in credentials.PROTECTED if ns in exports), None)
@@ -268,12 +297,19 @@ def placed(scenario: Scenario, exports: Exports) -> Scenario:
 
 @dataclass(frozen=True)
 class Load:
-    """How many objects there are, and how many each scenario moves."""
+    """How many objects there are, and how many each scenario moves.
 
-    objects: int  # objects per origin, named <origin>.<n>
-    batches: int  # batches for a scenario whose token matters
-    refused_batches: int  # batches for the rest
-    sizes: tuple[int, ...]  # objects per batch, taken in turn
+    Attributes:
+        objects: Objects per origin, named <origin>.<n>.
+        batches: Batches for a scenario whose token matters.
+        refused_batches: Batches for the rest.
+        sizes: Objects per batch, taken in turn.
+    """
+
+    objects: int
+    batches: int
+    refused_batches: int
+    sizes: tuple[int, ...]
 
 
 # A basic check, not a stress test: `exist`, `dne`, and each scenario
@@ -304,8 +340,10 @@ class Batch:
 
     @property
     def destination(self) -> str:
-        """Where a `pelican object put` of the batch goes: the object's URL,
-        or the collection of several."""
+        """Where a `pelican object put` of the batch goes.
+
+        It is the object's URL, or the collection of several.
+        """
         if len(self.urls) == 1:
             return self.urls[0]
         return self.urls[0].rsplit("/", 1)[0] + "/"
@@ -315,45 +353,53 @@ DIRECT_QUERY = "?directread"
 
 
 def local_name(url: str) -> str:
-    """Where an object of url goes locally, or comes from."""
+    """Return where an object of url goes locally, or comes from."""
     return url.split("?", 1)[0].rsplit("/", 1)[1]
 
 
 def object_path(url: str) -> str:
-    """An object's path in the federation, from its URL or its path:
-    without the federation, a query, or the leading slash, e.g.
-    protected-a/data/0.17."""
+    """Return an object's path in the federation, from its URL or its path.
+
+    It is without the federation, a query, or the leading slash, e.g.
+    protected-a/data/0.17.
+    """
     return re.sub(r"^[a-z]+://[^/]*", "", url.split("?", 1)[0]).lstrip("/")
 
 
 def rel_path(url: str) -> str:
-    """Where an object is in its namespace's storage: its path without
-    the namespace too, e.g. data/0.17."""
+    """Return where an object is in its namespace's storage.
+
+    It is its path without the namespace too, e.g. data/0.17.
+    """
     return object_path(url).split("/", 1)[1]
 
 
 def batch_url(federation: str, scenario: Scenario, name: str) -> str:
-    """The URL of object name in scenario's collection."""
+    """Return the URL of object name in scenario's collection."""
     query = DIRECT_QUERY if scenario.direct and scenario.client == "plugin" else ""
     return f"{federation}{scenario.collection}{name}{query}"
 
 
 def format_batch(batch: Batch) -> str:
-    """batch, in stash_plugin's input format."""
+    """Return batch, in stash_plugin's input format."""
     return "".join(
         f'[ Url="{url}"; LocalFileName="{local_name(url)}" ]\n' for url in batch.urls
     )
 
 
 def parse_batch(scenario: Scenario, index: int, text: str) -> Batch:
-    """The batch of scenario that text, in stash_plugin's format, holds."""
+    """Parse a batch of scenario's from text, in stash_plugin's format."""
     return Batch(scenario, index, tuple(re.findall(r'Url="([^"]*)"', text)))
 
 
 def batch_count(scenario: Scenario, exports: Exports, load: Load) -> int:
-    """load.batches for `exist`, `dne`, and every scenario that a token
-    should let through; load.refused_batches for the rest: refusals, and
-    scenarios whose token can't matter (e.g. reads of /public)."""
+    """Return how many batches scenario runs.
+
+    Returns:
+        load.batches for `exist`, `dne`, and every scenario that a token
+        should let through; load.refused_batches for the rest: refusals,
+        and scenarios whose token can't matter (e.g. reads of /public).
+    """
     if scenario.credential is None or scenario.missing:
         return load.batches
     if outcome(scenario, exports) is Outcome.PASS and credentials.token_decides(
@@ -366,11 +412,13 @@ def batch_count(scenario: Scenario, exports: Exports, load: Load) -> int:
 def make_batches(
     federation: str, exports: Exports, load: Load, pick: Callable[[int], int]
 ) -> dict[str, list[Batch]]:
-    """Every exported scenario's batches. Batch <x> holds as many objects
-    as the <x mod n>th of the n sizes. A get's are distinct, each picked
-    by pick(load.objects); a put's are named <x>.<z>. A plugin twin
-    gets its scenario's objects, in its own collection. Each scenario is
-    as placed() puts it."""
+    """Return every exported scenario's batches, by scenario name.
+
+    Batch <x> holds as many objects as the <x mod n>th of the n sizes. A
+    get's are distinct, each picked by pick(load.objects); a put's are
+    named <x>.<z>. A plugin twin gets its scenario's objects, in its own
+    collection. Each scenario is as placed() puts it.
+    """
     batches: dict[str, list[Batch]] = {}
     for scenario in PELICAN_SCENARIOS:
         scenario = placed(scenario, exports)
@@ -453,7 +501,7 @@ REFUSALS = {"client", "director", "unsupported", "server"}
 
 
 def classify(line: str) -> str:
-    """The category of one failure, or `other`."""
+    """Return the category of one failure, or `other`."""
     line = LOCAL_DENIAL.sub("", line)
     for category, patterns, _ in FAILURE_RULES:
         if all(re.search(p, line) for p in patterns):
@@ -462,9 +510,13 @@ def classify(line: str) -> str:
 
 
 def combine(categories: Iterable[str]) -> str:
-    """One category for a batch's failures: the one they all share,
-    `mixed` for different refusals, and otherwise `other`. A batch that
-    failed without saying why is `other` too."""
+    """Return one category for a batch's failures.
+
+    Returns:
+        The one they all share, `mixed` for different refusals, and
+        otherwise `other`. A batch that failed without saying why is
+        `other` too.
+    """
     kinds = set(categories)
     if len(kinds) == 1:
         return kinds.pop()
@@ -474,9 +526,15 @@ def combine(categories: Iterable[str]) -> str:
 
 
 def refused(text: str) -> Optional[str]:
-    """Why the output of a client command (not only a transfer) shows it
-    was refused, or None if it doesn't, or if any line shows a failure no
-    refusal explains (NOT_REFUSAL), whatever the rest say."""
+    """Return why a client command's output shows it was refused, or None.
+
+    The command may be any, not only a transfer.
+
+    Returns:
+        The refusal's category; None if the output doesn't show one, or if
+        any line shows a failure no refusal explains (NOT_REFUSAL),
+        whatever the rest say.
+    """
     if re.search(NOT_REFUSAL, text):
         return None
     categories = {classify(line) for line in text.splitlines()}
@@ -491,18 +549,29 @@ def refused(text: str) -> Optional[str]:
 
 
 def failure_lines(client: str, text: str) -> list[str]:
-    """The pelican client stops at the first object that fails, and logs
-    one `Failure getting|putting <src>: <error>` line, for it. The plugin
+    """Return the lines of a client's output that report a failure.
+
+    The pelican client stops at the first object that fails, and logs one
+    `Failure getting|putting <src>: <error>` line, for it. The plugin
     writes a result ad per object, one per line, up to the first failed
-    download."""
+    download.
+
+    Args:
+        client: "pelican" or "plugin".
+        text: Its log, or its result ads.
+    """
     marker = "TransferSuccess = false" if client == "plugin" else r"Failure (getting|putting) "
     return [line for line in text.splitlines() if re.search(marker, line)]
 
 
 def stats_endpoints(stats: Any) -> list[str]:
-    """The host that served each object in the pelican client's transfer
-    stats (--transfer-stats): a list (of lists) of results, each with its
-    attempts, of which the highest-numbered served it."""
+    """Return the host that served each object that stats describes.
+
+    Args:
+        stats: The pelican client's transfer stats (--transfer-stats): a
+            list (of lists) of results, each with its attempts, of which
+            the highest-numbered served it.
+    """
     hosts: list[str] = []
     pending: list[Any] = [stats]
     while pending:
@@ -522,7 +591,7 @@ def stats_endpoints(stats: Any) -> list[str]:
 
 
 def plugin_passed(text: str) -> bool:
-    """Whether the plugin's result ads say every transfer succeeded."""
+    """Return whether the plugin's result ads say every transfer passed."""
     return "TransferSuccess = true" in text and "TransferSuccess = false" not in text
 
 
@@ -532,12 +601,20 @@ def plugin_passed(text: str) -> bool:
 
 @dataclass(frozen=True)
 class Observation:
-    """What a batch did."""
+    """What a batch did.
 
-    passed: bool  # the client said every transfer succeeded
-    failure: Optional[str]  # if not, why (see combine)
-    local: Mapping[str, str]  # the SHA-256 of each of the batch's files in its directory
-    others: tuple[str, ...]  # whatever else is in its directory
+    Attributes:
+        passed: Whether the client said every transfer succeeded.
+        failure: If not, why (see combine()).
+        local: The SHA-256 of each of the batch's files in its directory,
+            by name.
+        others: Whatever else is in its directory.
+    """
+
+    passed: bool
+    failure: Optional[str]
+    local: Mapping[str, str]
+    others: tuple[str, ...]
 
 
 def judge(
@@ -547,17 +624,28 @@ def judge(
     refs: Mapping[str, str],
     stores: Mapping[str, set[str]],
 ) -> list[str]:
-    """What is wrong with how batch went; nothing, if it went as expected.
-    refs is the SHA-256 of each test object at the origins, and stores
-    those of what the origins hold in each put collection, both by
-    object_path(). Every namespace's objects differ, so an object from
-    another namespace's storage is no match.
+    """Return what is wrong with how batch went.
 
     The client downloads into a temporary file beside the object's, and
     renames it only once the object is complete (client/handle_http.go in
     Pelican). So whatever happens, nothing but the batch's own files may
     be in its directory, and a get that fails must leave no file of the
-    object's name."""
+    object's name.
+
+    Args:
+        batch: The batch.
+        expected: What its scenario should do.
+        seen: What it did.
+        refs: The SHA-256 of each test object at the origins, by
+            object_path().
+        stores: The SHA-256s of what the origins hold in each put
+            collection, by object_path(). Every namespace's objects
+            differ, so an object from another namespace's storage is no
+            match.
+
+    Returns:
+        The problems; none if it went as expected.
+    """
     scenario = batch.scenario
     problems = [f"{name}: left in the batch's directory" for name in seen.others]
 
@@ -608,7 +696,10 @@ def judge(
 
 
 def summarize_failures(failures: Sequence[str]) -> str:
-    """e.g. `server 5, mixed 1`, in the order of FAILURE_RULES."""
+    """Return failures counted by kind, e.g. `server 5, mixed 1`.
+
+    The kinds are in the order of FAILURE_RULES.
+    """
     order = [rule[0] for rule in FAILURE_RULES] + ["mixed", "other"]
     return ", ".join(f"{kind} {failures.count(kind)}" for kind in order if kind in failures)
 
@@ -618,7 +709,7 @@ def summarize_failures(failures: Sequence[str]) -> str:
 
 
 def describe_hosts(hosts: Mapping[str, int]) -> str:
-    """e.g. `cache-0 3, origin-0 1`."""
+    """Return how many each host served, e.g. `cache-0 3, origin-0 1`."""
     return ", ".join(f"{host} {count}" for host, count in sorted(hosts.items()))
 
 
@@ -630,11 +721,7 @@ def check_served_by(
     cacheless: bool,
     named: str = "",
 ) -> tuple[str, str]:
-    """The verdict on the hosts that served route's downloads: PASS,
-    FAIL, or SKIP (see report.py), and why. served is, for each namespace
-    with downloads that should succeed, how many objects each host
-    served in it; a namespace whose downloads all failed has none, and
-    its scenarios fail anyway.
+    """Return the verdict on the hosts that served route's downloads.
 
     A director that routes around its caches would pass every scenario,
     so each namespace with a download through a cache must have had some
@@ -643,7 +730,22 @@ def check_served_by(
     A named download must come from the cache the client named (named,
     its host), and from nowhere else: a client that fell back to the
     director's choice would pass otherwise. In the tiny topology, one
-    host is everything, so none of these says anything."""
+    host is everything, so none of these says anything.
+
+    Args:
+        route: "cache", "direct", or "named".
+        served: For each namespace with downloads that should succeed,
+            how many objects each host served in it; a namespace whose
+            downloads all failed has none, and its scenarios fail anyway.
+        origin_hosts: The origins' hosts.
+        tiny: Whether the topology is `tiny`.
+        cacheless: Whether there is no cache.
+        named: For the named route, the host of the cache the client
+            names.
+
+    Returns:
+        PASS, FAIL, or SKIP (see report.py), and why.
+    """
     if tiny:
         return report.SKIP, "the tiny topology's cache and origin are one host"
     hosts: dict[str, int] = {}

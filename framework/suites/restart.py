@@ -1,8 +1,9 @@
-"""What survives when a server restarts, stops, or loses its backend:
-a cache's store, every server's identity and database, the issuer's
-refresh tokens and clients, the directors' view of a server that has
-gone, and an origin's answers while its storage is unreachable. The
-suite controls the services through the control helper
+"""What survives when a server restarts, stops, or loses its backend.
+
+That is a cache's store, every server's identity and database, the
+issuer's refresh tokens and clients, the directors' view of a server
+that has gone, and an origin's answers while its storage is
+unreachable. The suite controls the services through the control helper
 (testlib/control.py), so it needs one, and skips the tiny topology,
 whose servers are one process. It comes after every other suite but
 `keys`, since it takes servers away for a while. Its objects go under
@@ -32,10 +33,6 @@ afterward. A scenario with several cases records a row per case, named
   peer-director    with several directors, a director killed drops from
                    its peer's list of directors once its ad expires, and
                    returns
-
-The `transfer-api` suite's `restart` covers a transfer job interrupted
-by a restart, and `freshness`'s `stale-if-error` a stale copy served
-while every origin is stopped.
 """
 
 import json
@@ -129,9 +126,12 @@ HEALTH = "/api/v1.0/metrics/health"
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: the tiny topology, whose servers are
-    one process, or no /protected-a. Whether a control helper serves the
-    run is asked as the suite runs, since asking waits."""
+    """Return why there is nothing to test, or None.
+
+    There is nothing in the tiny topology, whose servers are one
+    process, or without /protected-a. Whether a control helper serves
+    the run is asked as the suite runs, since asking waits.
+    """
     if fed.tiny:
         return "the tiny topology's servers are one process"
     if NAMESPACE not in fed.exports:
@@ -140,14 +140,22 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 
 def outcome(problems: Sequence[str], note: str) -> Row:
-    """A row with no case: FAIL with the first of problems, or PASS with
-    note."""
+    """Return a row with no case.
+
+    It is FAIL with the first of problems, or PASS with note.
+    """
     return ("", FAIL, first(problems)) if problems else ("", PASS, note)
 
 
 class Test:
-    """The federation, the run's objects, and the tokens the scenarios
-    share."""
+    """The federation, the run's objects, and the tokens scenarios share.
+
+    Attributes:
+        base: The run's collection, within /protected-a.
+        tmp: A directory of the run's own, for the clients' files.
+        caps: /protected-a's capabilities.
+        objects: The run's objects' bytes, by rel within the namespace.
+    """
 
     def __init__(self, session: Session):
         self.session = session
@@ -159,20 +167,20 @@ class Test:
         self.token = session.token(NAMESPACE)
         self.token_file = session.token_file(NAMESPACE)
         self.caps = self.fed.exports[NAMESPACE]
-        self.objects: dict[str, bytes] = {}  # by rel within the namespace
+        self.objects: dict[str, bytes] = {}
         self._admins: dict[str, str] = {}
         self._runs = 0
 
     def rel(self, name: str) -> str:
-        """Where object name of the run is in the namespace."""
+        """Return where object name of the run is in the namespace."""
         return f"{self.base}/{name}"
 
     def path(self, name: str) -> str:
-        """Its path in the federation."""
+        """Return object name's path in the federation."""
         return f"/{NAMESPACE}/{self.rel(name)}"
 
     def url(self, name: str) -> str:
-        """Its federation URL."""
+        """Return object name's federation URL."""
         return f"{self.fed.url}{self.path(name)}"
 
     def put(self, name: str, data: bytes) -> None:
@@ -189,8 +197,11 @@ class Test:
         self.objects[rel] = data
 
     def admin_token(self, web_url: str, key_dir: str) -> str:
-        """A token that the server at web_url takes as its admin's, signed
-        with its key in key_dir (see credentials.mint_admin())."""
+        """Return a token that the server at web_url takes as its admin's.
+
+        It is signed with the server's key in key_dir (see
+        credentials.mint_admin()).
+        """
         if web_url not in self._admins:
             self._admins[web_url] = credentials.mint_admin(
                 self.fed,
@@ -201,19 +212,25 @@ class Test:
         return self._admins[web_url]
 
     def admin(self, web_url: str, key_dir: str) -> Api:
-        """The web API of the server at web_url, as its admin."""
+        """Return the web API of the server at web_url, as its admin."""
         return Api(web_url, self.admin_token(web_url, key_dir))
 
     def held(self, cache: common.Cache, name: str) -> bool:
-        """Whether a V2 cache says, with Age, that it holds all of object
-        name."""
+        """Return whether a V2 cache holds all of object name.
+
+        The cache says so with Age.
+        """
         answer = web.request("HEAD", f"{cache.url}{self.path(name)}", token=self.token)
         return answer.status == 200 and answer.header("Age").strip().isdigit()
 
     def fill(self, cache: common.Cache, name: str) -> Optional[str]:
-        """Read object name whole through cache, which must serve it, and
-        for a V2 cache wait until it says it holds it all; what went
-        wrong, or None."""
+        """Read object name whole through cache, which must serve it.
+
+        For a V2 cache, wait until it says it holds it all.
+
+        Returns:
+            What went wrong, or None.
+        """
         answer = web.request(
             "GET", f"{cache.url}{self.path(name)}", token=self.token, timeout=120
         )
@@ -226,20 +243,25 @@ class Test:
         return None
 
     def directory(self, name: str) -> str:
-        """A new directory of the run's for a client run."""
+        """Return a new directory of the run's for a client run."""
         self._runs += 1
         path = os.path.join(self.tmp, f"{self._runs:03d}-{name}")
         os.makedirs(path)
         return path
 
     def named_by(self, route: str, path: str, host: str) -> list[str]:
-        """The directors that would send a GET of path, for route, to
-        host."""
+        """Return the directors that would send a GET of path to host.
+
+        Each is asked by route, as for director.naming().
+        """
         return director.naming(self.fed.directors, route, path, host)
 
     def wait_named(self, route: str, path: str, host: str, seconds: float) -> Optional[float]:
-        """How long until every director names host for path, if within
-        seconds; None if not."""
+        """Wait up to seconds until every director names host for path.
+
+        Returns:
+            How long that took; None if not within seconds.
+        """
         started = time.monotonic()
         if common.wait_for(
             lambda: len(self.named_by(route, path, host)) == len(self.fed.directors),
@@ -250,8 +272,11 @@ class Test:
         return None
 
     def wait_unnamed(self, route: str, path: str, host: str, seconds: float) -> Optional[float]:
-        """How long until no director names host for path, if within
-        seconds; None if not."""
+        """Wait up to seconds until no director names host for path.
+
+        Returns:
+            How long that took; None if not within seconds.
+        """
         started = time.monotonic()
         if common.wait_for(lambda: not self.named_by(route, path, host), seconds, interval=5):
             return time.monotonic() - started
@@ -259,9 +284,12 @@ class Test:
 
 
 def sent_bytes(fed: common.Federation) -> Optional[float]:
-    """What the native origins have sent for GETs, in bytes, in all
-    (pelican_http_bytes_total); None where they keep no such counter, or
-    one did not answer."""
+    """Return how many bytes the native origins have sent for GETs, in all.
+
+    Returns:
+        The sum of their pelican_http_bytes_total; None where they keep
+        no such counter, or one did not answer.
+    """
     if not fed.native_origins:
         return None
     total = 0.0
@@ -280,13 +308,16 @@ def sent_bytes(fed: common.Federation) -> Optional[float]:
 
 
 def cache_restart(test: Test) -> list[Row]:
-    """Each cache, holding HELD_OBJECTS objects read whole (a V2 cache
-    says so with Age): restarted, and once every director names it
-    again, it must serve each from its store, intact, with Age for a V2
-    cache, and the native origins must have sent less than an object for
-    GETs meanwhile. An XRootD cache sends no Age, so there only the
-    origins' counters tell; over XRootD origins, which keep none, the
-    bytes alone must be right."""
+    """Check that each cache, restarted, serves what it held from its store.
+
+    Each cache holds HELD_OBJECTS objects read whole (a V2 cache says so
+    with Age). Restarted, and once every director names it again, it
+    must serve each from its store, intact, with Age for a V2 cache, and
+    the native origins must have sent less than an object for GETs
+    meanwhile. An XRootD cache sends no Age, so there only the origins'
+    counters tell; over XRootD origins, which keep none, the bytes alone
+    must be right.
+    """
     rows: list[Row] = []
     for cache in test.fed.caches:
         names = [f"held-{cache.svc}-{n}" for n in range(HELD_OBJECTS)]
@@ -363,7 +394,11 @@ def cache_restart(test: Test) -> list[Row]:
 
 @dataclass(frozen=True)
 class Server:
-    """An origin or a cache, whose record of itself the suite reads."""
+    """An origin or a cache, whose record of itself the suite reads.
+
+    Attributes:
+        key_dir: The directory of its signing key, under framework/var.
+    """
 
     svc: str
     web_url: str
@@ -371,7 +406,7 @@ class Server:
 
 
 def servers_of(fed: common.Federation) -> list[Server]:
-    """The origins (another owner's too) and the caches."""
+    """Return the origins (another owner's too) and the caches."""
     found = [Server(o.svc, o.web_url, f"issuer-keys/{o.svc}") for o in fed.origins]
     found += [Server(o.origin.svc, o.web_url, o.key_dir) for o in fed.owners]
     found += [Server(c.svc, c.web_url, f"issuer-keys/{c.svc}") for c in fed.caches]
@@ -380,7 +415,12 @@ def servers_of(fed: common.Federation) -> list[Server]:
 
 @dataclass
 class Recorded:
-    """What state-survives recorded before the restarts."""
+    """What state-survives recorded before the restarts.
+
+    Attributes:
+        metadata: What each server records of itself, by service.
+        registered: Each server the registry lists: its ID and name.
+    """
 
     metadata: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
     registered: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
@@ -394,15 +434,22 @@ class Recorded:
 
 
 def local_metadata(test: Test, server: Server) -> dict[str, Any]:
-    """What server records of itself (its ID, name, and type), as its
-    admin reads it; {} if it will not say."""
+    """Return what server records of itself, as its admin reads it.
+
+    Returns:
+        Its record (its ID, name, and type); {} if it will not say.
+    """
     answer = test.admin(server.web_url, server.key_dir).call("GET", LOCAL_METADATA)
     return answer.object if answer.status == 200 else {}
 
 
 def registered_servers(test: Test) -> Optional[list[tuple[str, str]]]:
-    """Each server the registry lists, as its admin reads them: its ID
-    and name; None if it will not say."""
+    """Return each server the registry lists, as its admin reads them.
+
+    Returns:
+        Each one's ID and name; None if there is no registry, or it will
+        not say.
+    """
     fed = test.fed
     if not fed.registry_url:
         return None
@@ -417,8 +464,11 @@ def registered_servers(test: Test) -> Optional[list[tuple[str, str]]]:
 
 
 def issuer_origin(test: Test) -> tuple[Optional[common.Origin], str]:
-    """The issuer origin (origin-0), and why its issuer cannot be used,
-    if it cannot."""
+    """Return the issuer origin (origin-0), if its issuer can be used.
+
+    Returns:
+        The origin, and ""; or None, and why its issuer cannot be used.
+    """
     fed = test.fed
     if not fed.embedded_issuer or fed.external_issuer:
         return None, "the origins run no issuer of their own"
@@ -426,14 +476,20 @@ def issuer_origin(test: Test) -> tuple[Optional[common.Origin], str]:
 
 
 def login_cookie(web_url: str) -> str:
-    """A login cookie of the admin's at web_url."""
+    """Return a login cookie of the admin's at web_url."""
     return accounts.login(web_url, "admin", ADMIN_PASSWORD)
 
 
 def record_state(test: Test, found: Recorded) -> list[str]:
-    """Record every server's metadata and the registry's servers, and at
+    """Record into found the state that state-survives checks.
+
+    Record every server's metadata and the registry's servers, and at
     the issuer origin make a user, a group, an API token, a downtime, a
-    client, and a refresh token; what went wrong."""
+    client, and a refresh token.
+
+    Returns:
+        What went wrong.
+    """
     problems: list[str] = []
     for server in servers_of(test.fed):
         found.metadata[server.svc] = local_metadata(test, server)
@@ -507,8 +563,13 @@ def record_state(test: Test, found: Recorded) -> list[str]:
 
 
 def restart_and_settle(test: Test, svc: str, route: str, host: str) -> Optional[str]:
-    """Restart svc, and wait until every director names host for the
-    probe object, for route; why that failed, or None."""
+    """Restart svc, and wait until every director names host for the probe.
+
+    The directors are asked by route; with none, nothing is waited for.
+
+    Returns:
+        Why that failed, or None.
+    """
     try:
         control.restart(svc)
     except control.ControlError as e:
@@ -519,15 +580,17 @@ def restart_and_settle(test: Test, svc: str, route: str, host: str) -> Optional[
 
 
 def state_survives(test: Test) -> list[Row]:
-    """See record_state(): once origin-0, director-0, and the registry
-    have restarted, each server's ID and name must be as recorded
-    (`ids`), the registry must list the same servers, none twice
-    (`registrations`), the user and group must be there (`accounts`),
-    the API token must still read /metrics and be listed (`api-token`),
-    the downtime must still be declared (`downtime`), and the refresh
-    token must refresh, with the client's secret (`issuer`): the
-    issuer's HMAC key is derived from a master key kept in its database
-    (oauth2/issuer/provider.go)."""
+    """Check that what record_state() records outlives restarts.
+
+    Once origin-0, director-0, and the registry have restarted, each
+    server's ID and name must be as recorded (`ids`), the registry must
+    list the same servers, none twice (`registrations`), the user and
+    group must be there (`accounts`), the API token must still read
+    /metrics and be listed (`api-token`), the downtime must still be
+    declared (`downtime`), and the refresh token must refresh, with the
+    client's secret (`issuer`): the issuer's HMAC key is derived from a
+    master key kept in its database (oauth2/issuer/provider.go).
+    """
     fed = test.fed
     test.put("probe", os.urandom(4096))
     found = Recorded()
@@ -677,12 +740,15 @@ def cleanup_state(test: Test, found: Recorded) -> None:
 
 
 def ad_expiry(test: Test) -> list[Row]:
-    """The first federated cache, and with several origins the last
-    origin, killed (SIGKILL, so it says nothing): within
-    Server.AdLifetime and some slack, no director may name it, since its
-    ad has expired (the directors keep ads in a cache with that TTL,
+    """Check that a server killed drops from every director, and returns.
+
+    The first federated cache, and with several origins the last origin,
+    is killed (SIGKILL, so it says nothing): within Server.AdLifetime
+    and some slack, no director may name it, since its ad has expired
+    (the directors keep ads in a cache with that TTL,
     director/cache_ads.go); started again, every director must name it
-    within NAMED_WAIT seconds. The note times both."""
+    within NAMED_WAIT seconds. The note times both.
+    """
     fed = test.fed
     if not fed.directors:
         return [("", SKIP, "a standalone origin has no director")]
@@ -746,8 +812,11 @@ def ad_expiry(test: Test) -> list[Row]:
 
 
 def health_component(test: Test, origin: common.Origin, component: str) -> str:
-    """What origin's health report says of component, as its admin reads
-    it; "" if nothing."""
+    """Return what origin's health report says of component.
+
+    Returns:
+        Its status, as the admin reads it; "" if nothing.
+    """
     answer = test.admin(origin.web_url, f"issuer-keys/{origin.svc}").call("GET", HEALTH)
     components = common.as_object(answer.object.get("components")) or {}
     found = common.as_object(components.get(component)) or {}
@@ -755,7 +824,7 @@ def health_component(test: Test, origin: common.Origin, component: str) -> str:
 
 
 def restart_backend(backend: str) -> Optional[str]:
-    """Start backend again; why that failed, or None."""
+    """Start backend again, and return why that failed, or None."""
     try:
         control.start(backend)
     except control.ControlError as e:
@@ -764,7 +833,9 @@ def restart_backend(backend: str) -> Optional[str]:
 
 
 def backend_outage(test: Test) -> list[Row]:
-    """With the origins' storage service stopped: at origin-0, where it
+    """Check that an origin answers 5xx while its backend is stopped.
+
+    With the origins' storage service stopped: at origin-0, where it
     takes direct clients, a GET and a HEAD of an object, and a PUT of a
     new one, must each get a server error (5xx), never 404 or 405, nor
     the object's bytes (`direct`); through the first federated cache, a
@@ -772,7 +843,8 @@ def backend_outage(test: Test) -> list[Row]:
     and for an `ssh` origin, its health must say its backend is not ok
     within HEALTH_WAIT seconds (`health`). Once the service is back, the
     origin must serve the object again within BACKEND_WAIT seconds,
-    without a restart, as must the cache (`recovered`)."""
+    without a restart, as must the cache (`recovered`).
+    """
     fed = test.fed
     backend = BACKENDS.get(fed.origin_variant)
     if backend is None:
@@ -921,17 +993,23 @@ def backend_outage(test: Test) -> list[Row]:
 
 @dataclass
 class Fetched:
-    """How a client run went."""
+    """How a client run went.
+
+    Attributes:
+        hosts: The host of each attempt, the last the one that served.
+    """
 
     status: int
     said: str
     directory: str
-    hosts: list[str]  # the host of each attempt, the last the one that served
+    hosts: list[str]
 
 
 def get_pelican(test: Test, name: str, url: str) -> Fetched:
-    """`pelican object get` of url into a directory of its own, with
-    transfer stats."""
+    """Run `pelican object get` of url into a directory of its own.
+
+    It writes transfer stats, which give the host of each attempt.
+    """
     directory = test.directory(name)
     stats = os.path.join(directory, "stats.json")
     status, out, err = test.session.pelican_cmd(
@@ -968,8 +1046,10 @@ def get_pelican(test: Test, name: str, url: str) -> Fetched:
 
 
 def get_plugin(test: Test, name: str, url: str) -> Fetched:
-    """stash_plugin's download of url into a directory of its own, with
-    the server's token in its credentials directory."""
+    """Run stash_plugin's download of url into a directory of its own.
+
+    The server's token is in its credentials directory.
+    """
     directory = test.directory(name)
     creds = os.path.join(test.tmp, f"{name}.creds")
     os.makedirs(creds, exist_ok=True)
@@ -1009,8 +1089,11 @@ def get_plugin(test: Test, name: str, url: str) -> Fetched:
 
 
 def failover_problems(fetch: Fetched, data: bytes, dead: str, client: str) -> list[str]:
-    """What is wrong with a client's download while cache dead is away:
-    it must succeed, with the object, served by another cache."""
+    """Return what is wrong with a download while cache dead is away.
+
+    client's download must succeed, with the object, served by another
+    cache.
+    """
     if client == "pelican" and fetch.status != 0:
         return [f"exit {fetch.status}: {last_line(fetch.said)}"]
     if client == "plugin" and not transfers.plugin_passed(fetch.said):
@@ -1026,13 +1109,17 @@ def failover_problems(fetch: Fetched, data: bytes, dead: str, client: str) -> li
 
 
 def cache_failover(test: Test) -> list[Row]:
-    """With the first federated cache paused (its ports take connections
-    that nothing answers), and then killed (they refuse), `pelican object
-    get` and stash_plugin of an object through the federation must each
-    succeed, served by another cache, while the directors still name the
-    first (before its ad expires), and once they have dropped it. The
-    note says which caches each client tried. Afterward the cache is
-    unpaused, or started, and every director must name it again."""
+    """Check that the clients get an object while the first cache is away.
+
+    With the first federated cache paused (its ports take connections
+    that nothing answers), and then killed (they refuse), `pelican
+    object get` and stash_plugin of an object through the federation
+    must each succeed, served by another cache, while the directors
+    still name the first (before its ad expires), and once they have
+    dropped it. The note says which caches each client tried. Afterward
+    the cache is unpaused, or started, and every director must name it
+    again.
+    """
     fed = test.fed
     caches = fed.federated_caches
     if len(caches) < 2:
@@ -1124,8 +1211,11 @@ def cache_failover(test: Test) -> list[Row]:
 
 
 def listed_directors(url: str) -> Optional[set[str]]:
-    """The hosts in the director at url's list of directors; None if it
-    gave none."""
+    """Return the hosts in the director at url's list of directors.
+
+    Returns:
+        The hosts; None if it gave no list.
+    """
     answer = web.request("GET", f"{url}{DIRECTORS}")
     if answer.status != 200:
         return None
@@ -1139,11 +1229,14 @@ def listed_directors(url: str) -> Optional[set[str]]:
 
 
 def peer_director(test: Test) -> list[Row]:
-    """With several directors, the second killed: within Server.AdLifetime
+    """Check that a director killed drops from its peer's list, and returns.
+
+    With several directors, the second killed: within Server.AdLifetime
     and some slack, the first must list only itself at
     /api/v1.0/director/directors, since its peer's ad has expired
     (director/director_advertise.go); once the second starts again, the
-    first must list both within NAMED_WAIT seconds."""
+    first must list both within NAMED_WAIT seconds.
+    """
     fed = test.fed
     if len(fed.directors) < 2:
         return [("", SKIP, "fewer than two directors ('-p topo-multi-director')")]
@@ -1207,7 +1300,7 @@ RUN: dict[str, Callable[[Test], Rows]] = {
 
 
 def guarded(name: str, test: Test) -> list[Row]:
-    """Scenario name's rows; one failing row if it raised."""
+    """Return scenario name's rows; one failing row if it raised."""
     try:
         found = RUN[name](test)
     except Exception as e:  # pylint: disable=broad-exception-caught

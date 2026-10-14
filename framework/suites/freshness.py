@@ -1,6 +1,7 @@
-"""How long a cache keeps its copy of an object, and what it tells its
-clients about it, by the Cache-Control that the origins send
-(Origin.CacheControl): that it keeps or drops a copy as the origins say,
+"""How long a cache keeps its copy of an object, and what it tells clients.
+
+Both go by the Cache-Control that the origins send (Origin.CacheControl).
+The suite checks that a cache keeps or drops a copy as the origins say,
 tells clients the truth about its copy's freshness, and keeps nothing it
 should not: a 404, an object marked no-store or private, or anything a
 HEAD touched.
@@ -138,12 +139,24 @@ OBJECT_SIZE = 3 * blocks.XROOTD_BLOCK + 7
 ONLY_IF_CACHED = {"Cache-Control": "only-if-cached"}
 NO_DOWNLOAD = {"X-Pelican-NoDownload": "true"}
 
-# A row: its case, its status, and its note.
+# A row: its status and its note.
 Row = tuple[str, str]
 
 
 class Test:
-    """The run's objects in /protected-a, the token, and the shape."""
+    """The run's objects in /protected-a, the token, and the shape.
+
+    Attributes:
+        base: The run's collection, in /protected-a.
+        token: A `server` token for /protected-a.
+        caps: /protected-a's capabilities.
+        direct: Whether /protected-a takes direct clients.
+        caches: The federated caches.
+        v2: The federated V2 caches.
+        sent: What the origins send as the shape is: only native ones send
+            Origin.CacheControl.
+        made: The collections that put() has made.
+    """
 
     def __init__(self, session: Session):
         self.session = session
@@ -155,26 +168,27 @@ class Test:
         self.origins = self.fed.origins
         self.caches = self.fed.federated_caches
         self.v2 = [c for c in self.caches if c.kind == "v2"]
-        # What the origins send as the shape is: only native ones send
-        # Origin.CacheControl.
         self.sent = self.fed.sent_cache_control
         self.made: set[str] = set()
 
     def rel(self, *parts: str) -> str:
-        """Where parts are, under the run's collection."""
+        """Return where parts are, under the run's collection."""
         return "/".join([self.base, *parts])
 
     def url(self, server_url: str, rel: str) -> str:
-        """rel in /protected-a at the server at server_url."""
+        """Return rel's URL in /protected-a at the server at server_url."""
         return f"{server_url}/{NAMESPACE}/{quote(rel)}"
 
     def path(self, rel: str) -> str:
-        """rel's path in the federation."""
+        """Return rel's path in the federation."""
         return f"/{NAMESPACE}/{rel}"
 
     def put(self, objects: Mapping[str, bytes]) -> Optional[str]:
-        """Put objects, by rel, at every origin, making their collections
-        first; what went wrong, or None."""
+        """Put objects, by rel, and their collections, at every origin.
+
+        Returns:
+            What went wrong, or None.
+        """
         for rel, data in objects.items():
             parent = rel.rsplit("/", 1)[0]
             if parent not in self.made:
@@ -197,7 +211,7 @@ class Test:
         headers: Optional[Mapping[str, str]] = None,
         timeout: float = 120,
     ) -> web.Response:
-        """method of rel at the server at server_url, with the token."""
+        """Send method of rel at server_url, with the token."""
         return web.request(
             method,
             self.url(server_url, rel),
@@ -207,8 +221,11 @@ class Test:
         )
 
     def admin_token(self, cache: common.Cache) -> str:
-        """A token that cache's web API takes as its admin's (see
-        credentials.mint_admin()), signed with the cache's own key."""
+        """Return a token that cache's web API takes as its admin's.
+
+        It is minted by credentials.mint_admin(), signed with the cache's
+        own key.
+        """
         issuer = credentials.local_issuer(self.fed, cache.web_url)
         key = common.signing_key(f"issuer-keys/{cache.svc}")
         out = self.session.path(f"tokens/freshness-admin.{cache.svc}")
@@ -220,25 +237,29 @@ class Test:
 
 
 def age(answer: web.Response) -> Optional[int]:
-    """answer's Age, in seconds, or None if it has none."""
+    """Return answer's Age, in seconds, or None if it has none."""
     value = answer.header("Age").strip()
     return int(value) if value.isdigit() else None
 
 
 def holds(test: Test, cache: common.Cache, rel: str) -> bool:
-    """Whether a V2 cache says, with Age, that it holds all of rel."""
+    """Return whether a V2 cache says, with Age, it holds all of rel."""
     answer = test.ask("HEAD", cache.url, rel)
     return answer.status == 200 and age(answer) is not None
 
 
 def wait_held(test: Test, cache: common.Cache, rel: str, seconds: float = HELD_WAIT) -> bool:
-    """Whether a V2 cache says it holds all of rel within seconds."""
+    """Return whether a V2 cache says it holds all of rel within seconds."""
     return common.wait_for(lambda: holds(test, cache, rel), seconds, interval=1)
 
 
 def directives(value: str) -> dict[str, str]:
-    """A Cache-Control's directives, by name in lower case, each with its
-    value, unquoted, or ""."""
+    """Return the directives of Cache-Control value.
+
+    Returns:
+        Each directive's value, unquoted, or "", by its name in lower
+        case.
+    """
     found: dict[str, str] = {}
     for part in value.split(","):
         name, _, given = part.strip().partition("=")
@@ -248,13 +269,15 @@ def directives(value: str) -> dict[str, str]:
 
 
 def seconds_of(value: str, name: str) -> int:
-    """The seconds of directive name in Cache-Control value, which has
-    it."""
+    """Return the seconds of directive name in Cache-Control value.
+
+    value must have the directive.
+    """
     return int(directives(value)[name])
 
 
 def served(answer: web.Response, data: bytes) -> Optional[str]:
-    """Why answer is not a whole object holding data, or None."""
+    """Return why answer is not a whole object holding data, or None."""
     if answer.status != 200:
         return answer.describe()
     if answer.body != data:
@@ -270,9 +293,13 @@ def sleep_until(moment: float) -> None:
 def poll(
     problem: Callable[[], Optional[str]], seconds: float, interval: float
 ) -> Optional[str]:
-    """Ask problem() what is wrong, at once and then every interval
-    until it finds nothing, or seconds have passed: what it last found,
-    or None."""
+    """Ask problem() what is wrong until it finds nothing, or seconds pass.
+
+    It is asked at once, and then every interval seconds.
+
+    Returns:
+        What it last found, or None.
+    """
     deadline = time.time() + seconds
     found = problem()
     while found and time.time() < deadline:
@@ -288,8 +315,15 @@ ETAG_RESOLUTION = 1.1
 
 
 class Versions:
-    """Two versions of objects, by rel: v2 differs from v1 in its bytes,
-    and perhaps in its size."""
+    """Two versions of objects, by rel.
+
+    v2 differs from v1 in its bytes, and perhaps in its size.
+
+    Attributes:
+        v1: The first version of each object, by rel.
+        v2: The second version of each object, by rel.
+        written: When v1 was put.
+    """
 
     def __init__(self, sizes: Mapping[str, tuple[int, int]]):
         self.v1 = {rel: os.urandom(a) for rel, (a, _) in sizes.items()}
@@ -297,23 +331,39 @@ class Versions:
         self.written = 0.0
 
     def put_v1(self, test: Test) -> Optional[str]:
-        """Put v1 of every object at every origin."""
+        """Put v1 of every object at every origin.
+
+        Returns:
+            What went wrong, or None.
+        """
         why = test.put(self.v1)
         self.written = time.time()
         return why
 
     def put_v2(self, test: Test) -> Optional[str]:
-        """Put v2 of every object at every origin, once it will have
-        another ETag."""
+        """Put v2 of every object at every origin.
+
+        They are put once they will have another ETag.
+
+        Returns:
+            What went wrong, or None.
+        """
         sleep_until(self.written + ETAG_RESOLUTION)
         return test.put(self.v2)
 
     def which(
         self, test: Test, cache: common.Cache, rel: str, request: Optional[blocks.Request]
     ) -> tuple[Optional[str], str]:
-        """Which version a read of rel (or a range of it) through cache
-        came back as, as blocks.which_version() tells; a whole read asks
-        for a digest too, which, if one comes, must be that version's."""
+        """Return which version a read of rel through cache came back as.
+
+        request is the range to read, or None for the whole object; a
+        whole read asks for a digest too, which, if one comes, must be
+        that version's.
+
+        Returns:
+            As blocks.which_version() tells: the version, `v1` or `v2`,
+            and ""; or None, and why.
+        """
         headers = {"Range": blocks.header(request)} if request else {"Want-Digest": "crc32c"}
         answer = test.ask("GET", cache.url, rel, headers)
         versions = {"v1": self.v1[rel], "v2": self.v2[rel]}
@@ -327,8 +377,7 @@ class Versions:
         return version, why
 
     def all_v2(self, test: Test, cache: common.Cache, rels: Sequence[str]) -> list[str]:
-        """What a whole read of each of rels through cache came back as,
-        but v2."""
+        """Return what whole reads of rels through cache got, but v2."""
         found: list[str] = []
         for rel in rels:
             version, why = self.which(test, cache, rel, None)
@@ -337,8 +386,10 @@ class Versions:
         return found
 
     def battery(self, test: Test, cache: common.Cache, rels: Sequence[str]) -> list[str]:
-        """Every read of rels through cache, whole and in every range of v2,
-        that did not come back as v2."""
+        """Return the reads of rels through cache that did not get v2.
+
+        The reads are whole, and in every range of v2.
+        """
         found: list[str] = []
         for rel in rels:
             for request in [None, *blocks.requests(len(self.v2[rel]))]:
@@ -354,9 +405,11 @@ class Versions:
 
 
 def serving(test: Test) -> Optional[str]:
-    """Why /protected-a is not served as before, or None: every director
-    must name every origin for the probe, and every cache answer a HEAD
-    of it, which fetches nothing."""
+    """Return why /protected-a is not served as before, or None if it is.
+
+    Every director must name every origin for the probe, and every cache
+    answer a HEAD of it, which fetches nothing.
+    """
     path = test.path(test.rel(PROBE))
     for url in test.fed.directors:
         where = director.ask(url, "origin", path, token=test.token)
@@ -371,15 +424,21 @@ def serving(test: Test) -> Optional[str]:
 
 
 def settle(test: Test) -> Optional[str]:
-    """Wait until the federation serves /protected-a as before (see
-    serving()); why it doesn't within SETTLE_WAIT seconds, or None."""
+    """Wait until the federation serves /protected-a as before.
+
+    Returns:
+        Why it doesn't within SETTLE_WAIT seconds (see serving()), or
+        None.
+    """
     why = poll(partial(serving, test), SETTLE_WAIT, 5)
     return f"after {SETTLE_WAIT}s, {why}" if why else None
 
 
 def not_sent(test: Test, value: str) -> Optional[str]:
-    """Why the origins do not send Cache-Control value, if one does not:
-    asked directly, where they take direct clients."""
+    """Return why the origins do not send Cache-Control value, or None.
+
+    They are asked directly, where they take direct clients.
+    """
     if not test.direct:
         return None
     for origin in test.origins:
@@ -393,8 +452,11 @@ def not_sent(test: Test, value: str) -> Optional[str]:
 
 
 def unreachable(test: Test, value: str) -> Optional[str]:
-    """Why the origins cannot be made to send Cache-Control value, or
-    None."""
+    """Return why the origins can't be made to send Cache-Control value.
+
+    Returns:
+        Why, or None if they can be.
+    """
     if value == test.sent:
         return None
     if not test.fed.native_origins:
@@ -411,8 +473,10 @@ def unreachable(test: Test, value: str) -> Optional[str]:
 
 @contextlib.contextmanager
 def origins_sending(test: Test, value: str) -> Generator[None, None, None]:
-    """Restart every origin with Origin.CacheControl value, and
-    afterward, as it was."""
+    """Restart every origin with Origin.CacheControl value.
+
+    Afterward, restart each as it was.
+    """
     text = f"Origin:\n  CacheControl: {json.dumps(value)}\n"
     with contextlib.ExitStack() as stack:
         for origin in test.origins:
@@ -421,16 +485,20 @@ def origins_sending(test: Test, value: str) -> Generator[None, None, None]:
 
 
 # --------------------------------------------------------------------------
-# The cases. Each returns its result and a note.
+# The cases. Each takes the Test and the Cache-Control that the origins
+# send, and returns its result and a note.
 
 
 def only_if_cached(test: Test, _value: str) -> Row:
-    """At each V2 cache, an object it lacks: a GET and a HEAD with
+    """Check that each V2 cache answers only-if-cached from what it holds.
+
+    At each V2 cache, an object it lacks: a GET and a HEAD with
     only-if-cached, and with X-Pelican-NoDownload, get 504, and again 2
     seconds later; and a native origin sends fewer bytes for GETs
     meanwhile than one such object (pelican_http_bytes_total). A plain
     HEAD of another such object gets its Content-Length, and leaves the
-    cache lacking it. An object the cache holds comes back with either."""
+    cache lacking it. An object the cache holds comes back with either.
+    """
     cold = {c.svc: test.rel("only-if-cached", f"cold-{c.svc}") for c in test.v2}
     head = {c.svc: test.rel("only-if-cached", f"head-{c.svc}") for c in test.v2}
     held = {c.svc: test.rel("only-if-cached", f"held-{c.svc}") for c in test.v2}
@@ -525,8 +593,13 @@ def only_if_cached(test: Test, _value: str) -> Row:
 
 
 def bare_get(url: str, test: Test, rel: str) -> tuple[web.Response, str]:
-    """A GET of rel's bare path at the director at url, followed once to
-    where it leads, as curl -L would: the answer, and who gave it."""
+    """GET rel's bare path at the director at url, as curl -L would.
+
+    The answer is followed once to where it leads.
+
+    Returns:
+        The answer, and the host that gave it.
+    """
     answer = web.request("GET", f"{url}{test.path(quote(rel))}", token=test.token, timeout=120)
     if answer.status in (301, 302, 303, 307, 308) and answer.header("Location"):
         target = answer.header("Location")
@@ -537,8 +610,11 @@ def bare_get(url: str, test: Test, rel: str) -> tuple[web.Response, str]:
 def not_back(
     test: Test, target: Union[common.Cache, str], rel: str, data: bytes
 ) -> Optional[str]:
-    """Why a GET of rel, holding data, at target, a cache or a director's
-    bare path, followed, does not get it, or None."""
+    """Return why a GET of rel at target does not get data, or None.
+
+    target is a cache, or the URL of a director, whose bare path is asked
+    and followed (see bare_get()).
+    """
     if isinstance(target, common.Cache):
         answer, name, where = test.ask("GET", target.url, rel), target.svc, target.svc
     else:
@@ -549,12 +625,14 @@ def not_back(
 
 
 def no_negative_cache(test: Test, _value: str) -> Row:
-    """An object that no origin holds yet: each cache, and each
-    director's bare path, followed, must answer 404 (a V2 cache's body
-    JSON with `not_found`). Once every origin holds it, each must serve
-    it at once; or, where there are several origins, within
-    PRESENCE_WAIT seconds, since a director keeps an origin's 404 for a
-    minute."""
+    """Check that each cache and director serves an object once it exists.
+
+    An object that no origin holds yet: each cache, and each director's
+    bare path, followed, must answer 404 (a V2 cache's body JSON with
+    `not_found`). Once every origin holds it, each must serve it at once;
+    or, where there are several origins, within PRESENCE_WAIT seconds,
+    since a director keeps an origin's 404 for a minute.
+    """
     rel = test.rel("no-negative-cache", "object")
     data = os.urandom(HELD_SIZE)
     errors = stores.make_dirs(test.origins, NAMESPACE, rel.rsplit("/", 1)[0], test.token)
@@ -610,12 +688,14 @@ def no_negative_cache(test: Test, _value: str) -> Row:
 
 
 def downstream_problems(answer: web.Response, value: str, filled: float) -> list[str]:
-    """What is wrong with the Cache-Control of answer from a V2 cache,
-    which first fetched the object at time filled, from origins sending
-    Cache-Control value. With max-age=N, it must send s-maxage=N and
-    max-age=N (ResponseCacheControl in local_cache/schema.go); with
+    """Return what is wrong with the Cache-Control of a V2 cache's answer.
+
+    The cache first fetched the object at time filled, from origins
+    sending Cache-Control value. With max-age=N, it must send s-maxage=N
+    and max-age=N (ResponseCacheControl in local_cache/schema.go); with
     none, max-age of what remains of its own freshness, which began at
-    filled."""
+    filled.
+    """
     sent = answer.header("Cache-Control")
     found = directives(sent)
     if value:
@@ -635,13 +715,16 @@ def downstream_problems(answer: web.Response, value: str, filled: float) -> list
 
 
 def downstream(test: Test, value: str) -> Row:
-    """At each V2 cache, an object of its own: a cold GET, which fills
-    it; once the cache says it holds it, two GETs 3 seconds apart; and a
-    GET with If-None-Match naming its ETag. Each must carry Cache-Control
+    """Check each V2 cache's Cache-Control and Age on fills, hits, and 304s.
+
+    At each V2 cache, an object of its own: a cold GET, which fills it;
+    once the cache says it holds it, two GETs 3 seconds apart; and a GET
+    with If-None-Match naming its ETag. Each must carry Cache-Control
     (see downstream_problems()), the 304 too. The fill may carry no Age,
     or one of at most AGE_SLACK; each hit's Age must be no more than the
     time since the fill, and the second's must exceed the first's by the
-    time between them, within AGE_SLACK."""
+    time between them, within AGE_SLACK.
+    """
     slug = "max-age" if value else "none"
     rels = {c.svc: test.rel(f"cc-downstream-{slug}", c.svc) for c in test.v2}
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
@@ -712,8 +795,11 @@ def downstream(test: Test, value: str) -> Row:
 
 
 def depth_0(test: Test, cache: common.Cache, rel: str) -> tuple[Optional[webdav.Entry], str]:
-    """The entry of a cache's Depth 0 PROPFIND of rel, or why there is
-    none."""
+    """Return the entry of a cache's Depth 0 PROPFIND of rel.
+
+    Returns:
+        The entry, and ""; or None, and why there is none.
+    """
     answer = webdav.propfind(test.url(cache.url, rel), "0", test.token)
     if answer.status != 207:
         return None, f"Depth 0 got {answer.describe()}, not 207"
@@ -730,11 +816,14 @@ def depth_0(test: Test, cache: common.Cache, rel: str) -> tuple[Optional[webdav.
 
 
 def propfind_empty(test: Test, _value: str) -> Row:
-    """At each V2 cache, an empty object: once read whole, a Depth 0
+    """Check that each V2 cache's Depth 0 says an empty object is 0 bytes.
+
+    At each V2 cache, an empty object: once read whole, a Depth 0
     PROPFIND must say it is 0 bytes long, since every object has a
     getcontentlength, 0 included. A cache answers Depth 0 from its copy
     if it holds one, and otherwise asks an origin; if it never says,
-    with Age, that it holds the object, a pass is inconclusive."""
+    with Age, that it holds the object, a pass is inconclusive.
+    """
     rels = {c.svc: test.rel("propfind-empty", c.svc) for c in test.v2}
     why = test.put({rel: b"" for rel in rels.values()})
     if why:
@@ -767,8 +856,10 @@ def propfind_empty(test: Test, _value: str) -> Row:
 
 
 def origin_etags(test: Test, rel: str) -> set[str]:
-    """The ETags that the origins send for rel, where they take direct
-    clients; none otherwise."""
+    """Return the ETags that the origins send for rel.
+
+    There are none where the origins take no direct clients.
+    """
     if not test.direct:
         return set()
     found = {test.ask("HEAD", o.url, rel).header("ETag") for o in test.origins}
@@ -778,8 +869,11 @@ def origin_etags(test: Test, rel: str) -> set[str]:
 def not_current(
     test: Test, cache: common.Cache, rel: str, size: int, old: Optional[str], etags: set[str]
 ) -> Optional[str]:
-    """Why a cache's Depth 0 of rel does not say the object is size bytes
-    long, with an ETag other than old (one of etags, if any), or None."""
+    """Return why a cache's Depth 0 of rel is not current, or None.
+
+    It must say the object is size bytes long, with an ETag other than
+    old (one of etags, if any).
+    """
     entry, why = depth_0(test, cache, rel)
     if entry is None:
         return why
@@ -790,12 +884,14 @@ def not_current(
 
 
 def propfind_overwrite(test: Test, value: str) -> Row:
-    """At each V2 cache, an object read whole, which it holds, and whose
+    """Check that each V2 cache's Depth 0 says the new size once stale.
+
+    At each V2 cache, an object read whole, which it holds, and whose
     Depth 0 says its size; the origins then take one 1,000 bytes longer.
     Once the cache's copy is stale (max-age), Depth 0, with no GET in
     between, must say the new size, and an ETag other than the old one
-    (an origin's, where they can be asked), within STALE_SLACK
-    seconds."""
+    (an origin's, where they can be asked), within STALE_SLACK seconds.
+    """
     fresh = seconds_of(value, "max-age")
     rels = {c.svc: test.rel("propfind-overwrite", c.svc) for c in test.v2}
     versions = Versions({rel: (OBJECT_SIZE, OBJECT_SIZE + 1000) for rel in rels.values()})
@@ -848,12 +944,15 @@ def propfind_overwrite(test: Test, value: str) -> Row:
 
 
 def stale_if_error(test: Test, value: str) -> Row:
-    """At each V2 cache, an object read whole, which it holds, and
-    another it never read. Once the first is stale (max-age), every
-    origin is stopped. The first must still come back, as the cache
-    holds it; the other must fail, and never come back with bytes that
-    are not its own. Then the origins start again, and the federation
-    must serve as before."""
+    """Check that each V2 cache serves a stale copy with every origin down.
+
+    At each V2 cache, an object read whole, which it holds, and another
+    it never read. Once the first is stale (max-age), every origin is
+    stopped. The first must still come back, as the cache holds it; the
+    other must fail, and never come back with bytes that are not its
+    own. Then the origins start again, and the federation must serve as
+    before.
+    """
     if test.fed.tiny:
         return SKIP, "the tiny topology's origin is the whole federation's process"
     why = control.unavailable()
@@ -912,15 +1011,17 @@ def stale_if_error(test: Test, value: str) -> Row:
 
 
 def immediate(test: Test, value: str) -> Row:
-    """blocks's overwrite-cached and overwrite-range-first at each V2
-    cache, for Cache-Control value, under which a copy is fresh for
-    blocks.freshness() seconds: 0, or no-cache's grace of 5. Of three
-    objects read whole twice, and three read through a range and then
-    whole, the origins then take another version: as long, longer, or
-    shorter. Each cache must serve the new version of each, whole, at
-    the first read after (where it is fresh for 0), or within its grace
-    and IMMEDIATE_SLACK of when it last read the old one; then every
-    read, whole and in every range, must be the new version alone."""
+    """Check that each V2 cache serves an overwrite at once.
+
+    Under Cache-Control value, a copy is fresh for blocks.freshness()
+    seconds: 0, or no-cache's grace of 5. Of three objects read whole
+    twice, and three read through a range and then whole, the origins
+    then take another version: as long, longer, or shorter. Each cache
+    must serve the new version of each, whole, at the first read after
+    (where it is fresh for 0), or within its grace and IMMEDIATE_SLACK of
+    when it last read the old one; then every read, whole and in every
+    range, must be the new version alone.
+    """
     fresh = blocks.freshness(value) or 0.0
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     changes = {"same": 0, "grown": OVERWRITE_CHANGE, "shrunk": -OVERWRITE_CHANGE}
@@ -988,10 +1089,15 @@ def immediate(test: Test, value: str) -> Row:
 def ranged(
     data: bytes, request: blocks.Request, answer: web.Response
 ) -> tuple[Optional[str], bool]:
-    """What is wrong with answer to request for an object holding data
-    (blocks.check()), and whether the server answered it whole, with
-    `Accept-Ranges: none`: as a V2 cache passing through an object it
-    may not store does, which RFC 9110 allows."""
+    """Return what is wrong with answer to request, and if it was whole.
+
+    Returns:
+        What is wrong with answer for an object holding data
+        (blocks.check()), or None; and whether the server answered it
+        whole, with `Accept-Ranges: none`, which is not wrong: a V2
+        cache passing through an object it may not store does so, as
+        RFC 9110 allows.
+    """
     why = blocks.check(data, request, answer.status, answer.headers, answer.body)
     if (
         why
@@ -1004,10 +1110,15 @@ def ranged(
 
 
 def introspected(test: Test, cache: common.Cache, rel: str) -> tuple[Optional[int], str]:
-    """How many instances of rel a V2 cache's introspection lists, as its
-    admin (`/api/v1.0/cache/introspect/list`, whose pattern without a
-    wildcard matches a substring of an object's URL); or None, and why
-    it said nothing."""
+    """Return how many instances of rel a V2 cache's introspection lists.
+
+    It is asked as the cache's admin (`/api/v1.0/cache/introspect/list`,
+    whose pattern without a wildcard matches a substring of an object's
+    URL).
+
+    Returns:
+        The count, and ""; or None, and why it said nothing.
+    """
     query = urlencode({"limit": "1000", "pattern": test.path(rel)})
     url = f"{cache.web_url}/api/v1.0/cache/introspect/list?{query}"
     answer = web.request("GET", url, token=test.admin_token(cache))
@@ -1023,13 +1134,16 @@ def introspected(test: Test, cache: common.Cache, rel: str) -> tuple[Optional[in
 
 
 def not_stored(test: Test, value: str) -> Row:
-    """At each V2 cache, an object the origins mark value (no-store or
+    """Check that each V2 cache passes the object through, and keeps none.
+
+    At each V2 cache, an object the origins mark value (no-store or
     private): two GETs must each pass it through, whole, with value in
     its Cache-Control and no Age; every range of it must come back as
     blocks.check() says, or whole, with `Accept-Ranges: none`. Then a
     GET and a HEAD with only-if-cached must get 504, the cache's
     introspection must list none of it, and its store's object files
-    must not have grown by as much as the object."""
+    must not have grown by as much as the object.
+    """
     rels = {c.svc: test.rel(f"cc-not-stored-{value}", c.svc) for c in test.v2}
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
     why = test.put(objects)
@@ -1093,10 +1207,13 @@ def not_stored(test: Test, value: str) -> Row:
 
 
 def s_maxage(test: Test, value: str) -> Row:
-    """At each V2 cache, an object read whole, which the origins then
+    """Check that each V2 cache takes s-maxage over max-age.
+
+    At each V2 cache, an object read whole, which the origins then
     replace with a longer one. RFC 9111 (section 5.2.2.10) says a shared
     cache must take s-maxage over max-age, so each cache must serve the
-    new version within STALE_SLACK seconds of s-maxage's freshness."""
+    new version within STALE_SLACK seconds of s-maxage's freshness.
+    """
     shared, private = seconds_of(value, "s-maxage"), seconds_of(value, "max-age")
     rels = {c.svc: test.rel("s-maxage", c.svc) for c in test.v2}
     versions = Versions(
@@ -1138,10 +1255,15 @@ def s_maxage(test: Test, value: str) -> Row:
 
 @dataclass(frozen=True)
 class Case:
-    """A case of a scenario: its row's name after the scenario's, the
-    Cache-Control the origins must send for it (None: whatever they
-    send), whether it needs a V2 cache, and what runs it, with what the
-    origins send."""
+    """A case of a scenario.
+
+    Attributes:
+        name: Its row's name after the scenario's.
+        control: The Cache-Control the origins must send for it (None:
+            whatever they send).
+        run: What runs it, with what the origins send.
+        v2: Whether it needs a V2 cache.
+    """
 
     scenario: str
     name: str
@@ -1188,9 +1310,11 @@ def run_case(test: Test, case: Case, value: str, results: common.Results) -> Non
 
 
 def run_phase(test: Test, value: str, cases: Sequence[Case], results: common.Results) -> None:
-    """Run cases with the origins sending Cache-Control value: as they
-    are, if they send it, or restarted to send it, and afterward
-    restored."""
+    """Run cases with the origins sending Cache-Control value.
+
+    The origins are as they are, if they send it, or restarted to send
+    it, and afterward restored.
+    """
     ready: list[Case] = []
     for case in cases:
         if case.v2 and not test.v2:
@@ -1234,7 +1358,7 @@ def run_phase(test: Test, value: str, cases: Sequence[Case], results: common.Res
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no /protected-a, or no cache."""
+    """Return why there is nothing to test: no /protected-a, or no cache."""
     if NAMESPACE not in fed.exports:
         return "this shape does not export /protected-a"
     if not fed.federated_caches:
@@ -1243,8 +1367,11 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Put the probe in place, run the selected scenarios' cases phase by
-    phase, and remove the run's objects."""
+    """Run the selected scenarios' cases phase by phase.
+
+    The probe is put in place first, and the run's objects are removed
+    afterward.
+    """
     fed = session.fed
     for origin in stores.unique(fed.origins):
         directory = f"{origin.store_of(NAMESPACE)}/data/freshness"

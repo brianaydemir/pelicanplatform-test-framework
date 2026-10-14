@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Create the test objects for the current shape, and the collections
-that the test suites write in.
+"""Create the shape's test objects and the collections the suites write in.
 
   framework/init-data.py                build them
   framework/init-data.py --print-shape  print the shape and stop
@@ -69,7 +68,7 @@ SUITE_DIRS = (
 
 
 def federation_url() -> str:
-    """The federation's URL, from fed.sh, or the full topology's."""
+    """Return the federation's URL, from fed.sh, or the full topology's."""
     try:
         with open("generated/federation-url", encoding="utf-8") as f:
             return f.read().strip()
@@ -78,8 +77,11 @@ def federation_url() -> str:
 
 
 def shape(exports: transfers.Exports) -> str:
-    """Everything that changes the data, including the code that decides
-    it. Other profiles, e.g. `multi-cache` and `monitoring`, do not."""
+    """Return the shape: everything that changes the data.
+
+    That includes the code that decides it. Other profiles, e.g.
+    `multi-cache` and `monitoring`, do not change it.
+    """
     used = (
         ",".join(p for p in ("lab", "multi-origin", "multi-owner") if p in profiles) or "none"
     )
@@ -112,8 +114,10 @@ def shape(exports: transfers.Exports) -> str:
 
 
 def make_dir(path: str) -> None:
-    """Make directory path, writable by any uid (e.g. `alice` on the lab
-    server)."""
+    """Make directory path, writable by any uid.
+
+    Any uid includes, e.g., `alice` on the lab server.
+    """
     os.makedirs(path, exist_ok=True)
     # os.makedirs's mode is subject to the umask.
     os.chmod(path, 0o777)  # nosec B103
@@ -134,8 +138,17 @@ def remove_tree(directory: str) -> None:
 
 
 def make_objects(store: str, prefix: str, namespaces: Sequence[str]) -> None:
-    """Replace each namespace's data/ in store with its objects, and the
-    directories that the suites write in."""
+    """Replace each namespace's data/ in store with its objects.
+
+    Also make the directories that the suites write in.
+
+    Args:
+        store: The store's directory, under framework/var (e.g.
+            `data/origin/0`).
+        prefix: The objects' names' prefix: `<origin>` in
+            `<origin>.<n>`.
+        namespaces: The namespaces whose storage to fill.
+    """
     for namespace in namespaces:
         root = f"{store}/{common.storage_dir(namespace)}"
         directory = f"{root}/data"

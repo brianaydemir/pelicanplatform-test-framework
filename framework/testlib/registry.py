@@ -1,7 +1,8 @@
-"""The registry's own APIs (registry/registry.go and registry_ui.go in
-Pelican): registering a prefix as a server or `pelican namespace
-register` does, with keys of a run's own; reading the keys it holds; and
-looking for private key material in a JWKS document.
+"""The registry's own APIs, and looking for private key material in a JWKS.
+
+The APIs are those of registry/registry.go and registry_ui.go in Pelican:
+registering a prefix as a server or `pelican namespace register` does,
+with keys of a run's own, and reading the keys it holds.
 
 A registration (POST /api/v1.0/registry) is a key-sign challenge in two
 requests (keySignChallenge). The client sends a nonce and its JWKS; the
@@ -44,7 +45,7 @@ DOWNTIME_DELETE = "pelican.downtime_delete"
 
 
 def _openssl(args: Sequence[str], data: bytes = b"") -> bytes:
-    """What `openssl <args>` writes, given data; it must succeed."""
+    """Return what `openssl <args>` writes, given data; it must succeed."""
     done = subprocess.run(  # nosec B603 B607
         ["openssl", *args], input=data, capture_output=True, check=False
     )
@@ -54,8 +55,13 @@ def _openssl(args: Sequence[str], data: bytes = b"") -> bytes:
 
 
 def new_key(path: str) -> str:
-    """Make an EC P-256 private key at path (PKCS #8 PEM, which Pelican
-    reads, as it does its own keys), unless one is there: path."""
+    """Make an EC P-256 private key at path, unless one is there.
+
+    The key is PKCS #8 PEM, which Pelican reads, as it does its own keys.
+
+    Returns:
+        path.
+    """
     if not os.path.exists(path):
         _openssl(
             ["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", path]
@@ -65,29 +71,41 @@ def new_key(path: str) -> str:
 
 
 def write_public_key(key: str, path: str) -> str:
-    """Write PEM private key file key's public key to path, in PEM: path."""
+    """Write PEM private key file key's public key to path, in PEM.
+
+    Returns:
+        path.
+    """
     with open(path, "wb") as f:
         f.write(_openssl(["pkey", "-in", key, "-pubout"]))
     return path
 
 
 def public_jwk(key: str) -> dict[str, str]:
-    """PEM private key file key's public key, as Pelican publishes one of
-    its own: with its thumbprint as its kid, its algorithm, and its use
-    (registry_client.NamespaceRegister)."""
+    """Return PEM private key file key's public key, as a JWK.
+
+    The JWK is as Pelican publishes one of its own: with its thumbprint as
+    its kid, its algorithm, and its use (registry_client.NamespaceRegister).
+    """
     found = jwt.public_jwk(key)
     return {**found, "kid": jwt.thumbprint(found), "alg": jwt.algorithm(key), "use": "sig"}
 
 
 def jwks(keys: Sequence[str]) -> dict[str, Any]:
-    """A JWKS of the public keys of keys, PEM private key files, in order:
-    the first is the one a registration signs its challenge with."""
+    """Return a JWKS of the public keys of keys, in order.
+
+    Args:
+        keys: PEM private key files. The first is the one a registration
+            signs its challenge with.
+    """
     return {"keys": [public_jwk(key) for key in keys]}
 
 
 def sign_payload(key: str, payload: bytes) -> str:
-    """payload's SHA-256, signed with PEM private key file key, as
-    utils.SignPayload signs it (ASN.1 DER), in hex."""
+    """Return payload's SHA-256, signed with PEM private key file key.
+
+    The signature is as utils.SignPayload makes it (ASN.1 DER), in hex.
+    """
     return _openssl(["dgst", "-sha256", "-sign", key], payload).hex()
 
 
@@ -98,12 +116,21 @@ def register(
     site_name: str,
     server_id: str = "",
 ) -> web.Response:
-    """Register prefix at the registry at registry_url, with the public
-    keys of keys (PEM private key files), the first of which signs the
-    challenge, as a server or `pelican namespace register` does, under
-    site_name; for a server's prefix (/origins/... or /caches/...), with
-    server_id, the ID it gives itself. The registry's answer to the
-    challenge, if that failed, or else to the registration."""
+    """Register prefix as a server or `pelican namespace register` does.
+
+    Args:
+        registry_url: The registry's base URL.
+        prefix: The prefix to register.
+        keys: PEM private key files, whose public keys the registration
+            carries. The first signs the challenge.
+        site_name: The site name to register prefix under.
+        server_id: For a server's prefix (/origins/... or /caches/...),
+            the ID the server gives itself.
+
+    Returns:
+        The registry's answer to the challenge, if that failed, or else
+        to the registration.
+    """
     url = registry_url + REGISTRY
     keyset = jwks(keys)
     client_nonce = uuid.uuid4().hex + uuid.uuid4().hex
@@ -144,10 +171,19 @@ def token(
     lifetime: int = 300,
     jwks_doc: Optional[bytes] = None,
 ) -> str:
-    """A token of scope for subject, from issuer, for audience, signed
-    with PEM private key file key, naming it by its kid in jwks_doc if it
-    is there, and otherwise by its thumbprint (jwt.key_id()), lasting
-    lifetime seconds: as a server mints those the registry takes."""
+    """Return a token, as a server mints those the registry takes.
+
+    Args:
+        key: The PEM private key file to sign it with.
+        scope: Its scope.
+        subject: Its subject.
+        issuer: Its issuer.
+        audience: Its audience.
+        lifetime: How long it lasts, in seconds.
+        jwks_doc: A JWKS document. The token names key by its kid there,
+            if the document holds key's public key, and otherwise by its
+            thumbprint (jwt.key_id()).
+    """
     now = int(time.time())
     claims = {
         "aud": audience,
@@ -165,7 +201,7 @@ def token(
 
 
 def parse(body: bytes) -> Any:
-    """body, decoded as one JSON document, or None if it isn't one."""
+    """Return body decoded as one JSON document, or None if it isn't one."""
     try:
         return json.loads(body)
     except ValueError:
@@ -173,9 +209,11 @@ def parse(body: bytes) -> Any:
 
 
 def documents(body: bytes) -> int:
-    """How many JSON documents body holds, one after another, as a
-    handler that writes an error, and then goes on to write another
-    answer, sends; 0 if it doesn't start with one."""
+    """Return how many JSON documents body holds, one after another.
+
+    That is 0 if body doesn't start with one. A handler that writes an
+    error, and then goes on to write another answer, sends more than one.
+    """
     decoder = json.JSONDecoder()
     text = body.decode(errors="replace").strip()
     found = 0
@@ -190,8 +228,12 @@ def documents(body: bytes) -> int:
 
 
 def as_jwks(document: Any) -> Optional[list[dict[str, Any]]]:
-    """The keys of a JWKS, given parsed or as its text, as a registration
-    stores it (`pubkey`); None if it isn't one."""
+    """Return the keys of a JWKS, or None if document isn't one.
+
+    Args:
+        document: The JWKS, parsed or as its text, as a registration
+            stores it (`pubkey`).
+    """
     if isinstance(document, (str, bytes)):
         document = parse(document.encode() if isinstance(document, str) else document)
     listed = common.as_array((common.as_object(document) or {}).get("keys"))
@@ -201,8 +243,14 @@ def as_jwks(document: Any) -> Optional[list[dict[str, Any]]]:
 
 
 def private_members(document: Any) -> list[str]:
-    """Each key in a JWKS (see as_jwks()) that holds private key
-    material, by its kid, and which members it holds."""
+    """Return each key in a JWKS that holds private key material.
+
+    Args:
+        document: The JWKS, as as_jwks() takes it.
+
+    Returns:
+        Each such key, by its kid, and which members it holds.
+    """
     found: list[str] = []
     for key in as_jwks(document) or []:
         held = [m for m in PRIVATE_MEMBERS if m in key]
@@ -217,9 +265,17 @@ _THUMBPRINT_MEMBERS = {"EC": ("crv", "kty", "x", "y"), "RSA": ("e", "kty", "n")}
 
 
 def thumbprints(document: Any) -> Optional[frozenset[str]]:
-    """The RFC 7638 thumbprint of each public key in a JWKS (see
-    as_jwks()), computed from its members rather than taken from its kid;
-    None if it isn't a JWKS."""
+    """Return the RFC 7638 thumbprint of each public key in a JWKS.
+
+    Each is computed from the key's members rather than taken from its
+    kid.
+
+    Args:
+        document: The JWKS, as as_jwks() takes it.
+
+    Returns:
+        The thumbprints, or None if document isn't a JWKS.
+    """
     listed = as_jwks(document)
     if listed is None:
         return None
@@ -232,13 +288,15 @@ def thumbprints(document: Any) -> Optional[frozenset[str]]:
 
 
 def key_thumbprints(keys: Sequence[str]) -> frozenset[str]:
-    """The thumbprint of each of keys, PEM private key files."""
+    """Return the thumbprint of each of keys, PEM private key files."""
     return frozenset(jwt.thumbprint(jwt.public_jwk(key)) for key in keys)
 
 
 def dir_keys(key_dir: str) -> list[str]:
-    """The .pem files in key_dir (under framework/var): a server's keys,
-    all of which it publishes."""
+    """Return the .pem files in key_dir (under framework/var).
+
+    They are a server's keys, all of which it publishes.
+    """
     try:
         names = sorted(n for n in os.listdir(key_dir) if n.endswith(".pem"))
     except FileNotFoundError:
@@ -247,5 +305,5 @@ def dir_keys(key_dir: str) -> list[str]:
 
 
 def admin_metadata(registration: Mapping[str, Any]) -> dict[str, Any]:
-    """A registration's admin_metadata."""
+    """Return a registration's admin_metadata."""
     return common.as_object(registration.get("admin_metadata")) or {}

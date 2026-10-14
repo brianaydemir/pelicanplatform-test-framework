@@ -1,8 +1,10 @@
-"""Pelican's embedded OAuth2 issuer, as a client of it: tokens for a
-user through the device flow (RFC 8628) and the authorization code flow
-(RFC 6749, with PKCE), approved on the user's behalf; and what a client
-does with a token afterward: refresh it, exchange it (RFC 8693), revoke
-it (RFC 7009), and introspect it (RFC 7662).
+"""Pelican's embedded OAuth2 issuer, as a client of it.
+
+This covers tokens for a user through the device flow (RFC 8628) and the
+authorization code flow (RFC 6749, with PKCE), approved on the user's
+behalf; and what a client does with a token afterward: refresh it,
+exchange it (RFC 8693), revoke it (RFC 7009), and introspect it (RFC
+7662).
 
 A client asks the issuer to start a flow. In the device flow, it polls
 for the token while the user approves the flow at the issuer's
@@ -112,10 +114,16 @@ class IssuerError(Exception):
 
 @dataclass(frozen=True)
 class User:
-    """How the issuer knows the user who approves a flow, as the server's
-    web API knows them: by a bearer token (credentials.mint_user()), or
-    by the cookie of a web login (accounts.login()), which also carries
-    the groups the user was in when they logged in."""
+    """How the issuer knows the user who approves a flow.
+
+    The issuer knows them as the server's web API does, by either
+    attribute.
+
+    Attributes:
+        token: A bearer token (credentials.mint_user()).
+        cookie: The cookie of a web login (accounts.login()), which also
+            carries the groups the user was in when they logged in.
+    """
 
     token: Optional[str] = None
     cookie: Optional[str] = None
@@ -132,15 +140,25 @@ class User:
 
 @dataclass(frozen=True)
 class Client:
-    """A client of one issuer."""
+    """A client of one issuer.
 
-    url: str  # where the issuer serves: <web URL>/api/v1.0/issuer/ns<namespace>
+    Attributes:
+        url: Where the issuer serves:
+            <web URL>/api/v1.0/issuer/ns<namespace>.
+        client_secret: Its secret; "" for a public client, which has none.
+        device_url: The issuer's device authorization endpoint.
+        token_url: The issuer's token endpoint.
+        authorize_url: The issuer's authorization endpoint.
+        redirect_uri: Where the code flow sends the user back.
+    """
+
+    url: str
     client_id: str
-    client_secret: str  # "" for a public client, which has none
-    device_url: str  # its device authorization endpoint
-    token_url: str  # its token endpoint
-    authorize_url: str  # its authorization endpoint
-    redirect_uri: str = ""  # where the code flow sends the user back
+    client_secret: str
+    device_url: str
+    token_url: str
+    authorize_url: str
+    redirect_uri: str = ""
 
     @property
     def public(self) -> bool:
@@ -158,21 +176,29 @@ class Client:
 
 @dataclass(frozen=True)
 class Tokens:
-    """What the token endpoint issued."""
+    """What the token endpoint issued.
+
+    Attributes:
+        access: The access token.
+        refresh: The refresh token, which comes only with offline_access,
+            from a client that may refresh; None if none came.
+        expires_in: The access token's lifetime, in seconds.
+        raw: The token endpoint's answer, decoded.
+    """
 
     access: str
-    refresh: Optional[str]  # only with offline_access, from a client that may refresh
-    expires_in: int  # the access token's lifetime, in seconds
+    refresh: Optional[str]
+    expires_in: int
     raw: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 def url(web_url: str, namespace: str) -> str:
-    """Where the server at web_url serves its issuer of namespace."""
+    """Return where the server at web_url serves its issuer of namespace."""
     return f"{web_url}{ROUTE}{namespace}"
 
 
 def decoded(answer: web.Response) -> dict[str, Any]:
-    """The JSON object in answer's body, or {}."""
+    """Return the JSON object in answer's body, or {}."""
     try:
         return common.as_object(json.loads(answer.body)) or {}
     except ValueError:
@@ -180,20 +206,23 @@ def decoded(answer: web.Response) -> dict[str, Any]:
 
 
 def error_of(answer: web.Response) -> str:
-    """The OAuth2 error in answer, e.g. invalid_grant, or ""."""
+    """Return the OAuth2 error in answer, e.g. invalid_grant, or ""."""
     return str(decoded(answer).get("error", ""))
 
 
 def failed(what: str, answer: web.Response) -> IssuerError:
-    """An error saying how what went."""
+    """Return an error saying how what went."""
     return IssuerError(
         f"{what}: {answer.describe()}: {answer.body[:200].decode(errors='replace')}"
     )
 
 
 def discovery(issuer_url: str) -> dict[str, Any]:
-    """An issuer's discovery document. Raises IssuerError if it serves
-    none."""
+    """Return an issuer's discovery document.
+
+    Raises:
+        IssuerError: The issuer serves none.
+    """
     target = f"{issuer_url}/.well-known/openid-configuration"
     found = web.request("GET", target)
     document = decoded(found)
@@ -205,8 +234,13 @@ def discovery(issuer_url: str) -> dict[str, Any]:
 def client_of(
     web_url: str, namespace: str, client_id: str, client_secret: str, redirect_uri: str = ""
 ) -> Client:
-    """A Client for an existing client of the server's issuer of
-    namespace, with the issuer's endpoints looked up."""
+    """Return a Client for a client of web_url's issuer of namespace.
+
+    The client exists already; the issuer's endpoints are looked up.
+
+    Raises:
+        IssuerError: The issuer serves no discovery document.
+    """
     issuer_url = url(web_url, namespace)
     endpoints = discovery(issuer_url)
     return Client(
@@ -228,9 +262,16 @@ def admin_call(
     client_id: str = "",
     body: Optional[dict[str, Any]] = None,
 ) -> web.Response:
-    """method the server's admin API for the clients of its issuer of
-    namespace, presenting bearer (a web token; None for none): the list of
-    them, or with client_id, that one, sending body as JSON if given."""
+    """Send method to the admin API for the clients of a server's issuer.
+
+    Args:
+        web_url: The server's web URL.
+        namespace: The namespace of the server's issuer.
+        bearer: A web token to present; None for none.
+        method: The HTTP method.
+        client_id: The client to ask about; "" for the list of them.
+        body: What to send as JSON, if given.
+    """
     target = f"{web_url}{ADMIN_ROUTE}{namespace}/clients"
     if client_id:
         target += f"/{client_id}"
@@ -248,9 +289,26 @@ def create_client(
     public: bool = False,
     name: str = "pelican-test-framework",
 ) -> Client:
-    """Have the server at web_url, as its admin, create a client of its
-    issuer of namespace (LOCAL_NAMESPACE for its local one), allowed the
-    grants and allowed_scopes, and look up the issuer's endpoints."""
+    """Have the server at web_url, as its admin, create an issuer's client.
+
+    Args:
+        web_url: The server's web URL.
+        namespace: The namespace of the server's issuer (LOCAL_NAMESPACE
+            for its local one).
+        admin_token: A web token of the server's admin.
+        grants: The grant types the client is allowed.
+        allowed_scopes: The scopes the client is allowed.
+        redirect_uris: Where the code flow may send the user back.
+        public: Whether the client has no secret.
+        name: The client's name.
+
+    Returns:
+        The client, with the issuer's endpoints looked up.
+
+    Raises:
+        IssuerError: The client was not created, or the issuer serves no
+            discovery document.
+    """
     target = f"{web_url}{ADMIN_ROUTE}{namespace}/clients"
     body: dict[str, Any] = {
         "client_name": name,
@@ -278,16 +336,22 @@ def create_client(
 def delete_client(
     web_url: str, namespace: str, admin_token: str, client_id: str
 ) -> Optional[str]:
-    """Have the server's admin delete a client of its issuer of namespace;
-    why that failed, or None."""
+    """Have the server's admin delete a client of its issuer of namespace.
+
+    Returns:
+        Why that failed, or None if it did not.
+    """
     target = f"{web_url}{ADMIN_ROUTE}{namespace}/clients/{client_id}"
     gone = web.request("DELETE", target, token=admin_token)
     return None if gone.ok else f"DELETE {target}: {gone.describe()}"
 
 
 def post(client: Client, target: str, form: dict[str, str]) -> web.Response:
-    """POST form to target as client: authenticated by its secret, or, if
-    it has none, naming itself in the form."""
+    """POST form to target as client.
+
+    The client is authenticated by its secret, or, if it has none, names
+    itself in the form.
+    """
     body = dict(form)
     if client.public:
         body["client_id"] = client.client_id
@@ -297,8 +361,15 @@ def post(client: Client, target: str, form: dict[str, str]) -> web.Response:
 
 
 def tokens_of(answer: web.Response, what: str) -> Tokens:
-    """The tokens in the token endpoint's answer. Raises IssuerError if
-    it issued none."""
+    """Return the tokens in the token endpoint's answer.
+
+    Args:
+        answer: The token endpoint's answer.
+        what: The request answered, for an error's message.
+
+    Raises:
+        IssuerError: The endpoint issued none.
+    """
     got = decoded(answer)
     if answer.status != 200 or not got.get("access_token"):
         raise failed(what, answer)
@@ -312,8 +383,12 @@ def tokens_of(answer: web.Response, what: str) -> Tokens:
 
 
 def register(issuer_url: str, metadata: dict[str, Any]) -> web.Response:
-    """Register a client at issuer_url itself (RFC 7591), with metadata:
-    its credentials, metadata, and registration access token."""
+    """Register a client at issuer_url itself (RFC 7591), with metadata.
+
+    Returns:
+        The issuer's answer: the client's credentials, metadata, and
+        registration access token.
+    """
     return web.request(
         "POST", f"{issuer_url}/oidc-cm", upload=json.dumps(metadata).encode(), headers=JSON
     )
@@ -326,9 +401,15 @@ def configuration(
     access: Optional[str],
     metadata: Optional[dict[str, Any]] = None,
 ) -> web.Response:
-    """method (GET, PUT, or DELETE) the configuration of a client that
-    registered itself (RFC 7592), presenting access, its registration
-    access token (None for none), and sending metadata if given."""
+    """Send method to the configuration of a client that registered itself.
+
+    Args:
+        issuer_url: The issuer's URL.
+        client_id: The client's ID.
+        method: GET, PUT, or DELETE (RFC 7592).
+        access: The client's registration access token; None for none.
+        metadata: What to send, if given.
+    """
     upload = None if metadata is None else json.dumps(metadata).encode()
     return web.request(
         method, f"{issuer_url}/oidc-cm/{client_id}", token=access, upload=upload, headers=JSON
@@ -345,8 +426,11 @@ def start_device(client: Client, wanted: Sequence[str]) -> web.Response:
 
 
 def started(answer: web.Response, client: Client) -> dict[str, Any]:
-    """The flow that start_device() started. Raises IssuerError if the
-    issuer started none."""
+    """Return the flow that start_device() started.
+
+    Raises:
+        IssuerError: The issuer started none.
+    """
     flow = decoded(answer)
     if answer.status != 200 or not flow.get("device_code") or not flow.get("user_code"):
         raise failed(f"POST {client.device_url}", answer)
@@ -361,8 +445,13 @@ def poll(client: Client, device_code: str) -> web.Response:
 
 
 def redeem(client: Client, device_code: str) -> Tokens:
-    """The flow's tokens, polling (POLLS times, a second apart) while the
-    issuer says to wait."""
+    """Return the flow's tokens, polling while the issuer says to wait.
+
+    It polls up to POLLS times, a second apart.
+
+    Raises:
+        IssuerError: The issuer refused, or never issued the tokens.
+    """
     for _ in range(POLLS):
         polled = poll(client, device_code)
         if polled.status == 200:
@@ -374,8 +463,12 @@ def redeem(client: Client, device_code: str) -> Tokens:
 
 
 def consent_page(issuer_url: str, user_code: str, user: User) -> web.Response:
-    """The issuer's verification page for user_code, as user: what the
-    user is asked to approve, and the CSRF cookie the approval needs."""
+    """Return the issuer's verification page for user_code, as user.
+
+    Returns:
+        The page, with what the user is asked to approve, and the CSRF
+        cookie the approval needs.
+    """
     return web.request(
         "GET", f"{issuer_url}/device?user_code={user_code}", headers=user.headers
     )
@@ -393,9 +486,20 @@ CSRF_NONE = "none"
 def decide(
     issuer_url: str, user_code: str, user: User, action: str, csrf: str = CSRF_SENT
 ) -> web.Response:
-    """Approve or deny (action) the device flow with user_code at
-    issuer_url, as user, returning the CSRF token the verification page
-    set as csrf says."""
+    """Approve or deny the device flow with user_code, as user.
+
+    Args:
+        issuer_url: The issuer's URL.
+        user_code: The flow's user code.
+        user: The user who decides.
+        action: Either `approve` or `deny`.
+        csrf: How to return the CSRF token the verification page set: one
+            of the CSRF_* values.
+
+    Raises:
+        IssuerError: The verification page was not served, or set no CSRF
+            token.
+    """
     page = f"{issuer_url}/device"
     shown = consent_page(issuer_url, user_code, user)
     issued = shown.cookie("csrf_token")
@@ -418,23 +522,36 @@ def decide(
 
 
 def approve(issuer_url: str, user_code: str, user: User) -> None:
-    """Approve the device flow with user_code at issuer_url, as user."""
+    """Approve the device flow with user_code at issuer_url, as user.
+
+    Raises:
+        IssuerError: The issuer did not approve it.
+    """
     done = decide(issuer_url, user_code, user, "approve")
     if done.status != 200 or decoded(done).get("status") != "approved":
         raise failed(f"approving {user_code} at {issuer_url}/device", done)
 
 
 def device_tokens(client: Client, user: User, wanted: Sequence[str]) -> Tokens:
-    """Tokens from client's issuer for user through the device flow,
-    asking for the scopes wanted, which the issuer narrows to what the
-    user is allowed."""
+    """Return tokens from client's issuer for user, through the device flow.
+
+    The flow asks for the scopes wanted, which the issuer narrows to what
+    the user is allowed.
+
+    Raises:
+        IssuerError: The issuer did not issue them.
+    """
     flow = started(start_device(client, wanted), client)
     approve(client.url, str(flow["user_code"]), user)
     return redeem(client, str(flow["device_code"]))
 
 
 def token(client: Client, user: User, wanted: Sequence[str]) -> str:
-    """The access token of device_tokens()."""
+    """Return the access token of device_tokens().
+
+    Raises:
+        IssuerError: The issuer did not issue it.
+    """
     return device_tokens(client, user, wanted).access
 
 
@@ -443,7 +560,7 @@ def token(client: Client, user: User, wanted: Sequence[str]) -> str:
 
 
 def pkce() -> tuple[str, str]:
-    """A PKCE verifier, and its S256 challenge."""
+    """Return a PKCE verifier, and its S256 challenge."""
     verifier = secrets.token_urlsafe(48)
     digest = hashlib.sha256(verifier.encode()).digest()
     return verifier, base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
@@ -457,10 +574,21 @@ def authorize(
     state: str,
     redirect_uri: Optional[str] = None,
 ) -> web.Response:
-    """Ask client's issuer, as user, to authorize client for the scopes
-    wanted, with the PKCE challenge (none if ""): a redirect (303) back
-    to the client's redirect URI (or redirect_uri) with a code, or an
-    error."""
+    """Ask client's issuer, as user, to authorize client.
+
+    Args:
+        client: The client to authorize.
+        user: The user who authorizes it.
+        wanted: The scopes asked for.
+        challenge: The PKCE challenge; "" for none.
+        state: The state the issuer is to send back.
+        redirect_uri: Where to send the user back, if not to the client's
+            redirect URI.
+
+    Returns:
+        A redirect (303) back to the redirect URI with a code, or an
+        error.
+    """
     query = {
         "response_type": "code",
         "client_id": client.client_id,
@@ -476,8 +604,12 @@ def authorize(
 
 
 def redirected(answer: web.Response) -> dict[str, str]:
-    """The query of the redirect in answer, each parameter's first value;
-    {} if it redirects nowhere."""
+    """Return the query of the redirect in answer.
+
+    Returns:
+        Each parameter's first value, by parameter; {} if answer
+        redirects nowhere.
+    """
     if answer.status not in (302, 303):
         return {}
     query = parse_qs(urlsplit(answer.header("Location")).query)
@@ -496,8 +628,14 @@ def code_tokens(client: Client, code: str, verifier: str) -> web.Response:
 
 
 def code_flow(client: Client, user: User, wanted: Sequence[str]) -> Tokens:
-    """Tokens from client's issuer for user through the code flow, asking
-    for the scopes wanted."""
+    """Return tokens from client's issuer for user, through the code flow.
+
+    The flow asks for the scopes wanted.
+
+    Raises:
+        IssuerError: The issuer issued no code or tokens, or sent back
+            another state.
+    """
     verifier, challenge = pkce()
     state = secrets.token_urlsafe(12)
     sent = authorize(client, user, wanted, challenge, state)
@@ -523,8 +661,14 @@ def refresh(client: Client, refresh_token: str) -> web.Response:
 def exchange(
     client: Client, subject: str, wanted: Sequence[str] = (), audience: str = ""
 ) -> web.Response:
-    """Ask client's issuer to exchange the access token subject for one of
-    the scopes wanted (the subject's, if none), for audience if given."""
+    """Ask client's issuer to exchange the access token subject for another.
+
+    Args:
+        client: The client that asks.
+        subject: The access token to exchange.
+        wanted: The scopes to ask for; the subject's, if none.
+        audience: The audience to ask for, if given.
+    """
     form = {
         "grant_type": EXCHANGE_GRANT,
         "subject_token": subject,
@@ -538,14 +682,23 @@ def exchange(
 
 
 def revoke(client: Client, tok: str, hint: str) -> web.Response:
-    """Revoke tok, an access_token or refresh_token (hint), at client's
-    issuer."""
+    """Revoke tok at client's issuer.
+
+    Args:
+        client: The client that revokes it.
+        tok: An access or refresh token.
+        hint: Its type: access_token or refresh_token.
+    """
     return post(client, f"{client.url}/revoke", {"token": tok, "token_type_hint": hint})
 
 
 def introspect(client: Client, tok: str, hint: str = "") -> dict[str, Any]:
-    """What client's issuer says of tok: active, and if so its scope,
-    sub, and exp; {} if it would not say."""
+    """Return what client's issuer says of tok.
+
+    Returns:
+        The issuer's `active`, and if so tok's scope, sub, and exp; {} if
+        it would not say.
+    """
     form = {"token": tok}
     if hint:
         form["token_type_hint"] = hint
@@ -554,12 +707,12 @@ def introspect(client: Client, tok: str, hint: str = "") -> dict[str, Any]:
 
 
 def userinfo(issuer_url: str, access: str) -> web.Response:
-    """The issuer's userinfo endpoint, presenting access."""
+    """GET the issuer's userinfo endpoint, presenting access."""
     return web.request("GET", f"{issuer_url}/userinfo", token=access)
 
 
 def claims(tok: str) -> dict[str, Any]:
-    """A token's claims, not verified."""
+    """Return a token's claims, not verified."""
     try:
         payload = tok.split(".")[1]
         padded = payload + "=" * (-len(payload) % 4)
@@ -569,7 +722,7 @@ def claims(tok: str) -> dict[str, Any]:
 
 
 def header(tok: str) -> dict[str, Any]:
-    """A token's header: its kid and alg."""
+    """Return a token's header: its kid and alg."""
     try:
         head = tok.split(".")[0]
         padded = head + "=" * (-len(head) % 4)
@@ -579,28 +732,32 @@ def header(tok: str) -> dict[str, Any]:
 
 
 def scopes(tok: str) -> frozenset[str]:
-    """A token's scopes."""
+    """Return a token's scopes."""
     return frozenset(str(claims(tok).get("scope", "")).split())
 
 
 def data_scopes(tok: str) -> frozenset[str]:
-    """A token's scopes for data: storage.* and share.access."""
+    """Return a token's scopes for data: storage.* and share.access."""
     return frozenset(s for s in scopes(tok) if s.startswith(("storage.", "share.")))
 
 
 def project(group: str) -> str:
-    """A group's project prefix, within the namespace (see BASE)."""
+    """Return a group's project prefix, within the namespace (see BASE)."""
     return f"{BASE}/projects/{group}"
 
 
 def scope(kind: str, rel: str) -> str:
-    """The storage scope for kind (read, modify, or create) of rel, a
-    prefix within the namespace."""
+    """Return the storage scope for kind of rel.
+
+    Args:
+        kind: The kind of access: read, modify, or create.
+        rel: A prefix within the namespace.
+    """
     return f"storage.{kind}:/{rel}"
 
 
 def groups(tok: str) -> frozenset[str]:
-    """A token's wlcg.groups: the groups that earned it something."""
+    """Return a token's wlcg.groups: the groups that earned it something."""
     return frozenset(str(g) for g in (common.as_array(claims(tok).get("wlcg.groups")) or []))
 
 
@@ -609,10 +766,15 @@ def groups(tok: str) -> frozenset[str]:
 
 
 def approval_url(line: str) -> Optional[tuple[str, str]]:
-    """The issuer and user code that a client's line of output, naming
-    the issuer's verification page
-    (<web URL>/view/issuer/device?namespace=...&user_code=...), asks the
-    user to approve; None if the line names none."""
+    """Return the flow a client's line of output asks the user to approve.
+
+    Such a line names the issuer's verification page
+    (<web URL>/view/issuer/device?namespace=...&user_code=...).
+
+    Returns:
+        The issuer's URL and the flow's user code; None if the line names
+        no verification page.
+    """
     for word in line.split():
         parts = urlsplit(word)
         query = parse_qs(parts.query)
@@ -625,21 +787,34 @@ def approval_url(line: str) -> Optional[tuple[str, str]]:
 
 @dataclass
 class ClientRun:
-    """How a client that acquires its own tokens ran."""
+    """How a client that acquires its own tokens ran.
+
+    Attributes:
+        status: Its exit status; negative if it was killed.
+        approvals: How many device flows it started, which the tests
+            approved.
+        problems: What went wrong approving, or that the client was
+            killed.
+    """
 
     status: int
     stdout: str
     stderr: str
-    approvals: int  # how many device flows it started, which the tests approved
-    problems: list[str]  # what went wrong approving
+    approvals: int
+    problems: list[str]
 
 
 def client_env(base: dict[str, str], store: str) -> dict[str, str]:
-    """The environment for a client acting as one user, from base
-    (session.env): it may acquire a token with no terminal, and keeps its
-    credentials in store, apart from other users', since the issuer binds
-    a client that registers itself to the first user who approves a flow
-    for it."""
+    """Return the environment for a client acting as one user.
+
+    The client may acquire a token with no terminal, and keeps its
+    credentials apart from other users', since the issuer binds a client
+    that registers itself to the first user who approves a flow for it.
+
+    Args:
+        base: The environment to start from (session.env).
+        store: The directory to keep the client's credentials in.
+    """
     env = dict(base)
     env["PELICAN_SKIP_TERMINAL_CHECK"] = "1"
     os.makedirs(store, exist_ok=True)
@@ -655,10 +830,19 @@ def run_approving(
     approver: Callable[[str, str], None],
     timeout: float = 180.0,
 ) -> ClientRun:
-    """Run `pelican <args>` (the binary at pelican) in env, approving each
-    device flow it announces on its stderr with approver(issuer URL, user
-    code), which raises IssuerError if it cannot. A run that outlasts
-    timeout is killed."""
+    """Run `pelican <args>`, approving each device flow it announces.
+
+    Args:
+        pelican: The client's binary.
+        args: The client's arguments.
+        env: The client's environment.
+        cwd: The client's working directory.
+        approver: Called as approver(issuer URL, user code) for each
+            device flow the client announces on its stderr; it raises
+            IssuerError if it cannot approve it.
+        timeout: How long, in seconds, the run may last before it is
+            killed.
+    """
     with subprocess.Popen(  # nosec B603
         [pelican, *args],
         env=env,

@@ -55,22 +55,34 @@ S3_PART = 5 << 20
 
 
 def url(origin: common.Origin, namespace: str, rel: str) -> str:
-    """The URL of rel in namespace at origin, each character of rel that
-    a URL path may not hold as is percent-encoded."""
+    """Return the URL of rel in namespace at origin.
+
+    Each character of rel that a URL path may not hold as is gets
+    percent-encoded.
+    """
     return f"{origin.url}/{namespace}/{quote(rel)}"
 
 
 def cannot(fed: common.Federation, operation: str) -> Optional[str]:
-    """Why the origins' storage cannot do operation (`delete` or
-    `checksum`), if it can't."""
+    """Return why the origins' storage cannot do operation, or None.
+
+    Args:
+        fed: The federation, whose origins' storage is asked about.
+        operation: Either `delete` or `checksum`.
+    """
     return LIMITS.get(fed.origin_variant, {}).get(operation)
 
 
 def digests(fed: common.Federation) -> tuple[tuple[str, ...], Optional[str]]:
-    """The algorithms of ORIGIN_DIGESTS that the origins' storage reports,
-    and why not the rest, if it lacks any. An XRootD origin's multiuser
-    checksum path has no crc32c (xrootd/resources/xrootd-origin.cfg in
-    Pelican)."""
+    """Return which digests the origins' storage reports, and why not all.
+
+    An XRootD origin's multiuser checksum path has no crc32c
+    (xrootd/resources/xrootd-origin.cfg in Pelican).
+
+    Returns:
+        The algorithms of ORIGIN_DIGESTS that the storage reports; and why
+        not the rest, or None if it lacks none.
+    """
     limits = dict(LIMITS.get(fed.origin_variant, {}))
     if fed.origin_variant == "posix" and fed.multiuser:
         limits["crc32c"] = "XRootD's multiuser checksum path computes no crc32c"
@@ -81,9 +93,17 @@ def digests(fed: common.Federation) -> tuple[tuple[str, ...], Optional[str]]:
 
 
 def has_digests(fed: common.Federation, size: int, declared: bool) -> bool:
-    """Whether the origins report digests(fed) of an object of size bytes
-    that was uploaded with a Content-Length (declared) or in chunks: not an
-    s3v2 origin's object that arrived in parts (see S3_PART)."""
+    """Return whether the origins report digests(fed) of an object.
+
+    They report none of an s3v2 origin's object that arrived in parts
+    (see S3_PART).
+
+    Args:
+        fed: The federation.
+        size: The object's size, in bytes.
+        declared: Whether it was uploaded with a Content-Length, rather
+            than in chunks.
+    """
     if not digests(fed)[0]:
         return False
     return fed.origin_variant != "s3v2" or declared or size <= S3_PART
@@ -92,8 +112,21 @@ def has_digests(fed: common.Federation, size: int, declared: bool) -> bool:
 def held(
     origin: common.Origin, namespace: str, rel: str, token: Optional[str]
 ) -> Optional[str]:
-    """The SHA-256 of what origin holds at rel in namespace, or None if
-    nothing. token is for namespace; a read of /public ignores it."""
+    """Return the SHA-256 of what origin holds at rel in namespace.
+
+    Args:
+        origin: The origin to ask.
+        namespace: The namespace, e.g. `protected-a`.
+        rel: The object's path, relative to namespace.
+        token: A token for namespace; a read of /public ignores it.
+
+    Returns:
+        The digest, or None if origin holds nothing there.
+
+    Raises:
+        Unreadable: A pstore origin answered neither with the object nor
+            with 404.
+    """
     if origin.pstore:
         target = url(origin, namespace, rel)
         answer = web.request("GET", target, token=token)
@@ -108,10 +141,13 @@ def held(
 def storage_namespaces(
     origin: common.Origin, exports: Mapping[str, AbstractSet[str]]
 ) -> list[str]:
-    """The exported namespaces (exports, by name) that have storage of
-    their own at origin: each, but on a pstore origin not /public, which
-    reads /protected-a's (see common.Origin.storage_namespace()). What
-    origin should hold in every exported namespace goes in each of them."""
+    """Return the exported namespaces with storage of their own at origin.
+
+    Each of exports, by name, has its own, but on a pstore origin
+    /public, which reads /protected-a's (see
+    common.Origin.storage_namespace()). What origin should hold in every
+    exported namespace goes in each of them.
+    """
     return [
         ns
         for ns in credentials.NAMESPACES
@@ -122,13 +158,20 @@ def storage_namespaces(
 def held_anywhere(
     origins: Iterable[common.Origin], namespace: str, rel: str, tokens: dict[str, str]
 ) -> list[Optional[str]]:
-    """held() at each origin, with tokens by namespace."""
+    """Return held() at each store of origins, with tokens by namespace.
+
+    Raises:
+        Unreadable: A pstore origin could not say what it holds.
+    """
     return [held(o, namespace, rel, tokens.get(namespace)) for o in unique(origins)]
 
 
 def unique(origins: Iterable[common.Origin]) -> list[common.Origin]:
-    """The origins, each store once: disk stores can be shared, as the
-    lab server is under `ssh`, but every pstore origin has its own."""
+    """Return the origins, each store once.
+
+    Disk stores can be shared, as the lab server is under `ssh`, but every
+    pstore origin has its own.
+    """
     seen: set[str] = set()
     found: list[common.Origin] = []
     for origin in origins:
@@ -147,8 +190,11 @@ def put(
     token: str,
     chunked: bool = False,
 ) -> Optional[str]:
-    """Upload data to rel in namespace straight to origin; why it failed,
-    or None."""
+    """Upload data to rel in namespace straight to origin.
+
+    Returns:
+        Why it failed, or None if it did not.
+    """
     target = url(origin, namespace, rel)
     answer = web.request("PUT", target, token=token, upload=data, chunked=chunked)
     return None if answer.ok else f"PUT {target}: {answer.describe()}"
@@ -162,10 +208,15 @@ def put_everywhere(
     token: str,
     chunked: bool = False,
 ) -> list[str]:
-    """Upload data to rel in namespace straight to every origin, rather
-    than through the director, which would pick one: under
+    """Upload data to rel in namespace straight to every origin.
+
+    Not through the director, which would pick one: under
     `topo-multi-origin`, whichever origin a later request reaches then
-    holds it. Returns what went wrong."""
+    holds it.
+
+    Returns:
+        What went wrong; empty if nothing did.
+    """
     return [e for e in (put(o, namespace, rel, data, token, chunked) for o in origins) if e]
 
 
@@ -177,11 +228,23 @@ def seed(
     token: str,
     caps: AbstractSet[str],
 ) -> Optional[str]:
-    """Put data at rel in namespace at origin, as a test's setup: through
-    the origin (put()) if the namespace takes writes, and otherwise
-    straight into its storage on disk, which fed.sh ensures it has (but
-    for /public on a pstore origin, which reads /protected-a's). token
-    and caps are namespace's. Returns why that failed, or None."""
+    """Put data at rel in namespace at origin, as a test's setup.
+
+    It goes through the origin (put()) if the namespace takes writes, and
+    otherwise straight into its storage on disk, which fed.sh ensures it
+    has (but for /public on a pstore origin, which reads /protected-a's).
+
+    Args:
+        origin: The origin to put it at.
+        namespace: The namespace, e.g. `protected-a`.
+        rel: Where to put it, relative to namespace.
+        data: The object.
+        token: A token for namespace.
+        caps: Namespace's capabilities (e.g. `Writes`).
+
+    Returns:
+        Why that failed, or None if nothing did.
+    """
     if "Writes" in caps:
         return put(origin, namespace, rel, data, token)
     if origin.pstore:
@@ -197,16 +260,25 @@ def seed_everywhere(
     token: str,
     caps: AbstractSet[str],
 ) -> list[str]:
-    """seed() at every origin (see put_everywhere()); what went wrong."""
+    """Run seed() at every origin (see put_everywhere()).
+
+    Returns:
+        What went wrong; empty if nothing did.
+    """
     targets = list(origins) if "Writes" in caps else unique(origins)
     return [e for e in (seed(o, namespace, rel, data, token, caps) for o in targets) if e]
 
 
 def write_file(store: str, rel: str, data: bytes) -> Optional[str]:
-    """Write data to rel in store, a namespace's storage on disk (see
-    common.Origin.store_of()), any directories it needs writable by any
-    uid (see make_dirs()), and the file readable by any; why that failed,
-    or None."""
+    """Write data to rel in store, a namespace's storage on disk.
+
+    store is as common.Origin.store_of() names it. Any directories that
+    rel needs are made writable by any uid (see make_dirs()), and the
+    file readable by any.
+
+    Returns:
+        Why that failed, or None if nothing did.
+    """
     parts = rel.strip("/").split("/")
     try:
         for n in range(1, len(parts)):
@@ -226,10 +298,15 @@ def write_file(store: str, rel: str, data: bytes) -> Optional[str]:
 def make_dirs(
     origins: Iterable[common.Origin], namespace: str, rel: str, token: str
 ) -> list[str]:
-    """Make collection rel (and its parents) in namespace at every origin,
-    so that it exists before a test's uploads. A disk store's are made
-    directly, writable by any uid (e.g. `alice` on the lab server); a
-    pstore origin is sent MKCOL for each. Returns what went wrong."""
+    """Make collection rel, and its parents, in namespace at every origin.
+
+    This is so that it exists before a test's uploads. A disk store's are
+    made directly, writable by any uid (e.g. `alice` on the lab server); a
+    pstore origin is sent MKCOL for each.
+
+    Returns:
+        What went wrong; empty if nothing did.
+    """
     errors: list[str] = []
     parts = rel.strip("/").split("/")
     for origin in unique(origins):
@@ -256,9 +333,14 @@ def make_dirs(
 
 
 def delete(origin: common.Origin, namespace: str, rel: str, token: str) -> Optional[str]:
-    """Remove rel in namespace from origin's store, if it is there; why
-    that failed, or None. A disk store's file is removed directly, and a
-    pstore origin is sent DELETE."""
+    """Remove rel in namespace from origin's store, if it is there.
+
+    A disk store's file is removed directly, and a pstore origin is sent
+    DELETE.
+
+    Returns:
+        Why that failed, or None if nothing did.
+    """
     if not origin.pstore:
         path = f"{origin.store_of(namespace)}/{rel}"
         try:
@@ -276,11 +358,16 @@ def delete(origin: common.Origin, namespace: str, rel: str, token: str) -> Optio
 
 
 def empty_tree(origin: common.Origin, namespace: str, rel: str, token: str) -> list[str]:
-    """Remove everything in collection rel in namespace from origin's
-    store, but not rel itself, as common.empty_dir() does; what went
-    wrong. A disk store's are removed directly. A pstore origin is listed
-    a level at a time (Depth 1, which every origin answers) and sent
-    DELETE for each object, then each collection, deepest first."""
+    """Remove everything in collection rel in namespace from origin's store.
+
+    rel itself stays, as common.empty_dir() leaves it. A disk store's are
+    removed directly. A pstore origin is listed a level at a time (Depth
+    1, which every origin answers) and sent DELETE for each object, then
+    each collection, deepest first.
+
+    Returns:
+        What went wrong; empty if nothing did.
+    """
     base = rel.strip("/")
     if not origin.pstore:
         path = os.path.join(origin.store_of(namespace), *base.split("/"))
@@ -324,9 +411,18 @@ def empty_tree_everywhere(
     rel: str,
     tokens: Mapping[str, str],
 ) -> list[str]:
-    """empty_tree() at every origin's store, in each exported namespace
-    with storage of its own there (see storage_namespaces()), with tokens
-    by namespace, which only a pstore origin needs; what went wrong."""
+    """Run empty_tree() at every origin's store, and return what went wrong.
+
+    It empties rel in each exported namespace with storage of its own
+    there (see storage_namespaces()).
+
+    Args:
+        origins: The origins; each store is emptied once.
+        exports: Each exported namespace's capabilities, by name.
+        rel: The collection to empty, relative to each namespace.
+        tokens: A token for each namespace, by name, which only a pstore
+            origin needs.
+    """
     errors: list[str] = []
     for origin in unique(origins):
         for namespace in storage_namespaces(origin, exports):

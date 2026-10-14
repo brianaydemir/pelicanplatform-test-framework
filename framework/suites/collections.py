@@ -1,8 +1,10 @@
-"""Collections: prefixes of an exported namespace with access control of
-their own, kept in an origin's database and granted through its embedded
-OAuth2 issuer (Pelican's docs/collections-design.md). The suite needs
-the embedded issuer (ORIGIN_ENABLE_ISSUER, on by default) and a
-protected namespace, and skips with the issuer off or the external one.
+"""Collections: prefixes of a namespace with access control of their own.
+
+They are of an exported namespace, kept in an origin's database and
+granted through its embedded OAuth2 issuer (Pelican's
+docs/collections-design.md). The suite needs the embedded issuer
+(ORIGIN_ENABLE_ISSUER, on by default) and a protected namespace, and
+skips with the issuer off or the external one.
 
 Its users are records of the issuer origin (origin-0, or `fed`), which
 its admin creates once and later runs reuse: test-curator, a collection
@@ -143,24 +145,44 @@ CLIENT_TIMEOUT = 180.0
 
 
 def username(role: str) -> str:
-    """The user who plays role."""
+    """Return the user who plays role."""
     return "admin" if role == "admin" else f"test-{role}"
 
 
 def personal(role: str) -> str:
-    """The ACL target that grants to role's user alone."""
+    """Return the ACL target that grants to role's user alone."""
     return f"user-{username(role)}"
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no embedded issuer, or no protected
-    namespace."""
+    """Return why there is nothing to test, or None if there is something.
+
+    There is nothing without an embedded issuer, or a protected namespace.
+    """
     return missing(fed)
 
 
 class Test:
-    """The issuer origin and its namespace, the run's users, groups,
-    collections, and objects, and tokens as each user."""
+    """The issuer origin and its namespace, the run's fixture, and tokens.
+
+    The fixture is the run's users, groups, collections, and objects; the
+    tokens are as each user.
+
+    Attributes:
+        origin: The issuer origin.
+        web: Its web URL.
+        namespace: The first protected namespace exported, which holds the
+            collections.
+        caps: The namespace's capabilities.
+        issuer_url: The namespace's issuer.
+        base: Where the run's collections are within the namespace.
+        prefix: Where they are in the federation.
+        server_token: The `server` token for the namespace.
+        ids: The users' IDs, by role.
+        groups: The groups' IDs, by name.
+        coll: The IDs of alpha and beta, by name.
+        data: The objects' bytes, by name.
+    """
 
     def __init__(self, session: Session):
         fed = session.fed
@@ -175,17 +197,19 @@ class Test:
         self.base = f"data/collections/{self.run}"
         self.prefix = f"/{self.namespace}/{self.base}"
         self.server_token = session.token(self.namespace)
-        self.ids: dict[str, str] = {}  # the users' IDs, by role
-        self.groups: dict[str, str] = {}  # the groups' IDs, by name
-        self.coll: dict[str, str] = {}  # alpha's and beta's IDs
-        self.data: dict[str, bytes] = {}  # the objects' bytes, by name
+        self.ids: dict[str, str] = {}
+        self.groups: dict[str, str] = {}
+        self.coll: dict[str, str] = {}
+        self.data: dict[str, bytes] = {}
         self._web_tokens: dict[tuple[str, str], str] = {}
         self._clients: dict[str, issuer.Client] = {}
         self._minted = 0
 
     def web_token(self, role: str, web_url: Optional[str] = None) -> str:
-        """A token that the web API of the origin at web_url (the issuer
-        origin's by default) takes as role's user."""
+        """Return a token that an origin's web API takes as role's user.
+
+        The origin is the one at web_url, or by default the issuer origin.
+        """
         web_url = web_url or self.web
         key = (web_url, role)
         if key not in self._web_tokens:
@@ -201,11 +225,14 @@ class Test:
         return self._web_tokens[key]
 
     def api(self, role: str) -> Api:
-        """The issuer origin's web API, as role's user."""
+        """Return the issuer origin's web API, as role's user."""
         return Api(self.web, self.web_token(role))
 
     def client(self, namespace: str) -> issuer.Client:
-        """The tests' client of the issuer origin's issuer of namespace."""
+        """Return the tests' client of the issuer of namespace.
+
+        The issuer is the issuer origin's.
+        """
         if namespace not in self._clients:
             self._clients[namespace] = issuer.create_client(
                 self.web, namespace, self.web_token("admin")
@@ -213,24 +240,30 @@ class Test:
         return self._clients[namespace]
 
     def user(self, role: str, web_url: Optional[str] = None) -> issuer.User:
-        """role's user, as an issuer of the origin at web_url (the issuer
-        origin's by default) knows them."""
+        """Return role's user, as an issuer of an origin knows them.
+
+        The origin is the one at web_url, or by default the issuer origin.
+        """
         return issuer.User(token=self.web_token(role, web_url))
 
     def data_token(self, role: str) -> str:
-        """A token for the namespace from its issuer, as role's user: what
-        the user's collections allow right now."""
+        """Return a token for the namespace from its issuer, as role's user.
+
+        It grants what the user's collections allow right now.
+        """
         return issuer.token(self.client(f"/{self.namespace}"), self.user(role), DATA_SCOPES)
 
     def control_token(self, role: str) -> str:
-        """A token from the origin's local issuer, as role's user, for
-        managing collections."""
+        """Return a token for managing collections, as role's user.
+
+        It is from the origin's local issuer.
+        """
         return issuer.token(
             self.client(issuer.LOCAL_NAMESPACE), self.user(role), CONTROL_SCOPES
         )
 
     def token_file(self, role: str) -> str:
-        """A fresh data token for role's user, in a file for `--token`."""
+        """Return a `--token` file of a fresh data token for role's user."""
         self._minted += 1
         path = self.session.path(f"tokens/collections.{role}.{self._minted}")
         with open(path, "w", encoding="utf-8") as f:
@@ -238,38 +271,47 @@ class Test:
         return path
 
     def group_name(self, name: str) -> str:
-        """The run's group name (the ACL target), e.g. test-readers-<run>."""
+        """Return the run's group name for name (the ACL target).
+
+        For example, test-readers-<run> for readers.
+        """
         return f"test-{name}-{self.run}"
 
     def path(self, name: str) -> str:
-        """The namespace of the run's collection name: its federation path."""
+        """Return the namespace of the run's collection name.
+
+        That is its path in the federation.
+        """
         return f"{self.prefix}/{name}"
 
     def rel(self, name: str) -> str:
-        """Object or collection name's path within the namespace."""
+        """Return object or collection name's path within the namespace."""
         return f"{self.base}/{name}"
 
     def scope(self, kind: str, name: str) -> str:
-        """The storage scope for collection name that the namespace's
-        issuer mints: `storage.<kind>` of its path within the namespace."""
+        """Return the storage scope of kind for collection name.
+
+        It is as the namespace's issuer mints it: `storage.<kind>` of its
+        path within the namespace.
+        """
         return f"storage.{kind}:/{self.base}/{name}"
 
     def object_url(self, origin: common.Origin, name: str) -> str:
-        """Where origin serves object name."""
+        """Return where origin serves object name."""
         return stores.url(origin, self.namespace, self.rel(name))
 
     def federation_url(self, name: str) -> str:
-        """Object name's URL through the federation."""
+        """Return object name's URL through the federation."""
         return f"{self.fed.url}/{self.namespace}/{self.rel(name)}"
 
 
 def rfc3339(when: float) -> str:
-    """when (seconds since the epoch), as a server reads it."""
+    """Format when (seconds since the epoch) as a server reads it."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when))
 
 
 def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
-    """A row: the first problem, or note if there were none."""
+    """Return a row: the first problem, or note if there were none."""
     return (FAIL, common.first(problems)) if problems else (PASS, note)
 
 
@@ -285,9 +327,11 @@ def make_collection(
     sharing: bool = False,
     visibility: str = "private",
 ) -> str:
-    """Have test-curator create the run's collection name, hand it to
-    test-owner (with the admins group as its admin group, if admins),
-    and have test-owner grant rules ((target, role) pairs): its ID."""
+    """Have test-curator create the run's collection name; return its ID.
+
+    Then hand it to test-owner (with the admins group as its admin group,
+    if admins), and have test-owner grant rules ((target, role) pairs).
+    """
     curator = test.api("curator")
     made = must(create(curator, name, test.path(name), visibility, sharing), f"creating {name}")
     cid = str(made.object.get("id", ""))
@@ -302,8 +346,10 @@ def make_collection(
 
 
 def sweep(test: Test, this_run: bool) -> None:
-    """Remove the collections under the suite's directory: the run's, or
-    earlier runs' leftovers."""
+    """Remove the collections under the suite's directory.
+
+    Remove the run's, if this_run, or else earlier runs' leftovers.
+    """
     admin = test.api("admin")
     directory = f"/{test.namespace}/data/collections/"
     for row in objects(admin.call("GET", COLLECTIONS).array):
@@ -315,9 +361,11 @@ def sweep(test: Test, this_run: bool) -> None:
 
 
 def prepare(test: Test) -> None:
-    """Make the run's users (once), groups, collections, and objects. The
-    admin, and each user, agree to the origin's AUP first, without which
-    it refuses them its user and group routes."""
+    """Make the run's users (once), groups, collections, and objects.
+
+    The admin, and each user, agree to the origin's AUP first, without
+    which it refuses them its user and group routes.
+    """
     sweep(test, this_run=False)
     admin = test.api("admin")
     accounts.agree_to_aup(admin)
@@ -372,10 +420,12 @@ def finish(test: Test) -> None:
 def run_approving(
     test: Test, args: Sequence[str], role: str, pelican: Optional[str] = None
 ) -> ClientRun:
-    """Run `pelican <args>` (the binary at pelican, by default the
-    client) as role's user (see issuer.run_approving()), approving each
-    device flow it announces on its stderr as that user, at whichever
-    origin's issuer it names."""
+    """Run `pelican <args>` as role's user, approving its device flows.
+
+    Approve each device flow it announces on its stderr as that user, at
+    whichever origin's issuer it names (see issuer.run_approving()). The
+    binary is at pelican, by default the client.
+    """
 
     def approve_as_role(issuer_url: str, user_code: str) -> None:
         web_url = issuer_url.split(issuer.ROUTE, 1)[0]
@@ -389,7 +439,7 @@ def run_approving(
 
 
 def cli_json(out: str) -> Any:
-    """The JSON that `pelican --json` printed, after any preamble."""
+    """Return the JSON that `pelican --json` printed, after any preamble."""
     start = min((i for i in (out.find("{"), out.find("[")) if i >= 0), default=-1)
     if start < 0:
         return None
@@ -404,8 +454,11 @@ def cli_json(out: str) -> Any:
 
 
 def users(test: Test) -> tuple[str, str]:
-    """The admin creates users, and nobody else; a user makes groups of
-    their own, and nobody joins one uninvited."""
+    """Check who may create users, and make and join groups.
+
+    The admin creates users, and nobody else; a user makes groups of
+    their own, and nobody joins one uninvited.
+    """
     problems: list[str] = []
     found = {
         row.get("username")
@@ -435,8 +488,10 @@ def users(test: Test) -> tuple[str, str]:
 
 
 def create_scenario(test: Test) -> tuple[str, str]:
-    """A collection administrator creates a collection, an ordinary user
-    may not, and a bad namespace is refused."""
+    """Check that only a collection administrator creates a collection.
+
+    An ordinary user may not, and a bad namespace is refused.
+    """
     problems: list[str] = []
     curator = test.api("curator")
     made = create(curator, "gamma", test.path("gamma"))
@@ -484,9 +539,11 @@ def create_scenario(test: Test) -> tuple[str, str]:
 
 
 def visibility_scenario(test: Test) -> tuple[str, str]:
-    """A private collection is invisible to a user with no access, a
-    public one visible to every user, and canEdit says who may change
-    each."""
+    """Check that a private collection is invisible without access.
+
+    A public one is visible to every user, and canEdit says who may change
+    each.
+    """
     problems: list[str] = []
     alpha, beta = test.coll["alpha"], test.coll["beta"]
     outsider = test.api("outsider")
@@ -527,7 +584,7 @@ def visibility_scenario(test: Test) -> tuple[str, str]:
 
 
 def acl_scenario(test: Test) -> tuple[str, str]:
-    """Who may grant access, to what roles, and what the ACL lists."""
+    """Check who may grant access, to what roles, and what the ACL lists."""
     problems: list[str] = []
     readers, writers = test.group_name("readers"), test.group_name("writers")
     delta = make_collection(test, "delta", ((writers, "write"),))
@@ -562,9 +619,11 @@ def acl_scenario(test: Test) -> tuple[str, str]:
 
 
 def tokens(test: Test) -> tuple[str, str]:
-    """What the issuer grants each user: the storage scopes of their
-    collections alone, and collection.create only to a collection
-    administrator."""
+    """Check what the issuer grants each user.
+
+    It grants the storage scopes of their collections alone, and
+    collection.create only to a collection administrator.
+    """
     problems: list[str] = []
     read_alpha, read_beta = test.scope("read", "alpha"), test.scope("read", "beta")
     wanted = {
@@ -614,8 +673,10 @@ def tokens(test: Test) -> tuple[str, str]:
 
 
 def data(test: Test) -> tuple[str, str]:
-    """What the tokens allow, straight at every origin and through the
-    federation."""
+    """Check what the tokens allow.
+
+    Try them straight at every origin and through the federation.
+    """
     problems: list[str] = []
     token = {role: test.data_token(role) for role in ("writer", "reader", "outsider")}
     writes = "Writes" in test.caps
@@ -653,8 +714,10 @@ def data(test: Test) -> tuple[str, str]:
 
 
 def write_problems(test: Test, origin: common.Origin, token: dict[str, str]) -> list[str]:
-    """What is wrong with PUT and DELETE straight to origin with the
-    tokens: only test-writer may, and only within alpha."""
+    """Return what is wrong with PUT and DELETE straight to origin.
+
+    With the tokens, by role, only test-writer may, and only within alpha.
+    """
     problems: list[str] = []
     payload = os.urandom(OBJECT_SIZE)
     for role, name in (
@@ -681,9 +744,11 @@ def write_problems(test: Test, origin: common.Origin, token: dict[str, str]) -> 
 
 
 def federation_problems(test: Test, writes: bool) -> list[str]:
-    """What is wrong with `pelican object` through the federation with
-    the tokens: test-reader gets alpha's object and test-outsider does
-    not; test-writer puts one and test-reader does not."""
+    """Return what is wrong with `pelican object` through the federation.
+
+    With the tokens, test-reader gets alpha's object and test-outsider
+    does not; if writes, test-writer puts one and test-reader does not.
+    """
     problems: list[str] = []
     session = test.session
     for role, allowed in (("reader", True), ("outsider", False)):
@@ -724,9 +789,11 @@ def federation_problems(test: Test, writes: bool) -> list[str]:
 
 
 def client(test: Test) -> tuple[str, str]:
-    """`pelican object get` with no token acquires one from the issuer,
-    which the tests approve as the user: test-reader's works, and
-    test-outsider's gets nothing."""
+    """Check that `pelican object get` acquires a token from the issuer.
+
+    With no token, it acquires one, which the tests approve as the user:
+    test-reader's works, and test-outsider's gets nothing.
+    """
     if test.fed.standalone:
         return SKIP, "a standalone origin has no director to find the issuer through"
     problems: list[str] = []
@@ -752,8 +819,10 @@ def client(test: Test) -> tuple[str, str]:
 
 
 def covers(scope: str, path: str) -> bool:
-    """Whether scope, if a storage scope, grants something of path, a
-    path within the namespace."""
+    """Return whether scope is a storage scope granting something of path.
+
+    Here path is a path within the namespace.
+    """
     if not scope.startswith("storage."):
         return False
     granted = scope.split(":", 1)[-1].rstrip("/")
@@ -761,12 +830,15 @@ def covers(scope: str, path: str) -> bool:
 
 
 def share_confinement(test: Test) -> tuple[str, str]:
-    """test-sharer, who may read alpha, may share only within it: a share
+    """Check that a reader may share only within the collection.
+
+    test-sharer, who may read alpha, may share only within it: a share
     whose namespace climbs out of alpha, lies beside it, begins like it
     without being in it, or lies outside every export is refused (400),
     and test-guest's token gets nothing of decoy. Pelican's
     database.CreateShare cleans the namespace before it compares it with
-    alpha's, so this is a check against regressions."""
+    alpha's, so this is a check against regressions.
+    """
     if test.fed.multiuser:
         return SKIP, "a multiuser origin refuses every share (see `shares`)"
     problems: list[str] = []
@@ -797,9 +869,11 @@ def share_confinement(test: Test) -> tuple[str, str]:
 
 
 def shares(test: Test) -> tuple[str, str]:
-    """test-sharer, who may read alpha, shares alpha/shared with
-    test-guest, whose access is the lesser of the share's and
-    test-sharer's, and goes with test-sharer's."""
+    """Check that a share grants the lesser of its access and the sharer's.
+
+    test-sharer, who may read alpha, shares alpha/shared with test-guest,
+    whose access goes with test-sharer's.
+    """
     problems: list[str] = []
     alpha = test.coll["alpha"]
     owner, sharer = test.api("owner"), test.api("sharer")
@@ -866,7 +940,7 @@ def shares(test: Test) -> tuple[str, str]:
 
 
 def expiry(test: Test) -> tuple[str, str]:
-    """A grant with an expiry grants nothing after it."""
+    """Check that a grant with an expiry grants nothing after it."""
     alpha, owner = test.coll["alpha"], test.api("owner")
     deadline = time.time() + EXPIRY
     must(
@@ -886,8 +960,10 @@ def expiry(test: Test) -> tuple[str, str]:
 
 
 def revoke_scenario(test: Test) -> tuple[str, str]:
-    """A revoked grant is gone from the next token; the old one keeps it
-    until it expires."""
+    """Check that a revoked grant is gone from the next token.
+
+    The old one keeps it until it expires.
+    """
     problems: list[str] = []
     alpha, owner = test.coll["alpha"], test.api("owner")
     read = test.scope("read", "alpha")
@@ -914,8 +990,10 @@ def revoke_scenario(test: Test) -> tuple[str, str]:
 
 
 def manage(test: Test) -> tuple[str, str]:
-    """Who may rename and describe a collection, set its metadata, and
-    delete it."""
+    """Check who may rename, describe, and delete a collection.
+
+    Also check who may set its metadata.
+    """
     problems: list[str] = []
     readers, writers = test.group_name("readers"), test.group_name("writers")
     eps = make_collection(test, "epsilon", ((readers, "read"), (writers, "write")), admins=True)
@@ -966,8 +1044,11 @@ def manage(test: Test) -> tuple[str, str]:
 
 
 def ownership(test: Test) -> tuple[str, str]:
-    """Only the owner hands a collection on: by setting its owner, or by
-    an invite that one user redeems once."""
+    """Check that only the owner hands a collection on.
+
+    The owner hands it on by setting its owner, or by an invite that one
+    user redeems once.
+    """
     problems: list[str] = []
     zeta = make_collection(test, "zeta", ((test.group_name("writers"), "write"),))
     owner, heir, guest = test.api("owner"), test.api("heir"), test.api("guest")
@@ -1003,8 +1084,10 @@ def ownership(test: Test) -> tuple[str, str]:
 
 
 def first_origin(test: Test) -> Optional[str]:
-    """The web URL of the origin the CLI will manage: the first the
-    director lists."""
+    """Return the web URL of the origin the CLI will manage, or None.
+
+    It is the first the director lists.
+    """
     answer = Api(test.fed.directors[0], None).call("GET", ORIGINS)
     for row in objects(answer.array):
         if row.get("webUrl"):
@@ -1013,9 +1096,11 @@ def first_origin(test: Test) -> Optional[str]:
 
 
 def cli(test: Test) -> tuple[str, str]:
-    """`pelican-server origin collection` (the client lacks it) manages
-    collections through the issuer's device flow, approved as
-    test-curator, and fails for an ordinary user."""
+    """Check that `pelican-server origin collection` manages collections.
+
+    The client lacks the command, which manages them through the issuer's
+    device flow, approved as test-curator, and fails for an ordinary user.
+    """
     server = test.session.pelican_server
     if server is None:
         return SKIP, "no pelican-server, which has `origin collection`; run ./fed.sh init"
@@ -1086,6 +1171,8 @@ def cli(test: Test) -> tuple[str, str]:
     return outcome(problems, "created, listed, changed, and deleted as test-curator")
 
 
+# Each scenario, by name: it takes the Test, and returns its status and
+# note.
 RUN = {
     "users": users,
     "create": create_scenario,
@@ -1105,8 +1192,11 @@ RUN = {
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Make the run's users, groups, collections, and objects; run the
-    selected scenarios; and remove what the run made."""
+    """Run the selected scenarios, on a fixture of the run's own.
+
+    Make the run's users, groups, collections, and objects first, and
+    remove what the run made afterward.
+    """
     test = Test(session)
     try:
         prepare(test)

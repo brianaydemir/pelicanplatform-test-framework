@@ -1,8 +1,9 @@
-"""What the directors take from servers, and from anyone posing as one:
-the advertisements by which each origin and cache tells them what it
-serves; the federation tokens they mint for a server that proves it is
-one; their service discovery; and the connection broker. Each must turn
-away a caller who lies, and serve the real thing.
+"""What the directors take from servers, and from anyone posing as one.
+
+These are the advertisements by which each origin and cache tells them
+what it serves; the federation tokens they mint for a server that proves
+it is one; their service discovery; and the connection broker. Each must
+turn away a caller who lies, and serve the real thing.
 
   forged-ads           an ad is taken only with its server's own key,
                        the advertise scope, a server's registry prefix of
@@ -114,45 +115,63 @@ FED_TOKEN_LIFETIME = 900
 
 
 class Test(Servers):
-    """The servers, keys, and tokens (ads.Servers), and the probe."""
+    """The servers, keys, and tokens (ads.Servers), and the probe.
+
+    Attributes:
+        namespace: The probe's namespace: the first protected namespace,
+            or /public where the origins export only that
+            (`-p origin-public`).
+        rel: The probe's path in namespace.
+        path: The probe's path in the federation.
+        data: The probe's content.
+    """
 
     def __init__(self, session: Session):
         super().__init__(session.fed)
         self.session = session
         self.run = session.run
-        # The first protected namespace, or /public where the origins
-        # export only that (`-p origin-public`).
         self.namespace = credentials.probe_namespace(self.fed)
         self.rel = f"data/advertise/{self.run}-probe"
         self.path = f"/{self.namespace}/{self.rel}"
         self.data = os.urandom(4096)
 
     def caches(self) -> list[common.Cache]:
-        """The caches that the directors know of."""
+        """Return the caches that the directors know of."""
         return self.fed.federated_caches
 
 
 def rejected(url: str) -> Optional[float]:
-    """How many ads the director at url has refused (REJECTED, every
-    series), or None if its /metrics did not answer."""
+    """Return how many ads the director at url has refused.
+
+    Returns:
+        The count (REJECTED, every series), or None if the director's
+        /metrics did not answer.
+    """
     snapshot = metrics.fetch(url)
     return None if snapshot is None else snapshot.value(REJECTED)
 
 
 def route(server: Server) -> str:
-    """The director route that names server: `origin` or `object` (a
-    cache)."""
+    """Return the director route that names server.
+
+    It is `origin` for an origin, and `object` for a cache.
+    """
     return "origin" if server.kind == "Origin" else "object"
 
 
 def naming(test: Test, server: Server) -> list[str]:
-    """The directors that name server for the probe."""
+    """Return the directors that name server for the probe."""
     return director.naming(test.fed.directors, route(server), test.path, server.host)
 
 
 def restored(test: Test, *servers: Server) -> list[str]:
-    """Wait, up to RESTORE_WAIT seconds, until every director names each
-    of servers for the probe; what is still wrong after that."""
+    """Wait until every director names each of servers for the probe.
+
+    Each server gets up to RESTORE_WAIT seconds.
+
+    Returns:
+        What is still wrong after that.
+    """
     problems: list[str] = []
     wanted = len(test.fed.directors)
     for server in servers:
@@ -168,7 +187,7 @@ def restored(test: Test, *servers: Server) -> list[str]:
 
 
 def restored_row(test: Test, *servers: Server) -> Row:
-    """restored()'s row."""
+    """Return restored()'s row."""
     problems = restored(test, *servers)
     names = ", ".join(s.host for s in servers)
     return ("restored", FAIL, first(problems)) if problems else ("restored", PASS, names)
@@ -181,9 +200,14 @@ def restored_row(test: Test, *servers: Server) -> Row:
 def forged(
     test: Test, kind: str, body: Mapping[str, Any], token: Optional[str]
 ) -> tuple[list[str], list[str]]:
-    """POST ad body to every director, as a server of kind, with token;
-    each must refuse it (403) and count it among the ads it refused
-    (REJECTED). What is wrong, and what each answered."""
+    """POST ad body to every director, as a server of kind, with token.
+
+    Each must refuse it (403) and count it among the ads it refused
+    (REJECTED).
+
+    Returns:
+        What is wrong, and what each answered.
+    """
     problems: list[str] = []
     seen: list[str] = []
     for url in test.fed.directors:
@@ -208,9 +232,12 @@ Variant = tuple[str, str, dict[str, Any], Optional[str], Optional[tuple[str, Ser
 
 
 def forged_ads(test: Test) -> list[Row]:
-    """Post origin-0's and the first cache's own ads, as each, to every
+    """Check that the directors take servers' own ads, and no forgeries.
+
+    Post origin-0's and the first cache's own ads, as each, to every
     director, which must take them (200); then variants of each, each
-    changed in one way, which every director must refuse (403)."""
+    changed in one way, which every director must refuse (403).
+    """
     fed = test.fed
     origin = test.server("Origin", director.host(fed.origins[0].url))
     servers = [origin]
@@ -313,12 +340,15 @@ def forged_ads(test: Test) -> list[Row]:
 
 
 def bad_broker_url(test: Test) -> list[Row]:
-    """Post origin-0's own ad, as it, but with a broker URL that Go's
+    """Check that an ad whose broker URL does not parse gets 400.
+
+    Post origin-0's own ad, as it, but with a broker URL that Go's
     url.Parse refuses, to every director: each must answer 400, with one
     JSON body, and then still list its servers, and name origin-0. Pelican
     writes the 400 and goes on to read the URL it could not parse
     (finishRegisterServeAd in director/director.go), which panics, and gin
-    recovers."""
+    recovers.
+    """
     origin = test.server("Origin", director.host(test.fed.origins[0].url))
     body = ad(origin, **{"broker-url": "http://[::1"})
     token = test.advertise_token(origin)
@@ -346,8 +376,10 @@ def bad_broker_url(test: Test) -> list[Row]:
 
 
 def active_downtime(source: str) -> dict[str, Any]:
-    """A downtime under way, as a server's ad carries it (times in
-    milliseconds)."""
+    """Return a downtime under way, as a server's ad carries it.
+
+    Its times are in milliseconds.
+    """
     now = int(time.time() * 1000)
     return {
         "id": str(uuid.uuid4()),
@@ -370,8 +402,13 @@ def active_downtime(source: str) -> dict[str, Any]:
 def post_everywhere(
     test: Test, kind: str, body: Mapping[str, Any], token: str, refusable: bool = False
 ) -> list[str]:
-    """POST ad body to every director, which must take it (200), or if
-    refusable, may refuse it (403) too; what is wrong."""
+    """POST ad body to every director, which must take it (200).
+
+    If refusable, a director may refuse it (403) too.
+
+    Returns:
+        What is wrong.
+    """
     problems: list[str] = []
     for url in test.fed.directors:
         answer = post_ad(url, kind, body, token)
@@ -381,7 +418,9 @@ def post_everywhere(
 
 
 def spoofed_status(test: Test) -> list[Row]:
-    """With the first cache's own key, its ad saying it is shutting down,
+    """Check that only a cache's own key may take it out of routing.
+
+    With the first cache's own key, its ad saying it is shutting down,
     then that it is critical: within DROP_WAIT seconds, no director may
     name it, until its next ad (director.go: registerServerAd; sort.go:
     cacheNotInErrorState). Then, with a second cache's key and prefix, ads
@@ -389,7 +428,8 @@ def spoofed_status(test: Test) -> list[Row]:
     status, and with a downtime under way; and by its URL too, saying it
     is critical. The first must stay named: an advertise token proves a
     server's prefix, not its name or URL, and the director keeps the ad
-    of a URL, whoever sent it (recordAd in director/cache_ads.go)."""
+    of a URL, whoever sent it (recordAd in director/cache_ads.go).
+    """
     caches = test.caches()
     if not caches:
         return [("", SKIP, "the directors know of no cache")]
@@ -468,8 +508,10 @@ def spoofed_status(test: Test) -> list[Row]:
 
 
 def get_fed_token(test: Test, query: Mapping[str, str], token: Optional[str]) -> web.Response:
-    """Ask the first director for a federation token, with query and
-    token (none if None)."""
+    """Ask the first director for a federation token, with query and token.
+
+    If token is None, present none.
+    """
     url = f"{test.director}/api/v1.0/director/getFedToken"
     if query:
         url += f"?{urlencode(query)}"
@@ -477,10 +519,12 @@ def get_fed_token(test: Test, query: Mapping[str, str], token: Optional[str]) ->
 
 
 def fed_token_problems(test: Test, answer: web.Response, host: str) -> list[str]:
-    """What is wrong with a federation token the director minted for host,
-    in answer: it must come from the federation (its discovery URL), for
-    host, for any audience, to read everything, for FED_TOKEN_LIFETIME
-    seconds, signed by a key of the federation's JWKS."""
+    """Return what is wrong with answer's federation token for host.
+
+    The token must come from the federation (its discovery URL), for host,
+    for any audience, to read everything, for FED_TOKEN_LIFETIME seconds,
+    signed by a key of the federation's JWKS.
+    """
     found = common.as_object(answer.json()) or {}
     token = str(found.get("access_token") or "")
     if answer.status != 200 or not token:
@@ -519,11 +563,14 @@ def fed_token_problems(test: Test, answer: web.Response, host: str) -> list[str]
 
 
 def pending_registration(test: Test) -> Row:
-    """Under `-p registry-approval`: register a cache's prefix of the run's,
+    """Check that a director mints no federation token for a pending prefix.
+
+    Under `-p registry-approval`: register a cache's prefix of the run's,
     /caches/advertise-<run>, as the registry's admin, with a key made for
     it, which leaves it pending; ask for a federation token for it, with a
     token signed by that key, which must be refused (403); then remove the
-    registration."""
+    registration.
+    """
     fed = test.fed
     host = f"advertise-{test.run}"
     prefix = f"/caches/{host}"
@@ -589,13 +636,16 @@ def pending_registration(test: Test) -> Row:
 
 
 def fed_token(test: Test) -> list[Row]:
-    """Ask the first director for a federation token as the first cache,
+    """Check that a federation token needs a server's own advertise token.
+
+    Ask the first director for a federation token as the first cache,
     with its own advertise token: it must mint one (fed_token_problems());
     then without the host, the server type, or a token; for a director;
     with the cache's key but not the advertise scope; with the cache's
     token for another server; and with a token signed by a key no server
     knows: each must be refused (403). Pelican answers 500 to a token it
-    cannot verify (getFedToken in director/fed_token.go)."""
+    cannot verify (getFedToken in director/fed_token.go).
+    """
     caches = test.caches()
     if not caches:
         return [("", SKIP, "the directors know of no cache, which asks for federation tokens")]
@@ -657,7 +707,9 @@ def fed_token(test: Test) -> list[Row]:
 
 
 def fed_token_at_origin(test: Test) -> list[Row]:
-    """Where the origins take no direct clients (`-p origin-no-direct`,
+    """Check that an origin without direct clients needs a federation token.
+
+    Where the origins take no direct clients (`-p origin-no-direct`,
     Origin.DisableDirectClients), a native origin serves a request only
     with a federation token beside the user's (authMiddleware in Pelican's
     origin_serve/handlers.go): a GET of the probe straight to each, with
@@ -665,7 +717,8 @@ def fed_token_at_origin(test: Test) -> list[Row]:
     header, must get it; with the `server` token alone, 401; and with the
     federation token alone, which grants nothing in a protected
     namespace, a refusal (401 or 403), but in /public (`-p origin-public`),
-    which anyone may read, the probe."""
+    which anyone may read, the probe.
+    """
     fed = test.fed
     if "DirectReads" in fed.exports[test.namespace]:
         return [("", SKIP, "the origins take direct clients ('-p origin-no-direct')")]
@@ -708,11 +761,16 @@ def fed_token_at_origin(test: Test) -> list[Row]:
 
 
 def federation_key(fed: common.Federation) -> tuple[str, str]:
-    """The key that signs as the federation: of the keys in
-    framework/var/issuer-keys/, the first whose public key the federation's
-    JWKS (its discovery document's jwks_uri) lists, and its kid there; the
-    directors' (or under `-p auth-external-issuer`, the external issuer's).
-    Raises Missing if none is listed."""
+    """Return the key that signs as the federation, and its kid.
+
+    It is the first of the keys in framework/var/issuer-keys/ whose public
+    key the federation's JWKS (its discovery document's jwks_uri) lists,
+    with its kid there: the directors' (or under
+    `-p auth-external-issuer`, the external issuer's).
+
+    Raises:
+        Missing: The federation's JWKS lists none of those keys.
+    """
     jwks_uri = str(fed.discovery.get("jwks_uri", ""))
     answer = web.request("GET", jwks_uri)
     listed = common.as_array((common.as_object(answer.json()) or {}).get("keys")) or []
@@ -727,11 +785,15 @@ def federation_key(fed: common.Federation) -> tuple[str, str]:
 
 
 def discover_servers(test: Test) -> list[Row]:
-    """Ask each director for its servers, as Prometheus's service discovery
+    """Check that only the federation's token gets the directors' servers.
+
+    Ask each director for its servers, as Prometheus's service discovery
     does (/api/v1.0/director/discoverServers): with no token, and with one
     of the scope from an issuer it does not trust, it must refuse (403);
     with one of the scope from the federation (the discovery URL), signed
-    with the directors' key, it must list every server (listing_problems())."""
+    with the directors' key, it must list every server
+    (listing_problems()).
+    """
     fed = test.fed
     key, kid = federation_key(fed)
     issuer = str(fed.discovery.get("discovery_endpoint", ""))
@@ -768,7 +830,9 @@ BrokerRequest = tuple[str, str, Optional[str], dict[str, str], str, tuple[int, .
 
 
 def broker(test: Test) -> list[Row]:
-    """Under `-p origin-broker`, ask the director's broker for requests
+    """Check that the broker gives a caller only its own origin's requests.
+
+    Under `-p origin-broker`, ask the director's broker for requests
     (/api/v1.0/broker/retrieve), as the broker client does
     (LaunchRequestMonitor in Pelican's broker/client.go), with a token
     from the registry's issuer for a server's prefix, signed with its key:
@@ -779,7 +843,8 @@ def broker(test: Test) -> list[Row]:
     for 1s, which must time out (`timeout`). Then ask it to reverse a
     connection to origin-0's prefix with the cache's token, which must be
     refused (400, 401, or 403). The origin is made up, so that no request
-    is ever taken from origin-0's queue."""
+    is ever taken from origin-0's queue.
+    """
     fed = test.fed
     if not fed.broker:
         return [("", SKIP, "the origins use no connection broker ('-p origin-broker')")]
@@ -861,7 +926,10 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: a standalone origin has no director."""
+    """Return why there is nothing to test, or None if there is something.
+
+    A standalone origin has no director.
+    """
     if not fed.directors:
         return "a standalone origin has no director"
     return None

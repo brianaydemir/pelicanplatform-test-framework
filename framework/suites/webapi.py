@@ -1,7 +1,9 @@
-"""Who may use each server's web API (/api/v1.0/), which every Pelican
-server serves on its web port: its admin routes; a director's API
-tokens; logging in, and the login cookie; its guards against cross-site
-requests; malformed paths; and the version each server reports.
+"""Who may use each server's web API (/api/v1.0/).
+
+Every Pelican server serves it on its web port. The suite tests its admin
+routes; a director's API tokens; logging in, and the login cookie; its
+guards against cross-site requests; malformed paths; and the version each
+server reports.
 
   admin-matrix    at every server, each admin route refuses no
                   credentials (401) and an ordinary user (403), and
@@ -132,13 +134,17 @@ UNHELD_SCOPE = "pelican.transfer"
 
 
 class Missing(Exception):
-    """Something the scenario needs is not there."""
+    """The absence of something the scenario needs."""
 
 
 def unknown_ids(test: Access, server: Server) -> tuple[str, str]:
-    """The ID of a registration and of a server that the registry at
-    server does not hold, as its admin finds; raises Missing if it
-    cannot show that."""
+    """Return IDs of a registration and a server that the registry lacks.
+
+    The registry is server's, and its admin finds that it holds neither.
+
+    Raises:
+        Missing: Its admin cannot show that.
+    """
     ns_id = str(1_000_000_000 + int.from_bytes(os.urandom(3), "big"))
     server_id = f"webapi-{test.run}"
     admin = test.admin(server)
@@ -159,10 +165,12 @@ def unknown_ids(test: Access, server: Server) -> tuple[str, str]:
 
 
 def namespace_issuer(test: Access, server: Server) -> str:
-    """An issuer URL of a namespace's that is not server's own local
-    issuer: a protected namespace's, or, where that is the server's
-    (with the origins' issuer off), the URL an embedded issuer would give
-    /protected-a there."""
+    """Return an issuer URL of a namespace's, not server's own local issuer.
+
+    That is a protected namespace's, or, where that is the server's (with
+    the origins' issuer off), the URL an embedded issuer would give
+    /protected-a there.
+    """
     local = credentials.local_issuer(test.fed, server.web_url)
     for ns in credentials.PROTECTED:
         if test.fed.issuer_of(ns) != local:
@@ -171,13 +179,18 @@ def namespace_issuer(test: Access, server: Server) -> str:
 
 
 def strange_tokens(test: Access, server: Server) -> list[tuple[str, str, str, tuple[int, ...]]]:
-    """Bearer tokens that server's web API must take for no one: each
-    like the admin's, but signed by another key, from a namespace's
-    issuer, or expired; and one for a subject of whom the server has no
-    record. Each with its row's case, what it is, and the statuses it may
-    get at an admin route: 401, or for the subject without a record, 401
-    or 403, since the server takes such a subject for a user of no
-    standing (AuthHandler)."""
+    """Return bearer tokens that server's web API must take for no one.
+
+    Each is like the admin's, but signed by another key, from a namespace's
+    issuer, or expired; and one is for a subject of whom the server has no
+    record.
+
+    Returns:
+        For each token, its row's case, what it is, the token, and the
+        statuses it may get at an admin route: 401, or for the subject
+        without a record, 401 or 403, since the server takes such a subject
+        for a user of no standing (AuthHandler).
+    """
     head, claims = jwt.decode(test.admin(server))
     now = int(time.time())
     key, whose = other_key(test, server)
@@ -208,12 +221,14 @@ def strange_tokens(test: Access, server: Server) -> list[tuple[str, str, str, tu
 
 
 def registry_rows(test: Access, server: Server) -> list[Row]:
-    """The registry's admin routes, for a registration and a server that
-    it does not hold, each with a CSRF token that the registry takes
-    (see accounts.csrf()), so that only the credentials decide: none must
-    get 401, the user 403, and the admin 404, or for the server, which
-    the registry deletes without asking whether it exists
-    (deleteServerHandler), 404 or 200."""
+    """Return the rows of the registry's admin routes at server.
+
+    Each is sent for a registration and a server that the registry does not
+    hold, with a CSRF token that it takes (see accounts.csrf()), so that
+    only the credentials decide: none must get 401, the user 403, and the
+    admin 404, or for the server, which the registry deletes without asking
+    whether it exists (deleteServerHandler), 404, 200, or 204.
+    """
     admin, user = test.admin(server), test.user(server)
     guard = accounts.csrf(accounts.Api(server.web_url, admin))
     ns_id, server_id = unknown_ids(test, server)
@@ -231,7 +246,7 @@ def registry_rows(test: Access, server: Server) -> list[Row]:
 
 
 def matrix_rows(test: Access, server: Server) -> list[Row]:
-    """admin_matrix() at server."""
+    """Return admin_matrix()'s rows for server."""
     admin, user = test.admin(server), test.user(server)
     settings = server_settings(test, server)
     url = server.web_url
@@ -284,9 +299,11 @@ def matrix_rows(test: Access, server: Server) -> list[Row]:
 
 
 def admin_matrix(test: Access) -> list[Row]:
-    """At every server, each admin route with no credentials, the user's
-    bearer token, and the admin's; and bearer tokens that must count as
-    no credentials."""
+    """Check each admin route at every server.
+
+    Each is tried with no credentials, the user's bearer token, and the
+    admin's; and with bearer tokens that must count as no credentials.
+    """
     rows: list[Row] = []
     for server in test.servers:
         try:
@@ -310,8 +327,11 @@ def create_token(
     token: Optional[str] = None,
     scope: str = DISCOVERY_SCOPE,
 ) -> web.Response:
-    """POST a request for an API token of scope, named name and expiring
-    at expires, to server, with the login cookie or the bearer token."""
+    """POST a request for an API token of scope to server.
+
+    The token is named name, and expires at expires. The request carries the
+    login cookie, or the bearer token.
+    """
     body = {"name": name, "scopes": [scope], "expiration": common.timestamp(expires)}
     headers = dict(accounts.JSON)
     if cookie:
@@ -326,14 +346,16 @@ def create_token(
 
 
 def discover(server: Server, token: str) -> web.Response:
-    """The director's service discovery, with token."""
+    """GET the director's service discovery, with token."""
     return web.request("GET", server.web_url + DISCOVER, token=token)
 
 
 def listed_problems(answer: web.Response, token_id: str, name: str, secret: str) -> list[str]:
-    """What is wrong with answer, the listing of API tokens: it must list
-    the token token_id, named name, and show no secret: not secret, and no
-    field of a hash."""
+    """Return what is wrong with answer, the listing of API tokens.
+
+    It must list the token token_id, named name, and show no secret: not
+    secret, and no field of a hash.
+    """
     if answer.status != 200:
         return [f"listing: {answer.describe()}, not 200"]
     entries = [common.as_object(e) or {} for e in common.as_array(answer.json()) or []]
@@ -349,13 +371,16 @@ def listed_problems(answer: web.Response, token_id: str, name: str, secret: str)
 
 
 def api_tokens(test: Access) -> list[Row]:
-    """At the first director, as its admin, logged in: make an API token
+    """Check the first director's API tokens.
+
+    At the first director, as its admin, logged in: make an API token
     of the service discovery's scope, use it, list it, present it with a
     wrong secret, and a bogus one; delete it, and use it again; make one
     that expires in API_TOKEN_EXPIRY seconds, and use it after; ask for
     one with the admin's bearer token instead of the cookie; and ask for
     one of a scope that the admin does not hold. Every token made is
-    deleted afterward."""
+    deleted afterward.
+    """
     if not test.fed.directors:
         return [("", SKIP, "a standalone origin has no director")]
     server = test.server_at(test.fed.directors[0])
@@ -447,9 +472,11 @@ def api_tokens(test: Access) -> list[Row]:
 
 
 def expiring_rows(server: Server, cookie: str, name: str, made: list[str]) -> list[Row]:
-    """Make an API token that expires in API_TOKEN_EXPIRY seconds, which
-    must work at once, and be refused (403) two seconds after it expires.
-    Its ID goes in made."""
+    """Check an API token that expires in API_TOKEN_EXPIRY seconds.
+
+    It must work at once, and be refused (403) two seconds after it expires.
+    Its ID goes in made.
+    """
     expires = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(
         seconds=API_TOKEN_EXPIRY
     )
@@ -473,8 +500,12 @@ def expiring_rows(server: Server, cookie: str, name: str, made: list[str]) -> li
 
 
 def set_cookie(answer: web.Response, name: str) -> Optional[tuple[str, dict[str, str]]]:
-    """The value of the cookie name that answer sets, and its attributes,
-    by lower-case name (a flag's value is ""); None if it sets none."""
+    """Return the cookie name that answer sets.
+
+    Returns:
+        Its value, and its attributes by lower-case name (a flag's value is
+        ""); None if answer sets none.
+    """
     for key, value in answer.headers:
         if key.lower() == "set-cookie" and value.startswith(f"{name}="):
             pair, *attributes = [p.strip() for p in value.split(";")]
@@ -487,8 +518,11 @@ def set_cookie(answer: web.Response, name: str) -> Optional[tuple[str, dict[str,
 
 
 def cookie_problems(answer: web.Response) -> list[str]:
-    """What is wrong with the login cookie that answer sets: it must be
-    HttpOnly, Secure, SameSite=Lax, for Path=/, and last 16 hours."""
+    """Return what is wrong with the login cookie that answer sets.
+
+    It must be HttpOnly, Secure, SameSite=Lax, for Path=/, and last 16
+    hours.
+    """
     found = set_cookie(answer, "login")
     if found is None or not found[0]:
         return ["it set no login cookie"]
@@ -506,8 +540,10 @@ def cookie_problems(answer: web.Response) -> list[str]:
 
 
 def cleared(answer: web.Response) -> list[str]:
-    """What is wrong with how answer, a logout's, clears the login cookie:
-    it must set it empty, and already expired."""
+    """Return what is wrong with how answer clears the login cookie.
+
+    The answer, a logout's, must set the cookie empty, and already expired.
+    """
     found = set_cookie(answer, "login")
     if found is None:
         return ["the logout set no login cookie"]
@@ -519,15 +555,17 @@ def cleared(answer: web.Response) -> list[str]:
 
 
 def whoami(server: Server, token: Optional[str] = None, cookie: str = "") -> web.Response:
-    """server's /whoami, with token or cookie."""
+    """GET server's /whoami, with token or cookie."""
     headers = cookie_header(login=cookie) if cookie else {}
     return web.request("GET", server.web_url + accounts.WHOAMI, token=token, headers=headers)
 
 
 def whoami_row(case: str, answer: web.Response, role: Optional[str], user: str = "") -> Row:
-    """A row for case: answer, a /whoami's, must say who is logged in,
-    with role, or, for role None, that no one is, and then carry no CSRF
-    token."""
+    """Return case's row: answer, a /whoami's, must say who is logged in.
+
+    It must say so with role (and user, if given), or, for role None, say
+    that no one is, and then carry no CSRF token.
+    """
     found = common.as_object(answer.json()) or {}
     problems: list[str] = []
     if role is None:
@@ -546,7 +584,7 @@ def whoami_row(case: str, answer: web.Response, role: Optional[str], user: str =
 
 
 def login_rows(test: Access, server: Server) -> list[Row]:
-    """login() at server."""
+    """Return login()'s rows for server."""
     name = server.name
     rows: list[Row] = []
     good = test.post_login(server, {"user": "admin", "password": ADMIN_PASSWORD})
@@ -587,10 +625,13 @@ def login_rows(test: Access, server: Server) -> list[Row]:
 
 
 def login(test: Access) -> list[Row]:
-    """At every server: logging in as the admin, with a wrong password,
-    and with a field missing, and the cookie; logging out, and the cookie
-    after; who is logged in, with no credentials, the admin's cookie, and
-    the user's token; and two logins at once."""
+    """Check logging in and out, and who is logged in, at every server.
+
+    That is, logging in as the admin, with a wrong password, and with a
+    field missing, and the cookie; logging out, and the cookie after; who is
+    logged in, with no credentials, the admin's cookie, and the user's
+    token; and two logins at once.
+    """
     rows: list[Row] = []
     for server in test.servers:
         try:
@@ -607,19 +648,24 @@ def login(test: Access) -> list[Row]:
 
 
 def csrf_refused(answer: web.Response) -> list[str]:
-    """What is wrong with answer, which the registry's CSRF guard must
-    have refused: 403, with its message."""
+    """Return what is wrong with answer, which must be a CSRF refusal.
+
+    The registry's CSRF guard must have refused it: 403, with its message.
+    """
     if answer.status == 403 and b"CSRF token invalid" in answer.body:
         return []
     return [f"{answer.describe()}, not 403 'CSRF token invalid'"]
 
 
 def registry_csrf(test: Access) -> list[Row]:
-    """At the registry, as its admin, by cookie and by bearer token,
+    """Check the registry's CSRF tokens.
+
+    At the registry, as its admin, by cookie and by bearer token,
     approve a registration that does not exist: with no CSRF token, and
     with one that does not match its cookie, the registry must refuse
     (403 'CSRF token invalid'); with a matching one, it must get as far
-    as finding none (404). gorilla/csrf exempts no bearer token."""
+    as finding none (404). gorilla/csrf exempts no bearer token.
+    """
     if not test.fed.registry_url:
         return [("registry", SKIP, "a standalone origin has no registry")]
     server = test.server_at(test.fed.registry_url)
@@ -654,11 +700,14 @@ def registry_csrf(test: Access) -> list[Row]:
 
 
 def cross_origin(test: Access, server: Server) -> Row:
-    """A logout at server, which AuthHandler guards: with the admin's
-    cookie, from another site's page (Origin), it must be refused (403);
-    with the admin's bearer token from there, and with the cookie and no
-    Origin, it must succeed (200), judged on the credentials alone. The
-    cookie is a fresh one, since the logout may end it."""
+    """Check that a logout at server refuses a cookie from another site.
+
+    AuthHandler guards the logout: with the admin's cookie, from another
+    site's page (Origin), it must be refused (403); with the admin's bearer
+    token from there, and with the cookie and no Origin, it must succeed
+    (200), judged on the credentials alone. The cookie is a fresh one, since
+    the logout may end it.
+    """
     cookie = test.login(server)
     url = server.web_url + LOGOUT
     expects: list[Expect] = [
@@ -682,7 +731,7 @@ def cross_origin(test: Access, server: Server) -> Row:
 
 
 def csrf(test: Access) -> list[Row]:
-    """registry_csrf(), and cross_origin() at every server."""
+    """Run registry_csrf(), and cross_origin() at every server."""
     rows = registry_csrf(test)
     for server in test.servers:
         try:
@@ -697,9 +746,12 @@ def csrf(test: Access) -> list[Row]:
 
 
 def malformed_path(test: Access) -> list[Row]:
-    """At every server, GET of a path whose percent-encoding is not UTF-8
+    """Check that every server refuses a path that is not UTF-8 (400).
+
+    At every server, GET of a path whose percent-encoding is not UTF-8
     (an overlong encoding of /), at the root and under the API, must get
-    400; then the server must still answer."""
+    400; then the server must still answer.
+    """
     rows: list[Row] = []
     for server in test.servers:
         expects: list[Expect] = [
@@ -717,8 +769,11 @@ def malformed_path(test: Access) -> list[Row]:
 
 
 def reported_version(server: Server) -> tuple[Optional[str], str]:
-    """The version that server reports (GET /api/v1.0/version), or None
-    and why not."""
+    """Return the version that server reports (GET /api/v1.0/version).
+
+    Returns:
+        The version and "", or None and why it reports none.
+    """
     answer = web.request("GET", server.web_url + VERSION)
     found = (common.as_object(answer.json()) or {}).get("version")
     if answer.status != 200 or not isinstance(found, str) or not found:
@@ -727,7 +782,7 @@ def reported_version(server: Server) -> tuple[Optional[str], str]:
 
 
 def header_row(case: str, answer: web.Response, reported: str) -> Row:
-    """A row for case: answer must carry `Server: pelican/<reported>`."""
+    """Return case's row: answer must carry `Server: pelican/<reported>`."""
     want = f"pelican/{reported}"
     got = answer.header("Server")
     if answer.status is None:
@@ -738,11 +793,14 @@ def header_row(case: str, answer: web.Response, reported: str) -> Row:
 
 
 def version(test: Access) -> list[Row]:
-    """Every server's version: each must report one, the same, and
-    PELICAN_TAG's, unless the shape runs images of the user's own, when
-    the row only reports them. A director's responses, and the
-    registry's, must name it in their Server header; and each director
-    must list each server it knows with the version it reports."""
+    """Check every server's version.
+
+    Each must report one, the same, and PELICAN_TAG's, unless the shape runs
+    images of the user's own, when the row only reports them. A director's
+    responses, and the registry's, must name it in their Server header; and
+    each director must list each server it knows with the version it
+    reports.
+    """
     versions: dict[str, str] = {}
     problems: list[str] = []
     for server in test.servers:
@@ -785,9 +843,17 @@ def listing_row(
     by_host: Mapping[str, str],
     versions: Mapping[str, str],
 ) -> Row:
-    """A row for the director server's list of servers, listing: each
-    server of the shape in it must have the version that server
-    reports."""
+    """Return a row for the director server's list of servers.
+
+    Each server of the shape in it must have the version that server
+    reports.
+
+    Args:
+        server: A director.
+        listing: Its answer to a GET of its list of servers.
+        by_host: The name of each of the shape's servers, by host.
+        versions: The version that each server reports, by name.
+    """
     case = f"listed {server.name}"
     if listing.status != 200:
         return case, FAIL, f"{DIRECTOR_SERVERS}: {listing.describe()}"
@@ -819,13 +885,15 @@ RUN: dict[str, Callable[[Access], list[Row]]] = {
 
 
 def skip(_fed: common.Federation) -> Optional[str]:
-    """Never: every server has a web API."""
+    """Return None: every server has a web API."""
     return None
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Run the selected scenarios, and leave the next suite free to log
-    in at once."""
+    """Run the selected scenarios.
+
+    Afterward, leave the next suite free to log in at once.
+    """
     test = Access(session)
     try:
         for name in selected:

@@ -1,8 +1,10 @@
-"""How the servers, and the clients, behave when an origin is slow: a V2
-cache sheds what it has no room for, with 429 and Retry-After; answers
-by the time a client's X-Pelican-Timeout says; and streams the first
-bytes of a cold object before it has all of it. The clients classify a
-throttled attempt, and a transfer too slow to finish, by error code.
+"""How the servers, and the clients, behave when an origin is slow.
+
+A V2 cache sheds what it has no room for, with 429 and Retry-After;
+answers by the time a client's X-Pelican-Timeout says; and streams the
+first bytes of a cold object before it has all of it. The clients
+classify a throttled attempt, and a transfer too slow to finish, by
+error code.
 
   shed-429         each V2 cache, sent a burst of cold reads, sheds some
                    with 429, Retry-After, and a reason; a missing object
@@ -144,7 +146,16 @@ Row = tuple[str, str]
 
 
 class Test:
-    """The run's objects in /protected-a, the token, and the shape."""
+    """The run's objects in /protected-a, the token, and the shape.
+
+    Attributes:
+        base: The run's collection, within /protected-a.
+        caps: /protected-a's capabilities.
+        direct: Whether /protected-a takes direct clients.
+        holder: The origin that holds the run's objects.
+        v2: The federated V2 caches.
+        tmp: A directory of the run's own, for the clients' files.
+    """
 
     def __init__(self, session: Session):
         self.session = session
@@ -155,32 +166,36 @@ class Test:
         self.caps = self.fed.exports[NAMESPACE]
         self.direct = "DirectReads" in self.caps
         self.origins = self.fed.origins
-        # The origin that holds the run's objects.
         self.holder = self.origins[0]
         self.v2 = [c for c in self.fed.federated_caches if c.kind == "v2"]
         self.tmp = session.path("throttling")
         os.makedirs(self.tmp, exist_ok=True)
 
     def rel(self, *parts: str) -> str:
-        """Where parts are, under the run's collection."""
+        """Return where parts are, under the run's collection."""
         return "/".join([self.base, *parts])
 
     def url(self, server_url: str, rel: str) -> str:
-        """rel in /protected-a at the server at server_url."""
+        """Return rel's URL in /protected-a at the server at server_url."""
         return f"{server_url}/{NAMESPACE}/{quote(rel)}"
 
     def path(self, rel: str) -> str:
-        """rel's path in the federation."""
+        """Return rel's path in the federation."""
         return f"/{NAMESPACE}/{rel}"
 
     def object_url(self, rel: str) -> str:
-        """rel's pelican:// URL."""
+        """Return rel's pelican:// URL."""
         return f"{self.fed.url}{self.path(rel)}"
 
     def put(self, objects: Mapping[str, bytes], everywhere: bool = False) -> Optional[str]:
-        """Write objects, by rel, straight into the first origin's store on
-        disk, or with everywhere into every origin's; what went wrong, or
-        None."""
+        """Write objects, by rel, straight into origins' stores on disk.
+
+        They go into the first origin's store, or with everywhere into
+        every origin's.
+
+        Returns:
+            What went wrong, or None.
+        """
         targets = stores.unique(self.origins) if everywhere else [self.holder]
         for origin in targets:
             for rel, data in objects.items():
@@ -197,7 +212,7 @@ class Test:
         headers: Optional[Mapping[str, str]] = None,
         timeout: float = 120,
     ) -> web.Response:
-        """method of rel at the server at server_url, with the token."""
+        """Send method to rel at server_url's server, with the token."""
         return web.request(
             method,
             self.url(server_url, rel),
@@ -207,12 +222,19 @@ class Test:
         )
 
     def holds(self, cache: common.Cache, rel: str) -> bool:
-        """Whether cache holds all of rel: a HEAD with only-if-cached gets
-        200, which fetches nothing."""
+        """Return whether cache holds all of rel.
+
+        It does if a HEAD with only-if-cached, which fetches nothing,
+        gets 200.
+        """
         return self.ask("HEAD", cache.url, rel, ONLY_IF_CACHED).status == 200
 
     def wait_held(self, cache: common.Cache, rels: Sequence[str], seconds: float) -> list[str]:
-        """Those of rels that cache does not hold within seconds."""
+        """Wait up to seconds for cache to hold each of rels.
+
+        Returns:
+            Those of rels that cache does not hold within seconds.
+        """
         deadline = time.time() + seconds
         pending = list(rels)
         while pending:
@@ -224,12 +246,12 @@ class Test:
 
 
 def leaf(rel: str) -> str:
-    """rel's last segment, for a message."""
+    """Return rel's last segment, for a message."""
     return rel.rsplit("/", 1)[-1]
 
 
 def served(answer: web.Response, data: bytes) -> Optional[str]:
-    """Why answer is not a whole object holding data, or None."""
+    """Return why answer is not a whole object holding data, or None."""
     if answer.status != 200:
         return answer.describe()
     if answer.body != data:
@@ -238,7 +260,7 @@ def served(answer: web.Response, data: bytes) -> Optional[str]:
 
 
 def shed_reason(answer: web.Response) -> Optional[str]:
-    """The `error` of a 429's JSON body, or None if it has none."""
+    """Return the `error` of a 429's JSON body, or None if it has none."""
     try:
         found = common.as_object(json.loads(answer.body)) or {}
     except ValueError:
@@ -248,8 +270,11 @@ def shed_reason(answer: web.Response) -> Optional[str]:
 
 
 def shed_problem(answer: web.Response) -> Optional[str]:
-    """What is wrong with a 429 from a V2 cache, or None: it must say to
-    come back in RETRY_AFTER seconds, and why, as one of SHED_REASONS."""
+    """Return what is wrong with a 429 from a V2 cache, or None.
+
+    It must say to come back in RETRY_AFTER seconds, and why, as one of
+    SHED_REASONS.
+    """
     retry = answer.header("Retry-After")
     if retry != str(RETRY_AFTER):
         return f"a 429 with Retry-After '{retry}', not '{RETRY_AFTER}'"
@@ -264,9 +289,11 @@ def shed_problem(answer: web.Response) -> Optional[str]:
 
 
 def serving(test: Test) -> Optional[str]:
-    """Why /protected-a is not served as before, or None: every director
-    must name every origin for the probe, and every cache answer a HEAD
-    of it, which fetches nothing."""
+    """Return why /protected-a is not served as before, or None.
+
+    Every director must name every origin for the probe, and every cache
+    answer a HEAD of it, which fetches nothing.
+    """
     path = test.path(test.rel(PROBE))
     for url in test.fed.directors:
         where = director.ask(url, "origin", path, token=test.token)
@@ -281,8 +308,12 @@ def serving(test: Test) -> Optional[str]:
 
 
 def settle(test: Test) -> Optional[str]:
-    """Wait until the federation serves /protected-a as before (see
-    serving()); why it doesn't within SETTLE_WAIT seconds, or None."""
+    """Wait until the federation serves /protected-a as before.
+
+    Returns:
+        Why it doesn't within SETTLE_WAIT seconds (see serving()), or
+        None.
+    """
     deadline = time.time() + SETTLE_WAIT
     why = serving(test)
     while why and time.time() < deadline:
@@ -293,8 +324,14 @@ def settle(test: Test) -> Optional[str]:
 
 @contextlib.contextmanager
 def slowed(test: Test) -> Generator[None, None, None]:
-    """Restart every origin with the rate limit, and every federated V2
-    cache with the small scheduler; and afterward, as they were."""
+    """Restart the origins and the V2 caches slowed, for the with block.
+
+    Every origin gets the rate limit, and every federated V2 cache the
+    small scheduler; and afterward, each is restarted as it was.
+
+    Raises:
+        control.ControlError: Restarting, or restoring, failed.
+    """
     with contextlib.ExitStack() as stack:
         for origin in test.origins:
             stack.enter_context(control.restart_with(origin.svc, {CONFIG_FILE: ORIGIN_CONFIG}))
@@ -304,11 +341,11 @@ def slowed(test: Test) -> Generator[None, None, None]:
 
 
 # --------------------------------------------------------------------------
-# The cases. Each returns its result and a note.
+# The cases. Each returns its row, or its rows by name (see CASES).
 
 
 def burst(test: Test, cache: common.Cache, found: Findings) -> None:
-    """shed-429 at one V2 cache (see shed_429())."""
+    """Run shed-429 at one V2 cache (see shed_429())."""
     rels = [test.rel("shed-429", cache.svc, f"burst-{n}") for n in range(BURST)]
     missing = test.rel("shed-429", cache.svc, "missing")
     objects = {rel: os.urandom(BURST_SIZE) for rel in rels}
@@ -359,15 +396,18 @@ def burst(test: Test, cache: common.Cache, found: Findings) -> None:
 
 
 def shed_429(test: Test) -> Row:
-    """At each V2 cache, BURST reads at once of cold objects that take
-    seconds each to fetch, and, MISSING_DELAY seconds in, one of an object
-    that no origin holds. The cache fetches one at a time from the
-    origin, and queues one more, so it must shed some: 429, with
-    Retry-After of RETRY_AFTER seconds, and a JSON body whose error says
-    why (handleError in local_cache/persistent_cache_api.go). The rest
-    must come back whole. The missing object must be 404: telling a
-    client to come back later for what does not exist would have it come
-    back for ever."""
+    """Check that each V2 cache sheds some of a burst of cold reads.
+
+    Each gets BURST reads at once of cold objects that take seconds each
+    to fetch, and, MISSING_DELAY seconds in, one of an object that no
+    origin holds. The cache fetches one at a time from the origin, and
+    queues one more, so it must shed some: 429, with Retry-After of
+    RETRY_AFTER seconds, and a JSON body whose error says why
+    (handleError in local_cache/persistent_cache_api.go). The rest must
+    come back whole. The missing object must be 404: telling a client to
+    come back later for what does not exist would have it come back for
+    ever.
+    """
     found = Findings()
     for cache in test.v2:
         burst(test, cache, found)
@@ -375,8 +415,10 @@ def shed_429(test: Test) -> Row:
 
 
 def answered_in(answer: web.Response, took: float, status: int, within: float) -> Optional[str]:
-    """Why answer, which took took seconds, is not status within within
-    seconds, or None."""
+    """Return why answer is not status within within seconds, or None.
+
+    took is how many seconds answer took.
+    """
     if answer.status != status:
         return f"{answer.describe()}, not {status}"
     if took > within:
@@ -387,15 +429,18 @@ def answered_in(answer: web.Response, took: float, status: int, within: float) -
 def timed(
     test: Test, cache: common.Cache, rel: str, timeout: str
 ) -> tuple[web.Response, float]:
-    """A GET of rel at cache with X-Pelican-Timeout timeout: the answer,
-    and how many seconds it took."""
+    """GET rel at cache with X-Pelican-Timeout timeout, and time it.
+
+    Returns:
+        The answer, and how many seconds it took.
+    """
     started = time.monotonic()
     answer = test.ask("GET", cache.url, rel, {"X-Pelican-Timeout": timeout})
     return answer, time.monotonic() - started
 
 
 def timeouts(test: Test, cache: common.Cache, found: dict[str, Findings]) -> None:
-    """timeout-header at one V2 cache (see TIMEOUT_CASES)."""
+    """Run timeout-header at one V2 cache (see TIMEOUT_CASES)."""
     slow, queued, held, odd = (
         test.rel("timeout-header", cache.svc, name)
         for name in ("slow", "queued", "held", "malformed")
@@ -474,8 +519,10 @@ TIMEOUT_CASES = ("short", "queued", "held", "malformed")
 
 
 def timeout_header(test: Test) -> dict[str, Row]:
-    """At each V2 cache, X-Pelican-Timeout, which says how long a client
-    will wait (serveObject in local_cache/persistent_cache_api.go):
+    """Check that each V2 cache heeds X-Pelican-Timeout.
+
+    The header says how long a client will wait (serveObject in
+    local_cache/persistent_cache_api.go):
 
       short      a cold read with 20ms must get 504 at once
       queued     a cold read with 2s, sent while another's fetch holds
@@ -486,7 +533,8 @@ def timeout_header(test: Test) -> dict[str, Row]:
                  back, the value ignored
 
     For `short` and `queued`, the fetch must go on behind the 504: the
-    cache must then hold the object, and serve it."""
+    cache must then hold the object, and serve it.
+    """
     found = {case: Findings() for case in TIMEOUT_CASES}
     for cache in test.v2:
         timeouts(test, cache, found)
@@ -494,12 +542,15 @@ def timeout_header(test: Test) -> dict[str, Row]:
 
 
 def streaming(test: Test) -> Row:
-    """At each V2 cache, a cold read of an object that takes seconds to
-    fetch: its first STREAM_HEAD bytes must come within STREAM_FIRST
-    seconds, and in less than half the time of the whole, which must
-    come back intact. A cache that sent nothing until it held the whole
-    object would send its first bytes with its last. A whole read faster
-    than STREAM_SLOWEST shows nothing, since the origins were not slow."""
+    """Check that each V2 cache streams a cold object as it fetches it.
+
+    At each, a cold read of an object that takes seconds to fetch: its
+    first STREAM_HEAD bytes must come within STREAM_FIRST seconds, and
+    in less than half the time of the whole, which must come back
+    intact. A cache that sent nothing until it held the whole object
+    would send its first bytes with its last. A whole read faster than
+    STREAM_SLOWEST shows nothing, since the origins were not slow.
+    """
     found = Findings()
     for cache in test.v2:
         rel = test.rel("streaming", cache.svc)
@@ -529,27 +580,37 @@ def streaming(test: Test) -> Row:
 
 @dataclass(frozen=True)
 class Fetched:
-    """What a client's download of one object, named `object` in a
-    directory of its own, did."""
+    """What a client's download of one object did.
 
-    status: int  # its exit status
-    said: str  # its output; the plugin's, its result ads if it wrote any
-    left: tuple[str, ...]  # what its directory holds afterward
-    data: Optional[bytes]  # the object's bytes, if it left them
+    The object is named `object`, in a directory of its own.
+
+    Attributes:
+        status: Its exit status.
+        said: Its output; the plugin's, its result ads if it wrote any.
+        left: What its directory holds afterward.
+        data: The object's bytes, if it left them.
+    """
+
+    status: int
+    said: str
+    left: tuple[str, ...]
+    data: Optional[bytes]
 
     def codes(self) -> set[int]:
-        """The Pelican error codes it reported."""
+        """Return the Pelican error codes it reported."""
         found = re.findall(r"Error code (\d{4})|PelicanErrorCode = (\d+)", self.said)
         return {int(a or b) for a, b in found}
 
     def leftovers(self) -> Optional[str]:
-        """Why a failed download left something behind, or None. The
-        clients write a temporary file beside the object's, and rename it
-        once it is complete."""
+        """Return why a failed download left something behind, or None.
+
+        The clients write a temporary file beside the object's, and
+        rename it once it is complete.
+        """
         return f"it left {list(self.left)}" if self.left else None
 
     def got(self, data: bytes) -> Optional[str]:
-        """Why it did not download data, or None."""
+        """Return why it did not download data, or None."""
         if self.status != 0:
             return f"exit {self.status}: {last_line(self.said)}"
         if self.data != data:
@@ -584,7 +645,7 @@ RETRYABLE_EXIT = 11
 
 
 def client_env(test: Test, slow: bool) -> dict[str, str]:
-    """The clients' environment, with SLOW_ENV, or without it."""
+    """Return the clients' environment, with SLOW_ENV, or without it."""
     env = dict(test.session.env)
     for name in SLOW_ENV:
         env.pop(name, None)
@@ -594,7 +655,7 @@ def client_env(test: Test, slow: bool) -> dict[str, str]:
 
 
 def fetched(directory: str, status: int, said: str) -> Fetched:
-    """What a client that downloaded into directory did."""
+    """Return what a client that downloaded into directory did."""
     left = tuple(sorted(os.listdir(directory)))
     data: Optional[bytes] = None
     path = os.path.join(directory, "object")
@@ -612,9 +673,11 @@ def get_pelican(
     direct: bool = False,
     cache: Optional[common.Cache] = None,
 ) -> Fetched:
-    """`pelican object get` of rel into a directory of its own, name; with
-    SLOW_ENV if slow; from an origin if direct, or through cache alone
-    (--cache), if one is named."""
+    """Run `pelican object get` of rel into a directory of its own, name.
+
+    It runs with SLOW_ENV if slow; and reads from an origin if direct,
+    or through cache alone (--cache), if one is named.
+    """
     directory = os.path.join(test.tmp, name)
     os.makedirs(directory)
     args = ["object", "get", "--token", test.token_file]
@@ -637,9 +700,11 @@ def get_plugin(
     direct: bool = False,
     cache: Optional[common.Cache] = None,
 ) -> Fetched:
-    """stash_plugin's download of rel into a directory of its own, name,
-    as get_pelican()'s: a direct read adds ?directread to the URL, and a
-    cache is named by Client.PreferredCaches."""
+    """Run stash_plugin on rel, into a directory of its own, name.
+
+    It takes what get_pelican() takes; a direct read adds ?directread to
+    the URL, and a cache is named by Client.PreferredCaches.
+    """
     directory = os.path.join(test.tmp, name)
     creds = os.path.join(test.tmp, f"{name}.creds")
     os.makedirs(directory)
@@ -676,11 +741,13 @@ def get_plugin(
 
 
 def plugin_problems(fetch: Fetched, codes: set[int]) -> list[str]:
-    """What is wrong with the plugin's failed download, which must have
-    failed with one of codes, in a way it may retry: exit RETRYABLE_EXIT,
-    TransferSuccess = false and TransferRetryable = true, and an error of
-    type Transfer whose DeveloperData names the code (createTransferError
-    in cmd/plugin.go)."""
+    """Return what is wrong with the plugin's failed download.
+
+    It must have failed with one of codes, in a way it may retry: exit
+    RETRYABLE_EXIT, TransferSuccess = false and TransferRetryable =
+    true, and an error of type Transfer whose DeveloperData names the
+    code (createTransferError in cmd/plugin.go).
+    """
     problems: list[str] = []
     if "TransferSuccess = false" not in fetch.said:
         return [f"it wrote no ad of a failure: {last_line(fetch.said)}"]
@@ -700,9 +767,11 @@ def plugin_problems(fetch: Fetched, codes: set[int]) -> list[str]:
 
 
 def pelican_problems(fetch: Fetched, codes: set[int]) -> list[str]:
-    """What is wrong with `pelican object get`'s failed download, which
-    must have failed with one of codes, in a way it may retry: it says so,
-    and exits RETRYABLE_EXIT (cmd/object_get.go)."""
+    """Return what is wrong with `pelican object get`'s failed download.
+
+    It must have failed with one of codes, in a way it may retry: it
+    says so, and exits RETRYABLE_EXIT (cmd/object_get.go).
+    """
     problems: list[str] = []
     if fetch.status == 0:
         return ["it succeeded"]
@@ -718,10 +787,13 @@ def pelican_problems(fetch: Fetched, codes: set[int]) -> list[str]:
 
 
 def throttle_hints(fetch: Fetched) -> list[str]:
-    """What is wrong with the hints in the plugin's ad of a shed attempt:
-    its DeveloperData must carry RetryAfterSeconds, the cache's
-    Retry-After, and ThrottleReason, the 429's reason, which it leaves out
-    only where there is none (cmd/plugin.go)."""
+    """Return what is wrong with the throttle hints in the plugin's ad.
+
+    The ad is of a shed attempt. Its DeveloperData must carry
+    RetryAfterSeconds, the cache's Retry-After, and ThrottleReason, the
+    429's reason, which it leaves out only where there is none
+    (cmd/plugin.go).
+    """
     problems: list[str] = []
     retry = re.search(r"RetryAfterSeconds = (\d+)", fetch.said)
     if not retry or retry.group(1) != str(RETRY_AFTER):
@@ -746,7 +818,7 @@ OCCUPY_SIZE = 4 << 20
 
 
 def shed_client(test: Test, cache: common.Cache, found: dict[str, Findings]) -> None:
-    """client-throttled at one V2 cache (see client_throttled())."""
+    """Run client-throttled at one V2 cache (see client_throttled())."""
     slot, queue = (test.rel("client-throttled", cache.svc, n) for n in ("slot", "queue"))
     rels = {c: test.rel("client-throttled", cache.svc, c) for c in CLIENTS}
     objects = {slot: os.urandom(OCCUPY_SIZE), queue: os.urandom(SLOW_SIZE)}
@@ -807,17 +879,20 @@ def shed_client(test: Test, cache: common.Cache, found: dict[str, Findings]) -> 
 
 
 def client_throttled(test: Test) -> dict[str, Row]:
-    """At each V2 cache, a cold read holds the origin's one slot, and
-    another its one place in the queue, so that the cache sheds the next.
-    Meanwhile, `pelican object get` and stash_plugin each download a cold
-    object through that cache alone. Each must fail as the cache shed it,
-    with Transfer.OriginUnresponsive, OriginSlow, or CacheOverloaded
-    (6008-6010), in a way it may retry (exit 11), and leave nothing; the
-    plugin's ad must also say TransferRetryable = true, and carry the
-    cache's Retry-After and reason. The client does not wait on
-    Retry-After, and has no other cache to try; so the test, as a retrier
-    outside it would, tries it again once the reads are done, RETRY_AFTER
-    seconds apart, and it must then get the object."""
+    """Check that the clients, shed by a V2 cache, report a retryable error.
+
+    At each V2 cache, a cold read holds the origin's one slot, and
+    another its one place in the queue, so that the cache sheds the
+    next. Meanwhile, `pelican object get` and stash_plugin each download
+    a cold object through that cache alone. Each must fail as the cache
+    shed it, with Transfer.OriginUnresponsive, OriginSlow, or
+    CacheOverloaded (6008-6010), in a way it may retry (exit 11), and
+    leave nothing; the plugin's ad must also say TransferRetryable =
+    true, and carry the cache's Retry-After and reason. The client does
+    not wait on Retry-After, and has no other cache to try; so the test,
+    as a retrier outside it would, tries it again once the reads are
+    done, RETRY_AFTER seconds apart, and it must then get the object.
+    """
     found = {client: Findings() for client in CLIENTS}
     for cache in test.v2:
         shed_client(test, cache, found)
@@ -825,7 +900,9 @@ def client_throttled(test: Test) -> dict[str, Row]:
 
 
 def slow_transfer(test: Test) -> dict[str, Row]:
-    """The clients' slow transfers, of objects of SLOW_TRANSFER_SIZE:
+    """Check that the clients give up on transfers too slow, and only those.
+
+    The transfers are of objects of SLOW_TRANSFER_SIZE:
 
     direct         `pelican object get --direct`, with SLOW_ENV, must
                    fail with Transfer.SlowTransfer (6002), and leave
@@ -836,7 +913,8 @@ def slow_transfer(test: Test) -> dict[str, Row]:
                    the object: direct, or where the origins take no
                    direct clients, through the first V2 cache
     cache          `pelican object get` through each V2 cache, cold,
-                   with SLOW_ENV, must fail as `direct` does"""
+                   with SLOW_ENV, must fail as `direct` does
+    """
     rows: dict[str, Row] = {}
     slow = test.rel("slow-transfer", "direct")
     data = os.urandom(SLOW_TRANSFER_SIZE)
@@ -894,7 +972,7 @@ def slow_transfer(test: Test) -> dict[str, Row]:
 
 
 def single(case: Callable[[Test], Row]) -> Callable[[Test], dict[str, Row]]:
-    """A case of a scenario with one row."""
+    """Return case, of a scenario with one row, as CASES takes it."""
     return lambda test: {"": case(test)}
 
 
@@ -910,7 +988,7 @@ CASES: dict[str, Callable[[Test], dict[str, Row]]] = {
 
 
 def row_name(scenario: str, name: str) -> str:
-    """The row of scenario's case name."""
+    """Return the row name of scenario's case name."""
     return f"{scenario} {name}" if name else scenario
 
 
@@ -928,8 +1006,11 @@ def run_scenario(test: Test, scenario: str, results: common.Results) -> None:
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: origins that the rate limit does not
-    slow, the tiny topology, no /protected-a, or no federated V2 cache."""
+    """Return why there is nothing to test, or None.
+
+    There is nothing with origins that the rate limit does not slow, the
+    tiny topology, no /protected-a, or no federated V2 cache.
+    """
     if fed.origin_variant != "posixv2":
         return "Origin.TransferRateLimit slows only a posixv2 origin"
     if fed.tiny:
@@ -944,8 +1025,10 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Slow the origins and the caches, run the selected scenarios, and
-    restore them; then remove the run's objects."""
+    """Run the selected scenarios with the origins and the caches slowed.
+
+    Restore them afterward; then remove the run's objects.
+    """
     fed = session.fed
     why = control.unavailable()
     if why:

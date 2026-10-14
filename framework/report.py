@@ -41,7 +41,12 @@ def die_usage(message: str) -> None:
 
 
 def merge(args: Sequence[str]) -> str:
-    """One table of every DIR's results, each row with its shape."""
+    """Return one table of every DIR's results, each row with its shape.
+
+    Args:
+        args: Each `[NAME=]DIR`: a directory of *.tsv tables, and the
+            shape of their rows (by default, DIR's own name).
+    """
     rows: list[dict[str, str]] = []
     for arg in args:
         name, sep, directory = arg.partition("=")
@@ -59,7 +64,7 @@ def merge(args: Sequence[str]) -> str:
 
 
 def load(path: str) -> list[dict[str, str]]:
-    """The rows of the table at path, each with a shape."""
+    """Return the rows of the table at path, each with a shape."""
     with open(path, encoding="utf-8") as f:
         rows = report.parse_table(f.read())
     for row in rows:
@@ -70,7 +75,7 @@ def load(path: str) -> list[dict[str, str]]:
 def groups(
     rows: Sequence[dict[str, str]],
 ) -> "OrderedDict[tuple[str, str], list[dict[str, str]]]":
-    """Rows by (shape, suite), in the order they first appear."""
+    """Return rows by (shape, suite), in the order they first appear."""
     found: "OrderedDict[tuple[str, str], list[dict[str, str]]]" = OrderedDict()
     for row in rows:
         found.setdefault((row.get("shape", ""), row.get("suite", "")), []).append(row)
@@ -78,7 +83,7 @@ def groups(
 
 
 def seconds(row: dict[str, str]) -> float:
-    """How long row's case took, or 0 if it does not say."""
+    """Return how long row's case took, or 0 if it does not say."""
     try:
         return float(row.get("seconds") or 0)
     except ValueError:
@@ -91,18 +96,21 @@ _NOT_XML = re.compile("[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 
 
 def xml_text(text: str) -> str:
-    """text, with each character that XML 1.0 forbids written as \\xNN."""
+    """Return text, writing each character that XML 1.0 forbids as \\xNN."""
     return _NOT_XML.sub(lambda m: f"\\x{ord(m.group(0)):02x}", text)
 
 
 def count(rows: Sequence[dict[str, str]], status: str) -> int:
-    """How many of rows have status."""
+    """Return how many of rows have status."""
     return sum(1 for row in rows if row.get("status") == status)
 
 
 def junit(rows: Sequence[dict[str, str]]) -> str:
-    """A <testsuite> per shape and suite. FAIL is a <failure>; SKIP and
-    INCONCLUSIVE are <skipped>, the latter's message saying so."""
+    """Return JUnit XML of rows: a <testsuite> per shape and suite.
+
+    FAIL is a <failure>; SKIP and INCONCLUSIVE are <skipped>, the latter's
+    message saying so.
+    """
     top = ET.Element("testsuites", name="pelican-test-framework")
     totals = {"tests": 0, "failures": 0, "skipped": 0, "time": 0.0}
     for (shape, suite), members in groups(rows).items():
@@ -150,12 +158,12 @@ def junit(rows: Sequence[dict[str, str]]) -> str:
 
 
 def cell(text: str) -> str:
-    """text, safe in a Markdown table's cell."""
+    """Return text, safe in a Markdown table's cell."""
     return text.replace("|", "\\|").replace("\n", " ")
 
 
 def markdown(rows: Sequence[dict[str, str]]) -> str:
-    """A table of counts per shape and suite, then every failure."""
+    """Return a table of counts per shape and suite, then every failure."""
     lines = ["## Pelican smoke tests", ""]
     failed = count(rows, report.FAIL)
     lines.append(f"{len(rows)} cases: {len(rows) - failed} did not fail, {failed} failed.")

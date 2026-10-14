@@ -1,25 +1,25 @@
-"""Authorization at each server directly: GET, HEAD, PUT, and DELETE to
-every origin, and GET and HEAD to every cache, in every namespace, once
-for each credential in the table in framework/testlib/credentials.py.
-A request that should be allowed must succeed with the right bytes (a
-HEAD, with the object's length), or remove the object. Any other must
-get 401 or 403 and change nothing. First, the `keys` check fetches each
-namespace issuer's discovery document and JWKS, and the origins'
-server-wide JWKS, and checks which test keys each publishes. Last, the
-`narrow` check presents a token for the test object alone in
-/protected-a, at every server, for it and then for its sibling; the
-`create-only` and `modify-only` checks present tokens of one storage
-scope each at every origin, which may create an object, replace one,
-and delete one, as the WLCG token profile says; the `traversal`
-check sends paths that climb out of their namespace with `..`, which
-must reach neither another namespace's test object nor a file beyond
-an export's storage; the `hints` check asks each V2 cache for the
-test object with no token, whose refusal must say which namespace it
-is and name its issuer, as the director's redirect does; the
-`audience` check presents the origins a token like `server`'s but for
-another audience, which they must refuse; and the `query-token` check
-presents the `server` and `unknown` tokens in the authz query
-parameter instead of the header, as XRootD caches forward them, which
+"""Authorization at each server directly, in every namespace.
+
+GET, HEAD, PUT, and DELETE go to every origin, and GET and HEAD to every
+cache, once for each credential in the table in
+framework/testlib/credentials.py. A request that should be allowed must
+succeed with the right bytes (a HEAD, with the object's length), or remove
+the object. Any other must get 401 or 403 and change nothing. First, the
+`keys` check fetches each namespace issuer's discovery document and JWKS,
+and the origins' server-wide JWKS, and checks which test keys each
+publishes. Last, the `narrow` check presents a token for the test object
+alone in /protected-a, at every server, for it and then for its sibling; the
+`create-only` and `modify-only` checks present tokens of one storage scope
+each at every origin, which may create an object, replace one, and delete
+one, as the WLCG token profile says; the `traversal` check sends paths that
+climb out of their namespace with `..`, which must reach neither another
+namespace's test object nor a file beyond an export's storage; the `hints`
+check asks each V2 cache for the test object with no token, whose refusal
+must say which namespace it is and name its issuer, as the director's
+redirect does; the `audience` check presents the origins a token like
+`server`'s but for another audience, which they must refuse; and the
+`query-token` check presents the `server` and `unknown` tokens in the authz
+query parameter instead of the header, as XRootD caches forward them, which
 every server must take as it takes the header.
 
 Other checks present tokens that `pelican token create` cannot make
@@ -41,15 +41,13 @@ Each namespace has storage of its own, and a test object of its own
 bytes (but on a pstore origin, /public reads /protected-a's), so a
 server that answers from another namespace's is caught.
 
-What each namespace should allow comes from credentials.expected(): a
-read of /public is allowed whatever the token, a write to a namespace
-without Writes (/public, unless `-p origin-public-writes` gives it
-writes) is refused whatever the token, and so is every request straight
-to an origin in a namespace without DirectReads (`-p origin-no-direct`). The test objects are put in place with
-stores.seed(), so the last needs no writes. The transfers suite
-presents the same credentials through the clients, which refuse some
-of them themselves. Responses go to framework/var/data/auth-test/, and
-a row per request to the results.
+What each namespace should allow comes from credentials.expected(): a read
+of /public is allowed whatever the token, a write to a namespace without
+Writes (/public, unless `-p origin-public-writes` gives it writes) is
+refused whatever the token, and so is every request straight to an origin in
+a namespace without DirectReads (`-p origin-no-direct`). The test objects
+are put in place with stores.seed(), so the last needs no writes. Responses
+go to framework/var/data/auth-test/, and a row per request to the results.
 """
 
 import json
@@ -192,44 +190,62 @@ PROTECTED_A_CHECKS = (
 
 
 class Test:
-    """The test object, the setup tokens, and the rows recorded."""
+    """The test object, the setup tokens, and the rows recorded.
+
+    Attributes:
+        setup_tokens: A `server` token for each exported namespace, by
+            namespace.
+        object: The test object's path in each namespace.
+        object_bytes: The test object's bytes in each namespace.
+        sibling: For `narrow`: a name that the object's is a prefix of.
+    """
 
     def __init__(self, session: Session, report: Report):
         self.session = session
         self.report = report
         self.exports = session.fed.exports
-        self.setup_tokens = session.tokens()  # by namespace
+        self.setup_tokens = session.tokens()
         self.run = session.run
         self.object = f"data/auth/{self.run}-object"
-        # The test object's bytes in each namespace: on a pstore origin,
-        # /public's are /protected-a's, whose storage it reads.
+        # On a pstore origin, /public's bytes are /protected-a's, whose
+        # storage it reads.
         own = {ns: os.urandom(65536) for ns in session.namespaces}
         self.object_bytes = {ns: own[session.fed.storage_namespace(ns)] for ns in own}
-        # For `narrow`: a name that the object's is a prefix of.
         self.sibling = f"{self.object}-sibling"
         self.sibling_bytes = os.urandom(65536)
 
     def token(self, cred: Credential, namespace: str, op: str) -> Optional[str]:
-        """cred's token for op (`get` or `put`) in namespace, or None."""
+        """Return cred's token for op (`get` or `put`) in namespace.
+
+        Returns:
+            The token, or None for `none`, which has no token.
+        """
         return self.session.credential_token(cred, namespace, op)
 
     @cached_property
     def header(self) -> dict[str, Any]:
-        """The header of the `server` token for /protected-a, as `pelican
-        token create` wrote it, which raw_token() signs under: its alg,
-        and the kid of the origins' key in their issuer's JWKS."""
+        """The header of the `server` token for /protected-a.
+
+        It is as `pelican token create` wrote it: its alg, and the kid of
+        the origins' key in their issuer's JWKS. raw_token() signs under
+        it.
+        """
         return jwt.decode(self.setup_tokens["protected-a"])[0]
 
     def caps(self, namespace: str) -> AbstractSet[str]:
-        """namespace's capabilities."""
+        """Return namespace's capabilities."""
         return self.exports[namespace]
 
     def whose(self, body: bytes) -> Optional[str]:
-        """The namespace whose test object body is, if any."""
+        """Return the namespace whose test object body is, if any."""
         return next((ns for ns, data in self.object_bytes.items() if data == body), None)
 
     def stored(self, origin: common.Origin, namespace: str, rel: str) -> Optional[str]:
-        """What origin holds at rel in namespace (see stores.held())."""
+        """Return what origin holds at rel in namespace (see stores.held()).
+
+        Raises:
+            stores.Unreadable: The origin could not say what it holds.
+        """
         return stores.held(origin, namespace, rel, self.setup_tokens[namespace])
 
     def row(
@@ -255,8 +271,10 @@ class Test:
     def check_read(
         self, target: str, url: str, namespace: str, cred: Credential, op: str, direct: bool
     ) -> None:
-        """GET or HEAD (op) the test object at url, an origin's if
-        direct."""
+        """GET or HEAD (op) the test object at url.
+
+        url is an origin's if direct.
+        """
         answer = web.request(
             op.upper(),
             f"{url}/{namespace}/{self.object}",
@@ -325,8 +343,11 @@ class Test:
     def check_delete(
         self, target: str, origin: common.Origin, namespace: str, cred: Credential
     ) -> None:
-        """DELETE an object uploaded to origin for the purpose, unless the
-        DELETE should succeed and the origin's storage cannot delete."""
+        """DELETE an object uploaded to origin for the purpose.
+
+        If the DELETE should succeed and the origin's storage cannot
+        delete, skip the row instead.
+        """
         cannot_delete = stores.cannot(self.session.fed, "delete")
         if (
             cannot_delete
@@ -389,7 +410,7 @@ class Test:
 
 
 def file_key_ids(path: str) -> frozenset[str]:
-    """The kids in the JWKS file at path."""
+    """Return the kids in the JWKS file at path."""
     try:
         with open(path, "rb") as f:
             return credentials.key_ids(f.read())
@@ -400,9 +421,12 @@ def file_key_ids(path: str) -> frozenset[str]:
 
 
 def get_jwks(url: str, name: str) -> tuple[web.Response, Optional[frozenset[str]], list[str]]:
-    """GET the JWKS at url, keeping the response as name. Return the
-    answer, its kids (None if it is not a JWKS), and what is wrong with
-    it if it is not."""
+    """GET the JWKS at url, keeping the response as name.
+
+    Returns:
+        The answer, its kids (None if it is not a JWKS), and what is wrong
+        with it if it is not.
+    """
     answer = web.request("GET", url)
     save(f"{OUT}/responses/{name}", answer)
     if answer.status != 200:
@@ -414,11 +438,14 @@ def get_jwks(url: str, name: str) -> tuple[web.Response, Optional[frozenset[str]
 
 
 def check_keys(fed: common.Federation, report: Report) -> None:
-    """The server-wide JWKS, then each exported protected namespace's
+    """Check the keys that the origins publish.
+
+    First the server-wide JWKS, then each exported protected namespace's
     discovery document and JWKS. /public has no issuer, unless it takes
     writes (`-p origin-public-writes`): then its JWKS must hold the
     server-wide keys, and neither protected namespace's own, which would
-    otherwise write it."""
+    otherwise write it.
+    """
     if not credentials.namespace_issuers(fed):
         why = (
             "every namespace trusts the external issuer"
@@ -494,18 +521,24 @@ def check_keys(fed: common.Federation, report: Report) -> None:
 
 
 def targets(fed: common.Federation) -> list[tuple[str, str, bool]]:
-    """Every server's name in the rows, its data URL, and whether it is an
-    origin."""
+    """Return every origin and cache.
+
+    Returns:
+        Each one's name in the rows, its data URL, and whether it is an
+        origin.
+    """
     return [(label(o.svc, "origin"), o.url, True) for o in fed.origins] + [
         (label(c.svc, "cache"), c.url, False) for c in fed.caches
     ]
 
 
 def check_narrow(test: Test, fed: common.Federation, token: str) -> None:
-    """GET the test object with a token scoped to it alone, then its
-    sibling, whose name begins with the object's: the token's scope is a
+    """GET the test object with token, scoped to it alone, then its sibling.
+
+    The sibling's name begins with the object's: the token's scope is a
     path, not a prefix of names. An origin in a namespace without
-    DirectReads refuses both."""
+    DirectReads refuses both.
+    """
     caps = fed.exports["protected-a"]
     for target, url, direct in targets(fed):
         allowed = credentials.decide(ALLOW, caps, "get", direct) == ALLOW
@@ -539,10 +572,12 @@ def check_narrow(test: Test, fed: common.Federation, token: str) -> None:
 
 
 def check_scope(test: Test, fed: common.Federation, name: str) -> None:
-    """Present a token of the storage scope that check name stands for
-    (see SCOPES) at every origin: a PUT of a new object, a PUT over an
-    object, and a DELETE of one, each object new for the purpose (see
-    scope_write())."""
+    """Present a token of the storage scope of check name at every origin.
+
+    name is one of SCOPES. With the token, PUT a new object, PUT over an
+    object, and DELETE one, each object new for the purpose (see
+    scope_write()).
+    """
     flag, replaces = SCOPES[name]
     token = credentials.mint_server(
         fed, test.session.path(f"tokens/{name}"), "protected-a", scopes=(flag,)
@@ -580,11 +615,16 @@ def scope_write(
     existing: bool,
     allowed: bool,
 ) -> tuple[web.Response, str]:
-    """Send method (a PUT, of new bytes, or a DELETE) for rel in
-    /protected-a straight to origin with token, putting an object there
-    first if existing: the answer, and what is wrong with it. It must
-    succeed if allowed, and leave the new bytes, or for a DELETE nothing;
-    otherwise it must be refused, and leave what was there."""
+    """Send method for rel in /protected-a straight to origin with token.
+
+    method is a PUT, of new bytes, or a DELETE. If existing, put an
+    object there first. The request must succeed if allowed, and leave
+    the new bytes, or for a DELETE nothing; otherwise it must be refused,
+    and leave what was there.
+
+    Returns:
+        The answer, and what is wrong with it.
+    """
     old = os.urandom(4096) if existing else None
     if old is not None:
         error = stores.seed(
@@ -613,9 +653,12 @@ def scope_problem(
     allowed: bool,
     want: Optional[bytes],
 ) -> str:
-    """What is wrong with how origin answered a write of rel in
-    /protected-a: it must have succeeded if allowed, and otherwise been
-    refused; either way, the store must then hold want (None: nothing)."""
+    """Return what is wrong with how origin answered a write of rel.
+
+    The write, in /protected-a, must have succeeded if allowed, and
+    otherwise been refused; either way, the store must then hold want
+    (None: nothing).
+    """
     problems: list[str] = []
     if allowed and not answer.ok:
         problems.append("expected 2xx")
@@ -640,9 +683,11 @@ def scope_problem(
 
 
 def climbing(start: str, levels: int, rest: str) -> list[str]:
-    """Paths that begin in namespace start, step up levels times, in each
-    spelling of STEPS, then go down rest; and one whose steps end in an
-    encoded slash."""
+    """Return paths that climb out of namespace start, then go down rest.
+
+    They step up levels times, one in each spelling of STEPS, and one
+    more in steps that end in an encoded slash.
+    """
     paths = [f"/{start}/" + "/".join([step] * levels) + f"/{rest}" for step in STEPS]
     paths.append(f"/{start}/" + "..%2f" * levels + rest)
     return paths
@@ -653,7 +698,7 @@ Climb = tuple[str, Optional[str], frozenset[bytes]]
 
 
 def signing_keys(fed: common.Federation) -> dict[str, bytes]:
-    """Each origin's signing key, by its file name."""
+    """Return each origin's signing key, by its file name."""
     keys: dict[str, bytes] = {}
     for origin in fed.origins:
         path = common.signing_key(f"issuer-keys/{origin.svc}")
@@ -665,8 +710,10 @@ def signing_keys(fed: common.Federation) -> dict[str, bytes]:
 def traversal_climbs(
     test: Test, fed: common.Federation, sentinel: str, sentinels: frozenset[bytes]
 ) -> dict[str, list[Climb]]:
-    """The climbs of the traversal check, by what they climb toward, from
-    each exported namespace, with its `server` token (none for /public):
+    """Return the traversal check's climbs, by what they climb toward.
+
+    They climb from each exported namespace, with its `server` token
+    (none for /public), toward:
 
       namespace   another protected namespace's test object, where its
                   storage is not the start's own (unlike a pstore's
@@ -677,7 +724,8 @@ def traversal_climbs(
                   /fed/issuer-keys, where an origin keeps its store in
                   its own filesystem (at /data)
 
-    The symlink climbs are symlink_climbs()'s."""
+    The symlink climbs are symlink_climbs()'s.
+    """
     tokens = {
         ns: None if ns == "public" else test.setup_tokens[ns] for ns in test.session.namespaces
     }
@@ -704,14 +752,20 @@ def traversal_climbs(
 def symlink_climbs(
     test: Test, fed: common.Federation, sentinel: str, sentinels: frozenset[bytes]
 ) -> tuple[list[Climb], list[str]]:
-    """The climbs of the traversal check that are symbolic links, made in
-    each store on disk, in the first exported protected namespace's
-    storage, under data/auth/: one to sentinel, beside the exports'
-    storage, by a relative path, and one to each origin's signing key, by
-    the absolute path its container sees. A backend that follows links
-    would serve what they point to (Pelican's posixv2 refuses one that
-    leaves the export; XRootD's posix follows it). The climbs, each with
-    the namespace's `server` token, and the links made."""
+    """Make the traversal check's climbs that are symbolic links.
+
+    The links are made in each store on disk, in the first exported
+    protected namespace's storage, under data/auth/: one to sentinel,
+    beside the exports' storage, by a relative path, and one to each
+    origin's signing key, by the absolute path its container sees. A
+    backend that follows links would serve what they point to (Pelican's
+    posixv2 refuses one that leaves the export; XRootD's posix follows
+    it).
+
+    Returns:
+        The climbs, each with the namespace's `server` token, and the
+        links made.
+    """
     start = next((ns for ns in PROTECTED if ns in test.session.namespaces), None)
     disk = [o for o in stores.unique(fed.origins) if not o.pstore]
     if start is None or not disk:
@@ -737,10 +791,12 @@ def symlink_climbs(
 
 
 def check_traversal(test: Test, fed: common.Federation) -> None:
-    """Send each climb of traversal_climbs() and symlink_climbs() to every
-    origin and cache, each as is (http.client normalizes nothing): it must
-    not come back with the bytes it climbs toward. A row per server and
-    kind of climb."""
+    """Send each climb of the traversal check to every origin and cache.
+
+    The climbs are traversal_climbs()'s and symlink_climbs()'s, each sent
+    as is (http.client normalizes nothing). Each must not come back with
+    the bytes it climbs toward. A row per server and kind of climb.
+    """
     sentinel = f"traversal-{test.run}"
     written: dict[str, bytes] = {}
     links: list[str] = []
@@ -785,15 +841,17 @@ def check_traversal(test: Test, fed: common.Federation) -> None:
 
 
 def check_hints(test: Test, fed: common.Federation) -> None:
-    """GET the test object at each V2 cache, in each protected namespace,
-    with no token. The refusal must carry what the director's redirect
+    """GET the test object at each V2 cache in each protected namespace.
+
+    Send no token. The refusal must carry what the director's redirect
     does: X-Pelican-Namespace, naming the namespace and that it takes a
     token, and X-Pelican-Authorization, naming its issuer (see
     director.hints()). A client that named the cache itself
     (Client.PreferredCaches) has heard neither from a director, and has
     nowhere else to learn where to get a token (Pelican's
     local_cache/persistent_cache_api.go, on its main). An XRootD cache
-    sends none, and is passed over."""
+    sends none, and is passed over.
+    """
     for cache in fed.caches:
         target = label(cache.svc, "cache")
         for namespace in (ns for ns in PROTECTED if ns in fed.exports):
@@ -832,11 +890,13 @@ def check_hints(test: Test, fed: common.Federation) -> None:
 
 
 def check_audience(test: Test, fed: common.Federation) -> None:
-    """GET the test object, and PUT a new one, at every origin in
-    /protected-a with a token like `server`'s but for OTHER_AUDIENCE: each
-    must be refused, and the PUT store nothing. Where the origins take no
-    direct clients, they refuse everything direct anyway, so the rows are
-    skipped."""
+    """GET the test object, and PUT a new one, at every origin.
+
+    Each request is in /protected-a, with a token like `server`'s but for
+    OTHER_AUDIENCE: each must be refused, and the PUT store nothing.
+    Where the origins take no direct clients, they refuse everything
+    direct anyway, so the rows are skipped.
+    """
     caps = fed.exports["protected-a"]
     token = credentials.mint_server(
         fed, test.session.path("tokens/audience"), "protected-a", audience=OTHER_AUDIENCE
@@ -876,11 +936,13 @@ QUERY_FORMS = {"bare": "{}", "bearer": "Bearer {}"}
 
 
 def check_query_token(test: Test, fed: common.Federation) -> None:
-    """GET the test object in /protected-a at every origin and cache with
-    the `server` token, then the `unknown` one, in the authz query
-    parameter, in each of QUERY_FORMS: the first must get the object,
+    """GET the test object at every server, with a token in the authz query.
+
+    The tokens are the `server` one, then the `unknown` one, in
+    /protected-a, in each of QUERY_FORMS: the first must get the object,
     and the second be refused. An origin that takes no direct clients
-    must refuse both."""
+    must refuse both.
+    """
     caps = fed.exports["protected-a"]
     creds = {name: credentials.BY_NAME[name] for name in ("server", "unknown")}
     for target, url, direct in targets(fed):
@@ -916,12 +978,22 @@ def raw_token(
     head: Optional[Mapping[str, Any]] = None,
     secret: Optional[bytes] = None,
 ) -> str:
-    """A token like `server`'s for /protected-a, as
-    credentials.server_claims() has it, minted now and signed with the
-    origins' key under test.header; but with each of times (`exp`, `iat`,
-    or `nbf`) that many seconds from now, the claims in drop left out,
-    those in extra set, and header head instead. It is signed as the
-    header's alg says: HS256 with secret, and `none` not at all."""
+    """Return a token like `server`'s for /protected-a, but altered.
+
+    Its claims are as credentials.server_claims() has them, minted now.
+    It is signed with the origins' key, as its header's alg says: HS256
+    with secret, and `none` not at all.
+
+    Args:
+        test: The test, under whose header the token is signed unless
+            head is given.
+        times: Each of `exp`, `iat`, or `nbf` to set, in seconds from
+            now.
+        drop: The claims to leave out.
+        extra: The claims to set.
+        head: The header to sign under instead.
+        secret: The key for HS256.
+    """
     fed = test.session.fed
     claims = credentials.server_claims(fed, "protected-a")
     now = int(time.time())
@@ -936,9 +1008,12 @@ def raw_token(
 
 
 def read_problem(answer: web.Response, allowed: bool, data: bytes, why: str = "") -> str:
-    """What is wrong with answer to a GET of an object whose bytes are
-    data: if allowed, it must serve them; otherwise it must be refused (401
-    or 403), without them, because of why."""
+    """Return what is wrong with answer to a GET of an object.
+
+    The object's bytes are data. If allowed, the answer must serve them;
+    otherwise it must be refused (401 or 403), without them, because of
+    why.
+    """
     if allowed:
         if answer.status != 200:
             return "expected 200"
@@ -949,10 +1024,14 @@ def read_problem(answer: web.Response, allowed: bool, data: bytes, why: str = ""
 
 
 def read_either(answer: web.Response, data: bytes) -> tuple[str, str]:
-    """What a server did with a token that it may take or refuse, by its
-    answer to a GET of an object whose bytes are data: `taken` (it served
-    them) or `refused` (401 or 403, without them); and what is wrong if it
-    did neither."""
+    """Return what a server did with a token that it may take or refuse.
+
+    answer is its answer to a GET of an object whose bytes are data.
+
+    Returns:
+        `taken` (it served them), `refused` (401 or 403, without them),
+        or "" (neither); and what is wrong if it did neither.
+    """
     if answer.status == 200 and answer.body == data:
         return "taken", ""
     if answer.status in (401, 403) and answer.body != data:
@@ -963,10 +1042,15 @@ def read_either(answer: web.Response, data: bytes) -> tuple[str, str]:
 def write_either(
     test: Test, origin: common.Origin, rel: str, token: str
 ) -> tuple[web.Response, str, str]:
-    """PUT new bytes to rel in /protected-a straight to origin with a token
-    that it may take or refuse: the answer; `taken` if it stored them, or
-    `refused` (401 or 403) if it stored nothing; and what is wrong if it
-    did neither."""
+    """PUT new bytes to rel in /protected-a straight to origin with token.
+
+    The origin may take the token or refuse it.
+
+    Returns:
+        The answer; `taken` if it stored them, `refused` (401 or 403) if
+        it stored nothing, or "" (neither); and what is wrong if it did
+        neither.
+    """
     new = os.urandom(4096)
     answer = web.request("PUT", stores.url(origin, "protected-a", rel), token=token, upload=new)
     if answer.ok:
@@ -989,21 +1073,29 @@ def write_either(
 IN_USE_LIFETIME = 30
 IN_USE_TIMES = tuple(range(0, 181, 30))
 # How long past its expiry a server may still take a token: native servers
-# allow 60 seconds of clock skew (see credentials.wait_until_stale()).
+# allow 60 seconds of clock skew.
 STALE_AFTER = 70
 
 
 class InUse:
-    """The expired-in-use check, which asks every server in /protected-a
-    from a thread of its own, started at once, while the suite's other
-    checks run; record() records its rows once it is done."""
+    """The expired-in-use check, which runs in a thread of its own.
+
+    The thread starts at once, and asks every server in /protected-a
+    while the suite's other checks run. record() records its rows once it
+    is done.
+
+    Attributes:
+        targets: Each server: its name in the rows, its data URL, and
+            whether a token decides there.
+        answers: What each server answered, by its name in the rows, and
+            when, in seconds past the token's expiry.
+    """
 
     def __init__(self, test: Test, fed: common.Federation):
         self.test = test
         caps = fed.exports["protected-a"]
-        # Each server: its name in the rows, its data URL, and whether a
-        # token decides there (an origin that takes no direct clients
-        # refuses everything direct).
+        # An origin that takes no direct clients refuses everything
+        # direct.
         self.targets = [
             (target, url, credentials.decide(ALLOW, caps, "get", direct) == ALLOW)
             for target, url, direct in targets(fed)
@@ -1011,8 +1103,6 @@ class InUse:
         claims = credentials.server_claims(fed, "protected-a", lifetime=IN_USE_LIFETIME)
         self.minted, self.expiry = int(claims["iat"]), int(claims["exp"])
         self.token = jwt.encode(test.header, claims, key=fed.origin_key)
-        # What each server answered, by its name in the rows, and when, in
-        # seconds past the token's expiry.
         self.answers: dict[str, list[tuple[int, web.Response]]] = {
             target: [] for target, _, _ in self.targets
         }
@@ -1020,8 +1110,10 @@ class InUse:
         self.thread.start()
 
     def ask(self) -> None:
-        """GET the test object at each server where a token decides, at
-        each of IN_USE_TIMES."""
+        """GET the test object at each server where a token decides.
+
+        Ask at each of IN_USE_TIMES.
+        """
         for offset in IN_USE_TIMES:
             delay = self.minted + offset - time.time()
             if delay > 0:
@@ -1035,10 +1127,12 @@ class InUse:
                     self.answers[target].append((past, answer))
 
     def record(self) -> None:
-        """Wait for the thread, then record a row per server: it must take
-        the token before its expiry, and refuse it from STALE_AFTER seconds
-        past it on; in between, either. The note lists what it answered,
-        and when."""
+        """Wait for the thread, then record a row per server.
+
+        Each server must take the token before its expiry, and refuse it
+        from STALE_AFTER seconds past it on; in between, either. The note
+        lists what it answered, and when.
+        """
         self.thread.join()
         data = self.test.object_bytes["protected-a"]
         for target, _, decides in self.targets:
@@ -1088,9 +1182,11 @@ TIME_CASES: tuple[tuple[str, dict[str, int], bool], ...] = (
 
 
 def check_time_claims(test: Test, fed: common.Federation) -> None:
-    """GET the test object in /protected-a at every origin and cache with
-    each of TIME_CASES's tokens, minted afresh for each request, since a
-    V2 cache remembers a token it refused for 30 seconds."""
+    """GET the test object with each of TIME_CASES's tokens at every server.
+
+    The requests are in /protected-a, each with a token minted afresh,
+    since a V2 cache remembers a token it refused for 30 seconds.
+    """
     caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
     for target, url, direct in targets(fed):
@@ -1118,10 +1214,15 @@ def check_time_claims(test: Test, fed: common.Federation) -> None:
 def malformed_tokens(
     test: Test, fed: common.Federation
 ) -> list[tuple[str, str, Optional[bool]]]:
-    """The malformed-claims check's tokens, each like `server`'s for
-    /protected-a but for one thing: its row's name, the token, and whether
-    a server must take it where a token decides (None: it may or may
-    not, as for a `wlcg.ver` the profile does not define)."""
+    """Return the malformed-claims check's tokens.
+
+    Each is like `server`'s for /protected-a but for one thing.
+
+    Returns:
+        For each, its row's name, the token, and whether a server must
+        take it where a token decides (None: it may or may not, as for a
+        `wlcg.ver` the profile does not define).
+    """
     head = test.header
     no_kid = {k: v for k, v in head.items() if k != "kid"}
     # The origins' public key, as a JWK: what an attacker would key HS256
@@ -1142,9 +1243,11 @@ def malformed_tokens(
 
 
 def check_malformed(test: Test, fed: common.Federation) -> None:
-    """GET the test object in /protected-a at every origin and cache with
-    each of malformed_tokens(). The note of a token that may be taken or
-    refused says which."""
+    """GET the test object at every server with each of malformed_tokens().
+
+    The requests are in /protected-a. The note of a token that may be
+    taken or refused says which.
+    """
     caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
     tokens = malformed_tokens(test, fed)
@@ -1170,19 +1273,25 @@ def check_malformed(test: Test, fed: common.Federation) -> None:
 
 
 def audience_of(origin: common.Origin) -> str:
-    """The audience that origin takes as its own: Origin.Url, the scheme,
-    host, and port of its data URL (for an XRootD origin, XRootD's)."""
+    """Return the audience that origin takes as its own (Origin.Url).
+
+    It is the scheme, host, and port of its data URL (for an XRootD
+    origin, XRootD's).
+    """
     parts = urlsplit(origin.url)
     return f"{parts.scheme}://{parts.netloc}"
 
 
 def check_audience_specific(test: Test, fed: common.Federation) -> None:
-    """GET the test object at every origin in /protected-a with a token
-    like `server`'s but for the first origin's audience alone, which only
-    it may take; and with one for the WLCG "any" audience and
-    OTHER_AUDIENCE, which every origin must take. Only the origins are
-    asked, as in check_audience(); and where they take no direct clients,
-    they refuse everything direct anyway, so the rows are skipped."""
+    """GET the test object at every origin with tokens that list audiences.
+
+    In /protected-a, the tokens are like `server`'s but for the first
+    origin's audience alone, which only it may take; and for the WLCG
+    "any" audience and OTHER_AUDIENCE, which every origin must take. Only
+    the origins are asked, as in check_audience(); and where they take no
+    direct clients, they refuse everything direct anyway, so the rows are
+    skipped.
+    """
     caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
     first = fed.origins[0]
@@ -1220,13 +1329,17 @@ def check_audience_specific(test: Test, fed: common.Federation) -> None:
 
 
 def check_scitokens(test: Test, fed: common.Federation) -> None:
-    """GET the test object in /protected-a at every origin and cache, and
-    PUT a new object at every origin, with a token like `server`'s but of
-    the SciTokens profile (`pelican token create --profile scitokens2`,
-    with read:/ and write:/), which each may take or refuse: but wholly
-    either way, serving the object or none of it, and storing the PUT's
-    bytes or nothing. Where the namespace would refuse the request
-    whatever the token, it must be refused."""
+    """Present a token of the SciTokens profile at every origin and cache.
+
+    The token is like `server`'s, but of that profile
+    (`pelican token create --profile scitokens2`, with read:/ and
+    write:/). With it, GET the test object in /protected-a at every
+    origin and cache, and PUT a new object at every origin. Each may take
+    the token or refuse it: but wholly either way, serving the object or
+    none of it, and storing the PUT's bytes or nothing. Where the
+    namespace would refuse the request whatever the token, it must be
+    refused.
+    """
     caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
     token = credentials.mint_server(
@@ -1278,8 +1391,12 @@ TokenForm = tuple[str, dict[str, str], list[tuple[str, str]], str]
 
 
 def token_forms(server: str, unknown: str) -> list[TokenForm]:
-    """The token-lists check's ways of presenting tokens, with the `server`
-    token, which must be taken, and the `unknown` one, which must not."""
+    """Return the token-lists check's ways of presenting tokens.
+
+    Args:
+        server: The `server` token, which must be taken.
+        unknown: The `unknown` token, which must not.
+    """
     many = [f"Bearer {unknown}"] * MAX_TOKENS + [f"Bearer {server}"]
     return [
         ("access-token", {}, [("access_token", server)], ALLOW),
@@ -1292,9 +1409,11 @@ def token_forms(server: str, unknown: str) -> list[TokenForm]:
 
 
 def check_token_lists(test: Test, fed: common.Federation) -> None:
-    """GET the test object in /protected-a at every native origin, with
-    tokens presented in each of token_forms(). An XRootD origin is passed
-    over."""
+    """Present tokens in each of token_forms() at every native origin.
+
+    Each GETs the test object in /protected-a. An XRootD origin is passed
+    over.
+    """
     caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
     server = test.token(credentials.BY_NAME["server"], "protected-a", "get") or ""
@@ -1335,10 +1454,12 @@ HINT_HEADERS = ("X-Pelican-Namespace", "X-Pelican-Authorization", "X-Pelican-Tok
 
 
 def hint_problems(answer: web.Response, standalone: bool, issuer: str) -> list[str]:
-    """What is wrong with the hints of an origin's answer in /protected-a,
-    whose issuer is issuer: a standalone origin must send each of
-    HINT_HEADERS, saying that the namespace takes a token and naming its
-    issuer; a federated one, none."""
+    """Return what is wrong with the hints of an origin's answer.
+
+    The answer is in /protected-a, whose issuer is issuer. A standalone
+    origin must send each of HINT_HEADERS, saying that the namespace takes
+    a token and naming its issuer; a federated one, none.
+    """
     sent = [h for h in HINT_HEADERS if answer.header(h)]
     if not standalone:
         return [f"a federated origin sent {', '.join(sent)}"] if sent else []
@@ -1363,13 +1484,16 @@ def hint_problems(answer: web.Response, standalone: bool, issuer: str) -> list[s
 
 
 def check_standalone(test: Test, fed: common.Federation) -> None:
-    """GET the test object in /protected-a at every native origin with no
-    token, `unknown`'s, and `server`'s, and a missing object with
-    `server`'s: the first must get 401; the second 403 from a standalone
-    origin and 401 from a federated one; the third the object; and the last
-    404. Each answer's hints must be as hint_problems() says. An XRootD
-    origin is passed over, and so is an origin that takes no direct
-    clients, which refuses every request alike."""
+    """GET the test object, and a missing one, at every native origin.
+
+    Ask for the test object, in /protected-a, with no token, `unknown`'s,
+    and `server`'s, and for the missing one with `server`'s: the first
+    must get 401; the second 403 from a standalone origin and 401 from a
+    federated one; the third the object; and the last 404. Each answer's
+    hints must be as hint_problems() says. An XRootD origin is passed
+    over, and so is an origin that takes no direct clients, which refuses
+    every request alike.
+    """
     caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
     issuer = fed.issuer_of("protected-a")
@@ -1416,9 +1540,14 @@ def check_standalone(test: Test, fed: common.Federation) -> None:
 
 
 def web_servers(fed: common.Federation) -> list[tuple[str, str, str]]:
-    """Every origin's and cache's web API, each once: its server's name in
-    the rows, its web URL, and the directory (under framework/var) of its
-    keys. In the `tiny` topology, one server is both."""
+    """Return every origin's and cache's web API, each once.
+
+    In the `tiny` topology, one server is both.
+
+    Returns:
+        For each, its server's name in the rows, its web URL, and the
+        directory (under framework/var) of its keys.
+    """
     found: dict[str, tuple[str, str]] = {}
     for origin in fed.origins:
         found.setdefault(
@@ -1430,11 +1559,13 @@ def web_servers(fed: common.Federation) -> list[tuple[str, str, str]]:
 
 
 def check_web_token_strict(test: Test, fed: common.Federation) -> None:
-    """Ask each server's web API who is logged in (/whoami), with a token
-    that it takes as its admin's (credentials.mint_admin()), which it must
-    take; then with the same token, but not valid for another 20 seconds,
-    and expired 5 seconds ago, each of which it must refuse (401) or take
-    for no one."""
+    """Ask each server's web API who is logged in (/whoami).
+
+    Ask first with a token that it takes as its admin's
+    (credentials.mint_admin()), which it must take; then with the same
+    token, but not valid for another 20 seconds, and expired 5 seconds
+    ago, each of which it must refuse (401) or take for no one.
+    """
     for target, web_url, key_dir in web_servers(fed):
         key = common.signing_key(key_dir)
         issuer = credentials.local_issuer(fed, web_url)
@@ -1475,20 +1606,26 @@ def check_web_token_strict(test: Test, fed: common.Federation) -> None:
 
 
 def climbs_from(scope: str, rest: str) -> list[str]:
-    """Paths in /protected-a that begin in collection scope (relative to
-    the namespace), step up once, and go down rest: climbing()'s, but for
-    %252e%252e, which a server decodes once to a name inside scope."""
+    """Return paths that climb out of collection scope, then go down rest.
+
+    scope is in /protected-a, relative to it. The paths begin in scope,
+    step up once, and go down rest: climbing()'s, but for %252e%252e,
+    which a server decodes once to a name inside scope.
+    """
     return [p for p in climbing(f"protected-a/{scope}", 1, rest) if "%252e" not in p]
 
 
 def check_narrow_climb(test: Test, fed: common.Federation) -> None:
-    """With a token for collection data/auth/<run>-narrow in /protected-a
-    alone, climb out of it (see climbs_from()) to its sibling: GET the test
-    object at every server, and at every origin where the namespace takes
-    writes, PUT a new object, and DELETE one put there for the purpose.
-    Every request must be refused (4xx), without the object, and change
+    """With a narrow token, climb out of its collection to its sibling.
+
+    The token is for collection data/auth/<run>-narrow in /protected-a
+    alone, and the climbs are climbs_from()'s. GET the test object at
+    every server, and at every origin where the namespace takes writes,
+    PUT a new object, and DELETE one put there for the purpose. Every
+    request must be refused (4xx), without the object, and change
     nothing. Each cache must first serve the test object with the
-    server's token, so that it refuses an object it holds."""
+    server's token, so that it refuses an object it holds.
+    """
     caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
     scope = f"data/auth/{test.run}-narrow"
@@ -1532,10 +1669,12 @@ def climb(
     scope: str,
     token: str,
 ) -> None:
-    """Send op (get, put, or delete) by each of climbs_from() scope to the
-    server at url, origin if it is one, with token, a token for scope
-    alone; and record a row. A GET climbs to the test object; a PUT to a
-    new object; and a DELETE to one put there first."""
+    """Send op (get, put, or delete) by each of climbs_from() scope.
+
+    Send it to the server at url, origin if it is one, with token, a
+    token for scope alone; and record a row. A GET climbs to the test
+    object; a PUT to a new object; and a DELETE to one put there first.
+    """
     data = test.object_bytes["protected-a"]
     setup = test.setup_tokens["protected-a"]
     name = {"get": f"{test.run}-object", "put": f"{test.run}-climbed-{target}"}.get(
@@ -1596,9 +1735,13 @@ NESTED_TRIES, NESTED_INTERVAL = 8, 15
 
 
 def nested_export(fed: common.Federation) -> Optional[tuple[common.Owner, common.Export]]:
-    """Another owner's export that a token protects, inside a namespace
-    of the origins that anyone may read, and its owner; None if there is
-    none."""
+    """Return another owner's export that a token protects, and its owner.
+
+    The export is inside a namespace of the origins that anyone may read.
+
+    Returns:
+        The owner and the export, or None if there is none.
+    """
     public = [ns for ns, caps in fed.exports.items() if "PublicReads" in caps]
     for owner in fed.owners:
         for export in owner.exports:
@@ -1609,8 +1752,11 @@ def nested_export(fed: common.Federation) -> Optional[tuple[common.Owner, common
 
 
 def owner_read(url: str, token: str, data: bytes) -> web.Response:
-    """GET url with token until it serves data, NESTED_TRIES times at most;
-    the last answer."""
+    """GET url with token until it serves data, NESTED_TRIES times at most.
+
+    Returns:
+        The last answer.
+    """
     answer = web.Response(None)
     for attempt in range(NESTED_TRIES):
         if attempt:
@@ -1622,12 +1768,15 @@ def owner_read(url: str, token: str, data: bytes) -> web.Response:
 
 
 def check_nested(test: Test, fed: common.Federation) -> None:
-    """Put an object in the nested export (nested_export()) at its owner's
-    origin, and have the owner read it through each cache, so that each
-    holds it; then GET it with no token, and with one that names the
-    prefix's issuer but is signed by test-keys/unknown.pem, at each cache,
-    at the owner's origin, and at each director's bare path, following its
-    redirect. Each must be refused (401 or 403), without the object."""
+    """Put an object in the nested export (nested_export()), then GET it.
+
+    Put it at its owner's origin, and have the owner read it through each
+    cache, so that each holds it; then GET it with no token, and with one
+    that names the prefix's issuer but is signed by test-keys/unknown.pem,
+    at each cache, at the owner's origin, and at each director's bare
+    path, following its redirect. Each must be refused (401 or 403),
+    without the object.
+    """
     found = nested_export(fed)
     if found is None:
         why = "there is no protected prefix inside a public one (-p topo-multi-owner)"
@@ -1702,8 +1851,11 @@ def check_nested(test: Test, fed: common.Federation) -> None:
 def nested_token(
     test: Test, export: common.Export, name: str, key: str, scopes: tuple[str, ...]
 ) -> str:
-    """A token of scopes for the whole of export, naming its issuer, signed
-    with key (a PEM file under framework/var), and kept as name."""
+    """Return a token of scopes for the whole of export, naming its issuer.
+
+    It is signed with key (a PEM file under framework/var), and kept as
+    name.
+    """
     out = test.session.path(f"tokens/nested.{name}")
     credentials.mint(
         test.session.fed,
@@ -1720,16 +1872,22 @@ def nested_token(
 
 
 def skip(_fed: common.Federation) -> Optional[str]:
-    """Never: every shape exports a namespace that a token protects."""
+    """Return why there is nothing to test, or None if there is something.
+
+    There is always something: every shape exports a namespace that a
+    token protects.
+    """
     return None
 
 
 def runnable(fed: common.Federation, selected: list[str], report: Report) -> list[Credential]:
-    """The selected credentials, but for those that can test nothing in
-    this shape, which are recorded as skipped. `server` goes first, so
-    that each cache holds the test object before anything is refused: a
-    stored object must be protected too. `expired` goes last, since it
-    must wait out every server's clock skew."""
+    """Return the selected credentials that can test something in the shape.
+
+    Record the others as skipped. `server` goes first, so that each cache
+    holds the test object before anything is refused: a stored object
+    must be protected too. `expired` goes last, since it must wait out
+    every server's clock skew.
+    """
     found: list[Credential] = []
     for cred in (c for c in CREDENTIALS if c.name in selected):
         why = credentials.moot(fed, cred)
@@ -1743,11 +1901,14 @@ def runnable(fed: common.Federation, selected: list[str], report: Report) -> lis
 
 
 def put_test_objects(test: Test, fed: common.Federation, narrow: bool) -> None:
-    """Put each namespace's test object at every origin, in each namespace
-    with storage of its own (see stores.storage_namespaces()), with the
-    `server` credential; and for `narrow`, its sibling in /protected-a.
-    Earlier runs' objects come out first. The federation suite has
-    already waited for each cache to accept the server's token."""
+    """Put each namespace's test object at every origin.
+
+    Put it in each namespace with storage of its own (see
+    stores.storage_namespaces()), with the `server` credential; and for
+    `narrow`, the object's sibling in /protected-a. Earlier runs' objects
+    come out first. The federation suite has already waited for each
+    cache to accept the server's token.
+    """
     for origin in fed.origins:
         if not origin.pstore:
             for namespace in fed.exports:
@@ -1781,8 +1942,10 @@ def put_test_objects(test: Test, fed: common.Federation, narrow: bool) -> None:
 
 
 def cache_sibling(test: Test, fed: common.Federation) -> None:
-    """GET the test object's sibling through each cache with the server's
-    token, so that `narrow-out` asks each cache for an object it holds."""
+    """GET the object's sibling through each cache, with the server's token.
+
+    That way, `narrow-out` asks each cache for an object it holds.
+    """
     for cache in fed.caches:
         answer = web.request(
             "GET",
@@ -1817,15 +1980,18 @@ def check_credential(test: Test, fed: common.Federation, cred: Credential) -> No
 
 
 def narrow_token(test: Test, fed: common.Federation) -> str:
-    """A token like `server`'s, but for the test object alone."""
+    """Return a token like `server`'s, but for the test object alone."""
     path = test.session.path("tokens/narrow")
     return credentials.mint_server(fed, path, "protected-a", scope_path=f"/{test.object}")
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Check the keys, and start `expired-in-use`; then present each
+    """Run the selected checks.
+
+    Check the keys, and start `expired-in-use`; then present each
     credential, then run the other checks, `traversal` last; then record
-    `expired-in-use`'s rows."""
+    `expired-in-use`'s rows.
+    """
     report = results.report
     fed = session.fed
     creds = runnable(fed, selected, report)

@@ -1,13 +1,14 @@
-"""WebDAV methods at the origins, and how each is authorized, beyond the
-GET, HEAD, PUT, DELETE, and PROPFIND that the other suites send.
-Pelican's native origin serves every method through
+"""WebDAV methods at the origins, and how each is authorized.
+
+These are the methods beyond the GET, HEAD, PUT, DELETE, and PROPFIND that
+the other suites send. Pelican's native origin serves every method through
 golang.org/x/net/webdav, behind its own checks of a request's token
-(getActionFromMethod, which maps POST, MKCOL, LOCK, UNLOCK, PROPPATCH,
-and COPY to storage.create, and MOVE to storage.modify) and of a COPY's
-or MOVE's Destination (checkCopyMoveDestination), both in
-origin_serve/handlers.go. The scenarios that send those methods ask
-each native origin, and skip an XRootD origin; `symlink-writes` and
-`stored-html` ask every origin, so that an XRootD origin is a control.
+(getActionFromMethod, which maps POST, MKCOL, LOCK, UNLOCK, PROPPATCH, and
+COPY to storage.create, and MOVE to storage.modify) and of a COPY's or
+MOVE's Destination (checkCopyMoveDestination), both in
+origin_serve/handlers.go. The scenarios that send those methods ask each
+native origin, and skip an XRootD origin; `symlink-writes` and `stored-html`
+ask every origin, so that an XRootD origin is a control.
 
   post-create-only       POST, which x/net serves as GET, with a token
                          of storage.create or storage.read alone:
@@ -138,11 +139,11 @@ PROPPATCH = (
 VERBS = ("OPTIONS", "GET", "HEAD", "PUT", "DELETE", "PROPFIND", "MKCOL", "COPY", "MOVE")
 
 # The methods a cache serves for no one: it serves objects and listings
-# (GET, HEAD, and PROPFIND), and relays a PUT or a DELETE to an origin
-# (the blocks suite's `write-through`), and that is all a V2 cache
-# routes, so Gin answers the rest 405 (HandleMethodNotAllowed in
-# Pelican's web_ui/ui.go). Each is sent with the `server` token, which
-# would let an origin honor it, so a cache that relayed one would show.
+# (GET, HEAD, and PROPFIND), and relays a PUT or a DELETE to an origin,
+# and that is all a V2 cache routes, so Gin answers the rest 405
+# (HandleMethodNotAllowed in Pelican's web_ui/ui.go). Each is sent with
+# the `server` token, which would let an origin honor it, so a cache
+# that relayed one would show.
 CACHE_METHODS = ("POST", "MKCOL", "COPY", "MOVE", "PROPPATCH", "LOCK")
 
 # Objects a browser would run script in, if it rendered them.
@@ -159,12 +160,15 @@ INERT_TYPES = ("application/octet-stream", "text/plain")
 
 
 class SetupError(Exception):
-    """A scenario could not put in place what it checks."""
+    """A scenario's failure to put in place what it checks."""
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no /protected-a, or one that takes no
-    writes or no direct clients."""
+    """Return why there is nothing to test, or None if there is something.
+
+    There is nothing without /protected-a, or with one that takes no
+    writes or no direct clients.
+    """
     caps = fed.exports.get(NAMESPACE)
     if caps is None:
         return f"this shape does not export /{NAMESPACE}"
@@ -176,20 +180,28 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 
 def no_landings() -> list[tuple[common.Origin, str, str]]:
-    """Test.landings, to begin with."""
+    """Return Test.landings, to begin with."""
     return []
 
 
 @dataclass
 class Test:
-    """What every scenario needs: the federation, its tokens for
-    /protected-a, and the paths outside the run's collection that a
-    scenario's requests could have written, to remove afterward."""
+    """What every scenario needs: the federation, tokens, and landings.
+
+    Attributes:
+        token: The `server` token for /protected-a: read, create, and
+            modify.
+        create_token: A token for /protected-a of storage.create alone.
+        read_token: A token for /protected-a of storage.read alone.
+        landings: The paths outside the run's collection that a
+            scenario's requests could have written, to remove afterward:
+            each origin, namespace, and path within it.
+    """
 
     session: Session
-    token: str  # read, create, and modify
-    create_token: str  # storage.create alone
-    read_token: str  # storage.read alone
+    token: str
+    create_token: str
+    read_token: str
     landings: list[tuple[common.Origin, str, str]] = field(default_factory=no_landings)
 
     @property
@@ -198,19 +210,23 @@ class Test:
         return self.session.fed
 
     def base(self, origin: common.Origin) -> str:
-        """origin's collection of the run, in /protected-a."""
+        """Return origin's collection of the run, in /protected-a."""
         return f"data/webdav/{self.session.run}/{origin.svc}"
 
     def native(self) -> Optional[str]:
-        """Why the origins are not Pelican's native origins, if they are
-        not."""
+        """Return why the origins are not Pelican's native ones, or None."""
         if self.fed.native_origins:
             return None
         return f"XRootD serves the origins ({self.fed.origin_variant}), not Pelican"
 
     def seed(self, origin: common.Origin, rel: str) -> bytes:
-        """Put new bytes at rel in /protected-a at origin, with the
-        `server` token, and return them."""
+        """Put new bytes at rel in /protected-a at origin, and return them.
+
+        Put them with the `server` token.
+
+        Raises:
+            SetupError: They could not be put in place.
+        """
         data = os.urandom(4096)
         error = stores.put(origin, NAMESPACE, rel, data, self.token)
         if error:
@@ -218,16 +234,20 @@ class Test:
         return data
 
     def storage_token(self, origin: common.Origin, namespace: str) -> Optional[str]:
-        """A `server` token for the namespace whose storage namespace reads
-        at origin (none for /public, which has no issuer)."""
+        """Return a `server` token that reads namespace's storage at origin.
+
+        Return None for /public, which has no issuer.
+        """
         storage = origin.storage_namespace(namespace)
         return None if storage == "public" else self.session.token(storage)
 
     def stored(
         self, origin: common.Origin, namespace: str, rel: str, want: Optional[bytes], what: str
     ) -> Optional[str]:
-        """What is wrong with what origin holds at rel in namespace, which
-        should be want (None: nothing), calling it what."""
+        """Return what is wrong with what origin holds at rel in namespace.
+
+        It should be want (None: nothing); the answer calls it what.
+        """
         try:
             have = stores.held(origin, namespace, rel, self.storage_token(origin, namespace))
         except stores.Unreadable as e:
@@ -241,9 +261,17 @@ class Test:
         return None
 
     def collection(self, origin: common.Origin, rel: str) -> Optional[bool]:
-        """Whether rel in /protected-a at origin is a collection (False: an
-        object), by a PROPFIND of Depth 0, or None if it is not there;
-        stores.Unreadable if the origin does not say."""
+        """Return whether rel in /protected-a at origin is a collection.
+
+        Ask by a PROPFIND of Depth 0.
+
+        Returns:
+            True for a collection, False for an object, or None if nothing
+            is there.
+
+        Raises:
+            stores.Unreadable: The origin does not say.
+        """
         url = at(origin, rel)
         answer = webdav.propfind(url, "0", self.token)
         if answer.status == 404:
@@ -259,8 +287,11 @@ class Test:
         return entries[0].collection
 
     def made(self, origin: common.Origin, rel: str, want: bool, what: str) -> Optional[str]:
-        """What is wrong with what origin holds at rel in /protected-a, which
-        should be a collection if want, and otherwise nothing."""
+        """Return what is wrong with what origin holds at rel.
+
+        What it holds at rel in /protected-a should be a collection if
+        want, and otherwise nothing.
+        """
         try:
             kind = self.collection(origin, rel)
         except stores.Unreadable as e:
@@ -274,7 +305,11 @@ class Test:
         return None
 
     def make_dirs(self, origin: common.Origin, *rels: str) -> None:
-        """Make each collection of rels in /protected-a at origin."""
+        """Make each collection of rels in /protected-a at origin.
+
+        Raises:
+            SetupError: One could not be made.
+        """
         for rel in rels:
             errors = stores.make_dirs([origin], NAMESPACE, rel, self.token)
             if errors:
@@ -282,13 +317,15 @@ class Test:
 
 
 def at(origin: common.Origin, rel: str) -> str:
-    """The URL of rel in /protected-a at origin."""
+    """Return the URL of rel in /protected-a at origin."""
     return stores.url(origin, NAMESPACE, rel)
 
 
 class Findings:
-    """What a scenario found wrong at each server (an origin, or for
-    `cache-methods` a cache), and what it noted."""
+    """What a scenario found wrong at each server, and what it noted.
+
+    A server is an origin, or for `cache-methods` a cache.
+    """
 
     def __init__(self) -> None:
         self.problems: list[str] = []
@@ -305,7 +342,11 @@ class Findings:
         self.notes.append(f"{server.svc}: {note}")
 
     def result(self, passed: str) -> tuple[str, str]:
-        """FAIL with the problems, or PASS with passed and the notes."""
+        """Return the scenario's status and note.
+
+        That is FAIL with the first problem, or PASS with passed and the
+        notes.
+        """
         if self.problems:
             return FAIL, first(self.problems)
         return PASS, "; ".join([passed, *self.notes])
@@ -316,13 +357,16 @@ class Findings:
 
 
 def post_create_only(test: Test) -> tuple[str, str]:
-    """POST an object straight to each native origin, with a token of
+    """Check that POST with storage.create or storage.read alone is refused.
+
+    POST an object straight to each native origin, with a token of
     storage.create alone, then of storage.read alone: each must be
     refused, with none of the object's bytes. x/net's handler serves a
     POST as a GET (webdav.go), but Pelican authorizes POST as a create
     (getActionFromMethod), so a storage.create token, which may not
     read, gets the object; and a storage.read token is refused, since
-    a POST counts as a write, which is as it should be."""
+    a POST counts as a write, which is as it should be.
+    """
     why = test.native()
     if why:
         return SKIP, why
@@ -351,7 +395,9 @@ def post_create_only(test: Test) -> tuple[str, str]:
 
 
 def copy_move_destination(test: Test) -> tuple[str, str]:
-    """At each native origin, COPY and MOVE an object in /protected-a,
+    """Check COPY and MOVE to each kind of Destination.
+
+    At each native origin, COPY and MOVE an object in /protected-a,
     with the `server` token:
 
       within /protected-a     201 or 204, and the bytes at the
@@ -367,7 +413,8 @@ def copy_move_destination(test: Test) -> tuple[str, str]:
     x/net's handler neither cleans a Destination nor authorizes it, so
     Pelican's checkCopyMoveDestination does both (origin_serve/
     handlers.go), and leaves the last two to x/net. Pelican's own tests:
-    origin_serve/pstore_serving_test.go."""
+    origin_serve/pstore_serving_test.go.
+    """
     why = test.native()
     if why:
         return SKIP, why
@@ -460,7 +507,9 @@ def copy_move_destination(test: Test) -> tuple[str, str]:
 
 
 def copy_move_scopes(test: Test) -> tuple[str, str]:
-    """At each native origin, in /protected-a: with a storage.create
+    """Check COPY and MOVE with storage.create, and with `Overwrite: F`.
+
+    At each native origin, in /protected-a: with a storage.create
     token, a MOVE must be refused, since it removes its source; a COPY
     to a new path must succeed (201); and a COPY over an object must be
     refused, since replacing an object takes storage.modify (the WLCG
@@ -469,7 +518,8 @@ def copy_move_scopes(test: Test) -> tuple[str, str]:
     (getActionFromMethod, whose comment says COPY is purely additive).
     Then, with the `server` token, COPY and MOVE onto an object with
     `Overwrite: F` must get 412 and change nothing (RFC 4918, section
-    10.6)."""
+    10.6).
+    """
     why = test.native()
     if why:
         return SKIP, why
@@ -528,13 +578,16 @@ def copy_move_scopes(test: Test) -> tuple[str, str]:
 
 
 def mkcol(test: Test) -> tuple[str, str]:
-    """At each native origin, MKCOL in /protected-a: with a storage.read
+    """Check when MKCOL makes a collection, and when it may not.
+
+    At each native origin, MKCOL in /protected-a: with a storage.read
     token, refused, making nothing; with the `server` token, a new
     collection (201), which a PROPFIND then shows; the same again, 405,
     since it exists; and with a body, 415, making nothing (RFC 4918,
     section 9.3.1). The note says what each origin answered where a
     collection exists, which some backends answer 201 (MkdirAll, or an
-    object store's marker)."""
+    object store's marker).
+    """
     why = test.native()
     if why:
         return SKIP, why
@@ -580,8 +633,10 @@ def mkcol(test: Test) -> tuple[str, str]:
 
 
 def lock_timeout(body: bytes) -> Optional[str]:
-    """The timeout of the lock that a LOCK's answer describes, or None if
-    it names none."""
+    """Return the timeout of the lock that a LOCK's answer describes.
+
+    That is None if the answer names none.
+    """
     try:
         root = ET.fromstring(body)  # nosec B314
     except ET.ParseError:
@@ -591,14 +646,18 @@ def lock_timeout(body: bytes) -> Optional[str]:
 
 
 def bounded(timeout: Optional[str]) -> bool:
-    """Whether a lock's timeout is a number of seconds, more than none.
-    x/net writes a lock that never ends as `Second-0`."""
+    """Return whether a lock's timeout is a number of seconds, more than 0.
+
+    x/net writes a lock that never ends as `Second-0`.
+    """
     match = re.fullmatch(r"Second-(\d+)", timeout or "")
     return match is not None and int(match.group(1)) > 0
 
 
 def lock(test: Test) -> tuple[str, str]:
-    """At each native origin, with a storage.create token and no Timeout,
+    """Check that a LOCK with no Timeout is refused or bounded.
+
+    At each native origin, with a storage.create token and no Timeout,
     LOCK a new path and an existing object. Pelican doesn't use locks,
     but x/net keeps them in memory (webdav.NewMemLS() in origin_serve/
     handlers.go), forever when no Timeout is given, and makes an empty
@@ -608,7 +667,8 @@ def lock(test: Test) -> tuple[str, str]:
     and no lock token, a PUT of the new path and a DELETE of the object
     (the note says what each got), and an UNLOCK of each lock granted,
     which must succeed: otherwise the path stays locked until the origin
-    restarts."""
+    restarts.
+    """
     why = test.native()
     if why:
         return SKIP, why
@@ -618,7 +678,7 @@ def lock(test: Test) -> tuple[str, str]:
         base = test.base(origin)
         new, old = f"{base}/lock-new", f"{base}/lock-old"
         test.seed(origin, old)
-        granted: list[tuple[str, str]] = []  # each lock granted: its path, and its token
+        granted: list[tuple[str, str]] = []  # each lock granted: its URL, and its token
         statuses: list[str] = []
         for rel, what in ((new, "a new path"), (old, "an object")):
             url = at(origin, rel)
@@ -671,18 +731,27 @@ def lock(test: Test) -> tuple[str, str]:
 
 @dataclass(frozen=True)
 class Decoys:
-    """What symlink-writes's links lead to, beside the namespaces' storage
-    in a store: a file, and a directory holding one."""
+    """What symlink-writes's links lead to, beside the namespaces' storage.
 
-    file: str  # under framework/var
+    They are in a store: a file, and a directory holding one.
+
+    Attributes:
+        file: The file, under framework/var.
+        directory: The directory, under framework/var.
+        inner: The file in directory.
+        file_bytes: What file holds.
+        inner_bytes: What inner holds.
+    """
+
+    file: str
     directory: str
-    inner: str  # the file in directory
+    inner: str
     file_bytes: bytes
     inner_bytes: bytes
 
 
 def listing(directory: str) -> frozenset[str]:
-    """The names in directory, or none if it is not there."""
+    """Return the names in directory, or none if it is not there."""
     try:
         return frozenset(os.listdir(directory))
     except FileNotFoundError:
@@ -690,11 +759,16 @@ def listing(directory: str) -> frozenset[str]:
 
 
 def make_decoys(test: Test, origin: common.Origin) -> tuple[Decoys, str]:
-    """Put the decoys in origin's store, writable by any uid, so that only
-    the server can stop a write that reaches them; and the links, in the
-    run's collection in /protected-a's storage: `link-file` to the file
-    and `link-dir` to the directory, by relative paths. The decoys, and
-    the directory of the links."""
+    """Put the decoys in origin's store, and the links to them.
+
+    The decoys are writable by any uid, so that only the server can stop
+    a write that reaches them. The links are in the run's collection in
+    /protected-a's storage: `link-file` to the file and `link-dir` to the
+    directory, by relative paths.
+
+    Returns:
+        The decoys, and the directory of the links.
+    """
     stamp = test.session.run
     decoys = Decoys(
         f"{origin.store}/webdav-{stamp}-decoy",
@@ -735,8 +809,10 @@ def remove_decoys(decoys: Decoys, links: str) -> None:
 
 
 def decoys_problems(decoys: Decoys, store: str, entries: frozenset[str]) -> list[str]:
-    """What has become of the decoys, and of the store around them, which
-    held entries before."""
+    """Return what has become of the decoys, and of the store around them.
+
+    The store held entries before.
+    """
     problems: list[str] = []
     for path, data in ((decoys.file, decoys.file_bytes), (decoys.inner, decoys.inner_bytes)):
         have = common.sha256(path)
@@ -754,7 +830,9 @@ def decoys_problems(decoys: Decoys, store: str, entries: frozenset[str]) -> list
 
 
 def symlink_writes(test: Test) -> tuple[str, str]:
-    """At each origin whose store is on disk, through links in
+    """Check that a write through a link out of a store changes nothing.
+
+    At each origin whose store is on disk, through links in
     /protected-a's storage that lead out of it (make_decoys()), with the
     `server` token: a HEAD of `link-file` with `Want-Digest: crc32c`
     must report no digest of the file it leads to; a PUT and an MKCOL
@@ -766,7 +844,8 @@ def symlink_writes(test: Test) -> tuple[str, str]:
     (os.Root); an XRootD posix origin follows it; the rclone backends
     and the lab server skip links. Pelican's own tests:
     e2e_fed_tests/posixv2_security_test.go, origin_serve/
-    checksum_symlink_test.go."""
+    checksum_symlink_test.go.
+    """
     origins = [o for o in test.fed.origins if not o.pstore]
     if not origins:
         return SKIP, "a pstore origin's store is encrypted, and holds no links"
@@ -817,7 +896,9 @@ def symlink_writes(test: Test) -> tuple[str, str]:
 
 
 def stored_html(test: Test) -> tuple[str, str]:
-    """PUT an HTML page and an SVG image, each with a script, to each
+    """Check that a browser would not render a stored HTML or SVG object.
+
+    PUT an HTML page and an SVG image, each with a script, to each
     origin, and GET them back: each must come with
     `X-Content-Type-Options: nosniff`, and either a type that a browser
     does not render (INERT_TYPES) or `Content-Disposition: attachment`.
@@ -826,7 +907,8 @@ def stored_html(test: Test) -> tuple[str, str]:
     the origin's web UI, against its admin. x/net's handler types an
     object by its name's extension (http.ServeContent), and the only
     nosniff in Pelican is the V2 cache's (local_cache/
-    persistent_cache_api.go)."""
+    persistent_cache_api.go).
+    """
     found = Findings()
     for origin in test.fed.origins:
         for name, data in PAGES.items():
@@ -857,8 +939,10 @@ def stored_html(test: Test) -> tuple[str, str]:
 
 
 def propstat_problems(body: bytes) -> list[str]:
-    """What is wrong with a PROPPATCH's multistatus: each of PROPS must
-    have a propstat, and none may succeed."""
+    """Return what is wrong with a PROPPATCH's multistatus.
+
+    Each of PROPS must have a propstat, and none may succeed.
+    """
     try:
         root = ET.fromstring(body)  # nosec B314
     except ET.ParseError as e:
@@ -883,7 +967,9 @@ def propstat_problems(body: bytes) -> list[str]:
 
 
 def webdav_semantics(test: Test) -> tuple[str, str]:
-    """At each native origin:
+    """Check how native origins answer OPTIONS, PUT, PROPPATCH, and DELETE.
+
+    At each native origin:
 
       OPTIONS of the server's root, with no token: 200, with a DAV
         header, and an Allow naming VERBS (registerRootOptions in
@@ -897,7 +983,8 @@ def webdav_semantics(test: Test) -> tuple[str, str]:
 
     The DELETEs come last, at every origin, after everything else, with
     the `server` token: if one is honored, it takes /protected-a's
-    storage with it."""
+    storage with it.
+    """
     why = test.native()
     if why:
         return SKIP, why
@@ -973,9 +1060,11 @@ def webdav_semantics(test: Test) -> tuple[str, str]:
 
 
 def cache_request(method: str, url: str, token: str, destination: str) -> web.Response:
-    """Send method to url, with token, as a client that meant it would: a
-    COPY or MOVE to destination, a LOCK and a PROPPATCH with their
-    bodies, and a POST with one of its own."""
+    """Send method to url, with token, as a client that meant it would.
+
+    That is a COPY or MOVE to destination, a LOCK and a PROPPATCH with
+    their bodies, and a POST with one of its own.
+    """
     if method in ("COPY", "MOVE"):
         return copy_or_move(method, url, token, destination)
     bodies = {
@@ -992,14 +1081,17 @@ def cache_request(method: str, url: str, token: str, destination: str) -> web.Re
 
 
 def cache_methods(test: Test) -> tuple[str, str]:
-    """At each cache, each of CACHE_METHODS, with the `server` token: of an
+    """Check that each cache refuses the methods it serves for no one.
+
+    At each cache, each of CACHE_METHODS, with the `server` token: of an
     object of the run's own, which every origin holds (POST, COPY, MOVE,
     PROPPATCH, and LOCK), or of a new path beside it (MKCOL), with a COPY
     or MOVE's Destination beside it too. A V2 cache must answer 405; an
     XRootD cache must refuse (4xx or 5xx), as its HTTP server sees fit,
     which the note records. Whatever the answer, no origin's store may
     change: the object must keep its bytes, and nothing may appear at
-    the new path or the Destination."""
+    the new path or the Destination.
+    """
     caches = test.fed.caches
     if not caches:
         return SKIP, "this shape has no cache"
@@ -1044,6 +1136,8 @@ def cache_methods(test: Test) -> tuple[str, str]:
     return found.result(f"{len(caches)} cache(s)")
 
 
+# Each scenario, by name: it takes the Test, and returns its status and
+# note, or raises SetupError.
 RUN = {
     "post-create-only": post_create_only,
     "copy-move-destination": copy_move_destination,
@@ -1058,8 +1152,10 @@ RUN = {
 
 
 def clean(test: Test, when: str) -> None:
-    """Empty data/webdav in /protected-a at every store, and remove what
-    a Destination could have reached outside it."""
+    """Empty data/webdav in /protected-a at every store.
+
+    Also remove what a Destination could have reached outside it.
+    """
     fed = test.fed
     errors = stores.empty_tree_everywhere(
         fed.origins, {NAMESPACE: fed.exports[NAMESPACE]}, "data/webdav", {NAMESPACE: test.token}
@@ -1074,8 +1170,10 @@ def clean(test: Test, when: str) -> None:
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Make the run's collection at every origin, run the selected
-    scenarios, and remove what they wrote."""
+    """Run the selected scenarios, and remove what they wrote.
+
+    Make the run's collection at every origin first.
+    """
     fed = session.fed
     test = Test(
         session,

@@ -1,5 +1,6 @@
-"""The tests' own helpers, against the running federation: that each
-does what the suites that use it rely on.
+"""The tests' own helpers, against the running federation.
+
+The suite checks that each does what the suites that use it rely on.
 
   trailers  testlib.web keeps a chunked body's trailers: a V2 cache's
             X-Transfer-Status, which it sends when asked
@@ -63,12 +64,12 @@ RESTARTED = "cache-0"
 HELD_WAIT, NAMED_WAIT = 30, 150
 # How long it waits for the cache to serve the object again: a cache
 # just started refuses a namespace's tokens until it has learned the
-# namespace's issuers, as the federation suite's `caches` waits.
+# namespace's issuers.
 SERVED_WAIT = 300
 
 
 def skip(fed: common.Federation) -> Optional[str]:
-    """Why there is nothing to test: no /protected-a to read from."""
+    """Return why there is nothing to test: no /protected-a to read from."""
     if NAMESPACE not in fed.exports:
         return f"this shape does not export /{NAMESPACE}"
     return None
@@ -76,11 +77,16 @@ def skip(fed: common.Federation) -> Optional[str]:
 
 @dataclass(frozen=True)
 class Test:
-    """What every scenario needs: the federation, the object, and a read
-    token for it."""
+    """What every scenario needs: the federation, the object, and a token.
+
+    Attributes:
+        rel: The object's path, in /protected-a.
+        data: The object's contents.
+        token: A read token for the object.
+    """
 
     fed: common.Federation
-    rel: str  # the object, in /protected-a
+    rel: str
     data: bytes
     token: str
 
@@ -90,11 +96,11 @@ class Test:
         return "DirectReads" in self.fed.exports[NAMESPACE]
 
     def url(self, server_url: str) -> str:
-        """The object's URL at the server whose data URL is server_url."""
+        """Return the object's URL at server_url, a server's data URL."""
         return f"{server_url}/{NAMESPACE}/{self.rel}"
 
     def served(self, answer: web.Response) -> Optional[str]:
-        """Why answer is not the object, or None."""
+        """Return why answer is not the object, or None if it is."""
         if not answer.ok:
             return answer.describe()
         if answer.body != self.data:
@@ -103,10 +109,13 @@ class Test:
 
 
 def trailers(test: Test) -> tuple[str, str]:
-    """A GET of the object at each V2 cache, with `X-Transfer-Status:
-    true` and `TE: trailers`, must announce the trailer (`Trailer:
-    X-Transfer-Status`) and end with it, saying 200: OK; without them, no
-    trailer may come."""
+    """Check that testlib.web keeps a chunked body's trailers.
+
+    A GET of the object at each V2 cache, with `X-Transfer-Status: true`
+    and `TE: trailers`, must announce the trailer
+    (`Trailer: X-Transfer-Status`) and end with it, saying 200: OK;
+    without them, no trailer may come.
+    """
     caches = [c for c in test.fed.federated_caches if c.kind == "v2"]
     if not caches:
         return SKIP, "this shape has no federated V2 cache"
@@ -136,9 +145,15 @@ def trailers(test: Test) -> tuple[str, str]:
 
 
 def claims_problems(ours: dict[str, object], theirs: dict[str, object]) -> list[str]:
-    """How claims ours, from credentials.server_claims(), differ from
-    theirs, a token that `pelican token create` minted with the same
-    arguments, but for the claims that differ from token to token."""
+    """Return how claims ours differ from theirs.
+
+    The claims that differ from token to token are left out.
+
+    Args:
+        ours: Claims from credentials.server_claims().
+        theirs: The claims of a token that `pelican token create` minted
+            with the same arguments.
+    """
     problems: list[str] = []
     if set(ours) != set(theirs):
         problems.append(f"claims {sorted(ours)}, not token create's {sorted(theirs)}")
@@ -151,14 +166,17 @@ def claims_problems(ours: dict[str, object], theirs: dict[str, object]) -> list[
 
 
 def jwt_tokens(test: Test) -> tuple[str, str]:
-    """A token that jwt.encode() signs with the origins' key, with the
+    """Check that testlib.jwt signs tokens that the origins take.
+
+    A token that jwt.encode() signs with the origins' key, with the
     claims and header of the `server` token that `pelican token create`
     mints (credentials.server_claims(), jwt.header(), jwt.key_id()),
     must read the object at every origin; the same token, expired ten
     minutes ago (well past native servers' 60 seconds of clock skew),
     must be refused. jwt.verify() must find the token's key, by its kid,
     in the first origin's published JWKS (/.well-known/issuer.jwks), and
-    none in a JWKS of the `unknown` test key alone."""
+    none in a JWKS of the `unknown` test key alone.
+    """
     if not test.direct:
         return SKIP, f"/{NAMESPACE} takes no direct clients"
     fed = test.fed
@@ -190,9 +208,12 @@ def jwt_tokens(test: Test) -> tuple[str, str]:
 
 
 def verify_problem(fed: common.Federation, token: str, kid: str) -> Optional[str]:
-    """Why jwt.verify() does not find token's key, kid, in the first
-    origin's published JWKS, or finds one in a JWKS of the `unknown`
-    test key alone, or None."""
+    """Return why jwt.verify() is wrong about token, or None if it is not.
+
+    It is wrong if it does not find token's key, kid, in the first
+    origin's published JWKS, or finds one in a JWKS of the `unknown` test
+    key alone.
+    """
     origin = fed.origins[0]
     jwks = web.request("GET", f"{origin.web_url}/.well-known/issuer.jwks")
     if not jwks.ok:
@@ -208,10 +229,13 @@ def verify_problem(fed: common.Federation, token: str, kid: str) -> Optional[str
 
 
 def http_requests(test: Test) -> tuple[str, str]:
-    """A GET of the object straight to each native origin must raise its
+    """Check that testlib.metrics reads /metrics.
+
+    A GET of the object straight to each native origin must raise its
     pelican_http_requests_total{server_type="origin",method="GET",
     code="200"} by at least 1 (metrics/http_metrics.go in Pelican);
-    other requests may raise it too."""
+    other requests may raise it too.
+    """
     fed = test.fed
     if not fed.native_origins:
         return SKIP, f"XRootD serves the origins ({fed.origin_variant}), not Pelican"
@@ -237,19 +261,22 @@ def http_requests(test: Test) -> tuple[str, str]:
 
 
 def age(answer: web.Response) -> Optional[int]:
-    """answer's Age, in seconds, or None if it has none."""
+    """Return answer's Age, in seconds, or None if it has none."""
     value = answer.header("Age")
     return int(value) if value.isdigit() else None
 
 
 def restart_cache(test: Test) -> tuple[str, str]:
-    """Read the object through cache-0 until it holds it whole (a V2
-    cache sends Age then, and only then), and see every director name
-    it; restart it (testlib.control). Within NAMED_WAIT seconds every
+    """Check that testlib.control restarts a service mid-run.
+
+    Read the object through cache-0 until it holds it whole (a V2 cache
+    sends Age then, and only then), and see every director name it;
+    restart it (testlib.control). Within NAMED_WAIT seconds every
     director must name it again, and within SERVED_WAIT it must serve
     the object; a V2 cache from its store, with an Age at least the
     seconds since it first said it held it all, which only the record
-    it kept across the restart can give."""
+    it kept across the restart can give.
+    """
     fed = test.fed
     if fed.standalone:
         return SKIP, "a standalone origin has no cache"
@@ -320,6 +347,8 @@ def restart_cache(test: Test) -> tuple[str, str]:
     return PASS, f"{note}, and serves the object from its store (Age {found})"
 
 
+# The scenarios, by name: each takes the Test, and returns its result and
+# a note.
 RUN = {
     "trailers": trailers,
     "jwt": jwt_tokens,
@@ -329,8 +358,10 @@ RUN = {
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Put the object in place at every origin, run the selected
-    scenarios, and remove it."""
+    """Put the object in place, run the selected scenarios, and remove it.
+
+    The object is put in place at every origin.
+    """
     fed = session.fed
     for origin in stores.unique(fed.origins):
         directory = f"{origin.store_of(NAMESPACE)}/data/selftest"
