@@ -8,12 +8,13 @@ true` and `TE: trailers`), to report a failure after its headers.
 
 import functools
 import http.client
+import json
 import socket
 import ssl
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Any, Optional, Union
 from urllib.parse import urlsplit
 
 # The federation's CA, in the dev container.
@@ -59,11 +60,28 @@ class Response:
         """The status, for a message."""
         return "no response" if self.status is None else f"HTTP {self.status}"
 
+    def json(self) -> Any:
+        """The body, as JSON; None if it is not JSON."""
+        try:
+            return json.loads(self.body)
+        except ValueError:
+            return None
+
 
 def _last(fields: tuple[tuple[str, str], ...], name: str) -> str:
     """The last value of field name in fields, or ""."""
     values = [v for k, v in fields if k.lower() == name.lower()]
     return values[-1] if values else ""
+
+
+def save(path: str, answer: Response) -> None:
+    """Keep answer's body at path, or if it has none (a HEAD's), its
+    headers."""
+    with open(path, "wb") as f:
+        if answer.body:
+            f.write(answer.body)
+        else:
+            f.write("".join(f"{k}: {v}\n" for k, v in answer.headers).encode())
 
 
 class _Answer(http.client.HTTPResponse):

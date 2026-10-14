@@ -15,8 +15,9 @@ import platform
 import shutil
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime
 from functools import cached_property
 from typing import Any, NoReturn, Optional, cast
 from urllib.parse import urlsplit
@@ -110,6 +111,11 @@ def as_array(value: Any) -> Optional[list[Any]]:
     return items
 
 
+def objects(items: Iterable[Any]) -> list[dict[str, Any]]:
+    """The JSON objects among items, parsed JSON values."""
+    return [found for found in (as_object(item) for item in items) if found is not None]
+
+
 def enter_var() -> None:
     """Change to framework/var."""
     try:
@@ -176,6 +182,30 @@ def first(problems: Sequence[str]) -> str:
     """The first of problems, and how many more there are."""
     more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
     return problems[0] + more
+
+
+@dataclass
+class Findings:
+    """What a case found: problems, which fail it; doubts, which leave it
+    inconclusive; and notes on what went right."""
+
+    problems: list[str] = field(default_factory=list[str])
+    doubts: list[str] = field(default_factory=list[str])
+    notes: list[str] = field(default_factory=list[str])
+
+    def row(self, passed: str) -> tuple[str, str]:
+        """FAIL, INCONCLUSIVE, or PASS (with note passed), and a note."""
+        if self.problems:
+            return report_module.FAIL, first(self.problems)
+        if self.doubts:
+            return report_module.INCONCLUSIVE, "; ".join(self.doubts)
+        return report_module.PASS, "; ".join([passed] + self.notes)
+
+
+def timestamp(when: datetime) -> str:
+    """when, a UTC time, as Go's encoding/json reads a time.Time: RFC
+    3339, to the second."""
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def empty_dir(path: str) -> None:

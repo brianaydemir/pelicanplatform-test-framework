@@ -70,15 +70,30 @@ the users stay.
 import json
 import os
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from testlib import accounts, common, credentials, issuer, stores, web
-from testlib.accounts import Answer, Api, ApiError, must
-from testlib.common import die, warn
+from testlib.accounts import Api, ApiError, must
+from testlib.collections import (
+    COLLECTIONS,
+    create,
+    delete,
+    get,
+    grant,
+    grants,
+    listed,
+    metadata,
+    missing,
+    patch,
+    revoke,
+    set_metadata,
+    share,
+)
+from testlib.common import die, objects, warn
 from testlib.credentials import PROTECTED
-from testlib.issuer import ClientRun
+from testlib.issuer import DATA_SCOPES, ClientRun, data_scopes
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -99,7 +114,6 @@ SCENARIOS = {
     "cli": "`pelican-server origin collection` manages collections through the device flow",
 }
 
-COLLECTIONS = "/api/v1.0/origin_ui/collections"
 REDEEM = "/api/v1.0/invites/redeem/collection-ownership"
 MY_GROUPS = "/api/v1.0/me/groups"
 # The director's list of origins, from which the CLI takes the first.
@@ -111,10 +125,9 @@ GROUPS = {"readers": ("reader", "sharer"), "writers": ("writer",), "admins": ("h
 # The ACL target that means every authenticated user.
 EVERYONE = "@authenticated"
 
-# What a user asks the namespace's issuer for: it grants what the user's
-# collections allow, no more.
-DATA_SCOPES = ("storage.read:/", "storage.modify:/", "storage.create:/", "share.access:/")
-# What the CLI asks the origin's local issuer for.
+# What the CLI asks the origin's local issuer for; for data, a user asks
+# for issuer.DATA_SCOPES, of which the issuer grants what the user's
+# collections allow.
 CONTROL_SCOPES = ("collection.read:/", "collection.create:/")
 
 # How a server may refuse: a collection one may not see is "not found".
@@ -142,13 +155,7 @@ def personal(role: str) -> str:
 def skip(fed: common.Federation) -> Optional[str]:
     """Why there is nothing to test: no embedded issuer, or no protected
     namespace."""
-    if fed.external_issuer:
-        return "the exports trust the external issuer ('-p auth-external-issuer')"
-    if not fed.embedded_issuer:
-        return "the origins' embedded issuer is off (ORIGIN_ENABLE_ISSUER=false)"
-    if not any(ns in fed.exports for ns in PROTECTED):
-        return "no protected namespace is exported"
-    return None
+    return missing(fed)
 
 
 class Test:
@@ -254,94 +261,6 @@ class Test:
     def federation_url(self, name: str) -> str:
         """Object name's URL through the federation."""
         return f"{self.fed.url}/{self.namespace}/{self.rel(name)}"
-
-
-# --------------------------------------------------------------------------
-# The collections API (origin/collections.go in Pelican).
-
-
-def create(
-    api: Api, name: str, namespace: str, visibility: str = "private", sharing: bool = False
-) -> Answer:
-    """Create a collection named name at namespace, owned by the caller."""
-    body: dict[str, Any] = {"name": name, "namespace": namespace, "visibility": visibility}
-    body["enableSharing"] = sharing
-    return api.call("POST", COLLECTIONS, body)
-
-
-def get(api: Api, cid: str) -> Answer:
-    """One collection, if the caller may see it."""
-    return api.call("GET", f"{COLLECTIONS}/{cid}")
-
-
-def listed(api: Api) -> set[str]:
-    """The IDs of the collections the caller may see."""
-    return {str(row.get("id")) for row in objects(api.call("GET", COLLECTIONS).array)}
-
-
-def patch(api: Api, cid: str, **fields: Any) -> Answer:
-    """Change a collection's fields, e.g. description or ownerId."""
-    return api.call("PATCH", f"{COLLECTIONS}/{cid}", fields)
-
-
-def delete(api: Api, cid: str) -> Answer:
-    """Delete a collection."""
-    return api.call("DELETE", f"{COLLECTIONS}/{cid}")
-
-
-def grant(
-    api: Api, cid: str, target: str, role: str, expires_at: Optional[str] = None
-) -> Answer:
-    """Grant role (read or write) on a collection to target: a group
-    name, a user (personal()), or EVERYONE; until expires_at (RFC 3339)
-    if given."""
-    body: dict[str, Any] = {"groupId": target, "role": role}
-    if expires_at:
-        body["expiresAt"] = expires_at
-    return api.call("POST", f"{COLLECTIONS}/{cid}/acl", body)
-
-
-def revoke(api: Api, cid: str, target: str, role: str) -> Answer:
-    """Revoke a grant."""
-    return api.call("DELETE", f"{COLLECTIONS}/{cid}/acl", {"groupId": target, "role": role})
-
-
-def grants(api: Api, cid: str) -> set[tuple[str, str]]:
-    """A collection's ACL, as (target, role) pairs: a group name, a
-    username, or EVERYONE, and read or write."""
-    rows = objects(must(api.call("GET", f"{COLLECTIONS}/{cid}/acl"), "listing the ACL").array)
-    return {
-        (str(row.get("subjectName", "")).removeprefix("user-"), str(row.get("role", "")))
-        for row in rows
-    }
-
-
-def set_metadata(api: Api, cid: str, key: str, value: str) -> Answer:
-    """Set one key of a collection's metadata."""
-    return api.call("PUT", f"{COLLECTIONS}/{cid}/metadata/{key}", {"value": value})
-
-
-def metadata(api: Api, cid: str) -> Answer:
-    """A collection's metadata: rows of key and value."""
-    return api.call("GET", f"{COLLECTIONS}/{cid}/metadata")
-
-
-def share(api: Api, cid: str, name: str, namespace: str) -> Answer:
-    """Share part of a collection (namespace, within its own) as a
-    collection of the caller's."""
-    return api.call(
-        "POST", f"{COLLECTIONS}/{cid}/shares", {"name": name, "namespace": namespace}
-    )
-
-
-def objects(items: Iterable[Any]) -> list[dict[str, Any]]:
-    """The JSON objects among items."""
-    return [found for found in (common.as_object(item) for item in items) if found is not None]
-
-
-def storage_scopes(token: str) -> frozenset[str]:
-    """A token's scopes for data: storage.* and share.access."""
-    return frozenset(s for s in issuer.scopes(token) if s.startswith(("storage.", "share.")))
 
 
 def rfc3339(when: float) -> str:
@@ -492,9 +411,9 @@ def users(test: Test) -> tuple[str, str]:
         row.get("username")
         for row in objects(test.api("admin").call("GET", accounts.USERS).array)
     }
-    missing = [username(role) for role in ROLES if username(role) not in found]
-    if missing:
-        problems.append(f"the admin's list of users lacks {', '.join(missing)}")
+    absent = [username(role) for role in ROLES if username(role) not in found]
+    if absent:
+        problems.append(f"the admin's list of users lacks {', '.join(absent)}")
     refused = test.api("outsider").call(
         "POST", accounts.USERS, {"username": f"test-nobody-{test.run}"}
     )
@@ -660,7 +579,7 @@ def tokens(test: Test) -> tuple[str, str]:
     }
     for role, want in wanted.items():
         token = test.data_token(role)
-        found = storage_scopes(token)
+        found = data_scopes(token)
         if set(found) != want:
             problems.append(f"{username(role)}'s token has {sorted(found)}, not {sorted(want)}")
         claims = issuer.claims(token)
@@ -868,7 +787,7 @@ def share_confinement(test: Test) -> tuple[str, str]:
             grant(sharer, made[-1], personal("guest"), "read")
     try:
         decoy = f"/{test.rel('decoy')}"
-        found = sorted(s for s in storage_scopes(test.data_token("guest")) if covers(s, decoy))
+        found = sorted(s for s in data_scopes(test.data_token("guest")) if covers(s, decoy))
         if found:
             problems.append(f"test-guest's token has {found}, which read decoy")
     finally:
@@ -907,7 +826,7 @@ def shares(test: Test) -> tuple[str, str]:
         problems.append(f"a share of the share: {answer.describe()}, not refused")
     must(grant(sharer, sid, personal("guest"), "read"), "granting read on the share")
     access, shared = f"share.access:/{sid}", test.scope("read", "alpha/shared")
-    found = storage_scopes(test.data_token("guest"))
+    found = data_scopes(test.data_token("guest"))
     if not {access, shared} <= found or test.scope("read", "alpha") in found:
         problems.append(
             f"test-guest's token has {sorted(found)}, not {access} and {shared} alone"
@@ -926,18 +845,18 @@ def shares(test: Test) -> tuple[str, str]:
                     f"GET {url} as test-guest, outside the share: {reply.describe()}"
                 )
     must(grant(sharer, sid, personal("guest"), "write"), "granting write on the share")
-    found = storage_scopes(test.data_token("guest"))
+    found = data_scopes(test.data_token("guest"))
     if test.scope("modify", "alpha/shared") in found:
         problems.append("test-guest may write the share, which test-sharer may only read")
     must(
         grant(owner, alpha, personal("sharer"), "write"), "granting test-sharer write on alpha"
     )
-    found = storage_scopes(test.data_token("guest"))
+    found = data_scopes(test.data_token("guest"))
     if test.scope("modify", "alpha/shared") not in found:
         problems.append("test-guest may not write the share once test-sharer may write alpha")
     must(revoke(owner, alpha, personal("sharer"), "write"), "revoking test-sharer's write")
     accounts.remove_member(owner, test.groups["readers"], test.ids["sharer"])
-    found = storage_scopes(test.data_token("guest"))
+    found = data_scopes(test.data_token("guest"))
     if found & {access, shared}:
         problems.append(
             f"test-guest's token has {sorted(found)} once test-sharer may not read alpha"
@@ -956,10 +875,10 @@ def expiry(test: Test) -> tuple[str, str]:
     )
     try:
         read = test.scope("read", "alpha")
-        if read not in storage_scopes(test.data_token("guest")):
+        if read not in data_scopes(test.data_token("guest")):
             return FAIL, f"test-guest's token lacks {read} before the grant expires"
         time.sleep(max(0.0, deadline + 2 - time.time()))
-        if read in storage_scopes(test.data_token("guest")):
+        if read in data_scopes(test.data_token("guest")):
             return FAIL, f"test-guest's token has {read} after the grant expired"
     finally:
         revoke(owner, alpha, personal("guest"), "read")
@@ -973,15 +892,15 @@ def revoke_scenario(test: Test) -> tuple[str, str]:
     alpha, owner = test.coll["alpha"], test.api("owner")
     read = test.scope("read", "alpha")
     old = test.data_token("reader")
-    if read not in storage_scopes(old):
+    if read not in data_scopes(old):
         return FAIL, f"test-reader's token lacks {read} before the revoke"
     must(revoke(owner, alpha, test.group_name("readers"), "read"), "revoking the readers' read")
     if (test.group_name("readers"), "read") in grants(owner, alpha):
         problems.append("the revoked grant is still listed")
     new = test.data_token("reader")
-    if read in storage_scopes(new):
+    if read in data_scopes(new):
         problems.append(f"test-reader's next token still has {read}")
-    if test.scope("read", "beta") not in storage_scopes(new):
+    if test.scope("read", "beta") not in data_scopes(new):
         problems.append("test-reader's next token lost beta's read")
     if "DirectReads" in test.caps:
         url = test.object_url(test.origin, "alpha/obj")

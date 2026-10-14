@@ -8,15 +8,20 @@ It also tells the client what the namespace wants of it, in the
 X-Pelican-Namespace, X-Pelican-Authorization, and
 X-Pelican-Token-Generation headers (server_structs/director.go), which a
 server that refuses a request may send too (see hints()).
+
+A director also lists every origin and cache for Prometheus's service
+discovery (/api/v1.0/director/discoverServers): expected_targets() is
+what it should list for a shape, and listing_problems() how a listing
+falls short.
 """
 
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
-from . import web
+from . import common, web
 
 
 def parse_link(value: str) -> list[str]:
@@ -122,3 +127,49 @@ def naming(directors: Sequence[str], route: str, path: str, name: str) -> list[s
     of path, for route, to host name, or have the client try it: their
     hosts."""
     return [host(url) for url in directors if ask(url, route, path).names(name)]
+
+
+def expected_targets(fed: common.Federation) -> dict[tuple[str, str], str]:
+    """Each server that service discovery should list, by its type and
+    target (its web URL's host and port): its web URL."""
+    found: dict[tuple[str, str], str] = {}
+    origins = [o.url for o in fed.origins] + [o.origin.url for o in fed.owners]
+    for kind, urls in (("Origin", origins), ("Cache", [c.url for c in fed.federated_caches])):
+        for url in urls:
+            web_url = common.web_url_of(url)
+            found[(kind, urlsplit(web_url).netloc)] = web_url
+    return found
+
+
+def listing_problems(fed: common.Federation, listed: Any) -> list[str]:
+    """What is wrong with a director's service discovery, listed: it must
+    list each of expected_targets() once, with its type, name, web URL,
+    and data URL (on the same host) as labels, and nothing else."""
+    want = expected_targets(fed)
+    problems: list[str] = []
+    seen: dict[tuple[str, str], int] = {}
+    for item in (common.as_object(i) or {} for i in common.as_array(listed) or []):
+        targets = [str(t) for t in common.as_array(item.get("targets")) or []]
+        labels = common.as_object(item.get("labels")) or {}
+        if len(targets) != 1:
+            problems.append(f"an item has targets {targets}, not one")
+            continue
+        key = (str(labels.get("server_type", "")), targets[0])
+        seen[key] = seen.get(key, 0) + 1
+        if key not in want:
+            problems.append(f"it lists {key[0]} {key[1]}, which is not in the shape")
+            continue
+        web_url = want[key]
+        if labels.get("server_web_url") != web_url:
+            problems.append(
+                f"{key[1]}'s server_web_url is {labels.get('server_web_url')!r}, not {web_url}"
+            )
+        if host(str(labels.get("server_url", ""))) != host(web_url):
+            problems.append(
+                f"{key[1]}'s server_url {labels.get('server_url')!r} is another host's"
+            )
+        if not labels.get("server_name"):
+            problems.append(f"{key[1]} has no server_name")
+    problems += [f"it lists {k[0]} {k[1]} {n} times" for k, n in seen.items() if n > 1]
+    problems += [f"it lacks {k[0]} {k[1]}" for k in want if k not in seen]
+    return problems

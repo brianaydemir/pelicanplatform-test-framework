@@ -26,7 +26,7 @@ its metrics, its log level, and its log.
                         serves again, and the directors name it again
 
 The suite acts as each server's admin, and as an ordinary user, as the
-webapi suite does (suites.webapi.Test), and reads /metrics with tokens
+webapi suite does (testlib.webapi.Access), and reads /metrics with tokens
 of each server's own making (credentials.web_token()), since every
 server guards it (Monitoring.MetricAuthorization, on by default).
 `log-level` and `log-redaction` raise each server's log level, each
@@ -47,14 +47,13 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import urlencode
 
-from suites import webapi
-from suites.advertise import expected_targets
-from suites.webapi import Server, judge
-from testlib import accounts, common, credentials, director, jwt, metrics, stores, web
+from testlib import accounts, common, credentials, director, jwt, metrics, stores, web, webapi
 from testlib.common import first, warn
 from testlib.credentials import RWM, R
+from testlib.director import expected_targets
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
+from testlib.webapi import Server, judge
 
 SCENARIOS = {
     "health-api": "each server's health report: for its admin alone, and every component ok",
@@ -193,7 +192,7 @@ class Test:
         self.session = session
         self.fed = session.fed
         self.run = session.run
-        self.web = webapi.Test(session)
+        self.web = webapi.Access(session)
         self.servers = self.web.servers
         self.base = f"data/observability/{self.run}"
         self.subject = f"observability-{self.run}"
@@ -213,7 +212,7 @@ class Test:
         """server's configuration, as its admin reads it; {} if that
         fails."""
         answer = web.request("GET", server.web_url + CONFIG, token=self.admin(server))
-        return common.as_object(webapi.parse(answer)) or {}
+        return common.as_object(answer.json()) or {}
 
     def caches_at(self, server: Server) -> list[common.Cache]:
         """The caches whose web URL is server's."""
@@ -272,7 +271,7 @@ class Test:
 
 def parse(answer: web.Response) -> dict[str, Any]:
     """answer's body, as a JSON object; {} if it is not one."""
-    return common.as_object(webapi.parse(answer)) or {}
+    return common.as_object(answer.json()) or {}
 
 
 def guarded(check: Callable[[], list[Row]]) -> list[Row]:

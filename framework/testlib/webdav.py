@@ -4,7 +4,8 @@ A listing is a {DAV:}multistatus of responses, one per resource: its
 href, and props in propstats, each with a status. Only props whose
 propstat says 200 count. Servers differ in prefixes (D:, lp1:) and in
 whether an href is a path or a URL, so both are read by namespace and
-by path.
+by path. copy_or_move() sends a COPY or a MOVE, and root_url() is where
+OPTIONS of an origin's root goes.
 """
 
 import xml.etree.ElementTree as ET  # nosec B405
@@ -15,7 +16,7 @@ from email.utils import parsedate_to_datetime
 from typing import Optional
 from urllib.parse import unquote, urlsplit
 
-from . import web
+from . import common, web
 
 DAV = "{DAV:}"
 
@@ -149,3 +150,27 @@ def problems(want: Mapping[str, Optional[int]], got: Mapping[str, Entry]) -> lis
         elif entry.size != size:
             wrong.append(f"{name} is {entry.size} bytes, not {size}")
     return wrong
+
+
+def copy_or_move(
+    method: str,
+    url: str,
+    token: str,
+    destination: Optional[str],
+    overwrite: Optional[str] = None,
+) -> web.Response:
+    """Send COPY or MOVE (method) of url to destination (none if None),
+    with an Overwrite header if overwrite is given."""
+    headers: dict[str, str] = {}
+    if destination is not None:
+        headers["Destination"] = destination
+    if overwrite is not None:
+        headers["Overwrite"] = overwrite
+    return web.request(method, url, token=token, headers=headers)
+
+
+def root_url(origin: common.Origin) -> str:
+    """The root of origin's server, whose OPTIONS names the methods it
+    serves (registerRootOptions in Pelican's origin_serve/handlers.go)."""
+    parts = urlsplit(origin.url)
+    return f"{parts.scheme}://{parts.netloc}/"

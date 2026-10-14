@@ -50,13 +50,24 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import quote, urlencode, urlsplit
 
 from testlib import accounts, common, credentials, director, jwt, metrics, stores, web
+from testlib.ads import (
+    ADVERTISE,
+    SERVERS,
+    Missing,
+    Server,
+    Servers,
+    ad,
+    namespace_ad,
+    post_ad,
+    sign,
+    unknown_token,
+)
 from testlib.common import die, first
+from testlib.director import expected_targets, listing_problems
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
 
@@ -78,277 +89,47 @@ SCENARIOS = {
 # and its note.
 Row = tuple[str, str, str]
 
-# Scopes, as a token carries them.
-ADVERTISE = "pelican.advertise"
+# Scopes, as a token carries them, beside the advertise scope
+# (ads.ADVERTISE).
 NOT_ADVERTISE = "storage.read:/"
 DISCOVERY = "pelican.director_service_discovery"
 RETRIEVE, REVERSE = "broker.retrieve", "broker.reverse"
 
-# A key that no server knows (see credentials.keys()), and an issuer that
-# none trusts.
-UNKNOWN_KEY = "test-keys/unknown.pem"
+# An issuer that no server trusts.
 ELSEWHERE = "https://elsewhere.invalid"
 
-# The directors' list of servers, and the registry's registrations.
-SERVERS = "/api/v1.0/director_ui/servers"
+# The registry's registrations.
 REGISTRATIONS = "/api/v1.0/registry_ui/namespaces"
 # The counter of the ads a director refuses (metrics/director.go).
 REJECTED = "pelican_director_rejected_advertisements"
 
-# How long an ad the suite posts lasts, in seconds; how long each director
-# has to name a server again afterward (it learns of an ad at once, and of
-# a server's next ad within Server.AdvertisementInterval); and how long one
+# How long each director has to name a server again after a scenario
+# changed where it sends clients (it learns of an ad at once, and of a
+# server's next ad within Server.AdvertisementInterval); and how long one
 # has to stop naming a server once an ad says it may not be used.
-AD_LIFETIME = 90
 RESTORE_WAIT = 150
 DROP_WAIT = 10
-# How long the tokens the suite signs last, in seconds: a server's last a
-# minute, but a scenario may wait out a restore between minting one and
-# its last use.
-TOKEN_LIFETIME = 300
 # How long a federation token lasts (Director.FedTokenLifetime's default).
 FED_TOKEN_LIFETIME = 900
 
 
-class Missing(Exception):
-    """Something the scenario needs is not there."""
-
-
-@dataclass(frozen=True)
-class Server:
-    """An origin or a cache, as a director describes it."""
-
-    kind: str  # "Origin" or "Cache"
-    host: str  # its web URL's host: its service, whose keys are its own
-    detail: Mapping[str, Any]  # what /servers/<name> says of it
-
-    @property
-    def name(self) -> str:
-        """Its name in its ads."""
-        return str(self.detail.get("name", ""))
-
-    @property
-    def prefix(self) -> str:
-        """Its registry prefix, e.g. /caches/cache-0."""
-        return str(self.detail.get("registryPrefix", ""))
-
-    @property
-    def registered_host(self) -> str:
-        """The host its registry prefix names."""
-        return self.prefix.rsplit("/", 1)[-1]
-
-
-class Test:
-    """The federation, the probe, and the servers, keys, and tokens the
-    scenarios share."""
+class Test(Servers):
+    """The servers, keys, and tokens (ads.Servers), and the probe."""
 
     def __init__(self, session: Session):
+        super().__init__(session.fed)
         self.session = session
-        self.fed = session.fed
         self.run = session.run
-        self.director = self.fed.directors[0]
         # The first protected namespace, or /public where the origins
         # export only that (`-p origin-public`).
         self.namespace = credentials.probe_namespace(self.fed)
         self.rel = f"data/advertise/{self.run}-probe"
         self.path = f"/{self.namespace}/{self.rel}"
         self.data = os.urandom(4096)
-        self._servers: dict[tuple[str, str], Server] = {}
-        self._keys: dict[str, tuple[str, str]] = {}
-
-    def server(self, kind: str, host: str) -> Server:
-        """The kind of server (Origin or Cache) whose web URL is at host,
-        as the first director lists it; raises Missing if it does not."""
-        if (kind, host) in self._servers:
-            return self._servers[(kind, host)]
-        listed = web.request("GET", f"{self.director}{SERVERS}")
-        rows = common.as_array(parse(listed)) or []
-        for row in (common.as_object(r) or {} for r in rows):
-            if row.get("type") == kind and director.host(str(row.get("webUrl", ""))) == host:
-                name = str(row.get("name", ""))
-                answer = web.request("GET", f"{self.director}{SERVERS}/{quote(name, safe='')}")
-                found = common.as_object(parse(answer))
-                if found is None:
-                    raise Missing(f"{SERVERS}/{name}: {answer.describe()}, not a server")
-                self._servers[(kind, host)] = Server(kind, host, found)
-                return self._servers[(kind, host)]
-        raise Missing(f"{director.host(self.director)} lists no {kind.lower()} at {host}")
-
-    def key(self, server: Server) -> tuple[str, str]:
-        """server's own key (a PEM file under framework/var) and its kid:
-        the one of its keys whose public key the registry holds for its
-        prefix. Raises Missing if none is."""
-        if server.prefix not in self._keys:
-            url = f"{self.fed.registry_url}/api/v1.0/registry{server.prefix}/.well-known/issuer.jwks"
-            answer = web.request("GET", url)
-            listed = common.as_array((common.as_object(parse(answer)) or {}).get("keys")) or []
-            for key in sorted(glob.glob(f"issuer-keys/{server.host}/*.pem")):
-                jwk = jwt.public_jwk(key)
-                for entry in (common.as_object(e) or {} for e in listed):
-                    if all(entry.get(k) == v for k, v in jwk.items()):
-                        self._keys[server.prefix] = (key, str(entry.get("kid") or ""))
-            if server.prefix not in self._keys:
-                raise Missing(
-                    f"the registry holds none of framework/var/issuer-keys/{server.host}/'s"
-                    + f" keys for {server.prefix} ({url}: {answer.describe()})"
-                )
-        return self._keys[server.prefix]
-
-    def advertise_token(self, server: Server, scope: str = ADVERTISE) -> str:
-        """A token like server's own advertise token (GetAdvertisementTok in
-        Pelican's server_utils/server_utils.go), of scope."""
-        key, kid = self.key(server)
-        web_url = str(server.detail.get("webUrl", ""))
-        return sign(key, kid, scope, web_url, self.director, web_url)
-
-    def unknown_token(self, scope: str, issuer: str, audience: str) -> str:
-        """A token of scope from issuer, signed with UNKNOWN_KEY."""
-        return sign(UNKNOWN_KEY, jwt.key_id(UNKNOWN_KEY), scope, issuer, audience)
 
     def caches(self) -> list[common.Cache]:
         """The caches that the directors know of."""
         return self.fed.federated_caches
-
-
-def parse(answer: web.Response) -> Any:
-    """answer's body, as JSON, or None if it is not."""
-    try:
-        return json.loads(answer.body)
-    except ValueError:
-        return None
-
-
-def sign(key: str, kid: str, scope: str, issuer: str, audience: str, subject: str = "") -> str:
-    """A token of scope, from issuer, for audience, signed with key (a PEM
-    file under framework/var) under kid, lasting TOKEN_LIFETIME seconds."""
-    now = int(time.time())
-    claims = {
-        "aud": [audience],
-        "exp": now + TOKEN_LIFETIME,
-        "iat": now,
-        "iss": issuer,
-        "jti": str(uuid.uuid4()),
-        "nbf": now,
-        "scope": scope,
-        "sub": subject or credentials.SUBJECT,
-        "wlcg.ver": "1.0",
-    }
-    return jwt.encode(jwt.header(jwt.algorithm(key), kid), claims, key=key)
-
-
-def host_of(url: str) -> str:
-    """The host of a data or web URL: its server's service."""
-    return director.host(url)
-
-
-# --------------------------------------------------------------------------
-# Advertisements.
-
-
-def url_object(text: str) -> dict[str, str]:
-    """A URL, as Go's encoding/json writes a url.URL, which an ad's
-    namespaces hold."""
-    parts = urlsplit(text)
-    return {
-        "Scheme": parts.scheme,
-        "Host": parts.netloc,
-        "Path": parts.path,
-        "RawQuery": parts.query,
-    }
-
-
-def namespace_ad(listed: Mapping[str, Any]) -> dict[str, Any]:
-    """A namespace of an ad (server_structs.NamespaceAd), from what a
-    director says of it (NamespaceAdResponse)."""
-    generations = [
-        common.as_object(g) or {} for g in common.as_array(listed.get("tokenGeneration")) or []
-    ]
-    issuers = [
-        common.as_object(i) or {} for i in common.as_array(listed.get("tokenIssuer")) or []
-    ]
-    return {
-        "Caps": listed.get("capabilities") or {},
-        "path": listed.get("path", ""),
-        "token-generation": [
-            {
-                "strategy": g.get("strategy", ""),
-                "vault-server": g.get("vaultServer", ""),
-                "max-scope-depth": g.get("maxScopeDepth", 0),
-                "issuer": url_object(str(g.get("issuer", ""))),
-            }
-            for g in generations
-        ],
-        "token-issuer": [
-            {
-                "base-paths": i.get("basePaths") or [],
-                "restricted-paths": i.get("restrictedPaths") or [],
-                "issuer": url_object(str(i.get("issuer", ""))),
-            }
-            for i in issuers
-        ],
-        "from-topology": False,
-    }
-
-
-def stamp(when: datetime) -> str:
-    """when, as Go's encoding/json reads a time.Time."""
-    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def ad(server: Server, **changes: Any) -> dict[str, Any]:
-    """An ad like server's own (server_structs.OriginAdvertise), as the
-    director describes the server, lasting AD_LIFETIME seconds, with
-    changes (by JSON name) made."""
-    detail = server.detail
-    now = datetime.now(timezone.utc)
-    body: dict[str, Any] = {
-        "name": server.name,
-        "serverId": detail.get("serverId", ""),
-        "version": detail.get("version", ""),
-        "expiry": stamp(now + timedelta(seconds=AD_LIFETIME)),
-        "registry-prefix": server.prefix,
-        "data-url": detail.get("url", ""),
-        "web-url": detail.get("webUrl", ""),
-        "capabilities": detail.get("capabilities") or {},
-        "namespaces": [
-            namespace_ad(common.as_object(n) or {})
-            for n in common.as_array(detail.get("namespaces")) or []
-        ],
-        "token-issuer": [],
-        "storageType": detail.get("storageType", ""),
-        "directorTest": bool(detail.get("disableDirectorTest")),
-        "downtimes": [],
-        "requiredFeatures": [],
-        "now": stamp(now),
-        "status": detail.get("serverStatus", ""),
-    }
-    if detail.get("brokerUrl"):
-        body["broker-url"] = detail["brokerUrl"]
-    body.update(changes)
-    return body
-
-
-def user_agent(kind: str, version: str) -> dict[str, str]:
-    """The User-Agent with which a server of kind, at version, posts its
-    ads, as the director reads it; none if version is not one."""
-    bare = version.lstrip("v")
-    if not bare[:1].isdigit():
-        return {}
-    return {"User-Agent": f"pelican-{kind.lower()}/{bare}"}
-
-
-def post_ad(url: str, kind: str, body: Mapping[str, Any], token: Optional[str]) -> web.Response:
-    """POST ad body to the director at url, as a server of kind does,
-    presenting token (none if None)."""
-    headers = {"Content-Type": "application/json"}
-    headers.update(user_agent(kind, str(body.get("version", ""))))
-    return web.request(
-        "POST",
-        f"{url}/api/v1.0/director/register{kind}",
-        token=token,
-        upload=json.dumps(body).encode(),
-        headers=headers,
-    )
 
 
 def rejected(url: str) -> Optional[float]:
@@ -431,10 +212,10 @@ def forged_ads(test: Test) -> list[Row]:
     director, which must take them (200); then variants of each, each
     changed in one way, which every director must refuse (403)."""
     fed = test.fed
-    origin = test.server("Origin", host_of(fed.origins[0].url))
+    origin = test.server("Origin", director.host(fed.origins[0].url))
     servers = [origin]
     if test.caches():
-        servers.append(test.server("Cache", host_of(test.caches()[0].url)))
+        servers.append(test.server("Cache", director.host(test.caches()[0].url)))
     rows: list[Row] = []
     variants: list[Variant] = []
     for server in servers:
@@ -462,7 +243,7 @@ def forged_ads(test: Test) -> list[Row]:
                 f"{kind}-unknown-key",
                 server.kind,
                 ad(server),
-                test.unknown_token(ADVERTISE, web_url, test.director),
+                unknown_token(ADVERTISE, web_url, test.director),
                 None,
             ),
             (
@@ -499,7 +280,7 @@ def forged_ads(test: Test) -> list[Row]:
     )
     owner = next(iter(fed.owners), None)
     if owner is not None:
-        other = test.server("Origin", host_of(owner.origin.url))
+        other = test.server("Origin", director.host(owner.origin.url))
         theirs = [n for n in ad(origin)["namespaces"] if n.get("path") == f"/{test.namespace}"]
         claim = ad(other)
         claim["namespaces"] = claim["namespaces"] + theirs
@@ -538,7 +319,7 @@ def bad_broker_url(test: Test) -> list[Row]:
     writes the 400 and goes on to read the URL it could not parse
     (finishRegisterServeAd in director/director.go), which panics, and gin
     recovers."""
-    origin = test.server("Origin", host_of(test.fed.origins[0].url))
+    origin = test.server("Origin", director.host(test.fed.origins[0].url))
     body = ad(origin, **{"broker-url": "http://[::1"})
     token = test.advertise_token(origin)
     problems: list[str] = []
@@ -547,7 +328,7 @@ def bad_broker_url(test: Test) -> list[Row]:
         answer = post_ad(url, "Origin", body, token)
         if answer.status != 400:
             problems.append(f"{name}: {answer.describe()}, not 400")
-        elif not isinstance(parse(answer), dict):
+        elif not isinstance(answer.json(), dict):
             problems.append(f"{name}: its 400's body is not one JSON object")
     for url in test.fed.directors:
         listed = web.request("GET", f"{url}{SERVERS}")
@@ -612,7 +393,7 @@ def spoofed_status(test: Test) -> list[Row]:
     caches = test.caches()
     if not caches:
         return [("", SKIP, "the directors know of no cache")]
-    first_cache = test.server("Cache", host_of(caches[0].url))
+    first_cache = test.server("Cache", director.host(caches[0].url))
     wanted = len(test.fed.directors)
     rows: list[Row] = []
     before = naming(test, first_cache)
@@ -642,7 +423,7 @@ def spoofed_status(test: Test) -> list[Row]:
             (n, SKIP, why)
             for n in ("name-shutting-down", "name-critical", "name-downtime", "url-hijack")
         ]
-    second = test.server("Cache", host_of(caches[1].url))
+    second = test.server("Cache", director.host(caches[1].url))
     spoofs = [
         ("name-shutting-down", ad(second, name=first_cache.name, status="shutting down")),
         ("name-critical", ad(second, name=first_cache.name, status="critical")),
@@ -664,7 +445,7 @@ def spoofed_status(test: Test) -> list[Row]:
         listed = web.request(
             "GET", f"{test.director}{SERVERS}/{quote(first_cache.name, safe='')}"
         )
-        found = common.as_object(parse(listed)) or {}
+        found = common.as_object(listed.json()) or {}
         if found.get("filtered"):
             problems.append(
                 f"{director.host(test.director)} lists it filtered ({found.get('filteredType')})"
@@ -700,7 +481,7 @@ def fed_token_problems(test: Test, answer: web.Response, host: str) -> list[str]
     in answer: it must come from the federation (its discovery URL), for
     host, for any audience, to read everything, for FED_TOKEN_LIFETIME
     seconds, signed by a key of the federation's JWKS."""
-    found = common.as_object(parse(answer)) or {}
+    found = common.as_object(answer.json()) or {}
     token = str(found.get("access_token") or "")
     if answer.status != 200 or not token:
         return [f"{answer.describe()}, with no access_token"]
@@ -818,7 +599,7 @@ def fed_token(test: Test) -> list[Row]:
     caches = test.caches()
     if not caches:
         return [("", SKIP, "the directors know of no cache, which asks for federation tokens")]
-    cache = test.server("Cache", host_of(caches[0].url))
+    cache = test.server("Cache", director.host(caches[0].url))
     host = cache.registered_host
     token = test.advertise_token(cache)
     key, kid = test.key(cache)
@@ -830,10 +611,10 @@ def fed_token(test: Test) -> list[Row]:
         ("valid", FAIL if problems else PASS, first(problems) if problems else f"for {host}")
     )
     if len(caches) > 1:
-        other = test.server("Cache", host_of(caches[1].url))
+        other = test.server("Cache", director.host(caches[1].url))
         other_query = {"host": other.registered_host, "sType": "Cache"}
     else:
-        other = test.server("Origin", host_of(test.fed.origins[0].url))
+        other = test.server("Origin", director.host(test.fed.origins[0].url))
         other_query = {"host": other.registered_host, "sType": "Origin"}
     bad: list[tuple[str, dict[str, str], Optional[str]]] = [
         ("no-host", {"sType": "Cache"}, token),
@@ -849,7 +630,7 @@ def fed_token(test: Test) -> list[Row]:
         (
             "unknown-key",
             {"host": host, "sType": "Cache"},
-            test.unknown_token(ADVERTISE, web_url, test.director),
+            unknown_token(ADVERTISE, web_url, test.director),
         ),
     ]
     for name, query, presented in bad:
@@ -892,11 +673,11 @@ def fed_token_at_origin(test: Test) -> list[Row]:
         return [("", SKIP, f"XRootD serves the origins ({fed.origin_variant}), not Pelican")]
     if not test.caches():
         return [("", SKIP, "the directors know of no cache, which asks for federation tokens")]
-    cache = test.server("Cache", host_of(test.caches()[0].url))
+    cache = test.server("Cache", director.host(test.caches()[0].url))
     answer = get_fed_token(
         test, {"host": cache.registered_host, "sType": "Cache"}, test.advertise_token(cache)
     )
-    federation = str((common.as_object(parse(answer)) or {}).get("access_token") or "")
+    federation = str((common.as_object(answer.json()) or {}).get("access_token") or "")
     if not federation:
         return [("", FAIL, f"no federation token for {cache.host}: {answer.describe()}")]
     user = test.session.token(test.namespace)
@@ -934,7 +715,7 @@ def federation_key(fed: common.Federation) -> tuple[str, str]:
     Raises Missing if none is listed."""
     jwks_uri = str(fed.discovery.get("jwks_uri", ""))
     answer = web.request("GET", jwks_uri)
-    listed = common.as_array((common.as_object(parse(answer)) or {}).get("keys")) or []
+    listed = common.as_array((common.as_object(answer.json()) or {}).get("keys")) or []
     for key in sorted(glob.glob("issuer-keys/*/*.pem")):
         jwk = jwt.public_jwk(key)
         for entry in (common.as_object(e) or {} for e in listed):
@@ -943,52 +724,6 @@ def federation_key(fed: common.Federation) -> tuple[str, str]:
     raise Missing(
         f"{jwks_uri} ({answer.describe()}) lists none of framework/var/issuer-keys/'s keys"
     )
-
-
-def expected_targets(fed: common.Federation) -> dict[tuple[str, str], str]:
-    """Each server that service discovery should list, by its type and
-    target (its web URL's host and port): its web URL."""
-    found: dict[tuple[str, str], str] = {}
-    origins = [o.url for o in fed.origins] + [o.origin.url for o in fed.owners]
-    for kind, urls in (("Origin", origins), ("Cache", [c.url for c in fed.federated_caches])):
-        for url in urls:
-            web_url = common.web_url_of(url)
-            found[(kind, urlsplit(web_url).netloc)] = web_url
-    return found
-
-
-def listing_problems(fed: common.Federation, listed: Any) -> list[str]:
-    """What is wrong with a director's service discovery, listed: it must
-    list each of expected_targets() once, with its type, name, web URL,
-    and data URL (on the same host) as labels, and nothing else."""
-    want = expected_targets(fed)
-    problems: list[str] = []
-    seen: dict[tuple[str, str], int] = {}
-    for item in (common.as_object(i) or {} for i in common.as_array(listed) or []):
-        targets = [str(t) for t in common.as_array(item.get("targets")) or []]
-        labels = common.as_object(item.get("labels")) or {}
-        if len(targets) != 1:
-            problems.append(f"an item has targets {targets}, not one")
-            continue
-        key = (str(labels.get("server_type", "")), targets[0])
-        seen[key] = seen.get(key, 0) + 1
-        if key not in want:
-            problems.append(f"it lists {key[0]} {key[1]}, which is not in the shape")
-            continue
-        web_url = want[key]
-        if labels.get("server_web_url") != web_url:
-            problems.append(
-                f"{key[1]}'s server_web_url is {labels.get('server_web_url')!r}, not {web_url}"
-            )
-        if host_of(str(labels.get("server_url", ""))) != host_of(web_url):
-            problems.append(
-                f"{key[1]}'s server_url {labels.get('server_url')!r} is another host's"
-            )
-        if not labels.get("server_name"):
-            problems.append(f"{key[1]} has no server_name")
-    problems += [f"it lists {k[0]} {k[1]} {n} times" for k, n in seen.items() if n > 1]
-    problems += [f"it lacks {k[0]} {k[1]}" for k in want if k not in seen]
-    return problems
 
 
 def discover_servers(test: Test) -> list[Row]:
@@ -1002,7 +737,7 @@ def discover_servers(test: Test) -> list[Row]:
     issuer = str(fed.discovery.get("discovery_endpoint", ""))
     tokens: tuple[tuple[str, Optional[str]], ...] = (
         ("no-token", None),
-        ("unknown-issuer", test.unknown_token(DISCOVERY, ELSEWHERE, jwt.ANY_AUDIENCE)),
+        ("unknown-issuer", unknown_token(DISCOVERY, ELSEWHERE, jwt.ANY_AUDIENCE)),
         ("federation", sign(key, kid, DISCOVERY, issuer, jwt.ANY_AUDIENCE)),
     )
     rows: list[Row] = []
@@ -1015,7 +750,7 @@ def discover_servers(test: Test) -> list[Row]:
             elif answer.status != 200:
                 why = f"{answer.describe()}, not 200"
             else:
-                why = first(listing_problems(fed, parse(answer)) or [""])
+                why = first(listing_problems(fed, answer.json()) or [""])
             note = why or (
                 f"{len(expected_targets(fed))} servers" if case == "federation" else "HTTP 403"
             )
@@ -1052,8 +787,8 @@ def broker(test: Test) -> list[Row]:
         return [("", SKIP, "the directors know of no cache")]
     endpoint = urlsplit(str(fed.discovery.get("broker_endpoint", "")))
     base = f"{endpoint.scheme}://{endpoint.netloc}"
-    origin = test.server("Origin", host_of(fed.origins[0].url))
-    cache = test.server("Cache", host_of(test.caches()[0].url))
+    origin = test.server("Origin", director.host(fed.origins[0].url))
+    cache = test.server("Cache", director.host(test.caches()[0].url))
     made_up = f"advertise-{test.run}"
 
     def registry_token(server: Server, scope: str) -> str:
@@ -1062,7 +797,7 @@ def broker(test: Test) -> list[Row]:
         return sign(key, kid, scope, issuer, base, server.registered_host)
 
     as_origin = {"origin": made_up, "prefix": origin.prefix}
-    unknown = test.unknown_token(
+    unknown = unknown_token(
         RETRIEVE, f"{fed.registry_url}/api/v1.0/registry{origin.prefix}", base
     )
     retrieve, reverse = "/api/v1.0/broker/retrieve", "/api/v1.0/broker/reverse"
@@ -1107,7 +842,7 @@ def broker(test: Test) -> list[Row]:
             why = f"{answer.describe()}, not {' or '.join(map(str, statuses))}"
         elif (
             name == "valid"
-            and (common.as_object(parse(answer)) or {}).get("status") != "timeout"
+            and (common.as_object(answer.json()) or {}).get("status") != "timeout"
         ):
             why = f"its status is not 'timeout': {answer.body[:200]!r}"
         rows.append((name, FAIL if why else PASS, why or answer.describe()))

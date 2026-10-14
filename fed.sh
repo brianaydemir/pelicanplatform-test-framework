@@ -1238,9 +1238,6 @@ fed_generate() {
   for ns in public protected-a protected-b; do
     printf '%s %s\n' "${ns}" "$(fed_issuer_url "/${ns}")"
   done | fed_write framework/var/generated/issuer-urls
-  # What fed.sh wrote before issuer-urls.
-  rm -f framework/var/generated/origin-issuer-url \
-      framework/var/generated/origin-issuer-url-public
   printf '%s\n' "${fed_origin_url}" | fed_write framework/var/generated/origin-web-url
   printf '%s\n' "${fed_origin_key_dir}" | fed_write framework/var/generated/origin-key-dir
   printf '%s\n' "${EXTERNAL_ISSUER}" | fed_write framework/var/generated/external-issuer
@@ -1397,8 +1394,6 @@ fed_generate() {
   if [ "${EXTERNAL_ISSUER}" = true ]; then
     pin_issuers=true
   fi
-  # What fed.sh called the file before it also restated capabilities.
-  rm -f framework/var/generated/conf/60-origin-issuers.yaml
   fed_origin_exports "" "${pin_issuers}" \
       | fed_write framework/var/generated/conf/60-origin-exports.yaml
   # Under `origin-s3`, each origin's exports name buckets of its own, in
@@ -2446,7 +2441,8 @@ fed_init() {
 
   if fed_have_binaries; then
     printf 'Keeping the %s binaries in framework/var/bin/.\n' "${PELICAN_TAG#v}"
-    # framework/var/bin/ may predate the fetching of this one.
+    # fed_have_binaries does not look for this one, so that a custom one
+    # survives; fetch it only if there is none.
     if [ ! -x framework/var/bin/linux/pelican-server ]; then
       fed_fetch_archive pelican-server "${PELICAN_TAG#v}" Linux
     fi

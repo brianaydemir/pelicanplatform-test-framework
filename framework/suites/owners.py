@@ -39,13 +39,13 @@ import time
 import traceback
 from typing import Optional
 
-from suites.auth import label, record, record_skip, save
 from testlib import common, credentials, director, owners, stores, transfers, web
 from testlib.common import die, first
 from testlib.credentials import ALLOW
 from testlib.owners import CREDENTIALS, OwnerCredential, Pair
-from testlib.report import FAIL, PASS, SKIP, Report
+from testlib.report import FAIL, PASS, SKIP, Report, label, record, record_skip
 from testlib.session import Session, last_line
+from testlib.web import save
 
 OUT = "data/owners-test"
 

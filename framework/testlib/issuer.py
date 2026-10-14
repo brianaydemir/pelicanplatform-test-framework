@@ -80,6 +80,17 @@ CLIENT_SCOPES = (
     "share.access:/",
 )
 
+# What a user asks for who wants everything they may have of data: the
+# storage scopes, and a share's.
+DATA_SCOPES = ("storage.read:/", "storage.modify:/", "storage.create:/", "share.access:/")
+
+# The prefixes, within a namespace, that the authorization templates of
+# framework/config.d/base/40-origin.yaml grant: each user's home,
+# BASE/home/<user>; each group's project (project()); and the archive,
+# to any group named test-project-*.
+BASE = "data/issuer"
+ARCHIVE = f"{BASE}/archive"
+
 # The client every issuer seeds for browsers, which has no secret and
 # proves itself with PKCE (Issuer.PublicClientID).
 PUBLIC_CLIENT = "pelican-public-client"
@@ -570,6 +581,22 @@ def header(tok: str) -> dict[str, Any]:
 def scopes(tok: str) -> frozenset[str]:
     """A token's scopes."""
     return frozenset(str(claims(tok).get("scope", "")).split())
+
+
+def data_scopes(tok: str) -> frozenset[str]:
+    """A token's scopes for data: storage.* and share.access."""
+    return frozenset(s for s in scopes(tok) if s.startswith(("storage.", "share.")))
+
+
+def project(group: str) -> str:
+    """A group's project prefix, within the namespace (see BASE)."""
+    return f"{BASE}/projects/{group}"
+
+
+def scope(kind: str, rel: str) -> str:
+    """The storage scope for kind (read, modify, or create) of rel, a
+    prefix within the namespace."""
+    return f"storage.{kind}:/{rel}"
 
 
 def groups(tok: str) -> frozenset[str]:

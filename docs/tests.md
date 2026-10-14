@@ -527,8 +527,9 @@ namespace.
 
 Both suites wait until the `expired` token is 70 seconds past its expiry
 before presenting it, since native servers allow 60 seconds of clock
-skew. `test.py` mints it as it starts, and runs these suites last, so
-the wait has usually passed by then.
+skew. `test.py` mints it as it starts, and runs these suites after
+every other but `restart` and `keys`, so the wait has usually passed by
+then.
 
 `init` creates the four test keys in `framework/var/test-keys/`, and
 the public keys of `jwks.pem`, `ns-protected-a.pem`, and
@@ -2902,7 +2903,8 @@ found. Its tokens are the origins' own, of the scopes each names.
   DELETE of `/protected-a`'s root, with the `server` token, must get
   403 or 405, and remove nothing. If an origin honored it, it would
   take `/protected-a`'s storage with it, and `init`'s objects, so
-  `webdav` runs after every other suite but `auth` and `transfers`.
+  `webdav` runs after every other suite but `auth`, `transfers`,
+  `restart`, and `keys`.
 - `cache-methods`: a cache serves objects and listings (GET, HEAD, and
   PROPFIND), and relays a PUT or a DELETE to an origin (`blocks`'s
   `write-through`), and that is all a V2 cache routes

@@ -15,6 +15,9 @@ The suite is the suite's name, with `-<tag>` after it if RESULTS_TAG
 names a tag (as smoke.sh does, to tell apart two runs of one suite).
 framework/report.py merges these files and converts them to JUnit XML
 and Markdown.
+
+A suite that prints a row per request, as the auth and owners suites
+do, records each with record() or record_skip().
 """
 
 import os
@@ -23,6 +26,8 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Optional
+
+from . import web
 
 PASS, FAIL, SKIP, INCONCLUSIVE = "PASS", "FAIL", "SKIP", "INCONCLUSIVE"
 STATUSES = (PASS, FAIL, SKIP, INCONCLUSIVE)
@@ -140,3 +145,30 @@ class Report:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, "w", encoding="utf-8") as f:
             f.write(self.table())
+
+
+def label(svc: str, role: str) -> str:
+    """What rows call service svc in role (origin or cache). In `tiny`,
+    one service is both."""
+    return svc if svc.startswith(f"{role}-") else f"{svc}-{role}"
+
+
+def record(
+    report: Report, heading: str, case: str, answer: web.Response, why: str, note: str = ""
+) -> None:
+    """Print heading and answer's status as a row, and record case: failed
+    because of why, or passed, with note."""
+    code = "000" if answer.status is None else str(answer.status)
+    line = f"{heading} {code:>4}"
+    if why:
+        print(f"{line}  FAIL  {why}")
+        report.add(case, FAIL, f"HTTP {code}: {why}")
+    else:
+        print(f"{line}  PASS" + (f"  {note}" if note else ""))
+        report.add(case, PASS, f"HTTP {code}" + (f": {note}" if note else ""))
+
+
+def record_skip(report: Report, heading: str, case: str, why: str) -> None:
+    """Print heading as a row, and record case as skipped because of why."""
+    print(f"{heading}       SKIP  {why}")
+    report.add(case, SKIP, why)

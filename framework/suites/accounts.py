@@ -68,11 +68,10 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from suites import collections, webapi
-from suites.collections import create, delete, get, grant, grants, listed, objects, patch
-from testlib import accounts, common, credentials, issuer, web
+from testlib import accounts, collections, common, credentials, issuer, web, webapi
 from testlib.accounts import Api, ApiError, must
-from testlib.common import die, first, warn
+from testlib.collections import create, delete, get, grant, grants, listed, patch
+from testlib.common import die, first, objects, warn
 from testlib.credentials import PROTECTED
 from testlib.issuer import IssuerError, Tokens, User
 from testlib.report import FAIL, PASS, SKIP
@@ -109,7 +108,7 @@ REFRESHABLE = ("openid", "offline_access")
 def skip(fed: common.Federation) -> Optional[str]:
     """Why there is nothing to test: no embedded issuer, or no protected
     namespace."""
-    return collections.skip(fed)
+    return collections.missing(fed)
 
 
 def outcome(problems: Sequence[str], note: str) -> Row:
@@ -176,9 +175,9 @@ class Test:
         """The data scopes the namespace's issuer grants username now, of
         everything they might have."""
         tok = issuer.token(
-            self.client("device"), User(token=self.web_token(username)), collections.DATA_SCOPES
+            self.client("device"), User(token=self.web_token(username)), issuer.DATA_SCOPES
         )
-        return collections.storage_scopes(tok)
+        return issuer.data_scopes(tok)
 
     def path(self, name: str) -> str:
         """The namespace of the run's collection name: its federation path."""
@@ -566,7 +565,7 @@ def scope_grants(test: Test) -> list[Row]:
         body = {
             "name": test.name("token"),
             "scopes": ["server.collection_admin"],
-            "expiration": webapi.stamp(datetime.now(timezone.utc) + timedelta(hours=1)),
+            "expiration": common.timestamp(datetime.now(timezone.utc) + timedelta(hours=1)),
         }
         minted = web.request(
             "POST",

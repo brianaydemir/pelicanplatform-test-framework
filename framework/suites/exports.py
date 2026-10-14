@@ -69,15 +69,14 @@ from functools import partial
 from typing import Optional
 from urllib.parse import quote
 
-from suites.cache_api import Findings
-from suites.metadata import index
-from suites.webdav import copy_or_move, root_url
 from testlib import common, control, director, stores, web, webdav
-from testlib.common import die, first, warn
+from testlib.common import Findings, die, first, warn
+from testlib.recorder import index
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
 from testlib.stub import HOST as STUB_HOST
 from testlib.stub import Reply, Stub
+from testlib.webdav import copy_or_move, root_url
 
 SCENARIOS = {
     "multipart-put": "with metadata off, a PUT typed multipart/form-data is stored as sent",

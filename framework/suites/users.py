@@ -63,9 +63,8 @@ from functools import partial
 from typing import Any, Optional
 from urllib.parse import quote
 
-from suites.cache_api import Findings
 from testlib import common, control, credentials, director, jwt, stores, web, webdav
-from testlib.common import die, first, warn
+from testlib.common import Findings, die, first, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
 

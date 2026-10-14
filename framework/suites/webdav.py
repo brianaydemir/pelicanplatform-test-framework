@@ -56,13 +56,13 @@ import traceback
 import xml.etree.ElementTree as ET  # nosec B405
 from dataclasses import dataclass, field
 from typing import Optional, Union
-from urllib.parse import urlsplit
 
 from testlib import common, credentials, digests, stores, web, webdav
 from testlib.common import first, warn
 from testlib.credentials import R
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
+from testlib.webdav import copy_or_move, root_url
 
 SCENARIOS = {
     "post-create-only": (
@@ -309,23 +309,6 @@ class Findings:
         if self.problems:
             return FAIL, first(self.problems)
         return PASS, "; ".join([passed, *self.notes])
-
-
-def copy_or_move(
-    method: str,
-    url: str,
-    token: str,
-    destination: Optional[str],
-    overwrite: Optional[str] = None,
-) -> web.Response:
-    """Send COPY or MOVE (method) of url to destination (none if None),
-    with an Overwrite header if overwrite is given."""
-    headers: dict[str, str] = {}
-    if destination is not None:
-        headers["Destination"] = destination
-    if overwrite is not None:
-        headers["Overwrite"] = overwrite
-    return web.request(method, url, token=token, headers=headers)
 
 
 # --------------------------------------------------------------------------
@@ -897,12 +880,6 @@ def propstat_problems(body: bytes) -> list[str]:
         elif seen[name].startswith("2"):
             problems.append(f"{local} was set ({seen[name]})")
     return problems
-
-
-def root_url(origin: common.Origin) -> str:
-    """The root of origin's server."""
-    parts = urlsplit(origin.url)
-    return f"{parts.scheme}://{parts.netloc}/"
 
 
 def webdav_semantics(test: Test) -> tuple[str, str]:

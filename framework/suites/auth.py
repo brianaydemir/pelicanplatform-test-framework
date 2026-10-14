@@ -66,8 +66,9 @@ from urllib.parse import urlencode, urlsplit
 from testlib import accounts, common, credentials, director, jwt, stores, web
 from testlib.common import die, warn
 from testlib.credentials import ALLOW, CREDENTIALS, DENY, PROTECTED, RWM, Credential, R
-from testlib.report import FAIL, PASS, SKIP, Report
+from testlib.report import FAIL, PASS, SKIP, Report, label, record, record_skip
 from testlib.session import Session
+from testlib.web import save
 
 OUT = "data/auth-test"
 
@@ -380,42 +381,6 @@ class Test:
             elif have != common.digest(data):
                 problems.append("the store no longer holds the object")
         self.row(target, namespace, "delete", cred.name, answer, "; ".join(problems))
-
-
-def record(
-    report: Report, heading: str, case: str, answer: web.Response, why: str, note: str = ""
-) -> None:
-    """Print heading and answer's status as a row, and record case: failed
-    because of why, or passed, with note."""
-    code = "000" if answer.status is None else str(answer.status)
-    line = f"{heading} {code:>4}"
-    if why:
-        print(f"{line}  FAIL  {why}")
-        report.add(case, FAIL, f"HTTP {code}: {why}")
-    else:
-        print(f"{line}  PASS" + (f"  {note}" if note else ""))
-        report.add(case, PASS, f"HTTP {code}" + (f": {note}" if note else ""))
-
-
-def record_skip(report: Report, heading: str, case: str, why: str) -> None:
-    """Print heading as a row, and record case as skipped because of why."""
-    print(f"{heading}       SKIP  {why}")
-    report.add(case, SKIP, why)
-
-
-def save(path: str, answer: web.Response) -> None:
-    """Keep a response's body (or a HEAD's headers)."""
-    with open(path, "wb") as f:
-        if answer.body:
-            f.write(answer.body)
-        else:
-            f.write("".join(f"{k}: {v}\n" for k, v in answer.headers).encode())
-
-
-def label(svc: str, role: str) -> str:
-    """What rows call service svc in role (origin or cache). In `tiny`,
-    one service is both."""
-    return svc if svc.startswith(f"{role}-") else f"{svc}-{role}"
 
 
 # --------------------------------------------------------------------------

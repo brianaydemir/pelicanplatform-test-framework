@@ -1,12 +1,7 @@
-"""Objects whose names a URL or a listing must encode: a space, `%`,
-`+`, `#`, `?`, `&`, `;`, quotes, angle brackets, brackets, `*`, and
-letters beyond ASCII; and two that need no encoding but are easily
-mishandled: a name that begins with a dot, and one of 200 characters.
-Each sits beside decoys, objects whose names a
-server or client that mishandles the encoding would take for its own:
-`x%41y` for `xAy`, `a+b` and `a%20b` for `a b`, `hash#tag` for `hash`,
-and `what?q=1` for `what`. Any bytes but the object's own fail, and
-another's are named.
+"""Objects whose names a URL or a listing must encode (testlib/names.py),
+each beside decoys, objects whose names a server or client that
+mishandles the encoding would take for its own. Any bytes but the
+object's own fail, and another's are named.
 
 Objects go under /protected-a/data/names/<run>/, put at every origin
 with stores.seed(). A URL names each with every character but letters,
@@ -36,11 +31,11 @@ import traceback
 from typing import Optional
 from urllib.parse import quote
 
-from suites.commands import json_objects
 from testlib import common, director, stores, transfers, web, webdav
 from testlib.common import die, first
+from testlib.names import NAMES
 from testlib.report import FAIL, PASS, SKIP
-from testlib.session import Session, last_line
+from testlib.session import Session, json_objects, last_line
 
 SCENARIOS = {
     "origin-put": "a PUT of each name lands in each store on disk under that name",
@@ -59,29 +54,6 @@ SCENARIOS = {
     "client-put": "`pelican object put` of a file of each name lands as that object",
     "client-ls": "`pelican object ls` lists every name",
 }
-
-NAMES: tuple[str, ...] = (
-    "plain",
-    "a b",
-    "a+b",
-    "a%20b",
-    "xAy",
-    "x%41y",
-    "hash",
-    "hash#tag",
-    "what",
-    "what?q=1",
-    "semi;colon",
-    "and&eq=1",
-    'it\'s "quoted"',
-    "<angle>&amp;",
-    "[brackets]",
-    "star*",
-    "café-日本",
-    "~tilde",
-    ".hidden",
-    "long-" + "x" * 195,
-)
 
 
 class Test:

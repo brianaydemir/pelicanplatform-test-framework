@@ -59,8 +59,6 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlsplit
 
-from suites.issuer import ARCHIVE, DATA_SCOPES, data_scopes, project, scope
-from suites.webapi import Server, servers
 from testlib import (
     accounts,
     common,
@@ -76,10 +74,11 @@ from testlib import (
 from testlib.accounts import Api, ApiError
 from testlib.common import first, warn
 from testlib.credentials import PROTECTED
-from testlib.issuer import IssuerError, User
+from testlib.issuer import ARCHIVE, DATA_SCOPES, IssuerError, User, data_scopes, project, scope
 from testlib.oidc import IdpUser, LoginError
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
+from testlib.webapi import Server, servers
 
 SCENARIOS = {
     "enabled": (
@@ -630,7 +629,7 @@ class Restarted:
 
 def seed(test: Test) -> Restarted:
     """Put an object in each group's project prefix at every origin, so
-    that a token for the group may read it (see suites.issuer.project)."""
+    that a token for the group may read it (testlib.issuer.project())."""
     namespace = test.namespace or ""
     token = test.session.token(namespace)
     caps = test.fed.exports[namespace]

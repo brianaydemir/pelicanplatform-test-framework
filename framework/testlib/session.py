@@ -6,14 +6,16 @@ in turn. Tokens are minted once and kept: the server's own, for a
 suite's setup and checks, and those of the credential table
 (credentials.CREDENTIALS), which the auth and transfers suites both
 present. The expired ones are minted as the session starts, so that they
-are long past their expiry by the time those suites, which run last,
-present them.
+are long past their expiry by the time those suites, which run late,
+present them. last_line() and the json_* functions read what a client
+printed.
 """
 
+import json
 import os
 import subprocess  # nosec B404
 import time
-from typing import Optional, Union
+from typing import Any, Optional, Union, cast
 
 from . import common, credentials
 from .credentials import RWM, Credential
@@ -149,3 +151,53 @@ def last_line(text: str) -> str:
     """The last line of a command's output that isn't blank, briefly."""
     lines = [line for line in text.strip().splitlines() if line.strip()]
     return lines[-1][:300] if lines else "(no output)"
+
+
+# How errors name a JSON value's type, by its Python type's name.
+JSON_TYPES = {
+    "dict": "an object",
+    "list": "an array",
+    "str": "a string",
+    "int": "a number",
+    "float": "a number",
+    "bool": "a boolean",
+    "NoneType": "null",
+}
+
+
+def last_json(text: str) -> Any:
+    """The JSON a command printed on stdout: its last line that parses.
+    Raises ValueError if none does."""
+    for line in reversed(text.strip().splitlines()):
+        try:
+            return json.loads(line)
+        except ValueError:
+            continue
+    raise ValueError("no JSON in the output")
+
+
+def json_type(value: Any) -> str:
+    """How a message names value's JSON type."""
+    name = type(value).__name__
+    return JSON_TYPES.get(name, name)
+
+
+def json_object(text: str) -> dict[str, Any]:
+    """last_json(), which must be an object. Raises ValueError if it
+    isn't."""
+    value = last_json(text)
+    if not isinstance(value, dict):
+        raise ValueError(f"the JSON is {json_type(value)}, not an object")
+    return cast(dict[str, Any], value)
+
+
+def json_objects(text: str) -> list[dict[str, Any]]:
+    """last_json(), which must be an array of objects. Raises ValueError
+    if it isn't."""
+    value = last_json(text)
+    items = common.as_array(value)
+    if items is None:
+        raise ValueError(f"the JSON is {json_type(value)}, not an array")
+    if not all(isinstance(item, dict) for item in items):
+        raise ValueError("the JSON array holds more than objects")
+    return cast(list[dict[str, Any]], items)

@@ -40,6 +40,14 @@ from urllib.parse import quote, urlencode, urlsplit
 
 from testlib import accounts, common, control, credentials, director, metrics, stores, web
 from testlib.common import die, first, shown, warn
+from testlib.recorder import (
+    CAPTURES,
+    delivered,
+    deliveries,
+    event,
+    last_delivery,
+    since,
+)
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -67,7 +75,6 @@ SCENARIOS = {
 # A row: its status and note.
 Row = tuple[str, str]
 
-CAPTURES = "data/metadata"
 NAMESPACE = "/protected-a"
 PREFIX = f"{NAMESPACE}/data/metadata"
 
@@ -344,35 +351,6 @@ class Test:
         return code == 0, last_line(err or out)
 
 
-def index() -> list[list[str]]:
-    """The recorder's index.tsv, whose columns are <id> <status> <type>
-    <path> <event id>."""
-    try:
-        with open(f"{CAPTURES}/index.tsv", encoding="utf-8") as f:
-            return [line.rstrip("\n").split("\t") for line in f]
-    except FileNotFoundError:
-        return []
-
-
-def since(after: int) -> list[list[str]]:
-    """index()'s rows for the deliveries that arrived after after, a
-    time.time_ns(): each row's ID is when its delivery arrived, by the
-    recorder's clock, which is the dev container's too (both are
-    containers on one host)."""
-    return [
-        row for row in index() if len(row) >= 5 and row[0].isdigit() and int(row[0]) > after
-    ]
-
-
-def deliveries(after: int, path: str = "", event_id: str = "") -> list[list[str]]:
-    """since(after)'s rows for object path, or for event event_id."""
-    return [
-        row
-        for row in since(after)
-        if (path and row[3] == path) or (event_id and row[4] == event_id)
-    ]
-
-
 def web_token(fed: common.Federation, origin: common.Origin, out: str, username: str) -> str:
     """A bearer token that origin's web API takes as username's
     (credentials.mint_user()), lasting the whole suite, written to out."""
@@ -425,32 +403,6 @@ def guarded(check: Callable[[], Row]) -> Row:
         # row fails, and the rest still run.
         traceback.print_exc()
         return FAIL, f"{type(e).__name__}: {e}"
-
-
-def event(capture: str, part: str) -> dict[str, Any]:
-    """A part of the captured event (e.g. "object"), or {} if it has
-    none."""
-    with open(f"{CAPTURES}/{capture}.event.json", encoding="utf-8") as f:
-        whole = common.as_object(json.load(f)) or {}
-    return common.as_object(whole.get(part)) or {}
-
-
-def last_delivery(row: list[str]) -> str:
-    """How the delivery that index() row records went: the status and
-    answer in its <id>.json, or, if that can't be read, the row's."""
-    try:
-        with open(f"{CAPTURES}/{row[0]}.json", encoding="utf-8") as f:
-            capture = json.load(f)
-        got, answer = capture.get("status"), str(capture.get("response", "")).rstrip()
-    except (OSError, ValueError, AttributeError):
-        got, answer = (row[1] if len(row) > 1 else "?"), "(no record of the answer)"
-    return f"last delivery got HTTP {got}: {answer}"
-
-
-def delivered(path: str, code: str) -> bool:
-    """Whether index() records a delivery for object path that the
-    recorder answered with code."""
-    return any(row[1:2] == [code] and row[3:4] == [path] for row in index())
 
 
 def same(got: object, want: object) -> bool:

@@ -34,9 +34,9 @@ from html.parser import HTMLParser
 from typing import Optional
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
-from suites.names import NAMES
 from testlib import common, credentials, stores, web, webdav
 from testlib.common import die, first, warn
+from testlib.names import NAMES
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
 

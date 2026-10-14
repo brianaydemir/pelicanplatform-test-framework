@@ -44,15 +44,14 @@ import os
 import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Optional
 from urllib.parse import quote, urlencode, urlsplit
 
-from suites.blocks import cache_dir, read_cinfo, store_bytes
 from testlib import blocks, cacheapi, common, credentials, jwt, metrics, stores, web
-from testlib.common import die, first, warn
-from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
+from testlib.blocks import cache_dir, read_cinfo, store_bytes
+from testlib.common import Findings, die, first, warn
+from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
 
 SCENARIOS = {
@@ -1276,24 +1275,6 @@ def scan_metric(cache: common.Cache) -> Optional[float]:
     """The cache's count of objects its data scans found inconsistent."""
     found = metrics.fetch(cache.web_url)
     return None if found is None else found.value(INCONSISTENT)
-
-
-@dataclass
-class Findings:
-    """What a case found: problems, which fail it; doubts, which leave it
-    inconclusive; and notes on what went right."""
-
-    problems: list[str] = field(default_factory=list[str])
-    doubts: list[str] = field(default_factory=list[str])
-    notes: list[str] = field(default_factory=list[str])
-
-    def row(self, passed: str) -> Row:
-        """FAIL, INCONCLUSIVE, or PASS (with note passed), and a note."""
-        if self.problems:
-            return FAIL, first(self.problems)
-        if self.doubts:
-            return INCONCLUSIVE, "; ".join(self.doubts)
-        return PASS, "; ".join([passed] + self.notes)
 
 
 # The rows of `consistency` that corrupted() decides, in order.

@@ -46,7 +46,7 @@ suites (`framework/suites/`): `federation`, `selftest`, `commands`,
 `client`, `transfer-api`, `listings`, `names`, `blocks`, `freshness`,
 `cache-api`, `throttling`, `exports`, `pstore`, `routing`,
 `director-api`, `registry`, `tiering`, `posc`, `metadata`, `users`,
-`owners`, `sitelocal`, `collections`, `issuer`, `accounts`,
+`owners`, `sitelocal`, `collections`, `issuer`, `accounts`, `oidc`,
 `advertise`, `webapi`, `observability`, `webdav`, `auth`,
 `transfers`, `restart`, and `keys`.
 A suite that doesn't apply to the shape is skipped, and says why.

@@ -55,7 +55,6 @@ from email.utils import formatdate
 from typing import Optional
 from urllib.parse import urlencode, urlsplit
 
-from suites import commands
 from testlib import (
     blocks,
     cacheapi,
@@ -71,7 +70,7 @@ from testlib import (
 )
 from testlib.common import die, first, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
-from testlib.session import CLIENT_TIMEOUT, Session, last_line
+from testlib.session import CLIENT_TIMEOUT, Session, json_object, json_objects, last_line
 
 SCENARIOS = {
     "put-declared": "upload every size with a Content-Length to every origin",
@@ -362,12 +361,6 @@ class Test:
         with ThreadPoolExecutor(8) as pool:
             found = pool.map(one, jobs)
         return [p for p in found if p]
-
-
-def cache_dir(cache: common.Cache) -> str:
-    """Where cache keeps its store, which it mounts at /data."""
-    name = cache.svc[len("cache-") :] if cache.svc.startswith("cache-") else cache.svc
-    return f"data/cache/{name}"
 
 
 def upload_each(test: Test, base: str, objects: dict[str, bytes]) -> list[str]:
@@ -940,38 +933,15 @@ def has_age(test: Test, cache: common.Cache, rel: str) -> Optional[bool]:
     return bool(answer.header("Age")) if answer.status == 200 else None
 
 
-def read_cinfo(cache: common.Cache, rel: str) -> tuple[Optional[blocks.Cinfo], str]:
-    """What an XRootD cache's .cinfo of rel in /protected-a records, or why
-    it could not be read. The cache links it from namespace/ to where it
-    keeps it, by a path in its own mount."""
-    root = cache_dir(cache)
-    link = f"{root}/namespace/protected-a/{rel}.cinfo"
-    try:
-        target = os.readlink(link)
-    except FileNotFoundError:
-        return None, f"framework/var/{link} is missing"
-    except OSError:
-        target = link
-    if target.startswith("/data/"):
-        target = f"{root}/{target[len('/data/'):]}"
-    try:
-        with open(target, "rb") as f:
-            return blocks.parse_cinfo(f.read()), ""
-    except FileNotFoundError:
-        return None, f"framework/var/{target} is missing"
-    except ValueError as e:
-        return None, f"framework/var/{target}: {e}"
-
-
 def wait_cinfo(
     cache: common.Cache, rel: str, want: Callable[[blocks.Cinfo], bool], seconds: float
 ) -> tuple[Optional[blocks.Cinfo], str]:
-    """read_cinfo, until what it finds is wanted or seconds pass: the
-    cache writes its .cinfo some time after the blocks."""
+    """blocks.read_cinfo(), until what it finds is wanted or seconds
+    pass: the cache writes its .cinfo some time after the blocks."""
     last: list[tuple[Optional[blocks.Cinfo], str]] = []
 
     def wanted() -> bool:
-        last[:] = [read_cinfo(cache, rel)]
+        last[:] = [blocks.read_cinfo(cache, rel)]
         found = last[0][0]
         return found is not None and want(found)
 
@@ -2868,7 +2838,7 @@ def huge_client_sizes(test: Test, rel: str) -> list[str]:
         problems.append(f"`object stat`: exit {code}: {last_line(err or out)}")
     else:
         try:
-            info = commands.json_object(out)
+            info = json_object(out)
         except ValueError as e:
             problems.append(f"`object stat`: unreadable output ({e}): {last_line(out)}")
         else:
@@ -2883,7 +2853,7 @@ def huge_client_sizes(test: Test, rel: str) -> list[str]:
         problems.append(f"`object ls`: exit {code}: {last_line(err or out)}")
         return problems
     try:
-        sizes = [e.get("Size") for e in commands.json_objects(out) if not e.get("IsCollection")]
+        sizes = [e.get("Size") for e in json_objects(out) if not e.get("IsCollection")]
     except ValueError as e:
         problems.append(f"`object ls`: unreadable output ({e}): {last_line(out)}")
         return problems
@@ -3532,9 +3502,7 @@ def mixed_version(test: Test) -> tuple[str, str]:
 
 
 # The overwrite scenarios' objects: one keeps its size, one grows, and one
-# shrinks, by OVERWRITE_CHANGE.
-OVERWRITE_SIZE = 3 * blocks.XROOTD_BLOCK + 7
-OVERWRITE_CHANGE = 3 * blocks.BLOCK + 11
+# shrinks, by blocks.OVERWRITE_CHANGE.
 # How long past an object's freshness a cache may take to serve the new
 # version: requests are 3 seconds apart, and it revalidates by fetching
 # the object again.
@@ -3545,7 +3513,7 @@ class Versions:
     """Two versions of each cache's objects for the overwrite scenarios,
     under base, by name: v2 is as long as v1, longer, or shorter."""
 
-    CHANGES = {"same": 0, "grown": OVERWRITE_CHANGE, "shrunk": -OVERWRITE_CHANGE}
+    CHANGES = {"same": 0, "grown": blocks.OVERWRITE_CHANGE, "shrunk": -blocks.OVERWRITE_CHANGE}
     NAMES = tuple(CHANGES)
 
     def __init__(self, test: Test, base: str):
@@ -3556,8 +3524,8 @@ class Versions:
         for cache in test.caches:
             for name, change in self.CHANGES.items():
                 key = f"{cache.svc}-{name}"
-                self.v1[key] = os.urandom(OVERWRITE_SIZE)
-                self.v2[key] = os.urandom(OVERWRITE_SIZE + change)
+                self.v1[key] = os.urandom(blocks.OVERWRITE_SIZE)
+                self.v2[key] = os.urandom(blocks.OVERWRITE_SIZE + change)
 
     def which(
         self, cache: common.Cache, key: str, request: Optional[blocks.Request]
@@ -3723,7 +3691,7 @@ def put_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> Optiona
     """write_through()'s PUTs through cache of rel in /protected-a, which
     every origin holds as v1; what went wrong, or None."""
     url = f"{cache.url}/protected-a/{rel}"
-    v2 = os.urandom(len(v1) - OVERWRITE_CHANGE)
+    v2 = os.urandom(len(v1) - blocks.OVERWRITE_CHANGE)
     why = test.get(cache.url, rel, v1, None)
     if why:
         return f"before the writes: {why}"
@@ -3804,7 +3772,7 @@ def write_through(test: Test) -> tuple[str, str]:
     writes, the PUT must be refused. An XRootD cache takes no writes, so
     its PUT must be refused, and change no origin."""
     base = f"{test.base}/write-through"
-    v1 = {c.svc: os.urandom(OVERWRITE_SIZE) for c in test.caches}
+    v1 = {c.svc: os.urandom(blocks.OVERWRITE_SIZE) for c in test.caches}
     errors = upload_each(test, base, v1)
     if errors:
         return FAIL, errors[0]
@@ -3855,20 +3823,6 @@ def evict_object(run_id: str, n: int) -> bytes:
     each time, since holding every object would take as much memory as
     the caches' bound. Test data, so not a cryptographic generator."""
     return random.Random(f"{run_id}/{n}").randbytes(EVICT_OBJECT)  # nosec B311
-
-
-def store_bytes(cache: common.Cache) -> Optional[int]:
-    """How many bytes a V2 cache's object files take, in the store it
-    mounts at /data (local_cache/storage.go in Pelican); None if it has
-    no such store."""
-    root = f"{cache_dir(cache)}/persistent-cache/objects"
-    if not os.path.isdir(root):
-        return None
-    return sum(
-        os.path.getsize(os.path.join(directory, name))
-        for directory, _, files in os.walk(root)
-        for name in files
-    )
 
 
 def cached(test: Test, cache: common.Cache, rel: str) -> Optional[bool]:
@@ -3936,21 +3890,21 @@ def evicted(
         why = test.get(cache.url, f"{base}/{n}", evict_object(test.run, n), None)
         if why:
             return f"object {n}, cold: {why}", ""
-    if store_bytes(cache) is None:
+    if blocks.store_bytes(cache) is None:
         return (
-            f"framework/var/{cache_dir(cache)} has no persistent-cache/objects to measure",
+            f"framework/var/{blocks.cache_dir(cache)} has no persistent-cache/objects to measure",
             "",
         )
 
     def under() -> bool:
-        return (store_bytes(cache) or 0) <= high + EVICT_SLACK
+        return (blocks.store_bytes(cache) or 0) <= high + EVICT_SLACK
 
     if not common.wait_for(under, EVICT_WAIT, interval=2):
         return (
-            f"holds {store_bytes(cache)} bytes {EVICT_WAIT}s after reading {count * EVICT_OBJECT},"
+            f"holds {blocks.store_bytes(cache)} bytes {EVICT_WAIT}s after reading {count * EVICT_OBJECT},"
             f" above its high water mark of {high}"
         ), ""
-    held = store_bytes(cache) or 0
+    held = blocks.store_bytes(cache) or 0
     if held < low - EVICT_OBJECT:
         return (
             f"holds {held} bytes, below its low water mark of {low}, so it evicted too much",

@@ -50,8 +50,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import quote, urlsplit
 
-from suites import advertise
-from testlib import common, credentials, director, metrics, stores, web, webdav
+from testlib import ads, common, credentials, director, metrics, stores, web, webdav
 from testlib.common import first, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
@@ -1204,8 +1203,7 @@ def metadata_hosting(test: Test) -> list[Row]:
 class Forwarding:
     """`forwarding`'s cache, its own key, and the two directors."""
 
-    ads: advertise.Test
-    cache: advertise.Server
+    cache: ads.Server
     token: str
     first: str  # the director the suite posts the cache's ads to, by URL
     second: str  # the director that must learn of them from the first
@@ -1242,8 +1240,8 @@ class Forwarding:
         alone."""
         if status != self.status:
             self.posted.add(status)
-        body = advertise.ad(self.cache, status=status)
-        return advertise.post_ad(url, "Cache", body, self.token)
+        body = ads.ad(self.cache, status=status)
+        return ads.post_ad(url, "Cache", body, self.token)
 
 
 def forwarded(f: Forwarding) -> Row:
@@ -1341,13 +1339,13 @@ def forwarding(test: Test) -> list[Row]:
         return [(c, SKIP, "one director (-p topo-multi-director)") for c in cases]
     if not test.fed.federated_caches:
         return [(c, SKIP, "the directors know of no cache") for c in cases]
-    ads = advertise.Test(test.session)
+    described = ads.Servers(test.fed)
     try:
-        cache = ads.server("Cache", director.host(test.fed.federated_caches[0].url))
-        token = ads.advertise_token(cache)
-    except advertise.Missing as e:
+        cache = described.server("Cache", director.host(test.fed.federated_caches[0].url))
+        token = described.advertise_token(cache)
+    except ads.Missing as e:
         return [(c, FAIL, str(e)) for c in cases]
-    f = Forwarding(ads, cache, token, directors[0], directors[1], "")
+    f = Forwarding(cache, token, directors[0], directors[1], "")
     f.status = str(f.listed(f.second).get("serverStatus") or "ok")
     if f.status == "shutting down":
         return [(c, INCONCLUSIVE, "the cache says it is shutting down") for c in cases]

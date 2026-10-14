@@ -59,7 +59,6 @@ from functools import partial
 from typing import Optional, Union
 from urllib.parse import quote, urlencode
 
-from suites.blocks import OVERWRITE_CHANGE, OVERWRITE_SIZE, store_bytes
 from testlib import (
     blocks,
     common,
@@ -72,6 +71,7 @@ from testlib import (
     web,
     webdav,
 )
+from testlib.blocks import OVERWRITE_CHANGE, OVERWRITE_SIZE, store_bytes
 from testlib.common import die, first, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session

@@ -54,9 +54,8 @@ from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import quote
 
-from suites.cache_api import Findings
 from testlib import common, control, director, stores, transfers, web
-from testlib.common import die, first, warn
+from testlib.common import Findings, die, first, warn
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import CLIENT_TIMEOUT, Session, last_line
 

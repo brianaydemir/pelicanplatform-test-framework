@@ -125,12 +125,21 @@ from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import quote
 
-from suites import collections
-from testlib import accounts, common, credentials, issuer, stores, web
+from testlib import accounts, collections, common, credentials, issuer, stores, web
 from testlib.accounts import Api, ApiError, must
 from testlib.common import die, warn
 from testlib.credentials import PROTECTED
-from testlib.issuer import IssuerError, Tokens, User
+from testlib.issuer import (
+    ARCHIVE,
+    BASE,
+    DATA_SCOPES,
+    IssuerError,
+    Tokens,
+    User,
+    data_scopes,
+    project,
+    scope,
+)
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -163,16 +172,14 @@ GROUPS = ("test-project-a", "test-project-b")
 # How test-stranger names the group of their own each run.
 ROGUE = "test-project-rogue"
 
-# Where the suite's objects and collections live, within the namespace.
-BASE = "data/issuer"
-ARCHIVE = f"{BASE}/archive"
+# Beside the templates' prefixes (testlib.issuer): /protected-b's own
+# template's, under `-p origin-export-templates`, and one that no
+# template grants.
 EXPORT = f"{BASE}/export"
 DECOY = f"{BASE}/decoy"
 
 RWC = ("read", "modify", "create")
 R, M, C = "storage.read", "storage.modify", "storage.create"
-# What a user asks for who wants everything they may have.
-DATA_SCOPES = ("storage.read:/", "storage.modify:/", "storage.create:/", "share.access:/")
 
 # How a server may refuse.
 REFUSED = (401, 403, 404)
@@ -219,22 +226,6 @@ def home(role: str) -> str:
     return f"{BASE}/home/{username(role)}"
 
 
-def project(group: str) -> str:
-    """A group's project prefix, within the namespace."""
-    return f"{BASE}/projects/{group}"
-
-
-def scope(kind: str, rel: str) -> str:
-    """The storage scope for kind (read, modify, or create) of rel, a
-    prefix within the namespace."""
-    return f"storage.{kind}:/{rel}"
-
-
-def data_scopes(tok: str) -> frozenset[str]:
-    """A token's scopes for data: storage.* and share.access."""
-    return frozenset(s for s in issuer.scopes(tok) if s.startswith(("storage.", "share.")))
-
-
 def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
     """A row: the first problem, or note if there were none."""
     return (FAIL, common.first(problems)) if problems else (PASS, note)
@@ -243,7 +234,7 @@ def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
 def skip(fed: common.Federation) -> Optional[str]:
     """Why there is nothing to test: no embedded issuer, or no protected
     namespace."""
-    return collections.skip(fed)
+    return collections.missing(fed)
 
 
 class Test:
@@ -402,7 +393,7 @@ def sweep(test: Test) -> None:
     directory, and their rogue groups."""
     admin = test.api("admin")
     directory = f"/{test.namespace}/{BASE}/collections/"
-    for row in collections.objects(admin.call("GET", collections.COLLECTIONS).array):
+    for row in common.objects(admin.call("GET", collections.COLLECTIONS).array):
         namespace = str(row.get("namespace", ""))
         if namespace.startswith(directory) and not namespace.startswith(
             f"/{test.namespace}/{test.gamma_rel}"
@@ -410,7 +401,7 @@ def sweep(test: Test) -> None:
             gone = collections.delete(admin, str(row.get("id")))
             if not gone.ok:
                 warn(f"could not remove collection {row.get('name')}: {gone.describe()}")
-    for row in collections.objects(admin.call("GET", accounts.GROUPS).array):
+    for row in common.objects(admin.call("GET", accounts.GROUPS).array):
         name = str(row.get("name", ""))
         if name.startswith(f"{ROGUE}-") and name != f"{ROGUE}-{test.run}":
             failed = accounts.delete_group(admin, str(row.get("id")))
@@ -1545,7 +1536,7 @@ def admin_clients(test: Test) -> tuple[str, str]:
         if answer.status != 403:
             problems.append(f"deleting a client as test-member: {answer.describe()}, not 403")
         listed = issuer.admin_call(test.web, namespace, admin)
-        rows = collections.objects(common.as_array(json_of(listed)) or [])
+        rows = common.objects(common.as_array(json_of(listed)) or [])
         if listed.status != 200 or made.client_id not in {r.get("client_id") for r in rows}:
             problems.append(f"the admin's list: {listed.describe()}, without the new client")
         shown = issuer.admin_call(test.web, namespace, admin, "GET", made.client_id)

@@ -28,13 +28,20 @@ local_cache/schema.go). Beyond that:
 
 A range is (start, end), inclusive; (None, n) is the last n bytes, and
 (start, None) everything from start. A request asks for one or more.
+
+A cache's store is on disk under framework/var/data/cache/<n>/
+(cache_dir()): store_bytes() is what a V2 cache's objects take there,
+and read_cinfo() what an XRootD cache's .cinfo records.
 """
 
+import os
 import re
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Optional
+
+from . import common
 
 BLOCK = 4080
 TAG = 16
@@ -345,6 +352,13 @@ def freshness(cache_control: str) -> Optional[float]:
     return max(ages) if ages else None
 
 
+# An object overwritten at the origins (the blocks and freshness suites'
+# overwrite scenarios): its size, and by how much the new version grows
+# or shrinks.
+OVERWRITE_SIZE = 3 * XROOTD_BLOCK + 7
+OVERWRITE_CHANGE = 3 * BLOCK + 11
+
+
 # --------------------------------------------------------------------------
 # Overlapping reads (the blocks suite's cache-overlap). Each is unaligned to
 # both BLOCK and XROOTD_BLOCK, but for the object's own ends.
@@ -501,3 +515,51 @@ def parse_cinfo(data: bytes) -> Cinfo:
         if crc != crc32c(data[head:rest]):
             raise ValueError("the .cinfo's bitmap fails its CRC")
     return Cinfo(block_size, file_size, bitmap)
+
+
+# --------------------------------------------------------------------------
+# A cache's store on disk.
+
+
+def cache_dir(cache: common.Cache) -> str:
+    """Where cache keeps its store (under framework/var), which it mounts
+    at /data."""
+    name = cache.svc[len("cache-") :] if cache.svc.startswith("cache-") else cache.svc
+    return f"data/cache/{name}"
+
+
+def store_bytes(cache: common.Cache) -> Optional[int]:
+    """How many bytes a V2 cache's object files take, in the store it
+    mounts at /data (local_cache/storage.go in Pelican); None if it has
+    no such store."""
+    root = f"{cache_dir(cache)}/persistent-cache/objects"
+    if not os.path.isdir(root):
+        return None
+    return sum(
+        os.path.getsize(os.path.join(directory, name))
+        for directory, _, files in os.walk(root)
+        for name in files
+    )
+
+
+def read_cinfo(cache: common.Cache, rel: str) -> tuple[Optional[Cinfo], str]:
+    """What an XRootD cache's .cinfo of rel in /protected-a records, or why
+    it could not be read. The cache links it from namespace/ to where it
+    keeps it, by a path in its own mount."""
+    root = cache_dir(cache)
+    link = f"{root}/namespace/protected-a/{rel}.cinfo"
+    try:
+        target = os.readlink(link)
+    except FileNotFoundError:
+        return None, f"framework/var/{link} is missing"
+    except OSError:
+        target = link
+    if target.startswith("/data/"):
+        target = f"{root}/{target[len('/data/'):]}"
+    try:
+        with open(target, "rb") as f:
+            return parse_cinfo(f.read()), ""
+    except FileNotFoundError:
+        return None, f"framework/var/{target} is missing"
+    except ValueError as e:
+        return None, f"framework/var/{target}: {e}"

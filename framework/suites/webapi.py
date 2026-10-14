@@ -40,17 +40,30 @@ import os
 import re
 import time
 import traceback
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
-from urllib.parse import urlencode
+from typing import Optional
 
-from suites.advertise import expected_targets, listing_problems
 from testlib import accounts, common, credentials, director, jwt, web
 from testlib.common import first
+from testlib.director import expected_targets, listing_problems
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
+from testlib.webapi import (
+    ADMIN_PASSWORD,
+    API,
+    CONFIG,
+    TOKENS,
+    USER,
+    Access,
+    Expect,
+    Server,
+    cookie_header,
+    judge,
+    made_token,
+    other_key,
+    server_settings,
+)
 
 SCENARIOS = {
     "admin-matrix": "each admin route: 401 for no one, 403 for a user, 200 for the admin",
@@ -65,9 +78,6 @@ SCENARIOS = {
 # and its note.
 Row = tuple[str, str, str]
 
-API = "/api/v1.0"
-CONFIG = f"{API}/config"
-TOKENS = f"{API}/tokens"
 LOGOUT = f"{API}/auth/logout"
 VERSION = f"{API}/version"
 DISCOVER = f"{API}/director/discoverServers"
@@ -75,22 +85,9 @@ REGISTRATIONS = f"{API}/registry_ui/namespaces"
 REGISTERED_SERVERS = f"{API}/registry_ui/servers"
 DIRECTOR_SERVERS = f"{API}/director_ui/servers"
 
-# The built-in admin's password (README.md), and the ordinary user.
-ADMIN_PASSWORD = "asdf"  # nosec B105
-USER = "test-webapi"
-
 # An origin that is none of the federation's, as a cross-site page has.
 EVIL = "https://evil.invalid"
 
-# How long the suite's own bearer tokens last, in seconds: the whole
-# suite, logins spaced out included.
-TOKEN_LIFETIME = 3600
-# How far apart the suite sends logins to one server, in seconds: a
-# server allows an address a login a second (Server.UILoginRateLimit).
-LOGIN_SPACING = 1.1
-# How far into a second of the clock the first of two logins that must
-# fall in one second may be sent, in seconds.
-EARLY = 0.3
 # How long the login cookie lasts, in seconds (setLoginCookie in
 # Pelican's web_ui/authentication.go).
 COOKIE_MAX_AGE = 57600
@@ -127,9 +124,6 @@ REGISTRY_ROUTES = (
     ("delete-server", "DELETE", REGISTERED_SERVERS + "/{server}"),
 )
 
-# What an API token looks like (ApiTokenRegex in Pelican's
-# api_token/api_token.go): an ID, and the secret, in hex.
-API_TOKEN = re.compile(r"^([a-zA-Z0-9]{5})\.([a-zA-Z0-9]{64})$")
 DISCOVERY_SCOPE = "pelican.director_service_discovery"
 # A scope that a user may be granted, but the admin is not by default:
 # server.admin implies only server.user_admin and server.collection_admin
@@ -141,203 +135,21 @@ class Missing(Exception):
     """Something the scenario needs is not there."""
 
 
-@dataclass(frozen=True)
-class Server:
-    """A server's web API: one per web URL, so in the `tiny` topology, one
-    for everything."""
-
-    name: str  # its service, as rows name it, e.g. origin-0 (`fed` in `tiny`)
-    web_url: str
-    key_dir: str  # the directory (under framework/var) of its keys
-    roles: frozenset[str]  # origin, cache, director, registry
-
-    @property
-    def key(self) -> str:
-        """Its active signing key."""
-        return common.signing_key(self.key_dir)
-
-
-def servers(fed: common.Federation) -> list[Server]:
-    """Every server of the shape, each once, by web URL: the origins
-    (another owner's included), the caches (site-local ones included),
-    the directors, and the registry."""
-    found: dict[str, tuple[str, str, set[str]]] = {}
-
-    def add(name: str, web_url: str, key_dir: str, role: str) -> None:
-        found.setdefault(web_url, (name, key_dir, set()))[2].add(role)
-
-    for origin in fed.origins:
-        add(origin.svc, origin.web_url, f"issuer-keys/{origin.svc}", "origin")
-    for owner in fed.owners:
-        add(owner.origin.svc, owner.web_url, owner.key_dir, "origin")
-    for cache in fed.caches:
-        add(cache.svc, cache.web_url, f"issuer-keys/{cache.svc}", "cache")
-    for url in fed.directors:
-        add(director.host(url), url, f"issuer-keys/{director.host(url)}", "director")
-    if fed.registry_url:
-        host = director.host(fed.registry_url)
-        add(host, fed.registry_url, f"issuer-keys/{host}", "registry")
-    return [
-        Server(name, url, key_dir, frozenset(roles))
-        for url, (name, key_dir, roles) in found.items()
-    ]
-
-
-class Test:
-    """The federation's servers, and the tokens, cookies, and logins the
-    scenarios share."""
-
-    def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.run = session.run
-        self.servers = servers(self.fed)
-        self._tokens: dict[tuple[str, str], str] = {}
-        self._cookies: dict[str, str] = {}
-        self._last_login: dict[str, float] = {}
-        self._unknown: dict[str, tuple[str, str]] = {}
-
-    def server_at(self, web_url: str) -> Server:
-        """The server whose web URL is web_url."""
-        return next(s for s in self.servers if s.web_url == web_url)
-
-    def token(self, server: Server, username: str) -> str:
-        """A bearer token that server's web API takes as username's (see
-        credentials.mint_user()), lasting the whole suite."""
-        if (server.name, username) not in self._tokens:
-            self._tokens[(server.name, username)] = credentials.mint_user(
-                self.fed,
-                self.session.path(f"tokens/webapi.{server.name}.{username}"),
-                credentials.local_issuer(self.fed, server.web_url),
-                server.key,
-                username,
-                TOKEN_LIFETIME,
+def unknown_ids(test: Access, server: Server) -> tuple[str, str]:
+    """The ID of a registration and of a server that the registry at
+    server does not hold, as its admin finds; raises Missing if it
+    cannot show that."""
+    ns_id = str(1_000_000_000 + int.from_bytes(os.urandom(3), "big"))
+    server_id = f"webapi-{test.run}"
+    admin = test.admin(server)
+    for path in (f"{REGISTRATIONS}/{ns_id}", f"{REGISTERED_SERVERS}/{server_id}"):
+        answer = web.request("GET", server.web_url + path, token=admin)
+        if answer.status != 404:
+            raise Missing(
+                f"GET {path} as the admin: {answer.describe()}, not 404, so the"
+                + " suite will not send the registry's admin routes for it"
             )
-        return self._tokens[(server.name, username)]
-
-    def admin(self, server: Server) -> str:
-        """The admin's bearer token for server."""
-        return self.token(server, "admin")
-
-    def user(self, server: Server) -> str:
-        """The ordinary user's bearer token for server, whom its admin
-        creates first, if need be. The admin, and then the user, agree to
-        the server's AUP, without which it refuses them its user routes,
-        whatever else they may do there. Raises accounts.ApiError if any
-        of that fails."""
-        if (server.name, USER) not in self._tokens:
-            admin = accounts.Api(server.web_url, self.admin(server))
-            accounts.agree_to_aup(admin)
-            accounts.ensure_user(admin, USER)
-            accounts.agree_to_aup(accounts.Api(server.web_url, self.token(server, USER)))
-        return self.token(server, USER)
-
-    def post_login(
-        self,
-        server: Server,
-        fields: Mapping[str, str],
-        headers: Optional[Mapping[str, str]] = None,
-        spaced: bool = True,
-        early: bool = False,
-    ) -> web.Response:
-        """POST fields to server's login route, as a login form does; with
-        spaced, no sooner than LOGIN_SPACING seconds after the suite's
-        last login there; and with early, in the first EARLY of a second
-        of the clock, which the server and the tests share, since the
-        server counts logins by the whole second (gin-rate-limit's
-        InMemoryStore)."""
-        wait = self._last_login.get(server.web_url, 0) + LOGIN_SPACING - time.time()
-        if spaced and wait > 0:
-            time.sleep(wait)
-        if early and time.time() % 1 > EARLY:
-            time.sleep(1.01 - time.time() % 1)
-        answer = web.request(
-            "POST",
-            server.web_url + accounts.LOGIN,
-            upload=urlencode(fields).encode(),
-            headers={**accounts.FORM, **(headers or {})},
-        )
-        self._last_login[server.web_url] = time.time()
-        return answer
-
-    def login(self, server: Server) -> str:
-        """A fresh login cookie of the admin's at server. Raises
-        accounts.ApiError if the login fails."""
-        answer = web.Response(None)
-        for _ in range(accounts.LOGIN_TRIES):
-            answer = self.post_login(server, {"user": "admin", "password": ADMIN_PASSWORD})
-            if answer.status != 429:
-                break
-        cookie = answer.cookie("login")
-        if answer.status != 200 or not cookie:
-            raise accounts.ApiError(
-                f"logging in to {server.name} as admin: {answer.describe()}, with no cookie"
-            )
-        return cookie
-
-    def cookie(self, server: Server) -> str:
-        """The admin's login cookie at server, once per suite, for routes
-        that take only a cookie. A cookie that a scenario may log out is
-        a fresh one of login()'s."""
-        if server.name not in self._cookies:
-            self._cookies[server.name] = self.login(server)
-        return self._cookies[server.name]
-
-    def wait_for_logins(self) -> None:
-        """Wait until the next suite may log in at once anywhere."""
-        last = max(self._last_login.values(), default=0)
-        wait = last + LOGIN_SPACING - time.time()
-        if wait > 0:
-            time.sleep(wait)
-
-    def unknown_ids(self, server: Server) -> tuple[str, str]:
-        """The ID of a registration and of a server that the registry at
-        server does not hold, as its admin finds; raises Missing if it
-        cannot show that."""
-        if server.name not in self._unknown:
-            ns_id = str(1_000_000_000 + int.from_bytes(os.urandom(3), "big"))
-            server_id = f"webapi-{self.run}"
-            admin = self.admin(server)
-            for path in (f"{REGISTRATIONS}/{ns_id}", f"{REGISTERED_SERVERS}/{server_id}"):
-                answer = web.request("GET", server.web_url + path, token=admin)
-                if answer.status != 404:
-                    raise Missing(
-                        f"GET {path} as the admin: {answer.describe()}, not 404, so the"
-                        + " suite will not send the registry's admin routes for it"
-                    )
-            self._unknown[server.name] = (ns_id, server_id)
-        return self._unknown[server.name]
-
-
-def parse(answer: web.Response) -> Any:
-    """answer's body, as JSON, or None if it is not."""
-    try:
-        return json.loads(answer.body)
-    except ValueError:
-        return None
-
-
-def cookie_header(**cookies: str) -> dict[str, str]:
-    """A Cookie header of cookies."""
-    return {"Cookie": "; ".join(f"{name}={value}" for name, value in cookies.items())}
-
-
-# An expected answer: a label for the note, the server's answer, and the
-# statuses it may have.
-Expect = tuple[str, web.Response, tuple[int, ...]]
-
-
-def judge(case: str, expects: Sequence[Expect], extra: Sequence[str] = ()) -> Row:
-    """A row for case: whether each answer has a status it may, and no
-    problem of extra is; its note says what each got."""
-    problems = [
-        f"{label}: {answer.describe()}, not {' or '.join(map(str, allowed))}"
-        for label, answer, allowed in expects
-        if answer.status not in allowed
-    ]
-    problems += list(extra)
-    seen = ", ".join(f"{label} {answer.status}" for label, answer, _ in expects)
-    return (case, FAIL, first(problems)) if problems else (case, PASS, seen)
+    return ns_id, server_id
 
 
 # --------------------------------------------------------------------------
@@ -346,15 +158,7 @@ def judge(case: str, expects: Sequence[Expect], extra: Sequence[str] = ()) -> Ro
 # the registry's.
 
 
-def server_settings(test: Test, server: Server) -> dict[str, Any]:
-    """Server's Server.* settings, as its admin reads them from its
-    configuration (GET /api/v1.0/config); {} if that fails."""
-    answer = web.request("GET", server.web_url + CONFIG, token=test.admin(server))
-    found = common.as_object(parse(answer)) or {}
-    return common.as_object(found.get("Server")) or {}
-
-
-def namespace_issuer(test: Test, server: Server) -> str:
+def namespace_issuer(test: Access, server: Server) -> str:
     """An issuer URL of a namespace's that is not server's own local
     issuer: a protected namespace's, or, where that is the server's
     (with the origins' issuer off), the URL an embedded issuer would give
@@ -366,18 +170,7 @@ def namespace_issuer(test: Test, server: Server) -> str:
     return f"{server.web_url}/api/v1.0/issuer/ns/protected-a"
 
 
-def other_key(test: Test, server: Server) -> tuple[str, str]:
-    """A key that is not server's, and what it is: another server's, or
-    where every server shares it (`tiny`, or a standalone origin),
-    test-keys/unknown.pem, which no server knows."""
-    own = jwt.public_jwk(server.key)
-    for other in test.servers:
-        if jwt.public_jwk(other.key) != own:
-            return other.key, f"{other.name}'s key"
-    return credentials.keys(test.fed)["unknown"], "unknown.pem"
-
-
-def strange_tokens(test: Test, server: Server) -> list[tuple[str, str, str, tuple[int, ...]]]:
+def strange_tokens(test: Access, server: Server) -> list[tuple[str, str, str, tuple[int, ...]]]:
     """Bearer tokens that server's web API must take for no one: each
     like the admin's, but signed by another key, from a namespace's
     issuer, or expired; and one for a subject of whom the server has no
@@ -414,7 +207,7 @@ def strange_tokens(test: Test, server: Server) -> list[tuple[str, str, str, tupl
     ]
 
 
-def registry_rows(test: Test, server: Server) -> list[Row]:
+def registry_rows(test: Access, server: Server) -> list[Row]:
     """The registry's admin routes, for a registration and a server that
     it does not hold, each with a CSRF token that the registry takes
     (see accounts.csrf()), so that only the credentials decide: none must
@@ -423,7 +216,7 @@ def registry_rows(test: Test, server: Server) -> list[Row]:
     (deleteServerHandler), 404 or 200."""
     admin, user = test.admin(server), test.user(server)
     guard = accounts.csrf(accounts.Api(server.web_url, admin))
-    ns_id, server_id = test.unknown_ids(server)
+    ns_id, server_id = unknown_ids(test, server)
     rows: list[Row] = []
     for case, method, path in REGISTRY_ROUTES:
         url = server.web_url + path.format(ns=ns_id, server=server_id)
@@ -437,7 +230,7 @@ def registry_rows(test: Test, server: Server) -> list[Row]:
     return rows
 
 
-def matrix_rows(test: Test, server: Server) -> list[Row]:
+def matrix_rows(test: Access, server: Server) -> list[Row]:
     """admin_matrix() at server."""
     admin, user = test.admin(server), test.user(server)
     settings = server_settings(test, server)
@@ -490,7 +283,7 @@ def matrix_rows(test: Test, server: Server) -> list[Row]:
     return rows
 
 
-def admin_matrix(test: Test) -> list[Row]:
+def admin_matrix(test: Access) -> list[Row]:
     """At every server, each admin route with no credentials, the user's
     bearer token, and the admin's; and bearer tokens that must count as
     no credentials."""
@@ -509,11 +302,6 @@ def admin_matrix(test: Test) -> list[Row]:
 # its service discovery takes (discoverOriginCache in director/director.go).
 
 
-def stamp(when: datetime) -> str:
-    """when, in RFC 3339, as an API token's expiration."""
-    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def create_token(
     server: Server,
     name: str,
@@ -524,7 +312,7 @@ def create_token(
 ) -> web.Response:
     """POST a request for an API token of scope, named name and expiring
     at expires, to server, with the login cookie or the bearer token."""
-    body = {"name": name, "scopes": [scope], "expiration": stamp(expires)}
+    body = {"name": name, "scopes": [scope], "expiration": common.timestamp(expires)}
     headers = dict(accounts.JSON)
     if cookie:
         headers.update(cookie_header(login=cookie))
@@ -535,13 +323,6 @@ def create_token(
         upload=json.dumps(body).encode(),
         headers=headers,
     )
-
-
-def made_token(answer: web.Response) -> Optional[tuple[str, str, str]]:
-    """The API token that answer hands out, its ID, and its secret, if it
-    does."""
-    found = API_TOKEN.match(str((common.as_object(parse(answer)) or {}).get("token", "")))
-    return (found.group(0), found.group(1), found.group(2)) if found else None
 
 
 def discover(server: Server, token: str) -> web.Response:
@@ -555,7 +336,7 @@ def listed_problems(answer: web.Response, token_id: str, name: str, secret: str)
     field of a hash."""
     if answer.status != 200:
         return [f"listing: {answer.describe()}, not 200"]
-    entries = [common.as_object(e) or {} for e in common.as_array(parse(answer)) or []]
+    entries = [common.as_object(e) or {} for e in common.as_array(answer.json()) or []]
     problems: list[str] = []
     if not any(e.get("id") == token_id and e.get("name") == name for e in entries):
         problems.append(f"the listing lacks {token_id}, named {name}")
@@ -567,7 +348,7 @@ def listed_problems(answer: web.Response, token_id: str, name: str, secret: str)
     return problems
 
 
-def api_tokens(test: Test) -> list[Row]:
+def api_tokens(test: Access) -> list[Row]:
     """At the first director, as its admin, logged in: make an API token
     of the service discovery's scope, use it, list it, present it with a
     wrong secret, and a bogus one; delete it, and use it again; make one
@@ -594,7 +375,7 @@ def api_tokens(test: Test) -> list[Row]:
         full, token_id, secret = token
         rows.append(("create", PASS, f"{answer.describe()}, {token_id}"))
         used = discover(server, full)
-        unlisted = listing_problems(test.fed, parse(used)) if used.status == 200 else []
+        unlisted = listing_problems(test.fed, used.json()) if used.status == 200 else []
         case, status, note = judge("use", [("discoverServers", used, (200,))], unlisted)
         if status == PASS:
             note = f"{len(expected_targets(test.fed))} servers"
@@ -747,7 +528,7 @@ def whoami_row(case: str, answer: web.Response, role: Optional[str], user: str =
     """A row for case: answer, a /whoami's, must say who is logged in,
     with role, or, for role None, that no one is, and then carry no CSRF
     token."""
-    found = common.as_object(parse(answer)) or {}
+    found = common.as_object(answer.json()) or {}
     problems: list[str] = []
     if role is None:
         if found.get("authenticated") is not False:
@@ -764,7 +545,7 @@ def whoami_row(case: str, answer: web.Response, role: Optional[str], user: str =
     return judge(case, [("whoami", answer, (200,))], problems)
 
 
-def login_rows(test: Test, server: Server) -> list[Row]:
+def login_rows(test: Access, server: Server) -> list[Row]:
     """login() at server."""
     name = server.name
     rows: list[Row] = []
@@ -805,7 +586,7 @@ def login_rows(test: Test, server: Server) -> list[Row]:
     return rows
 
 
-def login(test: Test) -> list[Row]:
+def login(test: Access) -> list[Row]:
     """At every server: logging in as the admin, with a wrong password,
     and with a field missing, and the cookie; logging out, and the cookie
     after; who is logged in, with no credentials, the admin's cookie, and
@@ -833,7 +614,7 @@ def csrf_refused(answer: web.Response) -> list[str]:
     return [f"{answer.describe()}, not 403 'CSRF token invalid'"]
 
 
-def registry_csrf(test: Test) -> list[Row]:
+def registry_csrf(test: Access) -> list[Row]:
     """At the registry, as its admin, by cookie and by bearer token,
     approve a registration that does not exist: with no CSRF token, and
     with one that does not match its cookie, the registry must refuse
@@ -846,7 +627,7 @@ def registry_csrf(test: Test) -> list[Row]:
     api = accounts.Api(server.web_url, admin)
     first_guard, second_guard = accounts.csrf(api), accounts.csrf(api)
     csrf_cookie = first_guard["Cookie"].split("=", 1)[1]
-    ns_id, _ = test.unknown_ids(server)
+    ns_id, _ = unknown_ids(test, server)
     url = f"{server.web_url}{REGISTRATIONS}/{ns_id}/approve"
     login_cookie = test.cookie(server)
     by = {
@@ -872,7 +653,7 @@ def registry_csrf(test: Test) -> list[Row]:
     return rows
 
 
-def cross_origin(test: Test, server: Server) -> Row:
+def cross_origin(test: Access, server: Server) -> Row:
     """A logout at server, which AuthHandler guards: with the admin's
     cookie, from another site's page (Origin), it must be refused (403);
     with the admin's bearer token from there, and with the cookie and no
@@ -900,7 +681,7 @@ def cross_origin(test: Test, server: Server) -> Row:
     return judge(f"{server.name} cross-origin", expects)
 
 
-def csrf(test: Test) -> list[Row]:
+def csrf(test: Access) -> list[Row]:
     """registry_csrf(), and cross_origin() at every server."""
     rows = registry_csrf(test)
     for server in test.servers:
@@ -915,7 +696,7 @@ def csrf(test: Test) -> list[Row]:
 # malformed-path: rejectInvalidPathMiddleware in web_ui/middleware.go.
 
 
-def malformed_path(test: Test) -> list[Row]:
+def malformed_path(test: Access) -> list[Row]:
     """At every server, GET of a path whose percent-encoding is not UTF-8
     (an overlong encoding of /), at the root and under the API, must get
     400; then the server must still answer."""
@@ -939,7 +720,7 @@ def reported_version(server: Server) -> tuple[Optional[str], str]:
     """The version that server reports (GET /api/v1.0/version), or None
     and why not."""
     answer = web.request("GET", server.web_url + VERSION)
-    found = (common.as_object(parse(answer)) or {}).get("version")
+    found = (common.as_object(answer.json()) or {}).get("version")
     if answer.status != 200 or not isinstance(found, str) or not found:
         return None, f"{server.name}: {answer.describe()}, with no version"
     return found, ""
@@ -956,7 +737,7 @@ def header_row(case: str, answer: web.Response, reported: str) -> Row:
     )
 
 
-def version(test: Test) -> list[Row]:
+def version(test: Access) -> list[Row]:
     """Every server's version: each must report one, the same, and
     PELICAN_TAG's, unless the shape runs images of the user's own, when
     the row only reports them. A director's responses, and the
@@ -1012,7 +793,7 @@ def listing_row(
         return case, FAIL, f"{DIRECTOR_SERVERS}: {listing.describe()}"
     problems: list[str] = []
     count = 0
-    for entry in (common.as_object(e) or {} for e in common.as_array(parse(listing)) or []):
+    for entry in (common.as_object(e) or {} for e in common.as_array(listing.json()) or []):
         name = by_host.get(director.host(str(entry.get("webUrl", ""))))
         if name is None or name not in versions:
             continue
@@ -1027,7 +808,7 @@ def listing_row(
     return (case, FAIL, first(problems)) if problems else (case, PASS, f"{count} server(s)")
 
 
-RUN: dict[str, Callable[[Test], list[Row]]] = {
+RUN: dict[str, Callable[[Access], list[Row]]] = {
     "admin-matrix": admin_matrix,
     "api-tokens": api_tokens,
     "login": login,
@@ -1045,7 +826,7 @@ def skip(_fed: common.Federation) -> Optional[str]:
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, and leave the next suite free to log
     in at once."""
-    test = Test(session)
+    test = Access(session)
     try:
         for name in selected:
             try:
