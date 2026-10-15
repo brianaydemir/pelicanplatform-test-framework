@@ -61,7 +61,10 @@ restricted to /public, or to another protected namespace, and waits
 likewise.
 
 The suite puts its objects at every origin, in the first protected
-namespace, under data/routing/<run>/, and removes them afterward.
+namespace, under data/routing/<run>/, and removes them afterward. It
+puts them in place, and fills the last cache for `adaptive`, with WLCG
+tokens; every request it asks the directors, which they pass on, carries
+a token of the session's profile.
 """
 
 import contextlib
@@ -196,7 +199,9 @@ class Test:
             origins export only that (`-p origin-public`), whose token
             every server ignores.
         caps: The namespace's capabilities.
-        token: The namespace's `server` token.
+        token: The namespace's `server` token, of the session's profile.
+        setup: The namespace's `server` token, of the WLCG profile, for
+            putting objects in place, and filling a cache.
         base: The suite's collection, below the namespace.
         data: The contents of the objects that the suite puts, by name.
         objects: Each object's path below the namespace, by name: the
@@ -214,6 +219,7 @@ class Test:
         self.namespace = credentials.probe_namespace(self.fed)
         self.caps = self.fed.exports[self.namespace]
         self.token = session.token(self.namespace)
+        self.setup = session.setup_token(self.namespace)
         self.base = f"data/routing/{self.run}"
         self.data = {
             "probe": os.urandom(4096),
@@ -793,7 +799,7 @@ def signed(test: Test, issued: int, expires: Optional[int]) -> str:
     expires (None: no exp claim). The director reads it without checking
     its signature.
     """
-    claims = credentials.server_claims(test.fed, test.namespace)
+    claims = credentials.server_claims(test.fed, test.namespace, profile=test.session.profile)
     claims["iat"] = claims["nbf"] = issued
     if expires is None:
         del claims["exp"]
@@ -1198,12 +1204,12 @@ def warm_last_cache(test: Test) -> Optional[str]:
     """
     cache = test.caches[-1]
     url = f"{cache.url}{test.path('warm')}"
-    answer = web.request("GET", url, token=test.token)
+    answer = web.request("GET", url, token=test.setup)
     if answer.status != 200 or answer.body != test.data["warm"]:
         return f"reading `warm` through {cache.svc}: {answer.describe()}"
 
     def aged() -> bool:
-        age = web.request("HEAD", url, token=test.token).header("Age")
+        age = web.request("HEAD", url, token=test.setup).header("Age")
         return age.isdigit() and int(age) >= 1
 
     if not common.wait_for(aged, AGE_WAIT, interval=0.5):
@@ -1624,7 +1630,7 @@ def put_permitted(test: Test, permitted: str) -> Optional[str]:
         Why that failed, or None.
     """
     target = test.fed.storage_namespace(permitted)
-    token = test.session.token(target)
+    token = test.session.setup_token(target)
     caps = test.fed.exports[target]
     rel = test.objects["permitted"]
     for origin in stores.unique(test.fed.origins):
@@ -1737,7 +1743,7 @@ def put_objects(test: Test) -> Optional[str]:
     Returns:
         Why that failed, or None.
     """
-    errors = stores.make_dirs(test.fed.origins, test.namespace, test.base, test.token)
+    errors = stores.make_dirs(test.fed.origins, test.namespace, test.base, test.setup)
     for name in ("probe", "warm"):
         for origin in stores.unique(test.fed.origins):
             if errors:
@@ -1747,7 +1753,7 @@ def put_objects(test: Test) -> Optional[str]:
                 test.namespace,
                 test.objects[name],
                 test.data[name],
-                test.token,
+                test.setup,
                 test.caps,
             )
             if error:
@@ -1789,7 +1795,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             permitted_namespaces(test, add)
     finally:
         errors = stores.empty_tree_everywhere(
-            session.fed.origins, session.fed.exports, "data/routing", session.tokens()
+            session.fed.origins, session.fed.exports, "data/routing", session.setup_tokens()
         )
         if errors:
             warn(f"could not remove the suite's objects: {first(errors)}")

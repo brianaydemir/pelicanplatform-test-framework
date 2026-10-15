@@ -113,6 +113,9 @@ SCENARIOS = {
         " provider's user, and reads what their group allows"
     ),
 }
+# Every scenario: each presents only Pelican's tokens, its issuer's and
+# its web API's, beside its setup's (see suites/__init__.py).
+ONE_PROFILE = tuple(SCENARIOS)
 
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.
@@ -635,7 +638,7 @@ def settle(test: Test, rel: str) -> Optional[str]:
         Why it does not, or None if it does.
     """
     namespace = test.namespace or ""
-    token = test.session.token(namespace)
+    token = test.session.setup_token(namespace)
     path = f"/{namespace}/{rel}"
 
     def unserved() -> Optional[str]:
@@ -688,7 +691,7 @@ def seed(test: Test) -> Restarted:
         ApiError: An object could not be put in place.
     """
     namespace = test.namespace or ""
-    token = test.session.token(namespace)
+    token = test.session.setup_token(namespace)
     caps = test.fed.exports[namespace]
     found: dict[str, tuple[str, bytes]] = {}
     for group in (PROJECT_A, PROJECT_B):
@@ -705,7 +708,7 @@ def seed(test: Test) -> Restarted:
 def unseed(test: Test, made: Restarted) -> None:
     """Remove what seed() put in place."""
     namespace = test.namespace or ""
-    token = test.session.token(namespace)
+    token = test.session.setup_token(namespace)
     for rel, _ in made.objects.values():
         for origin in stores.unique(test.fed.origins):
             error = stores.delete(origin, namespace, rel, token)

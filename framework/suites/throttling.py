@@ -36,10 +36,10 @@ shares, so the cases run one at a time, and each waits for what it set
 going to finish. The suite writes its objects straight into the first
 origin's store on disk, which the limit does not slow, under
 /protected-a/data/throttling/<run>/, a set per cache, so that each is
-cold where it is first read. Only the first origin holds them, so that
-a director with several sends every fetch there, and a cache's fetches
-share one scheduler queue (a tag per origin host; deriveSchedulerTag in
-client/handle_http.go).
+cold where it is first read, with a token of the session's profile.
+Only the first origin holds them, so that a director with several sends
+every fetch there, and a cache's fetches share one scheduler queue (a
+tag per origin host; deriveSchedulerTag in client/handle_http.go).
 """
 
 import contextlib
@@ -1039,7 +1039,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         directory = f"{origin.store_of(NAMESPACE)}/data/throttling"
         if not os.path.isdir(directory):
             die(f"framework/var/{directory} is missing; run ./fed.sh init")
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
         errors = stores.empty_tree_everywhere(

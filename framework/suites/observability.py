@@ -35,6 +35,12 @@ change for at most a minute, and delete their changes when they are
 done. `log-level-xrootd` restarts XRootD at the first XRootD origin and
 cache twice, and waits until it serves again. `http-metrics` writes
 under data/observability/<run>/, which the suite removes afterward.
+
+Only `http-metrics` and `log-redaction` present storage tokens, of the
+session's profile; the rest present tokens of the servers' web APIs,
+which Pelican mints in the WLCG profile alone, and `log-level-xrootd`
+sees XRootD serve again with a WLCG storage token, so they run in the
+WLCG pass alone.
 """
 
 import functools
@@ -65,6 +71,10 @@ SCENARIOS = {
     "log-redaction": "a token presented to an origin or a cache never reaches its log tail",
     "log-level-xrootd": "an XRootD log level restarts XRootD, which serves again, unless too short",
 }
+
+# The scenarios that present no storage token of the session's profile
+# (see suites/__init__.py).
+ONE_PROFILE = tuple(s for s in SCENARIOS if s not in ("http-metrics", "log-redaction"))
 
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.
@@ -273,13 +283,16 @@ class Test:
         """Return a token of the suite's own subject for namespace.
 
         It has scopes, as `pelican token create` mints a `server` token
-        (credentials.server_claims()), and is signed with the origins'
-        key, or with key. Under -p origin-multiuser, it is for the subject
-        the origins map to a Unix user.
+        of the session's profile (credentials.server_claims()), and is
+        signed with the origins' key, or with key. Under
+        -p origin-multiuser, it is for the subject the origins map to a
+        Unix user.
         """
         key = key or self.fed.origin_key
         subject = credentials.SUBJECT if self.fed.multiuser else self.subject
-        claims = credentials.server_claims(self.fed, namespace, scopes, subject=subject)
+        claims = credentials.server_claims(
+            self.fed, namespace, scopes, subject=subject, profile=self.session.profile
+        )
         return jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), claims, key=key)
 
     def readable(self) -> str:
@@ -1356,7 +1369,7 @@ def xrootd_targets(test: Test) -> list[XrootdTarget]:
     namespace = test.readable()
     path = f"/{namespace}/data/0.0"
     token = (
-        test.session.token(namespace)
+        test.session.setup_token(namespace)
         if credentials.has_issuer(fed.exports[namespace])
         else None
     )
@@ -1628,7 +1641,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         fed = session.fed
         exports = {ns: fed.exports[ns] for ns in credentials.exported(fed)}
         errors = stores.empty_tree_everywhere(
-            fed.origins, exports, "data/observability", session.tokens()
+            fed.origins, exports, "data/observability", session.setup_tokens()
         )
         if errors:
             warn(f"could not remove the suite's objects: {first(errors)}")

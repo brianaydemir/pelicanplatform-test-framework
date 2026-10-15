@@ -32,7 +32,12 @@ its catalog.
 A pstore is an encrypted store that only the running origin can read
 (origin_serve/backend_pstore.go and pstore/ in Pelican). The suite
 writes under /<ns>/data/pstore/<run>/, in the first protected namespace
-that takes writes, at every pstore origin, and removes it afterward.
+that takes writes, at every pstore origin, and removes it afterward. The
+requests that its checks make of the data port present tokens of the
+session's profile; what it puts in place, and the requests that see
+whether the federation serves again, present WLCG tokens either way, so
+that `introspect-cli`, `scheduled-passes`, and `backups`, which present
+nothing else but an admin's tokens, run in the WLCG pass alone.
 
 Nothing bounds a store, or backs one up, as the shape is: a bound would
 bound every suite's writes. So for `capacity`, `backups`, and `restore`
@@ -92,6 +97,10 @@ SCENARIOS = {
         " nothing written after it"
     ),
 }
+
+# The scenarios that present no storage token beyond their setup's (see
+# suites/__init__.py).
+ONE_PROFILE = ("introspect-cli", "scheduled-passes", "backups")
 
 # The protected namespaces, of which the suite writes in the first that
 # takes writes.
@@ -218,6 +227,10 @@ class Test:
     Attributes:
         namespace: The namespace that the suite writes in.
         base: The run's collection, within the namespace.
+        token: A `server` token for the namespace, of the session's
+            profile.
+        setup: A `server` token for the namespace, of the WLCG profile,
+            for putting objects in place.
         pstores: The pstore origins.
         tmp: A directory of the run's own, for the CLI's files.
         objects: The storage API's collection, by rel (see
@@ -230,6 +243,7 @@ class Test:
         self.namespace = namespace
         self.base = f"data/pstore/{session.run}"
         self.token = session.token(namespace)
+        self.setup = session.setup_token(namespace)
         self.pstores = [o for o in self.fed.origins if o.pstore]
         self.tmp = session.path("pstore")
         os.makedirs(self.tmp, exist_ok=True)
@@ -317,7 +331,7 @@ class Test:
         Returns:
             What went wrong, or None.
         """
-        return stores.put(origin, self.namespace, rel, data, self.token)
+        return stores.put(origin, self.namespace, rel, data, self.setup)
 
 
 def read_token(path: str) -> str:
@@ -900,7 +914,7 @@ def passes_at(test: Test, origin: common.Origin) -> Row:
             return FAIL, why
     before = fetch_metrics(origin)
     why = test.put(origin, test.rel("passes", "overwritten"), new)
-    why = why or stores.delete(origin, test.namespace, test.rel("passes", "gone"), test.token)
+    why = why or stores.delete(origin, test.namespace, test.rel("passes", "gone"), test.setup)
     if why:
         return FAIL, why
     changed, begun = time.time(), pass_counts(fetch_metrics(origin))
@@ -990,22 +1004,23 @@ def serving(test: Test) -> Optional[str]:
     """Return why the namespace is not served as before, or None.
 
     Every origin must answer a HEAD of the probe, every director name
-    every origin for it, and every federated cache answer a HEAD of it.
+    every origin for it, and every federated cache answer a HEAD of it,
+    with the setup token.
     """
     rel = test.rel(PROBE)
     for origin in test.fed.origins:
-        answer = web.request("HEAD", test.url(origin, rel), token=test.token)
+        answer = web.request("HEAD", test.url(origin, rel), token=test.setup)
         if answer.status != 200:
             return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
     path = f"/{test.namespace}/{rel}"
     for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.token)
+        where = director.ask(url, "origin", path, token=test.setup)
         for origin in test.fed.origins:
             if not where.names(director.host(origin.url)):
                 return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
     for cache in test.fed.federated_caches:
         answer = web.request(
-            "HEAD", f"{cache.url}/{test.namespace}/{quote(rel)}", token=test.token
+            "HEAD", f"{cache.url}/{test.namespace}/{quote(rel)}", token=test.setup
         )
         if answer.status != 200:
             return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
@@ -1097,7 +1112,7 @@ class Capacity:
                 break
             rel = self.test.rel("capacity", f"filler-{len(self.fillers)}")
             answer = web.request(
-                "PUT", self.test.url(self.origin, rel), self.test.token, os.urandom(size)
+                "PUT", self.test.url(self.origin, rel), self.test.setup, os.urandom(size)
             )
             if not answer.ok:
                 return FAIL, f"a filler of {size} bytes, with {room} left: {answer.describe()}"
@@ -1220,7 +1235,7 @@ class Capacity:
         size = self.room() + SIZED_OVER
         if not self.fillers:
             return FAIL, "no filler to delete"
-        why = stores.delete(self.origin, self.test.namespace, self.fillers[0], self.test.token)
+        why = stores.delete(self.origin, self.test.namespace, self.fillers[0], self.test.setup)
         if why:
             return FAIL, why
         need = blocks.stored(size)
@@ -1917,7 +1932,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             )
         return
     test = Test(session, namespace)
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
         errors = stores.empty_tree_everywhere(test.pstores, fed.exports, "data/pstore", tokens)
@@ -1960,7 +1975,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 )
         elif later:
             errors = stores.put_everywhere(
-                fed.origins, namespace, test.rel(PROBE), b"probe", test.token
+                fed.origins, namespace, test.rel(PROBE), b"probe", test.setup
             )
             if errors:
                 for scenario in later:

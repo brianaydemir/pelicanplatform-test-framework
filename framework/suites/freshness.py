@@ -45,7 +45,8 @@ is another cache, which sends Cache-Control of its own). XRootD caches
 do not parse Cache-Control as a V2 cache does, so only
 `no-negative-cache` asks them. Objects go under
 /protected-a/data/freshness/<run>/, a collection per case, put at every
-origin (stores.seed_everywhere()).
+origin (stores.seed_everywhere()) with a WLCG token; every request for
+them presents a token of the session's profile.
 """
 
 import contextlib
@@ -148,7 +149,10 @@ class Test:
 
     Attributes:
         base: The run's collection, in /protected-a.
-        token: A `server` token for /protected-a.
+        token: A `server` token for /protected-a, of the session's
+            profile.
+        setup: A `server` token for /protected-a, of the WLCG profile,
+            for putting objects in place.
         caps: /protected-a's capabilities.
         direct: Whether /protected-a takes direct clients.
         caches: The federated caches.
@@ -163,6 +167,7 @@ class Test:
         self.fed = session.fed
         self.base = f"data/freshness/{session.run}"
         self.token = session.token(NAMESPACE)
+        self.setup = session.setup_token(NAMESPACE)
         self.caps = self.fed.exports[NAMESPACE]
         self.direct = "DirectReads" in self.caps
         self.origins = self.fed.origins
@@ -192,12 +197,12 @@ class Test:
         for rel, data in objects.items():
             parent = rel.rsplit("/", 1)[0]
             if parent not in self.made:
-                errors = stores.make_dirs(self.origins, NAMESPACE, parent, self.token)
+                errors = stores.make_dirs(self.origins, NAMESPACE, parent, self.setup)
                 if errors:
                     return errors[0]
                 self.made.add(parent)
             errors = stores.seed_everywhere(
-                self.origins, NAMESPACE, rel, data, self.token, self.caps
+                self.origins, NAMESPACE, rel, data, self.setup, self.caps
             )
             if errors:
                 return errors[0]
@@ -635,7 +640,7 @@ def no_negative_cache(test: Test, _value: str) -> Row:
     """
     rel = test.rel("no-negative-cache", "object")
     data = os.urandom(HELD_SIZE)
-    errors = stores.make_dirs(test.origins, NAMESPACE, rel.rsplit("/", 1)[0], test.token)
+    errors = stores.make_dirs(test.origins, NAMESPACE, rel.rsplit("/", 1)[0], test.setup)
     if errors:
         return FAIL, errors[0]
     # A director that sends a bare path to an origin, which takes no
@@ -1377,7 +1382,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         directory = f"{origin.store_of(NAMESPACE)}/data/freshness"
         if not origin.pstore and not os.path.isdir(directory):
             die(f"framework/var/{directory} is missing; run ./fed.sh init")
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
         errors = stores.empty_tree_everywhere(

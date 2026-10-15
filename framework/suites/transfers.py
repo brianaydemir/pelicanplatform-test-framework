@@ -17,6 +17,13 @@ in stash_plugin's format), output/ (the pelican client's transfer
 stats, or the plugin's result ads), log/ (client logs, ending with the
 exit status), files/ (what each batch downloaded or uploaded), and
 verify/problems (every unexpected result).
+
+Each credential's token is of the session's profile, and must fare as
+its twin of the other profile does; the scenarios that present no token
+(`exist` and those of the `none` credential) run in the WLCG pass alone.
+The SciTokens pass keeps its results in data/transfers-scitokens/. The
+test objects are seeded, and the stores read, with WLCG tokens either
+way.
 """
 
 import collections
@@ -44,6 +51,15 @@ OUT = "data/transfers"
 
 
 SCENARIOS = {s.name: s.description for s in TABLE}
+# The scenarios that present no token (see suites/__init__.py): those of
+# no credential but `dne`'s, which takes the `server` token where /public
+# is not exported (transfers.placed()), and those of `none`.
+ONE_PROFILE = tuple(
+    s.name
+    for s in TABLE
+    if (s.credential is None and not s.missing)
+    or (s.credential is not None and s.credential.key is None)
+)
 
 # What a route's downloads must be served by, in the served-by-* rows.
 ROUTE_SERVERS = {"cache": "cache", "direct": "origin", "named": "named-cache"}
@@ -92,13 +108,15 @@ class Plan:
     It also records how the batches went.
 
     Attributes:
+        out: Where the results go, under framework/var.
         batches: Each scenario's batches, by name.
         token_files: Each scenario's token file (None for none), by name.
         statuses: Each batch's exit status, by ID.
         killed: The IDs of the batches that timed out.
     """
 
-    def __init__(self, scenarios: list[Scenario], batches: dict[str, list[Batch]]):
+    def __init__(self, out: str, scenarios: list[Scenario], batches: dict[str, list[Batch]]):
+        self.out = out
         self.scenarios = scenarios
         self.batches = batches
         self.token_files: dict[str, Optional[str]] = {}
@@ -164,18 +182,19 @@ def make_directories(fed: common.Federation, plan: Plan) -> None:
             directory = f"{origin.store_of(s.namespace)}/{s.store_dir}"
             if not origin.pstore and not os.path.isdir(directory):
                 die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    out = plan.out
     for sub in ("input", "output", "log", "files", "verify"):
-        shutil.rmtree(f"{OUT}/{sub}", ignore_errors=True)
+        shutil.rmtree(f"{out}/{sub}", ignore_errors=True)
     shutil.rmtree(".condor_creds", ignore_errors=True)
     for s in plan.scenarios:
         for sub in ("input", "output", "log", "files"):
-            os.makedirs(f"{OUT}/{sub}/{s.name}")
+            os.makedirs(f"{out}/{sub}/{s.name}")
         os.makedirs(f".condor_creds/{s.name}")
     for batch in plan.all_batches():
-        os.makedirs(f"{OUT}/files/{batch.id}")
-        with open(f"{OUT}/input/{batch.id}", "w", encoding="utf-8") as f:
+        os.makedirs(f"{out}/files/{batch.id}")
+        with open(f"{out}/input/{batch.id}", "w", encoding="utf-8") as f:
             f.write(transfers.format_batch(batch))
-    os.makedirs(f"{OUT}/verify")
+    os.makedirs(f"{out}/verify")
 
 
 def find_tokens(session: Session, plan: Plan) -> None:
@@ -268,14 +287,14 @@ def write_sources(plan: Plan) -> None:
         for batch in plan.batches[s.name]:
             for name in batch.names:
                 size = (size + 7919) % 65536
-                with open(f"{OUT}/files/{batch.id}/{name}", "wb") as source:
+                with open(f"{plan.out}/files/{batch.id}/{name}", "wb") as source:
                     source.write(os.urandom(size + 1))
 
 
 def command(session: Session, plan: Plan, batch: Batch) -> tuple[list[str], dict[str, str]]:
     """Return the client command that runs batch, and its environment."""
     s = batch.scenario
-    output = os.path.abspath(f"{OUT}/output/{batch.id}")
+    output = os.path.abspath(f"{plan.out}/output/{batch.id}")
     env = dict(session.env)
     if s.client == "plugin":
         # A direct get's URLs carry ?directread (see transfers.batch_url);
@@ -288,7 +307,7 @@ def command(session: Session, plan: Plan, batch: Batch) -> tuple[list[str], dict
             args.append("-upload")
         args += [
             "-infile",
-            os.path.abspath(f"{OUT}/input/{batch.id}"),
+            os.path.abspath(f"{plan.out}/input/{batch.id}"),
             "-outfile",
             f"{output}.ad",
         ]
@@ -315,11 +334,11 @@ def transfer(session: Session, plan: Plan, batch: Batch) -> None:
     interactively. A batch that outlasts CLIENT_TIMEOUT is killed.
     """
     args, env = command(session, plan, batch)
-    with open(f"{OUT}/log/{batch.id}", "wb") as log:
+    with open(f"{plan.out}/log/{batch.id}", "wb") as log:
         try:
             status = subprocess.run(  # nosec B603
                 args,
-                cwd=f"{OUT}/files/{batch.id}",
+                cwd=f"{plan.out}/files/{batch.id}",
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
@@ -372,13 +391,13 @@ def observe(plan: Plan, batch: Batch) -> Observation:
     s = batch.scenario
     if s.client == "plugin":
         try:
-            with open(f"{OUT}/output/{batch.id}.ad", encoding="utf-8") as f:
+            with open(f"{plan.out}/output/{batch.id}.ad", encoding="utf-8") as f:
                 said = f.read()
         except FileNotFoundError:
             said = ""
         passed = transfers.plugin_passed(said)
     else:
-        with open(f"{OUT}/log/{batch.id}", encoding="utf-8", errors="replace") as f:
+        with open(f"{plan.out}/log/{batch.id}", encoding="utf-8", errors="replace") as f:
             said = f.read()
         passed = plan.statuses[batch.id] == 0
     failure = None
@@ -387,7 +406,7 @@ def observe(plan: Plan, batch: Batch) -> Observation:
     elif not passed:
         lines = transfers.failure_lines(s.client, said)
         failure = transfers.combine(transfers.classify(line) for line in lines)
-    directory = f"{OUT}/files/{batch.id}"
+    directory = f"{plan.out}/files/{batch.id}"
     local: dict[str, str] = {}
     for name in batch.names:
         digest = common.sha256(f"{directory}/{name}")
@@ -496,7 +515,7 @@ def judge_all(
         + f" {'unexpected':>10}   {'expected':<10} failures"
     )
     last_group = None
-    with open(f"{OUT}/verify/problems", "w", encoding="utf-8") as problems_file:
+    with open(f"{plan.out}/verify/problems", "w", encoding="utf-8") as problems_file:
         for s in plan.scenarios:
             passed = failed = unexpected = 0
             failures: list[str] = []
@@ -537,12 +556,12 @@ def judge_all(
             )
             status = FAIL if unexpected else PASS
             report.add(s.name, status, f"{summary}; {note}" if note else summary, seconds=None)
-    if os.path.getsize(f"{OUT}/verify/problems"):
-        print(f"\nProblems are listed in framework/var/{OUT}/verify/problems.")
+    if os.path.getsize(f"{plan.out}/verify/problems"):
+        print(f"\nProblems are listed in framework/var/{plan.out}/verify/problems.")
     return ok
 
 
-def served_by(batch: Batch) -> list[str]:
+def served_by(plan: Plan, batch: Batch) -> list[str]:
     """Return the host that served each object the batch moved.
 
     In the plugin's result ads, that is the highest-numbered EndpointN of
@@ -552,7 +571,7 @@ def served_by(batch: Batch) -> list[str]:
     """
     if batch.scenario.client == "plugin":
         try:
-            with open(f"{OUT}/output/{batch.id}.ad", encoding="utf-8") as f:
+            with open(f"{plan.out}/output/{batch.id}.ad", encoding="utf-8") as f:
                 ads = f.read().splitlines()
         except FileNotFoundError:
             return []
@@ -566,7 +585,7 @@ def served_by(batch: Batch) -> list[str]:
         return hosts
 
     try:
-        with open(f"{OUT}/output/{batch.id}.json", encoding="utf-8") as f:
+        with open(f"{plan.out}/output/{batch.id}.json", encoding="utf-8") as f:
             stats = json.load(f)
     except (FileNotFoundError, ValueError):
         return []
@@ -607,7 +626,7 @@ def check_served(
             served: dict[str, Counter[str]] = collections.defaultdict(Counter)
             for s in downloads:
                 for batch in plan.batches[s.name]:
-                    served[s.namespace].update(served_by(batch))
+                    served[s.namespace].update(served_by(plan, batch))
             hosts: Counter[str] = Counter()
             for counts in served.values():
                 hosts.update(counts)
@@ -643,12 +662,12 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     expected = {s.name: transfers.outcome(s, fed.exports) for s in scenarios}
     # The batches are built afresh for each run (see transfers.LOAD).
     made = transfers.make_batches(fed.url, fed.exports, transfers.LOAD, random.randrange)
-    plan = Plan(scenarios, {s.name: made[s.name] for s in scenarios})
+    plan = Plan(session.var_dir(OUT), scenarios, {s.name: made[s.name] for s in scenarios})
 
     make_directories(fed, plan)
     find_tokens(session, plan)
     # The server's own tokens, for seeding and checking pstore origins.
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
     if any(s.op == "get" for s in scenarios):
         for origin in (o for o in fed.origins if o.pstore):
             seed_pstore(origin, fed.exports, tokens)
@@ -672,6 +691,6 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
 
     print(f"\nThe transfers took {elapsed:.0f}s.")
     if ok:
-        print(f"OK. Results are in framework/var/{OUT}/.")
+        print(f"OK. Results are in framework/var/{plan.out}/.")
     else:
-        print(f"\nUNEXPECTED RESULTS. See framework/var/{OUT}/.")
+        print(f"\nUNEXPECTED RESULTS. See framework/var/{plan.out}/.")

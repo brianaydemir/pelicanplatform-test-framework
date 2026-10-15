@@ -11,7 +11,8 @@
   common       paths, messages, the command line, and generated/
   control      restarting, stopping, or reconfiguring a service mid-run,
                through framework/control.py on the host
-  credentials  the credentials the tests present, and what each allows
+  credentials  the credentials the tests present, what each allows, and
+               the token profiles they come in
   digests      checksums as a Digest header reports them
   director     asking a director where it would send a request, and what
                its service discovery should list
@@ -27,7 +28,7 @@
   registry     the registry's own APIs: registering a prefix, keys of a
                run's own, and the keys in a JWKS
   report       one row per test case, in framework/var/results/
-  session      what every suite shares in one run: tokens, the client,
+  session      what every suite shares in one pass: tokens, the client,
                and reading what it printed
   stores       what the origins hold, putting objects straight there, and
                what their storage cannot do

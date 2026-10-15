@@ -33,6 +33,11 @@ afterward. A scenario with several cases records a row per case, named
   peer-director    with several directors, a director killed drops from
                    its peer's list of directors once its ad expires, and
                    returns
+
+The reads that the scenarios check present tokens of the session's
+profile; the objects are put in place, and the caches filled, with WLCG
+tokens either way. `state-survives`, `ad-expiry`, and `peer-director`
+present no storage token, and run in the WLCG pass alone.
 """
 
 import json
@@ -84,6 +89,8 @@ SCENARIOS = {
 }
 
 NAMESPACE = "protected-a"
+# The scenarios that present no storage token (see suites/__init__.py).
+ONE_PROFILE = ("state-survives", "ad-expiry", "peer-director")
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.
 Row = tuple[str, str, str]
@@ -153,6 +160,10 @@ class Test:
     Attributes:
         base: The run's collection, within /protected-a.
         tmp: A directory of the run's own, for the clients' files.
+        token: The `server` token for /protected-a, of the session's
+            profile.
+        setup: The `server` token for /protected-a, of the WLCG profile,
+            for putting objects in place and filling the caches.
         caps: /protected-a's capabilities.
         objects: The run's objects' bytes, by rel within the namespace.
     """
@@ -166,6 +177,7 @@ class Test:
         os.makedirs(self.tmp)
         self.token = session.token(NAMESPACE)
         self.token_file = session.token_file(NAMESPACE)
+        self.setup = session.setup_token(NAMESPACE)
         self.caps = self.fed.exports[NAMESPACE]
         self.objects: dict[str, bytes] = {}
         self._admins: dict[str, str] = {}
@@ -187,10 +199,10 @@ class Test:
         """Put object name, holding data, at every origin."""
         rel = self.rel(name)
         errors = stores.make_dirs(
-            self.fed.origins, NAMESPACE, rel.rsplit("/", 1)[0], self.token
+            self.fed.origins, NAMESPACE, rel.rsplit("/", 1)[0], self.setup
         )
         errors += stores.seed_everywhere(
-            self.fed.origins, NAMESPACE, rel, data, self.token, self.caps
+            self.fed.origins, NAMESPACE, rel, data, self.setup, self.caps
         )
         if errors:
             die(f"could not put {rel} in place: {first(errors)}")
@@ -218,21 +230,22 @@ class Test:
     def held(self, cache: common.Cache, name: str) -> bool:
         """Return whether a V2 cache holds all of object name.
 
-        The cache says so with Age.
+        The cache says so with Age, to the setup token.
         """
-        answer = web.request("HEAD", f"{cache.url}{self.path(name)}", token=self.token)
+        answer = web.request("HEAD", f"{cache.url}{self.path(name)}", token=self.setup)
         return answer.status == 200 and answer.header("Age").strip().isdigit()
 
     def fill(self, cache: common.Cache, name: str) -> Optional[str]:
         """Read object name whole through cache, which must serve it.
 
-        For a V2 cache, wait until it says it holds it all.
+        For a V2 cache, wait until it says it holds it all. The read is
+        setup, with the setup token.
 
         Returns:
             What went wrong, or None.
         """
         answer = web.request(
-            "GET", f"{cache.url}{self.path(name)}", token=self.token, timeout=120
+            "GET", f"{cache.url}{self.path(name)}", token=self.setup, timeout=120
         )
         if answer.status != 200 or answer.body != self.objects[self.rel(name)]:
             return f"{cache.svc}: a GET of {name} got {answer.describe()}"
@@ -1321,7 +1334,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         for name in selected:
             results.add(name, SKIP, why)
         return
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
     errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/restart", tokens)
     if errors:
         die(f"could not remove earlier runs' objects: {first(errors)}")

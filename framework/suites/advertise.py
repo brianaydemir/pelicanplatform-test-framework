@@ -86,6 +86,11 @@ SCENARIOS = {
     "broker": "the connection broker gives a caller only its own origin's requests",
 }
 
+# The scenarios that present no storage token but their setup's (see
+# suites/__init__.py): only `fed-token-at-origin` presents a user's, of
+# the session's profile, beside a federation token.
+ONE_PROFILE = tuple(s for s in SCENARIOS if s != "fed-token-at-origin")
+
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.
 Row = tuple[str, str, str]
@@ -938,7 +943,7 @@ def skip(fed: common.Federation) -> Optional[str]:
 def put_probe(test: Test) -> None:
     """Put the probe at every origin, in the suite's namespace."""
     fed = test.fed
-    token = test.session.token(test.namespace)
+    token = test.session.setup_token(test.namespace)
     errors = stores.make_dirs(fed.origins, test.namespace, "data/advertise", token)
     for origin in stores.unique(fed.origins):
         if errors:
@@ -972,7 +977,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 results.add(f"{name} {case}" if case else name, status, note)
     finally:
         fed = session.fed
-        tokens = {test.namespace: session.token(test.namespace)}
+        tokens = {test.namespace: session.setup_token(test.namespace)}
         errors = stores.empty_tree_everywhere(
             fed.origins, {test.namespace: fed.exports[test.namespace]}, "data/advertise", tokens
         )

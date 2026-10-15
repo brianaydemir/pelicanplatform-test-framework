@@ -39,6 +39,9 @@ and its scenarios skip.
   overwritten  a tiered object overwritten at the origins: every read is
                all one version, and under ORIGIN_CACHE_CONTROL, the new
                one once the old is stale
+
+The reads present tokens of the session's profile; the objects are put
+at the origins with WLCG tokens either way.
 """
 
 import hashlib
@@ -157,6 +160,10 @@ class Test:
 
     Attributes:
         base: The run's collection, within /protected-a.
+        token: The `server` token for /protected-a, of the session's
+            profile.
+        setup: The `server` token for /protected-a, of the WLCG profile,
+            for putting objects at the origins.
         tmp: A directory of the run's own, for the clients' files.
         tiered: The objects that each cache has tiered (their bytes), by
             cache, then name.
@@ -168,6 +175,7 @@ class Test:
         self.caches = caches
         self.base = f"data/tiering/{session.run}"
         self.token = session.token("protected-a")
+        self.setup = session.setup_token("protected-a")
         self.tmp = session.path("tiering")
         os.makedirs(self.tmp)
         self.tiered: dict[str, dict[str, bytes]] = {c.svc: {} for c in caches}
@@ -190,7 +198,7 @@ class Test:
         caps = self.fed.exports["protected-a"]
         rel = self.rel(cache, name)
         errors = stores.seed_everywhere(
-            self.fed.origins, "protected-a", rel, data, self.token, caps
+            self.fed.origins, "protected-a", rel, data, self.setup, caps
         )
         if errors:
             die(f"could not put {rel} in place: {first(errors)}")
@@ -669,7 +677,7 @@ def overwritten(test: Test) -> tuple[str, str]:
             "protected-a",
             test.rel(cache, name),
             v2,
-            test.token,
+            test.setup,
             test.fed.exports["protected-a"],
         )
         if errors:
@@ -726,7 +734,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         for name in selected:
             results.add(name, SKIP, why)
         return
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
     test = Test(session, caches)
     print(
         f"Tiering through {', '.join(c.svc for c in caches)},"

@@ -16,6 +16,10 @@ The director redirects a PROPFIND to an origin. A cache answers Depth 0
 from what it holds, or asks an origin, and relays deeper listings to an
 origin.
 
+Every PROPFIND and GET presents a token of the session's profile; the
+objects are put in place, and the stores read, with WLCG tokens either
+way.
+
 An object's getlastmodified at an origin must be when its file was
 written. Who may list depends on the namespace's capabilities (see
 may_list()): an origin serves only direct clients, which a namespace
@@ -58,6 +62,9 @@ SCENARIOS = {
     "html-links": "each origin's HTML listing links to each object by its name, and no decoy",
     "plain-object-listing": "Depth 1 of an object, at each origin and cache, and `ls` of it, list it alone",
 }
+
+# The scenarios that present no token (see suites/__init__.py).
+ONE_PROFILE = ("protected-a-no-token", "public-no-token")
 
 # The tree under <base>/tree, in every namespace: each object's size (paths
 # below it).
@@ -105,8 +112,12 @@ class Test:
         origins: The origins, each store once.
         caches: The federated caches.
         base: The run's collection, in each namespace.
-        token_files: Each namespace's `server` token's file, by namespace.
-        tokens: Each namespace's `server` token, by namespace.
+        token_files: Each namespace's `server` token's file, by namespace,
+            of the session's profile.
+        tokens: Each namespace's `server` token, by namespace, of the
+            session's profile.
+        setup: Each namespace's `server` token, by namespace, of the WLCG
+            profile, for putting objects in place and reading the stores.
         elsewhere: A token like `server`'s for /protected-a, but to read
             <base>/elsewhere alone.
     """
@@ -122,12 +133,14 @@ class Test:
         self.namespaces = session.namespaces
         self.token_files = {ns: session.token_file(ns) for ns in self.namespaces}
         self.tokens = {ns: session.token(ns) for ns in self.namespaces}
+        self.setup = session.setup_tokens()
         self.elsewhere = credentials.mint_server(
             self.fed,
             session.path("listings-elsewhere.token"),
             "protected-a",
             scopes=credentials.R,
             scope_path=f"/{self.base}/elsewhere",
+            profile=session.profile,
         )
 
     def path(self, namespace: str, rel: str = "tree") -> str:
@@ -177,7 +190,7 @@ class Test:
             for ns in stores.storage_namespaces(origin, self.fed.exports):
                 for rel in ("tree/sub/deeper", "probe"):
                     errors += stores.make_dirs(
-                        [origin], ns, f"{self.base}/{rel}", self.tokens[ns]
+                        [origin], ns, f"{self.base}/{rel}", self.setup[ns]
                     )
                 if errors:
                     return errors
@@ -190,7 +203,7 @@ class Test:
                         ns,
                         f"{self.base}/{rel}",
                         os.urandom(size),
-                        self.tokens[ns],
+                        self.setup[ns],
                         self.caps(ns),
                     )
                     if error:
@@ -676,7 +689,7 @@ def new_object(test: Test) -> tuple[str, str]:
         return SKIP, "/protected-a has no Listings"
     rel = f"{test.base}/tree/new"
     errors = stores.seed_everywhere(
-        test.origins, "protected-a", rel, os.urandom(1234), test.tokens["protected-a"], caps
+        test.origins, "protected-a", rel, os.urandom(1234), test.setup["protected-a"], caps
     )
     if errors:
         return FAIL, errors[0]
@@ -688,7 +701,7 @@ def new_object(test: Test) -> tuple[str, str]:
     ):
         if when == "after the removal":
             for origin in test.origins:
-                if why := stores.delete(origin, "protected-a", rel, test.tokens["protected-a"]):
+                if why := stores.delete(origin, "protected-a", rel, test.setup["protected-a"]):
                     return FAIL, why
         for svc, url, role in servers(test):
             if not may_list(caps, "1", role):
@@ -725,7 +738,9 @@ def collection_get(test: Test) -> tuple[str, str]:
     caps = test.caps("protected-a")
     token = test.tokens["protected-a"]
     path = test.path("protected-a", "tree/sub")
-    want = stores.held(test.origins[0], "protected-a", f"{test.base}/tree/sub/c", token)
+    want = stores.held(
+        test.origins[0], "protected-a", f"{test.base}/tree/sub/c", test.setup["protected-a"]
+    )
     if want is None:
         return FAIL, f"{test.origins[0].svc}'s store lacks tree/sub/c"
 
@@ -916,15 +931,16 @@ def html_links(test: Test) -> tuple[str, str]:
     if not may_list(caps, "0", "origin"):
         return SKIP, "/protected-a takes no direct clients"
     token = test.tokens["protected-a"]
+    setup = test.setup["protected-a"]
     rel = f"{test.base}/html"
     # Each a size of its own.
     objects = {name: os.urandom(1000 + 37 * n) for n, name in enumerate(NAMES)}
-    errors = stores.make_dirs(test.origins, "protected-a", f"{rel}/{HTML_SUB}", token)
+    errors = stores.make_dirs(test.origins, "protected-a", f"{rel}/{HTML_SUB}", setup)
     for name, data in [*objects.items(), (f"{HTML_SUB}/inner", os.urandom(HTML_INNER))]:
         if errors:
             break
         errors += stores.seed_everywhere(
-            test.origins, "protected-a", f"{rel}/{name}", data, token, caps
+            test.origins, "protected-a", f"{rel}/{name}", data, setup, caps
         )
     if errors:
         return FAIL, errors[0]
@@ -1029,7 +1045,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             directory = f"{origin.store_of(ns)}/data/listings"
             if not origin.pstore and not os.path.isdir(directory):
                 die(f"framework/var/{directory} is missing; run ./fed.sh init")
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
         errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/listings", tokens)

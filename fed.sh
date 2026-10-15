@@ -12,7 +12,8 @@
 #   ./fed.sh restart [SERVICE]... recreate containers to reread configuration
 #   ./fed.sh keys                 list issuer keys (also: init, add, rotate)
 #   ./fed.sh dev [CMD]...         run a shell (or CMD) in the dev container
-#   ./fed.sh test [ARG]...        run ./test.py in the dev container
+#   ./fed.sh test [ARG]...        run ./test.py in the dev container, then
+#                                 keep the services' logs in var/logs/
 #   ./fed.sh control              let a test.py run by hand control services
 #   ./fed.sh status               show containers, presets, and images
 #   ./fed.sh check                exit 0 if fed.sh accepts the presets
@@ -2368,6 +2369,24 @@ fed_control_stop() {
   fed_control_pid=""
 }
 
+# Keep every service's log in framework/var/logs/$1/, once: <svc>.log,
+# from when its container was created, and ps.txt, the containers'
+# states. The tests restart services but never recreate them, so a log
+# covers the whole run, and the startup before it.
+fed_save_logs() {
+  [ -n "$1" ] && [ -z "${fed_logs_saved:-}" ] || return 0
+  fed_logs_saved=yes
+  dir="framework/var/logs/$1"
+  mkdir -p "${dir}" || { warn "cannot save the services' logs in ${dir}/"; return 0; }
+  docker compose ps --all >"${dir}/ps.txt" 2>&1 || true
+  for svc in $(docker compose ps --all --services 2>/dev/null); do
+    docker compose logs --no-color --no-log-prefix --timestamps "${svc}" \
+        >"${dir}/${svc}.log" 2>&1 \
+        || warn "cannot save ${svc}'s log; see ${dir}/${svc}.log"
+  done
+  printf 'Service logs are in %s/.\n' "${dir}"
+}
+
 # Warn (only) if the test data was built for a different shape.
 fed_check_data_shape() {
   want=$(./framework/init-data.py --print-shape)
@@ -2595,7 +2614,14 @@ case "${cmd}" in
 
   dev|test)
     fed_dev_up
+    logs=""
     if [ "${cmd}" = test ]; then
+      # The services' logs are kept, pass or fail, but for a listing or
+      # the usage (see fed_save_logs).
+      case "${1:-}" in
+        -h|--help|-l|--list) ;;
+        *) logs=$(date -u +%Y%m%d-%H%M%S)${RESULTS_TAG:+"-${RESULTS_TAG}"} ;;
+      esac
       # RESULTS_TAG goes through, to name the results (see
       # framework/testlib/report.py).
       set -- env ${RESULTS_TAG:+"RESULTS_TAG=${RESULTS_TAG}"} /scratch/test.py "$@"
@@ -2610,14 +2636,16 @@ case "${cmd}" in
       exec docker compose -f framework/docker-compose.yaml \
           exec ${no_tty:+"${no_tty}"} dev "$@"
     fi
+    # The logs are saved after the helper puts back what the tests left.
     fed_control_start
     trap 'fed_control_stop' EXIT
-    trap 'fed_control_stop; exit 130' INT
-    trap 'fed_control_stop; exit 143' TERM
+    trap 'fed_control_stop; fed_save_logs "${logs}"; exit 130' INT
+    trap 'fed_control_stop; fed_save_logs "${logs}"; exit 143' TERM
     status=0
     docker compose -f framework/docker-compose.yaml \
         exec ${no_tty:+"${no_tty}"} dev "$@" || status=$?
     fed_control_stop
+    fed_save_logs "${logs}"
     exit "${status}"
     ;;
 

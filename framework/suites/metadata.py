@@ -13,7 +13,10 @@ publishing is off.
 Objects go under /protected-a/data/metadata/. `fields` and `blob` use
 `pelican object put` through the director; the rest go straight to the
 first origin in framework/var/generated/origins, since the client
-doesn't show the origin's X-Pelican-Metadata-Status.
+doesn't show the origin's X-Pelican-Metadata-Status. Each upload, MOVE,
+COPY, and DELETE presents a token of the session's profile; the suite
+cleans up, and sees whether the federation serves again, with a WLCG
+token either way.
 
 `queue-admin` and `backpressure` restart the first origin with its
 retries backed off for ten minutes, so that an event the recorder always
@@ -161,7 +164,9 @@ class Test:
         origin: The first origin.
         stores: /protected-a's storage in each store.
         tmp: The run's directory for files to upload.
-        token: /protected-a's `server` token.
+        token: /protected-a's `server` token, of the session's profile.
+        setup: /protected-a's `server` token, of the WLCG profile, for
+            cleaning up, and seeing whether the federation serves.
         fields: The custom fields that `fields` and `blob` send.
         web: The first origin's web URL.
         made: What the scenarios made under data/metadata/, by name, to
@@ -183,6 +188,7 @@ class Test:
         self.run = session.run
         self.token_file = session.token_file("protected-a")
         self.token = session.token("protected-a")
+        self.setup = session.setup_token("protected-a")
         self.fields = {
             "experiment": "pelican-test-framework",
             "run_number": int(self.run.split("-")[0]),
@@ -1700,20 +1706,21 @@ def serving(test: Test) -> Optional[str]:
     """Return why the namespace is not served as before, or None.
 
     Every origin must answer a HEAD of the probe, every director name
-    every origin for it, and every federated cache answer a HEAD of it.
+    every origin for it, and every federated cache answer a HEAD of it,
+    with the setup token.
     """
     path = f"{PREFIX}/{test.run}-probe"
     for origin in test.fed.origins:
-        answer = web.request("HEAD", f"{origin.url}{path}", token=test.token)
+        answer = web.request("HEAD", f"{origin.url}{path}", token=test.setup)
         if answer.status != 200:
             return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
     for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.token)
+        where = director.ask(url, "origin", path, token=test.setup)
         for origin in test.fed.origins:
             if not where.names(director.host(origin.url)):
                 return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
     for cache in test.fed.federated_caches:
-        answer = web.request("HEAD", f"{cache.url}{path}", token=test.token)
+        answer = web.request("HEAD", f"{cache.url}{path}", token=test.setup)
         if answer.status != 200:
             return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
     return None
@@ -1854,7 +1861,7 @@ def clean(test: Test) -> None:
     """
     errors: list[str] = []
     for name in sorted(test.held):
-        answer = web.request("DELETE", test.url(name), token=test.token)
+        answer = web.request("DELETE", test.url(name), token=test.setup)
         if not answer.ok and answer.status != 404:
             errors.append(f"DELETE of {name}: {answer.describe()}")
     for name in sorted(test.made):
@@ -1867,7 +1874,7 @@ def clean(test: Test) -> None:
                 except OSError as e:
                     errors.append(f"removing framework/var/{path}: {e.strerror}")
                 continue
-            error = stores.delete(origin, "protected-a", rel, test.token)
+            error = stores.delete(origin, "protected-a", rel, test.setup)
             if error:
                 errors.append(error)
     try:

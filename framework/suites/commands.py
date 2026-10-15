@@ -21,7 +21,9 @@ NEEDS), e.g. every write under `-p origin-no-direct`, must be refused,
 and change nothing.
 
 The *-no-token scenarios check that the client itself refuses, for want
-of a token (Error code 4010), before it asks any server.
+of a token (Error code 4010), before it asks any server. Each command's
+token is of the session's profile; the tree is put in place, and the
+stores checked, with WLCG tokens either way.
 
 These commands' exit status says little about what went wrong (mostly
 1 or 11), so failures are judged by what they print (see
@@ -100,6 +102,16 @@ SCENARIOS = {
     "du-summarize": "`du -s` gives only the total",
     "du-no-token": "`du` of /protected-a with no token: the client refuses (Error code 4010)",
 }
+
+# The scenarios that present no token (see suites/__init__.py).
+ONE_PROFILE = (
+    "ls-public",
+    "stat-public",
+    "du-public",
+    "ls-no-token",
+    "delete-no-token",
+    "du-no-token",
+)
 
 # The capabilities each scenario needs of its namespace (/public for
 # ls-public and du-public, and otherwise /protected-a), beyond reading.
@@ -245,8 +257,12 @@ class Test:
         namespaces: The namespaces the scenarios use.
         lacks: The capabilities that the running scenario needs, and its
             namespace lacks (see NEEDS).
-        token_files: A `server` token file for each namespace.
-        read_only: A read-only `server` token file for /protected-a.
+        token_files: A `server` token file for each namespace, of the
+            session's profile.
+        tokens: A `server` token for each namespace, of the WLCG profile,
+            for putting objects in place and reading the stores.
+        read_only: A read-only `server` token file for /protected-a, of
+            the session's profile.
         sync_env: The client's environment, with overwrites off.
         trees: Each namespace's tree, of TREE's paths and sizes, but
             bytes of its own.
@@ -265,7 +281,7 @@ class Test:
         ]
         self.lacks: frozenset[str] = frozenset()
         self.token_files = {ns: session.token_file(ns) for ns in self.namespaces}
-        self.tokens = {ns: session.token(ns) for ns in self.namespaces}
+        self.tokens = {ns: session.setup_token(ns) for ns in self.namespaces}
         self.read_only = session.token_file("protected-a", credentials.R)
         self.env = session.env
         self.sync_env = session.sync_env
@@ -1625,7 +1641,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 die(f"framework/var/{directory} is missing; run ./fed.sh init")
     # A pstore origin's store, which only it can change, is emptied
     # through it, with a token for each namespace with storage of its own.
-    tokens = session.tokens() if any(o.pstore for o in fed.origins) else {}
+    tokens = session.setup_tokens() if any(o.pstore for o in fed.origins) else {}
     # Earlier runs' trees come out first.
     errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/cmd", tokens)
     if errors:

@@ -50,19 +50,28 @@ suites (`framework/suites/`): `federation`, `selftest`, `commands`,
 `advertise`, `webapi`, `observability`, `webdav`, `auth`,
 `transfers`, `restart`, and `keys`.
 A suite that doesn't apply to the shape is skipped, and says why.
-[What the tests check](docs/tests/README.md) describes each one.
+[What the tests check](docs/tests/README.md) describes each one. Each
+suite runs twice, presenting WLCG tokens, then SciTokens
+([token profiles](docs/tests/README.md#token-profiles)).
 
 ```sh
 ./fed.sh test -l                        # list the suites and their scenarios
 ./fed.sh test auth commands             # only these suites
 ./fed.sh test 'transfers/plugin-*'      # only a suite's scenarios that match
 ./fed.sh test commands/ls-public        # just one
+./fed.sh test --profile wlcg auth       # only its WLCG pass (or scitokens)
 ```
 
 The run prints each suite's results as it goes, then a summary of every
 suite and every case that failed. Each suite writes a row per test case
 to `framework/var/results/` ([Results](docs/ci.md#results)), and
-`test.py` exits non-zero if any case failed.
+`test.py` exits non-zero if any case failed. Pass or fail, or
+interrupted, `./fed.sh test` then keeps every service's log, from when
+its container was created, in `framework/var/logs/<time>/`: a file per
+service, and `ps.txt`, the containers' states. The tests restart
+services but never recreate them, so these cover the whole run, and the
+startup before it; `./fed.sh up` and `restart` start a recreated
+container's log afresh.
 
 
 ## Workflow
@@ -86,7 +95,8 @@ to `framework/var/results/` ([Results](docs/ci.md#results)), and
            pelican://discovery:8444/public/data/0.0 /tmp/0.0
 
 5. **Inspect** with `./fed.sh logs -f origin-0`, `./fed.sh status`, the
-   [web UIs](#ports), and [`framework/var/`](#where-things-live).
+   [web UIs](#ports), and [`framework/var/`](#where-things-live),
+   where `logs/` keeps the services' logs from each test run.
 6. **Change something** ([below](#testing-your-changes)), then apply it.
 7. **Reset** with `./reset.sh`. It stops everything, then discards
    `framework/var/` (except Grafana's database) and the dev container's
@@ -374,13 +384,14 @@ them.
 | `data/origin/<N>/`   | origin-N's store (`/data`; `/srv/origin-<N>` on the `webdav` and `s3` backends), a directory per namespace      |
 | `data/cache/<N>/`    | cache-N's storage (`/data`)                                                                                     |
 | `data/lab-server/`   | the lab server's shared directory                                                                               |
-| `data/transfers/`    | the `transfers` suite's batches (`input/`) and results                                                          |
-| `data/auth-test/`    | the responses the `auth` suite got                                                                              |
-| `data/owners-test/`  | the responses the `owners` suite got                                                                            |
+| `data/transfers/`    | the `transfers` suite's batches (`input/`) and results; `data/transfers-scitokens/`, its SciTokens pass's        |
+| `data/auth-test/`    | the responses the `auth` suite got; `data/auth-test-scitokens/`, in its SciTokens pass                          |
+| `data/owners-test/`  | the responses the `owners` suite got; `data/owners-test-scitokens/`, in its SciTokens pass                      |
 | `data/metadata/`     | every request the metadata recorder received                                                                    |
 | `data/webdav-gate/`  | the `Authorization` of every request an `https` or `httpsv2` origin sent its backend through the gate (`exports`) |
 | `data/idp/`          | every request the identity provider served (`-p auth-oidc`), one JSON object per line, without its secrets         |
 | `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                   |
+| `logs/<time>/`       | every service's log, and the containers' states, as each `./fed.sh test` ended                                  |
 | `control/`           | the tests' requests to [control services](#service-control), and their configuration of a service (`config/<svc>/`) |
 | `issuer-keys/<svc>/` | each service's issuer keys (`/fed/issuer-keys`), and `issuer/`, the external issuer's                           |
 | `test-keys/`         | private keys for the [authorization tests](docs/tests/authorization.md)                                         |

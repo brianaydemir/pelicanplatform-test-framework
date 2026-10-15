@@ -35,6 +35,12 @@ writes, every object is put straight in each origin's store instead
 (see stores.seed()), and the uploads themselves are skipped; where it
 takes no direct clients, the origins are read only through the caches,
 and a direct read must be refused.
+
+Every request and client run presents a token of the session's
+profile, as do the uploads of `put-declared` and `put-chunked`, which
+the other sets' reads need; the scenarios' own objects are put in
+place, and the stores and caches checked and cleaned, with WLCG tokens
+either way.
 """
 
 import base64
@@ -166,8 +172,13 @@ class Test:
         origins: The origins, each store once.
         tmp: A local directory for the suite's files.
         base: Where the run's objects go in /protected-a.
-        token_file: The file of the server's token for /protected-a.
-        token: The server's token for /protected-a.
+        token_file: The file of the server's token for /protected-a, of
+            the session's profile.
+        token: The server's token for /protected-a, of the session's
+            profile.
+        setup: The server's token for /protected-a, of the WLCG profile,
+            for putting objects in place, and checking and cleaning the
+            stores and caches.
         caps: The capabilities of /protected-a.
         writes: Whether /protected-a takes writes.
         direct: Whether /protected-a takes direct clients.
@@ -189,6 +200,7 @@ class Test:
         self.base = f"data/blocks/{self.run}"
         self.token_file = session.token_file("protected-a")
         self.token = session.token("protected-a")
+        self.setup = session.setup_token("protected-a")
         self.caps = session.fed.exports["protected-a"]
         self.writes = "Writes" in self.caps
         self.direct = "DirectReads" in self.caps
@@ -239,7 +251,7 @@ class Test:
         for origin in self.origins:
             for set_name in names:
                 errors = stores.make_dirs(
-                    [origin], "protected-a", f"{self.base}/{set_name}", self.token
+                    [origin], "protected-a", f"{self.base}/{set_name}", self.setup
                 )
                 if errors:
                     return FAIL, "; ".join(errors)
@@ -263,7 +275,7 @@ class Test:
                     want = common.digest(self.data[(set_name, size)])
                     try:
                         got = stores.held(
-                            origin, "protected-a", self.rel(set_name, size), self.token
+                            origin, "protected-a", self.rel(set_name, size), self.setup
                         )
                     except stores.Unreadable as e:
                         return FAIL, str(e)
@@ -420,12 +432,12 @@ def upload_each(test: Test, base: str, objects: dict[str, bytes]) -> list[str]:
     Returns:
         What went wrong; empty if nothing did.
     """
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
     for name, data in objects.items():
         if errors:
             break
         errors += stores.seed_everywhere(
-            test.origins, "protected-a", f"{base}/{name}", data, test.token, test.caps
+            test.origins, "protected-a", f"{base}/{name}", data, test.setup, test.caps
         )
     return errors
 
@@ -500,7 +512,7 @@ def uploaded(test: Test, files: dict[int, bytes], collection: str) -> Optional[s
             test.origins,
             "protected-a",
             f"{collection}/{size}",
-            {"protected-a": test.token},
+            {"protected-a": test.setup},
         )
         if common.digest(data) not in held:
             return f"no origin holds {size} intact"
@@ -540,7 +552,7 @@ def put_client(test: Test) -> tuple[str, str]:
     if not test.writes:
         return SKIP, NO_WRITES
     collection = f"{test.base}/put-client"
-    errors = stores.make_dirs(test.origins, "protected-a", collection, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", collection, test.setup)
     if errors:
         return FAIL, "; ".join(errors)
     directory, files = local_sizes(test, "put-client")
@@ -626,7 +638,7 @@ def put_plugin(test: Test) -> tuple[str, str]:
     if not test.writes:
         return SKIP, NO_WRITES
     collection = f"{test.base}/put-plugin"
-    errors = stores.make_dirs(test.origins, "protected-a", collection, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", collection, test.setup)
     if errors:
         return FAIL, "; ".join(errors)
     directory, files = local_sizes(test, "put-plugin")
@@ -658,7 +670,7 @@ def put_checksum(test: Test) -> tuple[str, str]:
     if not test.writes:
         return SKIP, NO_WRITES
     collection = f"{test.base}/put-checksum"
-    errors = stores.make_dirs(test.origins, "protected-a", collection, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", collection, test.setup)
     if errors:
         return FAIL, "; ".join(errors)
     directory, files = local_sizes(test, "put-checksum")
@@ -1038,7 +1050,7 @@ def has_age(test: Test, cache: common.Cache, rel: str) -> Optional[bool]:
     Returns:
         Whether it does, or None if a HEAD of rel fails.
     """
-    answer = web.request("HEAD", f"{cache.url}/protected-a/{rel}", token=test.token)
+    answer = web.request("HEAD", f"{cache.url}/protected-a/{rel}", token=test.setup)
     return bool(answer.header("Age")) if answer.status == 200 else None
 
 
@@ -1889,7 +1901,7 @@ def unrepairable(
         found.fail(str(e))
         return
     for origin in test.origins:
-        error = stores.delete(origin, "protected-a", rel, test.token)
+        error = stores.delete(origin, "protected-a", rel, test.setup)
         if error:
             found.fail(error)
             return
@@ -2125,8 +2137,8 @@ def write_version(
         time.sleep(1.1)
         return stores.write_file(origin.store_of("protected-a"), rel, data)
     if how == "put":
-        return stores.put(origin, "protected-a", rel, data, test.token)
-    return stores.seed(origin, "protected-a", rel, data, test.token, test.caps)
+        return stores.put(origin, "protected-a", rel, data, test.setup)
+    return stores.seed(origin, "protected-a", rel, data, test.setup, test.caps)
 
 
 def digests_after_writes(test: Test, origin: common.Origin, rel: str) -> tuple[list[str], int]:
@@ -2182,7 +2194,7 @@ def digest_overwrite(test: Test) -> tuple[str, str]:
     if not test.digests:
         return SKIP, test.no_digests or "the origins report no digest"
     base = f"{test.base}/digest-overwrite"
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
     if errors:
         return FAIL, errors[0]
     problems: list[str] = []
@@ -2807,7 +2819,7 @@ def xattrs_at(
         return
     if test.writes:
         new = os.urandom(len(data) + 7)
-        error = stores.put(origin, "protected-a", rel, new, test.token)
+        error = stores.put(origin, "protected-a", rel, new, test.setup)
         if error:
             found.fail(f"{origin.svc}: {error}")
             return
@@ -2852,13 +2864,13 @@ def digest_defaults(test: Test) -> tuple[str, str]:
     if not test.digests:
         return SKIP, test.no_digests or "the origins report no digest"
     base = f"{test.base}/digest-defaults"
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
     if errors:
         return FAIL, errors[0]
     found = Findings()
     for origin in test.origins:
         rel, data = f"{base}/{origin.svc}", os.urandom(3 * blocks.BLOCK + 5)
-        error = stores.seed(origin, "protected-a", rel, data, test.token, test.caps)
+        error = stores.seed(origin, "protected-a", rel, data, test.setup, test.caps)
         if error:
             found.fail(f"{origin.svc}: {error}")
             continue
@@ -3209,7 +3221,7 @@ def huge_evict(test: Test, rel: str) -> list[str]:
             continue
         query = urlencode({"path": path, "immediate": "true"})
         answer = web.request(
-            "DELETE", f"{cache.web_url}{cacheapi.EVICT}?{query}", token=test.token
+            "DELETE", f"{cache.web_url}{cacheapi.EVICT}?{query}", token=test.setup
         )
         if answer.status != 200:
             problems.append(f"evicting it from {cache.svc}: {answer.describe()}")
@@ -3235,7 +3247,7 @@ def huge_ranges(test: Test) -> tuple[str, str]:
         )
     collection = f"{test.base}/huge"
     rel = f"{collection}/{HUGE_SIZE}"
-    errors = stores.make_dirs(test.origins, "protected-a", collection, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", collection, test.setup)
     if errors:
         return FAIL, first(errors)
     for origin in test.origins:
@@ -3425,7 +3437,7 @@ def cas_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str]
             problems.append(f"{what}: {answer.describe()}")
         elif not allowed and answer.status != 412:
             problems.append(f"{what}: {answer.describe()}, not 412")
-        have = stores.held(origin, "protected-a", where, test.token)
+        have = stores.held(origin, "protected-a", where, test.setup)
         if want is None and have is not None:
             problems.append(f"after {what}, the store holds an object")
         elif want is not None and have != common.digest(want):
@@ -3498,7 +3510,7 @@ def conditional_put(test: Test) -> tuple[str, str]:
     if not test.writes:
         return SKIP, NO_WRITES
     base = f"{test.base}/conditional-put"
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
     if errors:
         return FAIL, errors[0]
     problems: list[str] = []
@@ -3602,7 +3614,7 @@ def etag_conditions(
     answer = cas_put(test, origin, rel, new, "If-Match", etag)
     if not answer.ok:
         problems.append(f"a PUT {what}: {answer.describe()}")
-    held = stores.held(origin, "protected-a", rel, test.token)
+    held = stores.held(origin, "protected-a", rel, test.setup)
     now = new if answer.ok else data
     if held != common.digest(now):
         problems.append(f"after a PUT {what}, the store does not hold what it should")
@@ -3624,7 +3636,7 @@ def etag_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str
         if not answer.ok:
             return [f"a PUT: {answer.describe()}"], ""
         tags["PUT"] = answer.header("ETag")
-    elif error := stores.seed(origin, "protected-a", rel, data, test.token, test.caps):
+    elif error := stores.seed(origin, "protected-a", rel, data, test.setup, test.caps):
         return [error], ""
     tags.update(method_etags(test, target, data, problems))
     sent = {method: tag for method, tag in tags.items() if tag}
@@ -3663,7 +3675,7 @@ def etag_agreement(test: Test) -> tuple[str, str]:
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
     base = f"{test.base}/etag-agreement"
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
     if errors:
         return FAIL, errors[0]
     problems: list[str] = []
@@ -3714,7 +3726,7 @@ def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
     other = [a for a in answers if not a.ok and a.status != 412]
     if other:
         problems.append(f"a racing PUT that lost: {other[0].describe()}, not 412")
-    held = stores.held(origin, "protected-a", rel, test.token)
+    held = stores.held(origin, "protected-a", rel, test.setup)
     if not any(held == common.digest(bodies[n]) for n in won):
         problems.append("after the racing PUTs, the store holds no winner's bytes")
     return problems
@@ -3728,7 +3740,7 @@ def edge_problems(test: Test, origin: common.Origin, base: str) -> tuple[list[st
     """
     rel = f"{base}/object"
     data = os.urandom(blocks.BLOCK + 1)
-    error = stores.seed(origin, "protected-a", rel, data, test.token, test.caps)
+    error = stores.seed(origin, "protected-a", rel, data, test.setup, test.caps)
     if error:
         return [error], ""
     target = stores.url(origin, "protected-a", rel)
@@ -3769,7 +3781,7 @@ def edge_problems(test: Test, origin: common.Origin, base: str) -> tuple[list[st
         problems.append(
             f"a PUT with If-None-Match: {junk} over it: {answer.describe()}, not 412"
         )
-    if stores.held(origin, "protected-a", rel, test.token) != common.digest(data):
+    if stores.held(origin, "protected-a", rel, test.setup) != common.digest(data):
         problems.append(
             f"after a PUT with If-None-Match: {junk}, the store holds another object"
         )
@@ -3799,7 +3811,7 @@ def conditional_edges(test: Test) -> tuple[str, str]:
     problems: list[str] = []
     notes: list[str] = []
     for origin in test.origins:
-        errors = stores.make_dirs([origin], "protected-a", f"{base}/{origin.svc}", test.token)
+        errors = stores.make_dirs([origin], "protected-a", f"{base}/{origin.svc}", test.setup)
         if errors:
             return FAIL, errors[0]
         wrong, note = edge_problems(test, origin, f"{base}/{origin.svc}")
@@ -3829,9 +3841,9 @@ def mixed_version(test: Test) -> tuple[str, str]:
     size = MIXED_SIZE
     rel = f"{test.base}/mixed"
     v1, v2 = os.urandom(size), os.urandom(size)
-    errors = stores.make_dirs(test.origins, "protected-a", test.base, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", test.base, test.setup)
     errors += stores.seed_everywhere(
-        test.origins, "protected-a", rel, v1, test.token, test.caps
+        test.origins, "protected-a", rel, v1, test.setup, test.caps
     )
     if errors:
         return FAIL, "; ".join(errors)
@@ -3854,7 +3866,7 @@ def mixed_version(test: Test) -> tuple[str, str]:
                 FAIL,
                 f"{cache.svc}: the first block of v1 came back wrong ({answer.describe()})",
             )
-    errors = stores.seed_everywhere(test.origins, "protected-a", rel, v2, test.token, test.caps)
+    errors = stores.seed_everywhere(test.origins, "protected-a", rel, v2, test.setup, test.caps)
     if errors:
         return FAIL, "; ".join(errors)
     start, end = MIXED_LATER, MIXED_LATER + block
@@ -4050,7 +4062,7 @@ def overwrite(test: Test, range_first: bool) -> tuple[str, str]:
     for key, data in versions.v2.items():
         rel = f"{versions.base}/{key}"
         errors = stores.seed_everywhere(
-            test.origins, "protected-a", rel, data, test.token, test.caps
+            test.origins, "protected-a", rel, data, test.setup, test.caps
         )
         if errors:
             return FAIL, errors[0]
@@ -4102,7 +4114,7 @@ def overwrite_range_first(test: Test) -> tuple[str, str]:
 
 def held_everywhere(test: Test, rel: str, data: bytes) -> bool:
     """Return whether every origin holds data at rel in /protected-a."""
-    held = stores.held_anywhere(test.origins, "protected-a", rel, {"protected-a": test.token})
+    held = stores.held_anywhere(test.origins, "protected-a", rel, {"protected-a": test.setup})
     return all(h == common.digest(data) for h in held)
 
 
@@ -4134,11 +4146,11 @@ def put_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> Optiona
         return None
     if not answer.ok:
         return f"a PUT: {answer.describe()}"
-    held = stores.held_anywhere(test.origins, "protected-a", rel, {"protected-a": test.token})
+    held = stores.held_anywhere(test.origins, "protected-a", rel, {"protected-a": test.setup})
     if common.digest(v2) not in held:
         return "a PUT succeeded, but no origin holds what it wrote"
     # Then only the cache's own copy could still be v1.
-    errors = stores.seed_everywhere(test.origins, "protected-a", rel, v2, test.token, test.caps)
+    errors = stores.seed_everywhere(test.origins, "protected-a", rel, v2, test.setup, test.caps)
     if errors:
         return errors[0]
     why = test.get(cache.url, rel, v2, None)
@@ -4159,12 +4171,12 @@ def delete_through(test: Test, cache: common.Cache, rel: str) -> Optional[str]:
     answer = web.request("DELETE", url, token=test.token)
     if not answer.ok:
         return f"a DELETE: {answer.describe()}"
-    held = stores.held_anywhere(test.origins, "protected-a", rel, {"protected-a": test.token})
+    held = stores.held_anywhere(test.origins, "protected-a", rel, {"protected-a": test.setup})
     if None not in held:
         return "a DELETE succeeded, but every origin holds the object"
     # Then only the cache's own copy could still be served.
     for origin in test.origins:
-        error = stores.delete(origin, "protected-a", rel, test.token)
+        error = stores.delete(origin, "protected-a", rel, test.setup)
         if error:
             return error
     answer = web.request("GET", url, token=test.token)
@@ -4421,7 +4433,7 @@ def cache_evicted(test: Test) -> tuple[str, str]:
     high = max(test.fed.eviction[c.svc][0] for c in caches)
     count = -(-3 * high // (2 * EVICT_OBJECT))
     base = f"{test.base}/evicted"
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
     for n in range(count):
         if errors:
             break
@@ -4430,7 +4442,7 @@ def cache_evicted(test: Test) -> tuple[str, str]:
             "protected-a",
             f"{base}/{n}",
             evict_object(test.run, n),
-            test.token,
+            test.setup,
             test.caps,
         )
     if errors:
@@ -4507,7 +4519,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         directory = f"{origin.store_of('protected-a')}/data/blocks"
         if not origin.pstore and not os.path.isdir(directory):
             die(f"framework/var/{directory} is missing; run ./fed.sh init")
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
         errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/blocks", tokens)

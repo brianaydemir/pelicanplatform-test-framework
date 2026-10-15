@@ -57,6 +57,10 @@ SCENARIOS = {
     "downtime": "downtimes at the registry: whose they are, who may change them, routing",
 }
 
+# Every scenario: none presents a storage token, only Pelican's own (see
+# suites/__init__.py).
+ONE_PROFILE = tuple(SCENARIOS)
+
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.
 Row = tuple[str, str, str]

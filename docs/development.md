@@ -40,6 +40,19 @@ another suite: what two suites share lives there. The docstring of
 suites run in the order they do; a new suite goes in its `SUITES`, in
 that order.
 
+`test.py` runs each suite once for each
+[token profile](tests/README.md#token-profiles), each time with a
+session of that profile, so a suite's tokens come from its session:
+`session.token()` and the credential table's are the session's profile,
+for what a scenario presents, and `session.setup_token()` is WLCG's in
+either pass, for putting objects in place and reading the stores. A
+token a suite mints itself takes the session's profile too
+(`credentials.mint()` and its kin require one). A suite names its
+`ONE_PROFILE` scenarios, which present no storage token of the tests'
+own minting, and so run in the WLCG pass alone. A suite that keeps
+files under `framework/var/data/` for people to read keeps each pass's
+apart, with `session.var_dir()`.
+
 A suite records a row per case ([Results](ci.md#results)), named
 `<scenario>` or `<scenario> <case>`, through `testlib.report`. A row the
 suite could not judge is `INCONCLUSIVE`, with a note saying why, rather

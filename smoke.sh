@@ -26,9 +26,11 @@
 # variants, and features.
 #
 # Logs and results go to DIR (default: $SMOKE_LOG_DIR, or
-# smoke-logs/<timestamp>): <shape>.log, results/<shape>/*.tsv, and, merged
-# over every shape, results.tsv, junit.xml, and summary.md. Exits non-zero
-# if any shape fails.
+# smoke-logs/<timestamp>): <shape>.log, results/<shape>/*.tsv, the
+# services' logs from each run of the tests, logs/<shape>/<time>/, and,
+# merged over every shape, results.tsv, junit.xml, and summary.md. A
+# shape that fails also leaves <shape>.compose.log, every service's log
+# when it failed. Exits non-zero if any shape fails.
 
 set -u
 
@@ -458,12 +460,17 @@ shape_checks() {
 }
 
 # Keep the shape's results (framework/var/results/, which the next reset
-# discards) beside its steps'.
+# discards) beside its steps', and the services' logs from each run of
+# the tests (framework/var/logs/<time>/; see fed.sh's fed_save_logs).
 save_results() {
   for tsv in framework/var/results/*.tsv; do
     [ -e "${tsv}" ] || continue
     cp "${tsv}" "${log_dir}/results/${shape}/"
   done
+  if [ -d framework/var/logs ]; then
+    mkdir -p "${log_dir}/logs/${shape}" \
+        && cp -R framework/var/logs/. "${log_dir}/logs/${shape}/"
+  fi
 }
 
 #---------------------------------------------------------------------------
@@ -476,7 +483,7 @@ failed=0
 for shape in ${shapes}; do
   log="${log_dir}/${shape}.log"
   steps="${log_dir}/results/${shape}/smoke.tsv"
-  rm -rf "${log_dir}/results/${shape}"
+  rm -rf "${log_dir}/results/${shape}" "${log_dir}/logs/${shape}"
   mkdir -p "${log_dir}/results/${shape}"
   start=$(date +%s)
   set --

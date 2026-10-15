@@ -27,6 +27,13 @@ and the reverse:
 Otherwise each token has read, create, and modify on the whole namespace, is
 issued by that namespace's issuer, and lasts four hours, so that each tests
 one thing (`ns-cross` is `wrong-iss` signed with the other namespace's key).
+Each suite presents each credential in both
+[token profiles](README.md#token-profiles), as `pelican token create`
+makes them: of the WLCG profile, then of SciTokens 2.0, in its
+`-scitokens` pass, where read is `read:` and create and modify are both
+`write:`, so that `wrong-op`'s token is `write:` alone for a get and
+`read:` alone for a put. Each must fare alike in both. `none` presents
+no token, and so runs in the WLCG pass alone.
 With the origins' issuer off (`-p auth-no-issuer`), every namespace has
 one issuer, the origin itself, and no keys of its own, so the tests skip
 `wrong-iss`, `ns-jwks`, `ns-other`, and `ns-cross`, as they do with
@@ -95,7 +102,8 @@ namespace.
   has an issuer (`-p origin-public-writes`), its JWKS must hold the
   server-wide keys, and neither protected namespace's own, with which a
   token for that namespace alone could otherwise write `/public`.
-  `./fed.sh test auth/keys` runs only this check.
+  `./fed.sh test auth/keys` runs only this check, which presents no
+  token, and so runs in the WLCG pass alone.
 - **After a server has seen a token**, the `auth` suite's `narrow` check
   presents one like `server`'s but scoped to the test object alone, at
   every origin and cache in `/protected-a`. A GET of the object must
@@ -107,7 +115,10 @@ namespace.
   `modify-only` checks present tokens with only `storage.create` or only
   `storage.modify` in `/protected-a`, straight to every origin. As the
   WLCG token profile says, `storage.create` may create an object, but
-  neither replace nor delete one; `storage.modify` may do all three. Each
+  neither replace nor delete one; `storage.modify` may do all three. In
+  the SciTokens pass, `modify-only` presents a token of `write` alone,
+  which may do all three too, and `create-only` does not run, since
+  SciTokens has no scope of create alone. Each
   write is of an object of its own, put in place first where it must
   exist. A refused write must leave the object as it was. Pelican's
   native origin authorizes every PUT as a create, without asking whether
@@ -139,7 +150,8 @@ namespace.
   `X-Pelican-Authorization`, naming its issuer, since a client that named
   the cache itself (`Client.PreferredCaches`) heard them from no director.
   Pelican's main sends them; its releases through v26.0.0-rc.3 do not, so
-  the rows fail there. An XRootD cache sends none, and is passed over. The
+  the rows fail there. An XRootD cache sends none, and is passed over.
+  Presenting no token, the check runs in the WLCG pass alone. The
   `federation` suite's `hints` check asks the same of each director's
   redirects, for a cache and for an origin, in every namespace: the
   issuer must be the namespace's, and `/public`, which has none, must
@@ -155,8 +167,9 @@ namespace.
   refuses both.
 - **A token for another audience**, the `auth` suite's `audience` check:
   a resource server must check a token's `aud` against its own, as the
-  WLCG token profile says. Every credential names the profile's "any"
-  audience; this token, like `server`'s but for
+  WLCG token profile says, and SciTokens 2.0 too. Every credential names
+  its profile's "any" audience (`https://wlcg.cern.ch/jwt/v1/any`, or
+  SciTokens' `ANY`); this token, like `server`'s but for
   `https://elsewhere.invalid`, must be refused by every origin, for a
   GET of the test object and a PUT of a new one, which must store
   nothing. Only the origins are asked (Pelican's `origin_serve/authz.go`,
@@ -166,10 +179,10 @@ namespace.
   the first origin's own audience alone (`Origin.TokenAudience`, which
   is `Origin.Url` by default: the scheme, host, and port of its data
   URL, XRootD's for an XRootD origin), which only that origin may take,
-  and one whose `aud` lists the "any" audience and another, which every
-  origin must take, since a token is for each audience it lists. Under
-  `-p topo-multi-origin`, the second origin must refuse the first. Both
-  checks skip where the origins take no direct clients.
+  and one whose `aud` lists its profile's "any" audience and another,
+  which every origin must take, since a token is for each audience it
+  lists. Under `-p topo-multi-origin`, the second origin must refuse the
+  first. Both checks skip where the origins take no direct clients.
 - **Out of a token's scope**, the `auth` suite's `narrow-climb` check
   presents a token for one collection in `/protected-a`,
   `data/auth/<run>-narrow`, and climbs out of it to a sibling with `..`,

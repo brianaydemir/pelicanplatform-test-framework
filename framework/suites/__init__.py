@@ -15,7 +15,21 @@ A suite may also name REQUIRED scenarios, which run whatever test.py is
 asked for. A suite imports only testlib (framework/testlib/), never
 another suite: what two suites share lives there.
 
-The order, and why:
+test.py runs each suite once for each token profile
+(testlib.credentials.PROFILES), WLCG's first, each time with a session
+of that profile, whose tokens the scenarios present. A scenario's setup,
+and its checks of what the stores hold, use the session's setup tokens,
+which are WLCG's in either pass, so that a pass tests only the tokens
+that the scenario presents. A suite may name ONE_PROFILE scenarios,
+which run in WLCG's pass alone: those that present no storage token of
+the tests' own minting but their setup's (none at all, or only
+Pelican's: its web API's, its issuer's, or a server's own), and those
+whose check no other profile can make. Each pass is reported as a suite
+of its own: <suite>, and <suite>-scitokens. Only the first pass of a
+suite with REQUIRED scenarios can stop the run.
+
+The order, and why (a suite's passes run back to back, so it holds for
+each):
 
   federation     first: nothing else can pass until the federation
                  serves

@@ -2,11 +2,11 @@
 
 `./fed.sh test` runs `test.py` in the dev container. It runs every
 basic functionality check that applies to the federation's shape, over
-every combination of client, route, namespace, credential, and server
-that the shape has. The checks are grouped in suites
-(`framework/suites/`). The table below says what each one checks, and
-links to a page on each; see the [README](../../README.md#quickstart) for
-how to run them.
+every combination of client, route, namespace, credential, server, and
+[token profile](#token-profiles) that the shape has. The checks are
+grouped in suites (`framework/suites/`). The table below says what each
+one checks, and links to a page on each; see the
+[README](../../README.md#quickstart) for how to run them.
 
 
 ## Suites
@@ -45,7 +45,7 @@ The suites run in this order:
 | `webapi`     | who may use each server's web API: its admin routes, with no credentials, as an ordinary user, as the admin, and with tokens it must take for no one; a director's API tokens; logging in and out, and the login cookie; CSRF tokens and cross-origin requests; malformed paths; and the version each server reports ([web API](web-api.md)) |
 | `observability` | what each server reports about itself, and who may see it: its health report, and the gauges that must agree with it; who may read its metrics and query its Prometheus, and its scrapes and the directors'; a native origin's request, byte, and storage counters; its log level, raised for a while through its admin API; tokens kept out of its log; and under XRootD, an XRootD log level, which restarts XRootD ([observability](observability.md)) |
 | `webdav`     | the origins' WebDAV methods beyond GET, HEAD, PUT, DELETE, and PROPFIND, and how each is authorized: POST, COPY, MOVE, MKCOL, LOCK, PROPPATCH, and OPTIONS; writes through symbolic links that leave a store; how an origin serves stored HTML; and that a cache serves those methods for no one, and changes no origin ([WebDAV methods](webdav-methods.md)) |
-| `auth`       | each [credential](authorization.md) at each server, in each namespace; each issuer's keys; tokens of one storage scope, for another audience or one origin's, in the query string, and several at once; tokens whose times, claims, or signatures are wrong, one that expires while in use, SciTokens scopes, and a server's own web tokens ([token validation](token-validation.md)); paths and symbolic links that climb out of a namespace or a token's scope; a protected prefix inside a public one; and what a refusal tells a client |
+| `auth`       | each [credential](authorization.md) at each server, in each namespace; each issuer's keys; tokens of one storage scope, for another audience or one origin's, in the query string, and several at once; tokens whose times, claims, or signatures are wrong, one that expires while in use, and a server's own web tokens ([token validation](token-validation.md)); paths and symbolic links that climb out of a namespace or a token's scope; a protected prefix inside a public one; and what a refusal tells a client |
 | `transfers`  | gets and puts through `pelican object` and `stash_plugin`: gets through the cache the director picks, direct from an origin, and from a cache the client names, byte-checked ([test data](test-data.md)) |
 | `restart`    | what survives a server's restart, and what a server does while another is gone: a cache's store, every server's identity and database, the directors' routing once a server is killed and once it is back, an origin whose storage service is stopped, the clients' failover from a cache that is paused or killed, and a director's view of its peer ([restarts](restarts.md)) |
 | `keys`       | keys added and rotated while the servers run: the registry's and the origins' JWKS, the directors' routing, tokens of either key at every server, the issuer's kid, a V2 cache's master key, and every server's database backups ([keys](keys.md)) |
@@ -85,3 +85,50 @@ every origin's store afterward, a `pstore` origin's included.
 
 [What is not tested](what-is-not-tested.md) lists the shapes and features
 that Pelican offers and this framework does not, and why.
+
+
+## Token profiles
+
+Pelican understands tokens of two profiles, whose scopes differ (its
+docs/app/advanced-concepts/auth/): the WLCG common JWT profile's
+`storage.read`, `storage.create`, and `storage.modify`, which it
+prefers, and SciTokens 2.0's `read` and `write`. So each suite runs
+twice. Its first pass presents WLCG tokens; its second, reported as
+`<suite>-scitokens`, presents SciTokens in their place, each as
+`pelican token create --profile scitokens2` mints it, with the
+profile's version claim (`ver`) and "any" audience (`ANY`). A token's
+scopes in the second pass are what the same `token create` flags grant:
+`read:` for `--read`, and `write:` for `--write` and `--modify` alike,
+since SciTokens' `write` may create, replace, and remove an object. Each
+row of the SciTokens pass must fare as its twin in the WLCG pass does.
+
+What a scenario presents is of its pass's profile. Its setup, such as
+putting objects in place or filling a cache, and its checks of what the
+stores hold, use WLCG tokens in either pass, so that the SciTokens pass
+tests only what the scenario presents. A scenario that presents no
+storage token of the tests' own minting runs in the WLCG pass alone:
+one that presents none, or only tokens that Pelican mints itself, in
+the WLCG profile alone (its web API's, its issuer's, or a server's own),
+as every scenario of `registry`, `collections`, `issuer`, `accounts`,
+`oidc`, and `webapi` does. So does `auth`'s `create-only`, since
+SciTokens has no scope of create alone; and so does every scenario of
+`keys`, since a second pass would change the keys again while the
+servers still hold what the first left: its `hot-rotate` presents both
+profiles' tokens in its one rotation instead, in rows whose names end
+in `scitokens`. `./fed.sh test -l` marks each such scenario `WLCG only`,
+and `./fed.sh test --profile wlcg` (or `scitokens`) runs one pass alone.
+`federation`'s `ready` and `caches`, once they have passed, try once in
+the second pass, since the federation is no longer starting; the second
+pass repeats every other suite's restarts.
+
+Pelican's native origins and V2 caches compare a token's scopes with
+the WLCG profile's alone (`ParseResourceScopeString` in
+`token_scopes/token_scope_utils.go`, and `authorize` in
+`origin_serve/authz.go` and `local_cache/cache_authz.go`), so they grant
+a SciToken nothing, though the native origin takes the SciTokens `ANY`
+audience as its own; XRootD maps the scopes of both
+(`XrdSciTokensAccess.cc`). So, on main and v26.0.0-rc.3 alike, the
+SciTokens pass fails wherever a native origin or V2 cache must take a
+token, which in a shape of native servers is nearly every row (T6);
+where XRootD serves the origins and caches (`-p origin-xrootd
+-p cache-xrootd`), the passes should fare alike.

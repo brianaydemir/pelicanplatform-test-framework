@@ -4,8 +4,9 @@ Part of [What the tests check](README.md).
 
 The credentials are each wrong in one way that `pelican token create`
 can make. The `auth` suite also presents tokens that it cannot,
-which `framework/testlib/jwt.py` signs: each like `server`'s, with the
-same header and the origins' key, but for one thing. Each check asks
+which `framework/testlib/jwt.py` signs: each like `server`'s, of the
+pass's [token profile](README.md#token-profiles), with the same header
+and the origins' key, but for one thing. Each check asks
 for the test object in `/protected-a` at every origin and cache, where
 the origins' XRootD servers (`-p origin-xrootd`) and XRootD caches
 (`-p cache-xrootd`) are controls; where the origins take no direct
@@ -33,22 +34,15 @@ clients, every request straight to one must be refused anyway.
   that no key has; with `alg` `none` and no signature; signed by HS256,
   keyed with the origins' public key as a JWK, as in the classic
   key-confusion attack; or without `aud`, must be refused. The WLCG
-  token profile requires `exp` and `aud`. Pelican's native servers check
-  a token with jwx, which checks `exp` only if a token has one; a native
-  origin checks `aud` only if a token has one (`origin_serve/authz.go`),
-  and a V2 cache never. So the `no-exp` rows fail at native origins and
-  V2 caches, and the `no-aud` rows too, on main and v26.0.0-rc.3 alike.
-  A token whose `wlcg.ver` is `2.0`, which the profile does not define,
-  may be taken or refused, and the row's note says which.
-- `scitokens-profile`: a token of the SciTokens 2.0 profile (`pelican
-  token create --profile scitokens2`), whose scopes are `read:/` and
-  `write:/` and audience `ANY`, for a GET at every server and a PUT of a
-  new object at every origin. XRootD takes such scopes; Pelican's native
-  servers compare a token's scopes with the WLCG profile's `storage.*`
-  ones (`token_scopes/token_scope_utils.go`), and so grant it nothing.
-  Whether they should is not settled, so a server may take the token or
-  refuse it, and the row's note says which; but wholly, serving the
-  object or none of it, and storing the PUT's bytes or nothing.
+  token profile requires `exp` and `aud`, as SciTokens 2.0 does.
+  Pelican's native servers check a token with jwx, which checks `exp`
+  only if a token has one; a native origin checks `aud` only if a token
+  has one (`origin_serve/authz.go`), and a V2 cache never. So the
+  `no-exp` rows fail at native origins and V2 caches, and the `no-aud`
+  rows too, on main and v26.0.0-rc.3 alike. A token whose version claim
+  names a version that its profile does not define, `wlcg.ver` `2.0`
+  (row `wlcg.ver-2`), or in the SciTokens pass `ver` `scitokens:3.0`
+  (row `ver-3`), may be taken or refused, and the row's note says which.
 - `web-token-strict`: a server checks the tokens of its own web API with
   no clock skew, since it alone mints and checks them
   (`VerifyWithKeysetStrict`, from `extractUserFromBearerToken` in
@@ -56,4 +50,5 @@ clients, every request straight to one must be refused anyway.
   `/api/v1.0/auth/whoami` with a token that it takes as its admin's
   (`credentials.mint_admin()`) must say who that is; with the same token
   not valid for another 20 seconds, or expired 5 seconds ago, it must
-  refuse it (401) or say that no one is logged in.
+  refuse it (401) or say that no one is logged in. A server mints these
+  in the WLCG profile alone, so the check runs in the WLCG pass alone.

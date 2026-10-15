@@ -66,6 +66,11 @@ The suite uploads an object straight to every origin, under
 
 Its data, under each origin's data/federation/, on a pstore origin too,
 is removed after the suite.
+
+Its SciTokens pass presents SciTokens where the WLCG pass presents its
+own: its probes are put in place with WLCG tokens either way. Once
+`ready` or `caches` has passed, neither waits again in a later pass:
+the federation is no longer starting.
 """
 
 import json
@@ -108,9 +113,14 @@ SCENARIOS = {
 
 # The scenarios that run whatever test.py is asked for.
 REQUIRED = ("ready", "caches")
+# The scenarios that present no token (see suites/__init__.py).
+ONE_PROFILE = ("approval", "directors", "discovery", "broker", "hints", "downtime")
 
 # How long `ready` and `caches` wait: tries, and seconds between them.
 TRIES, INTERVAL = 20, 15
+# Which of them has passed, in an earlier pass of the run, after which it
+# tries once.
+SETTLED: set[str] = set()
 # How long `directors` and `broker` wait, in seconds.
 DIRECTORS_WAIT = 60
 # How long `downtime` waits for the directors, in seconds: they learn of a
@@ -219,7 +229,7 @@ class Probe:
             return None
         for origin in stores.unique(self.fed.origins):
             for ns in stores.storage_namespaces(origin, self.fed.exports):
-                token = self.session.token(ns)
+                token = self.session.setup_token(ns)
                 errors = stores.make_dirs([origin], ns, self.base, token)
                 if errors:
                     return errors[0]
@@ -322,25 +332,32 @@ def ready(probe: Probe) -> tuple[str, str]:
     """Check that the object comes back through the federation.
 
     Where the registry requires approval, each try first approves what is
-    pending, since a server registers once it is up.
+    pending, since a server registers once it is up. Once it has passed,
+    in an earlier pass of the run, it tries once, and fails rather than
+    dies.
 
     Raises:
         Died: The federation never serves: nothing after it could pass.
     """
     why: Optional[str] = None
-    for n in range(1, TRIES + 1):
+    tries = 1 if "ready" in SETTLED else TRIES
+    for n in range(1, tries + 1):
         if probe.fed.registry_approval:
             approve_pending(probe)
         why = probe.upload() or probe.get()
         if why is None:
+            SETTLED.add("ready")
             return PASS, f"{probe.read_ns}, after {n} tries" if n > 1 else probe.read_ns
-        if n == 1:
+        if n == 1 and tries > 1:
             print(
                 f"Waiting for the federation to serve {probe.fed.url}/{probe.read_ns}/"
                 + f"{probe.rel} ..."
             )
-        if n < TRIES:
+        if n < tries:
             time.sleep(INTERVAL)
+    if tries == 1:
+        # It served an earlier pass, so the rest can still pass.
+        return FAIL, f"{probe.read_ns}: {why}"
     die(
         f"gave up waiting for the federation after {TRIES} tries, {INTERVAL}s apart ({why})."
         + " Is it up (./fed.sh status)? Was it initialized (./fed.sh init) for this shape?"
@@ -352,6 +369,7 @@ def caches(probe: Probe) -> tuple[str, str]:
     if not probe.fed.caches:
         return SKIP, "this shape has no cache"
     token = probe.session.token(probe.namespace)
+    tries = 1 if "caches" in SETTLED else TRIES
     problems: list[str] = []
     for cache in probe.fed.caches:
         url = f"{cache.url}/{probe.namespace}/{probe.rel}"
@@ -359,7 +377,7 @@ def caches(probe: Probe) -> tuple[str, str]:
         # A new cache refuses the token (403) until it has learned the
         # namespace's issuers, and may fail otherwise, or not answer,
         # while it finds the origins.
-        for n in range(1, TRIES):
+        for n in range(1, tries):
             if answer.ok:
                 break
             if n == 1:
@@ -372,6 +390,7 @@ def caches(probe: Probe) -> tuple[str, str]:
             problems.append(f"{cache.svc}: the body is not the object")
     if problems:
         return FAIL, common.first(problems)
+    SETTLED.add("caches")
     return PASS, f"{len(probe.fed.caches)} cache(s)"
 
 
@@ -767,7 +786,7 @@ def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[s
             problems.append(f"{what}: succeeded, though /{namespace} takes no writes")
     elif answer.status is None or not 400 <= answer.status < 500:
         problems.append(f"{what}: {answer.describe()}, not a refusal")
-    held = stores.held_anywhere(fed.origins, namespace, rel, probe.session.tokens())
+    held = stores.held_anywhere(fed.origins, namespace, rel, probe.session.setup_tokens())
     if writes and common.digest(payload) not in held:
         problems.append(f"{what}: no origin holds what was put")
     elif not writes and any(held):
@@ -875,7 +894,7 @@ def presence(probe: Probe) -> tuple[str, str]:
     objects = {ns: os.urandom(8192) for ns in namespaces}
     for ns, data in objects.items():
         rel = f"{probe.base}/only-{holder.svc}"
-        token, caps = probe.session.token(ns), fed.exports[ns]
+        token, caps = probe.session.setup_token(ns), fed.exports[ns]
         errors = stores.make_dirs([holder], ns, probe.base, token)
         error = errors[0] if errors else stores.seed(holder, ns, rel, data, token, caps)
         if error:
@@ -1042,7 +1061,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach; a
         # pstore origin's only it can remove.
-        tokens = session.tokens() if any(o.pstore for o in fed.origins) else {}
+        tokens = session.setup_tokens() if any(o.pstore for o in fed.origins) else {}
         errors = stores.empty_tree_everywhere(
             fed.origins, fed.exports, "data/federation", tokens
         )

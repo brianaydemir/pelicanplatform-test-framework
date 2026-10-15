@@ -29,6 +29,14 @@ has one issuer URL, and no namespace has keys of its own, so
 `wrong-iss`, `ns-jwks`, `ns-other`, and `ns-cross` are skipped; so they
 are with the external issuer, whose JWKS also lacks `jwks`'s key, so
 `jwks` is skipped too (see moot()).
+
+Each storage token comes in two profiles (see PROFILES), as `pelican
+token create --profile` makes them: the WLCG common JWT profile, which
+Pelican prefers, and SciTokens 2.0, which its documentation says it
+understands too. Which one a test presents is its session's
+(testlib/session.py), and each must get what the other gets. Tokens of
+Pelican's own scopes, such as its web API's, are of the WLCG profile
+alone, as Pelican mints them.
 """
 
 import json
@@ -63,8 +71,26 @@ EXPIRED = 1
 RWM = ("read", "write", "modify")
 WM = ("write", "modify")
 R = ("read",)
-# The WLCG scope that each flag grants.
-WLCG_SCOPES = {"read": "storage.read", "write": "storage.create", "modify": "storage.modify"}
+
+# The token profiles, WLCG's first: the one the tests' setup uses.
+WLCG = "wlcg"
+SCITOKENS = "scitokens"
+PROFILES = (WLCG, SCITOKENS)
+# What `pelican token create --profile` calls each.
+PELICAN_PROFILES = {WLCG: "wlcg", SCITOKENS: "scitokens2"}
+# The scope that each flag grants, by profile (Pelican's
+# token/token_create.go). SciTokens has one scope for every write: to
+# create, replace, or remove an object.
+SCOPES = {
+    WLCG: {"read": "storage.read", "write": "storage.create", "modify": "storage.modify"},
+    SCITOKENS: {"read": "read", "write": "write", "modify": "write"},
+}
+# Each profile's audience for any server, which a token names unless told
+# otherwise.
+ANY_AUDIENCE = {WLCG: jwt.ANY_AUDIENCE, SCITOKENS: "ANY"}
+# Each profile's version claim, and its value, as `pelican token create`
+# writes it.
+VERSIONS = {WLCG: ("wlcg.ver", "1.0"), SCITOKENS: ("ver", "scitokens:2.0")}
 
 # The operations the tests perform, and which of them write.
 READS = ("get", "head")
@@ -421,7 +447,8 @@ def mint(
     subject: str = SUBJECT,
     raw_scopes: tuple[str, ...] = (),
     audience: str = "",
-    profile: str = "",
+    *,
+    profile: str,
 ) -> None:
     """Write a token for namespace prefix to file out.
 
@@ -438,9 +465,8 @@ def mint(
         raw_scopes: Its scopes as such (e.g. pelican.transfer).
         audience: Its audience; the profile's "any" unless this names
             one.
-        profile: Its profile; the WLCG token profile unless this names
-            another (`scitokens2`, whose flags grant `read:` and `write:`
-            scopes, and whose "any" is `ANY`).
+        profile: Its profile, one of PROFILES, which decides the scopes
+            that scopes grant, its "any" audience, and its version claim.
     """
     command = [common.binary("pelican"), "token", "create", fed.url + prefix]
     command += [f"--{scope}" for scope in scopes]
@@ -450,8 +476,7 @@ def mint(
     command += ["--lifetime", str(lifetime), "--private-key", key]
     if audience:
         command += ["--audience", audience]
-    if profile:
-        command += ["--profile", profile]
+    command += ["--profile", PELICAN_PROFILES[profile]]
     with open(out, "w", encoding="utf-8") as f:
         done = subprocess.run(  # nosec B603
             command,
@@ -474,13 +499,15 @@ def mint_server(
     scope_path: str = "/",
     subject: str = SUBJECT,
     audience: str = "",
-    profile: str = "",
+    *,
+    profile: str,
 ) -> str:
     """Write a `server` token for namespace to file out, and return it.
 
-    It is what the tests use for their own setup and checks. A token for
-    less of the namespace (scope_path), for another subject or audience,
-    or of another profile is the origins' too.
+    It is what the tests use for their own setup (of the WLCG profile)
+    and checks (of their session's). A token for less of the namespace
+    (scope_path), or for another subject or audience, is the origins'
+    too.
     """
     issuer = fed.issuer_of(namespace)
     mint(
@@ -507,33 +534,38 @@ def server_claims(
     scope_path: str = "/",
     lifetime: int = LONG,
     subject: str = SUBJECT,
-    audience: str = jwt.ANY_AUDIENCE,
+    audience: Optional[str] = None,
+    *,
+    profile: str,
 ) -> dict[str, Any]:
     """Return the claims of a `server` token for namespace.
 
-    They are as `pelican token create` writes them (see mint_server()),
-    for jwt.encode() to sign with the origins' key (fed.origin_key),
-    after changing them as a test needs: issued now, and lasting
-    lifetime seconds.
+    They are as `pelican token create` writes them in profile (see
+    mint_server()), for jwt.encode() to sign with the origins' key
+    (fed.origin_key), after changing them as a test needs: issued now,
+    lasting lifetime seconds, and for the profile's "any" audience
+    unless audience names another.
     """
     now = int(time.time())
-    return {
-        "aud": [audience],
+    version, value = VERSIONS[profile]
+    claims = {
+        "aud": [ANY_AUDIENCE[profile] if audience is None else audience],
         "exp": now + lifetime,
         "iat": now,
         "iss": fed.issuer_of(namespace),
         "jti": str(uuid.uuid4()),
         "nbf": now,
-        "scope": " ".join(f"{WLCG_SCOPES[s]}:{scope_path}" for s in scopes),
+        "scope": " ".join(f"{SCOPES[profile][s]}:{scope_path}" for s in scopes),
         "sub": subject,
-        "wlcg.ver": "1.0",
+        version: value,
     }
+    return dict(sorted(claims.items()))
 
 
 def mint_credential(
-    fed: common.Federation, cred: Credential, namespace: str, op: str, out: str
+    fed: common.Federation, cred: Credential, namespace: str, op: str, out: str, profile: str
 ) -> Optional[float]:
-    """Write cred's token for op in namespace to file out.
+    """Write cred's token of profile for op in namespace to file out.
 
     `token create` logs an error, but writes the token anyway, when the
     key does not match the issuer, which is the point of `unknown` and
@@ -556,6 +588,7 @@ def mint_credential(
         cred.scope_path,
         cred.lifetime,
         cred.scopes(op),
+        profile=profile,
     )
     # It expires within `lifetime` of `token create` returning.
     return time.time() + cred.lifetime
@@ -600,7 +633,7 @@ def mint_user(
     built-in `admin` always has one.
     """
     raw_scopes = (WEB_SCOPE, *extra_scopes)
-    mint(fed, out, "/", key, issuer, "/", lifetime, (), username, raw_scopes=raw_scopes)
+    mint(fed, out, "/", key, issuer, "/", lifetime, (), username, raw_scopes, profile=WLCG)
     with open(out, encoding="utf-8") as f:
         return f.read().strip()
 

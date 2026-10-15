@@ -101,7 +101,9 @@ several cases records a row per case, named `<scenario> <case>`.
   under `-p origin-public-writes`, where it has one, the token's issuer
   must be `/public`'s (`public`); and under `-p topo-multi-owner`, with
   origin-2's key for `/other`, the issuer must be origin-2's
-  (`other-owner`).
+  (`other-owner`). Each runs with the pass's `--profile`
+  ([token profiles](README.md#token-profiles)), so that in the
+  SciTokens pass the scope is `read:` and the path.
 - `share-url`: `pelican object share` of a collection in
   `/protected-a`, its device flow approved as the admin, whom the issuer
   grants the namespace (`client/sharing_url.go`, `cmd/object_share.go`):
@@ -115,7 +117,8 @@ several cases records a row per case, named `<scenario> <case>`.
   it too (`get`): nothing in Pelican's client reads `authz` back from a
   URL, so it finds no token (error 4010), and the row fails, on
   v26.0.0-rc.3 and main alike (L1). It skips without the origins'
-  embedded issuer, and for a standalone origin.
+  embedded issuer, and for a standalone origin. Its tokens are the
+  issuer's, of the WLCG profile, so it runs in the WLCG pass alone.
 - `director-decision`: with `Plugin.DirectorDecisionPercentage` at 100,
   stash_plugin asks the director to explain its decision
   (`X-Pelican-Debug`), and must record it in the ad's

@@ -47,7 +47,12 @@ Everything goes under /protected-a/data/webdav/<run>/<origin>/, and
 what `cache-methods` sends the caches under .../caches/, which the
 suite removes afterward, with what a Destination could have reached
 in /protected-b and /public. Every token is the origins' own, for
-/protected-a, of the scopes each scenario names.
+/protected-a, of the scopes each scenario names, and of the session's
+profile; in SciTokens', the storage.create token is one of `write`, as
+`pelican token create --write` makes it, which may replace and remove
+too, so `copy-move-scopes` checks what storage.create alone may not do
+in the WLCG pass alone. The objects are put in place, and the stores
+read, with WLCG tokens either way.
 """
 
 import os
@@ -191,8 +196,13 @@ class Test:
     Attributes:
         token: The `server` token for /protected-a: read, create, and
             modify.
-        create_token: A token for /protected-a of storage.create alone.
-        read_token: A token for /protected-a of storage.read alone.
+        create_token: A token for /protected-a of storage.create alone
+            (in SciTokens' profile, of write).
+        read_token: A token for /protected-a of storage.read alone (in
+            SciTokens' profile, of read).
+        setup: The `server` token for /protected-a, of the WLCG profile,
+            for putting objects in place and reading the stores; the
+            other tokens are of the session's profile.
         landings: The paths outside the run's collection that a
             scenario's requests could have written, to remove afterward:
             each origin, namespace, and path within it.
@@ -202,6 +212,7 @@ class Test:
     token: str
     create_token: str
     read_token: str
+    setup: str
     landings: list[tuple[common.Origin, str, str]] = field(default_factory=no_landings)
 
     @property
@@ -222,24 +233,24 @@ class Test:
     def seed(self, origin: common.Origin, rel: str) -> bytes:
         """Put new bytes at rel in /protected-a at origin, and return them.
 
-        Put them with the `server` token.
+        Put them with the setup token.
 
         Raises:
             SetupError: They could not be put in place.
         """
         data = os.urandom(4096)
-        error = stores.put(origin, NAMESPACE, rel, data, self.token)
+        error = stores.put(origin, NAMESPACE, rel, data, self.setup)
         if error:
             raise SetupError(f"{origin.svc}: could not put {rel} in place ({error})")
         return data
 
     def storage_token(self, origin: common.Origin, namespace: str) -> Optional[str]:
-        """Return a `server` token that reads namespace's storage at origin.
+        """Return a setup token that reads namespace's storage at origin.
 
         Return None for /public, which has no issuer.
         """
         storage = origin.storage_namespace(namespace)
-        return None if storage == "public" else self.session.token(storage)
+        return None if storage == "public" else self.session.setup_token(storage)
 
     def stored(
         self, origin: common.Origin, namespace: str, rel: str, want: Optional[bytes], what: str
@@ -311,7 +322,7 @@ class Test:
             SetupError: One could not be made.
         """
         for rel in rels:
-            errors = stores.make_dirs([origin], NAMESPACE, rel, self.token)
+            errors = stores.make_dirs([origin], NAMESPACE, rel, self.setup)
             if errors:
                 raise SetupError(f"{origin.svc}: could not make {rel} ({errors[0]})")
 
@@ -365,19 +376,21 @@ def post_create_only(test: Test) -> tuple[str, str]:
     POST as a GET (webdav.go), but Pelican authorizes POST as a create
     (getActionFromMethod), so a storage.create token, which may not
     read, gets the object; and a storage.read token is refused, since
-    a POST counts as a write, which is as it should be.
+    a POST counts as a write, which is as it should be. In SciTokens'
+    profile, the tokens are of write and read alone.
     """
     why = test.native()
     if why:
         return SKIP, why
     found = Findings()
+    scopes = credentials.SCOPES[test.session.profile]
     for origin in test.fed.origins:
         rel = f"{test.base(origin)}/post"
         data = test.seed(origin, rel)
         url = at(origin, rel)
         for name, token in (
-            ("storage.create", test.create_token),
-            ("storage.read", test.read_token),
+            (scopes["write"], test.create_token),
+            (scopes["read"], test.read_token),
         ):
             answer = web.request("POST", url, token=token)
             if answer.status not in REFUSED:
@@ -428,6 +441,7 @@ def copy_move_destination(test: Test) -> tuple[str, str]:
             test.session.path(f"tokens/webdav-narrow-{origin.svc}"),
             NAMESPACE,
             scope_path=f"/{base}/a",
+            profile=test.session.profile,
         )
         test.make_dirs(origin, f"{base}/a", f"{base}/b")
         for method in ("COPY", "MOVE"):
@@ -518,43 +532,18 @@ def copy_move_scopes(test: Test) -> tuple[str, str]:
     (getActionFromMethod, whose comment says COPY is purely additive).
     Then, with the `server` token, COPY and MOVE onto an object with
     `Overwrite: F` must get 412 and change nothing (RFC 4918, section
-    10.6).
+    10.6). SciTokens has no storage.create alone, so its pass checks
+    only `Overwrite: F`.
     """
     why = test.native()
     if why:
         return SKIP, why
     found = Findings()
+    create_only = test.session.profile == credentials.WLCG
     for origin in test.fed.origins:
         base = test.base(origin)
-
-        # MOVE with storage.create.
-        src, dst = f"{base}/scope-move-src", f"{base}/scope-move-dst"
-        data = test.seed(origin, src)
-        what = "MOVE with storage.create alone"
-        answer = copy_or_move("MOVE", at(origin, src), test.create_token, at(origin, dst))
-        if answer.status not in REFUSED:
-            found.add(origin, f"{what} got {answer.describe()}, not 401 or 403")
-        found.add(origin, test.stored(origin, NAMESPACE, src, data, f"{what}: the source"))
-        found.add(origin, test.stored(origin, NAMESPACE, dst, None, f"{what}: the destination"))
-
-        # COPY with storage.create to a new path.
-        src, dst = f"{base}/scope-copy-src", f"{base}/scope-copy-new"
-        data = test.seed(origin, src)
-        what = "COPY with storage.create alone to a new path"
-        answer = copy_or_move("COPY", at(origin, src), test.create_token, at(origin, dst))
-        if answer.status != 201:
-            found.add(origin, f"{what} got {answer.describe()}, not 201")
-        found.add(origin, test.stored(origin, NAMESPACE, dst, data, f"{what}: the destination"))
-
-        # COPY with storage.create over an object.
-        src, dst = f"{base}/scope-over-src", f"{base}/scope-over-dst"
-        data = test.seed(origin, src)
-        old = test.seed(origin, dst)
-        what = "COPY with storage.create alone over an object"
-        answer = copy_or_move("COPY", at(origin, src), test.create_token, at(origin, dst))
-        if answer.status not in REFUSED:
-            found.add(origin, f"{what} got {answer.describe()}, not 401 or 403")
-        found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
+        if create_only:
+            create_alone(test, origin, base, found)
 
         # Overwrite: F.
         for method in ("COPY", "MOVE"):
@@ -570,7 +559,46 @@ def copy_move_scopes(test: Test) -> tuple[str, str]:
                 found.add(origin, f"{what} got {answer.describe()}, not 412")
             found.add(origin, test.stored(origin, NAMESPACE, src, data, f"{what}: the source"))
             found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
-    return found.result(f"{len(test.fed.origins)} origin(s)")
+    passed = f"{len(test.fed.origins)} origin(s)"
+    if not create_only:
+        passed += "; Overwrite: F alone, since SciTokens has no storage.create"
+    return found.result(passed)
+
+
+def create_alone(test: Test, origin: common.Origin, base: str, found: Findings) -> None:
+    """Check MOVE and COPY with storage.create alone at origin.
+
+    The collection of the checks' objects is base. See
+    copy_move_scopes().
+    """
+    # MOVE with storage.create.
+    src, dst = f"{base}/scope-move-src", f"{base}/scope-move-dst"
+    data = test.seed(origin, src)
+    what = "MOVE with storage.create alone"
+    answer = copy_or_move("MOVE", at(origin, src), test.create_token, at(origin, dst))
+    if answer.status not in REFUSED:
+        found.add(origin, f"{what} got {answer.describe()}, not 401 or 403")
+    found.add(origin, test.stored(origin, NAMESPACE, src, data, f"{what}: the source"))
+    found.add(origin, test.stored(origin, NAMESPACE, dst, None, f"{what}: the destination"))
+
+    # COPY with storage.create to a new path.
+    src, dst = f"{base}/scope-copy-src", f"{base}/scope-copy-new"
+    data = test.seed(origin, src)
+    what = "COPY with storage.create alone to a new path"
+    answer = copy_or_move("COPY", at(origin, src), test.create_token, at(origin, dst))
+    if answer.status != 201:
+        found.add(origin, f"{what} got {answer.describe()}, not 201")
+    found.add(origin, test.stored(origin, NAMESPACE, dst, data, f"{what}: the destination"))
+
+    # COPY with storage.create over an object.
+    src, dst = f"{base}/scope-over-src", f"{base}/scope-over-dst"
+    data = test.seed(origin, src)
+    old = test.seed(origin, dst)
+    what = "COPY with storage.create alone over an object"
+    answer = copy_or_move("COPY", at(origin, src), test.create_token, at(origin, dst))
+    if answer.status not in REFUSED:
+        found.add(origin, f"{what} got {answer.describe()}, not 401 or 403")
+    found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
 
 
 # --------------------------------------------------------------------------
@@ -657,8 +685,9 @@ def bounded(timeout: Optional[str]) -> bool:
 def lock(test: Test) -> tuple[str, str]:
     """Check that a LOCK with no Timeout is refused or bounded.
 
-    At each native origin, with a storage.create token and no Timeout,
-    LOCK a new path and an existing object. Pelican doesn't use locks,
+    At each native origin, with a storage.create token (in SciTokens'
+    profile, a write token) and no Timeout, LOCK a new path and an
+    existing object. Pelican doesn't use locks,
     but x/net keeps them in memory (webdav.NewMemLS() in origin_serve/
     handlers.go), forever when no Timeout is given, and makes an empty
     file for a LOCK of a new path, beside POSC and the metadata events.
@@ -913,7 +942,7 @@ def stored_html(test: Test) -> tuple[str, str]:
     for origin in test.fed.origins:
         for name, data in PAGES.items():
             rel = f"{test.base(origin)}/{name}"
-            error = stores.put(origin, NAMESPACE, rel, data, test.token)
+            error = stores.put(origin, NAMESPACE, rel, data, test.setup)
             if error:
                 raise SetupError(f"{origin.svc}: could not put {rel} in place ({error})")
             answer = web.request("GET", at(origin, rel), token=test.token)
@@ -1097,14 +1126,14 @@ def cache_methods(test: Test) -> tuple[str, str]:
         return SKIP, "this shape has no cache"
     fed = test.fed
     base = f"data/webdav/{test.session.run}/caches"
-    errors = stores.make_dirs(fed.origins, NAMESPACE, base, test.token)
+    errors = stores.make_dirs(fed.origins, NAMESPACE, base, test.setup)
     if errors:
         raise SetupError(f"could not make {base} ({errors[0]})")
     found = Findings()
     for cache in caches:
         rel = f"{base}/{cache.svc}-obj"
         data = os.urandom(4096)
-        errors = stores.put_everywhere(fed.origins, NAMESPACE, rel, data, test.token)
+        errors = stores.put_everywhere(fed.origins, NAMESPACE, rel, data, test.setup)
         if errors:
             raise SetupError(f"could not put {rel} at every origin ({errors[0]})")
         new = f"{base}/{cache.svc}-mkcol"
@@ -1158,7 +1187,7 @@ def clean(test: Test, when: str) -> None:
     """
     fed = test.fed
     errors = stores.empty_tree_everywhere(
-        fed.origins, {NAMESPACE: fed.exports[NAMESPACE]}, "data/webdav", {NAMESPACE: test.token}
+        fed.origins, {NAMESPACE: fed.exports[NAMESPACE]}, "data/webdav", {NAMESPACE: test.setup}
     )
     for origin, namespace, rel in test.landings:
         storage = origin.storage_namespace(namespace)
@@ -1180,11 +1209,12 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         session.token(NAMESPACE),
         session.token(NAMESPACE, ("write",)),
         session.token(NAMESPACE, R),
+        session.setup_token(NAMESPACE),
     )
     clean(test, "before the run")
     try:
         for origin in fed.origins:
-            errors = stores.make_dirs([origin], NAMESPACE, test.base(origin), test.token)
+            errors = stores.make_dirs([origin], NAMESPACE, test.base(origin), test.setup)
             if errors:
                 common.die(f"could not make the run's collection: {errors[0]}")
         for name in selected:

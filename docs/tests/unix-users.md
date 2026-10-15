@@ -116,8 +116,10 @@ inconclusive.
     (`UserMapper.MapTokenToUser` in `origin_serve/user_mapfile.go`), so
     no `path` rule matches, and the row fails there, on main and
     v26.0.0-rc.3 alike.
-  - `group`: an upload with a token whose `wlcg.groups` is `[xrootd]`,
-    which the mapfile maps to `pelican`, must be the `pelican` user's.
+  - `group`: an upload with a token whose `wlcg.groups` is `[xrootd]`
+    (in the SciTokens pass too, since that is the claim the origins
+    read, `Origin.ScitokensGroupsClaim`'s default), which the mapfile
+    maps to `pelican`, must be the `pelican` user's.
     The group is a Unix group's name, since a native origin acts as the
     token's first group, and refuses a request whose group it can't
     find.

@@ -86,6 +86,9 @@ SCENARIOS = {
     "group-invites": "a group's invite links: single-use, multi-use, and the owner's alone",
     "aup": "a new AUP gates the admin until they agree; the policy is public",
 }
+# Every scenario: each presents only Pelican's tokens, its web API's and
+# its issuer's (see suites/__init__.py).
+ONE_PROFILE = tuple(SCENARIOS)
 
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.

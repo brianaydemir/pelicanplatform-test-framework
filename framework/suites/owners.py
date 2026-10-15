@@ -31,7 +31,13 @@ pass until origin-2 serves; the suite stops if it can't pass.
 
 Objects go under data/owners/<run>/ in each namespace's storage, and are
 removed after the suite, from a pstore origin too. Responses go to
-framework/var/data/owners-test/.
+framework/var/data/owners-test/ (in the SciTokens pass,
+data/owners-test-scitokens/).
+
+Each credential's token, and each client's, is of the session's
+profile; `ready` waits with WLCG tokens either way, since what it waits
+for is the federation, and `keys` and `routing` present none, so the
+three run in the WLCG pass alone.
 """
 
 import json
@@ -66,6 +72,9 @@ SCENARIOS = {
 }
 SCENARIOS.update({c.name: f"{c.description}, on both sides of each pair" for c in CREDENTIALS})
 SCENARIOS.update(CLIENT)
+# The scenarios that present no token of the session's profile (see
+# suites/__init__.py).
+ONE_PROFILE = ("ready", "keys", "routing")
 
 # How long `ready` waits: tries, and seconds between them.
 TRIES, INTERVAL = 20, 15
@@ -92,6 +101,7 @@ class Test:
             pair, which the suite writes in: the other owners', then the
             origins'.
         base: Where the suite's objects go, in each namespace's storage.
+        out: Where the responses go, under framework/var.
     """
 
     def __init__(self, session: Session):
@@ -110,19 +120,22 @@ class Test:
             )
         )
         self.base = f"data/owners/{session.run}"
-        self._tokens: dict[tuple[str, str, str], tuple[Optional[str], Optional[str]]] = {}
+        self.out = session.var_dir(OUT)
+        self._tokens: dict[tuple[str, str, str, str], tuple[Optional[str], Optional[str]]] = {}
 
     def token(
-        self, cred: OwnerCredential, pair: Pair, side: str
+        self, cred: OwnerCredential, pair: Pair, side: str, profile: Optional[str] = None
     ) -> tuple[Optional[str], Optional[str]]:
         """Return cred's token for side of pair, and its file.
 
+        The token is of the session's profile, unless profile names one.
         Return (None, None) for `none`.
         """
-        key = (cred.name, pair.export.name, side)
+        profile = profile or self.session.profile
+        key = (cred.name, pair.export.name, side, profile)
         if key not in self._tokens:
-            path = self.session.path(f"tokens/owners.{cred.name}.{pair.name(side)}")
-            token = owners.mint(self.fed, cred, pair, side, path)
+            path = self.session.path(f"tokens/owners.{cred.name}.{pair.name(side)}.{profile}")
+            token = owners.mint(self.fed, cred, pair, side, path, profile)
             self._tokens[key] = (token, path if token else None)
         return self._tokens[key]
 
@@ -192,13 +205,13 @@ def not_ready(test: Test) -> str:
     """Return why origin-2's objects do not yet come back.
 
     They must come back through `pelican object get`, and from each
-    cache. Return "" if they do.
+    cache, with WLCG tokens. Return "" if they do.
     """
     fed = test.fed
     for pair in test.pairs:
         rel = test.object_rel("owner")
         want = common.sha256(test.path(pair.owner.origin, pair, "owner", rel))
-        token, token_file = test.token(reader(pair), pair, "owner")
+        token, token_file = test.token(reader(pair), pair, "owner", credentials.WLCG)
         target = test.session.path(f"owners-ready-{pair.export.name}")
         if os.path.exists(target):
             os.remove(target)
@@ -223,14 +236,14 @@ def not_ready(test: Test) -> str:
 # keys
 
 
-def get_kids(url: str, name: str) -> tuple[Optional[frozenset[str]], str]:
+def get_kids(test: Test, url: str, name: str) -> tuple[Optional[frozenset[str]], str]:
     """Return the kids of the JWKS at url, kept as name.
 
     Returns:
         The kids, and ""; or None, and why there are none.
     """
     answer = web.request("GET", url)
-    save(f"{OUT}/responses/{name}", answer)
+    save(f"{test.out}/responses/{name}", answer)
     if answer.status != 200:
         return None, f"{url}: {answer.describe()}"
     try:
@@ -267,7 +280,7 @@ def keys(test: Test) -> tuple[str, str]:
             if not credentials.has_issuer(export.caps):
                 continue
             answer = web.request("GET", f"{export.issuer}/.well-known/openid-configuration")
-            save(f"{OUT}/responses/keys-{export.name}-discovery", answer)
+            save(f"{test.out}/responses/keys-{export.name}-discovery", answer)
             want = f"{export.issuer}/.well-known/issuer.jwks"
             try:
                 have = json.loads(answer.body).get("jwks_uri") if answer.status == 200 else None
@@ -280,7 +293,7 @@ def keys(test: Test) -> tuple[str, str]:
                 )
             documents.append((want, f"{export.name}-jwks"))
         for url, name in documents:
-            kids, why = get_kids(url, f"keys-{name}")
+            kids, why = get_kids(test, url, f"keys-{name}")
             checked += 1
             if kids is None:
                 problems.append(why)
@@ -297,7 +310,7 @@ def keys(test: Test) -> tuple[str, str]:
                     (f"{fed.issuer_of(pair.like)}/.well-known/issuer.jwks", f"{pair.like}-jwks")
                 )
         for url, name in dict.fromkeys(theirs):
-            kids, why = get_kids(url, f"keys-{name}")
+            kids, why = get_kids(test, url, f"keys-{name}")
             checked += 1
             if kids is None:
                 problems.append(why)
@@ -435,7 +448,7 @@ def check_credential(test: Test, cred: OwnerCredential, report: Report) -> None:
                 direct = origin is not None
                 for op in ("get", "head"):
                     answer = web.request(op.upper(), f"{url}/{ns}/{rel}", token=token)
-                    save(f"{OUT}/responses/{cred.name}-{target}-{name}-{op}", answer)
+                    save(f"{test.out}/responses/{cred.name}-{target}-{name}-{op}", answer)
                     ok = owners.expected(fed, cred, pair, side, op, direct) == ALLOW
                     why = ""
                     if ok and answer.status != 200:
@@ -486,7 +499,7 @@ def check_put(
     rel = f"{test.base}/{cred.name}-{target}-{name}-put"
     data = os.urandom(4096)
     answer = web.request("PUT", f"{origin.url}/{ns}/{rel}", token=token, upload=data)
-    save(f"{OUT}/responses/{cred.name}-{target}-{name}-put", answer)
+    save(f"{test.out}/responses/{cred.name}-{target}-{name}-put", answer)
     held = test.holders(pair, rel)
     why = ""
     if owners.expected(test.fed, cred, pair, side, "put", True) == ALLOW:
@@ -532,7 +545,7 @@ def check_delete(
         )
         return
     answer = web.request("DELETE", f"{origin.url}/{ns}/{rel}", token=token)
-    save(f"{OUT}/responses/{cred.name}-{target}-{name}-delete", answer)
+    save(f"{test.out}/responses/{cred.name}-{target}-{name}-delete", answer)
     there = common.sha256(test.path(origin, pair, side, rel)) is not None
     why = ""
     if owners.expected(test.fed, cred, pair, side, "delete", True) == ALLOW:
@@ -715,7 +728,7 @@ def clean(test: Test) -> list[str]:
     pstores = [o for o in test.origins if o.pstore]
     if pstores:
         errors += stores.empty_tree_everywhere(
-            pstores, fed.exports, "data/owners", test.session.tokens()
+            pstores, fed.exports, "data/owners", test.session.setup_tokens()
         )
     return errors
 
@@ -734,8 +747,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     errors = clean(test)
     if errors:
         die(f"could not remove earlier runs' objects: {first(errors)}")
-    shutil.rmtree(OUT, ignore_errors=True)
-    os.makedirs(f"{OUT}/responses")
+    shutil.rmtree(test.out, ignore_errors=True)
+    os.makedirs(f"{test.out}/responses")
     for storage in test.storages:
         os.makedirs(f"{storage}/{test.base}")
         os.chmod(f"{storage}/{test.base}", 0o777)  # nosec B103

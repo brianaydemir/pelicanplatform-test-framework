@@ -22,8 +22,11 @@ and the image registries.
   lists the shapes one per line, for a matrix of one shape per job.
 - **What comes back:** the exit status (non-zero if any shape failed),
   and, in `DIR`, each shape's log, its results in `results/<shape>/`,
-  and, merged over the shapes, `results.tsv`, `junit.xml` (for a test
-  reporter), and `summary.md` (for `$GITHUB_STEP_SUMMARY`). See
+  its services' logs from each run of the tests in
+  `logs/<shape>/<time>/`, and, merged over the shapes, `results.tsv`,
+  `junit.xml` (for a test reporter), and `summary.md` (for
+  `$GITHUB_STEP_SUMMARY`). A shape that failed also leaves
+  `<shape>.compose.log`, every service's log as it failed. See
   [Results](#results).
 
 For example, as steps of a job in a matrix over the shapes:
@@ -48,22 +51,25 @@ For example, as steps of a job in a matrix over the shapes:
 
 ## Results
 
-Each suite writes `framework/var/results/<suite>.tsv`, one row per test
+Each suite writes `framework/var/results/<suite>.tsv`, and its SciTokens
+pass `<suite>-scitokens.tsv`
+([token profiles](tests/README.md#token-profiles)), one row per test
 case, with a header row:
 
 ```
 suite   case   status   seconds   note
 ```
 
-`status` is `PASS`, `FAIL`, `SKIP`, or `INCONCLUSIVE`. A note's backslashes,
-tabs, carriage returns, and newlines are written as `\\`, `\t`, `\r`, and
-`\n`, so each row is one line. The suite is the suite's name, with `-<tag>`
-after it if `RESULTS_TAG` names a tag, as `smoke.sh` does to tell apart two
-runs of one suite. A suite that stops early records why, as a `FAIL` row
-named `setup` or `aborted`. A run of everything first removes earlier runs'
-results with the same tag. `transfers` has a row per scenario, and one per
-`served-by-*` check; `auth` and `owners` have one per request, and per
-document their `keys` check fetches. To read one:
+`status` is `PASS`, `FAIL`, `SKIP`, or `INCONCLUSIVE`. A note's
+backslashes, tabs, carriage returns, and newlines are written as `\\`,
+`\t`, `\r`, and `\n`, so each row is one line. The suite is the suite's
+name (with `-scitokens` after it for its SciTokens pass), with `-<tag>`
+after that if `RESULTS_TAG` names a tag, as `smoke.sh` does to tell apart
+two runs of one suite. A suite that stops early records why, as a `FAIL`
+row named `setup` or `aborted`. A run of everything first removes
+earlier runs' results with the same tag. `transfers` has a row per
+scenario, and one per `served-by-*` check; `auth` and `owners` have one
+per request, and per document their `keys` check fetches. To read one:
 
 ```sh
 column -t -s "$(printf '\t')" framework/var/results/transfers.tsv

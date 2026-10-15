@@ -5,7 +5,10 @@ mishandles the encoding would take for its own. Any bytes but the
 object's own fail, and another's are named.
 
 Objects go under /protected-a/data/names/<run>/, put at every origin
-with stores.seed(). A URL names each with every character but letters,
+with stores.seed(), with the token of the session's profile that every
+request presents, since `origin-put` checks those PUTs; the stores are
+read with WLCG tokens either way. A URL names each with every character
+but letters,
 digits, and `-._~` percent-encoded (stores.url()); the client is given
 it so too. A listing's hrefs are decoded before they are compared.
 
@@ -66,7 +69,9 @@ class Test:
         put_base: Where client-put uploads, beside the objects.
         tmp: The test's scratch directory.
         token_file: The file that holds token.
-        token: A token for /protected-a.
+        token: A token for /protected-a, of the session's profile.
+        setup: A token for /protected-a, of the WLCG profile, for making
+            collections and reading the stores.
         caps: The capabilities of /protected-a.
         objects: Each object's bytes, by name.
         unseeded: What went wrong putting the objects in place.
@@ -82,6 +87,7 @@ class Test:
         os.makedirs(self.tmp)
         self.token_file = session.token_file("protected-a")
         self.token = session.token("protected-a")
+        self.setup = session.setup_token("protected-a")
         self.caps = self.fed.exports["protected-a"]
         # Each a size of its own, so that a listing shows which is which.
         self.objects = {name: os.urandom(1000 + 37 * n) for n, name in enumerate(NAMES)}
@@ -118,7 +124,7 @@ class Test:
         What an origin refuses is left out, and recorded in unseeded: the
         scenarios then fail for it.
         """
-        errors = stores.make_dirs(self.origins, "protected-a", self.base, self.token)
+        errors = stores.make_dirs(self.origins, "protected-a", self.base, self.setup)
         if errors:
             die(f"could not make the run's collection: {first(errors)}")
         for name, data in self.objects.items():
@@ -378,7 +384,7 @@ def client_put(test: Test) -> tuple[str, str]:
     if "Writes" not in test.caps:
         return SKIP, "/protected-a takes no writes"
     collection = test.put_base
-    errors = stores.make_dirs(test.origins, "protected-a", collection, test.token)
+    errors = stores.make_dirs(test.origins, "protected-a", collection, test.setup)
     if errors:
         return FAIL, errors[0]
     directory = os.path.join(test.tmp, "client-put")
@@ -397,7 +403,7 @@ def client_put(test: Test) -> tuple[str, str]:
     )
     if code != 0:
         return FAIL, f"exit {code}: {last_line(err or out)}"
-    tokens = {"protected-a": test.token}
+    tokens = {"protected-a": test.setup}
     for name, data in files.items():
         held = stores.held_anywhere(test.origins, "protected-a", f"{collection}/{name}", tokens)
         if common.digest(data) not in held:
@@ -472,7 +478,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         directory = f"{origin.store_of('protected-a')}/data/names"
         if not origin.pstore and not os.path.isdir(directory):
             die(f"framework/var/{directory} is missing; run ./fed.sh init")
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
         errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/names", tokens)

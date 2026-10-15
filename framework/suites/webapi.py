@@ -76,6 +76,10 @@ SCENARIOS = {
     "version": "every server reports one version, as its Server header and the directors do",
 }
 
+# Every scenario: each presents only tokens of a server's web API, which
+# Pelican mints in the WLCG profile alone (see suites/__init__.py).
+ONE_PROFILE = tuple(SCENARIOS)
+
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.
 Row = tuple[str, str, str]

@@ -56,7 +56,10 @@ but `multipart-put` and disable-copies's `public` row, which ask an
 XRootD origin too, as a control. Everything goes under
 /<namespace>/data/exports/<run>/, which the suite removes afterward. A
 third-party COPY's failing sources are a stub HTTP server in the dev
-container (testlib/stub.py).
+container (testlib/stub.py). The requests that the scenarios check
+present tokens of the session's profile, the client's token that
+`backend-passthrough` forwards among them; their objects are put in
+place, and the stores read, with WLCG tokens either way.
 """
 
 import contextlib
@@ -205,7 +208,11 @@ class Test:
     run's collection, and the stub source.
 
     Attributes:
+        token: The `server` token for /protected-a, of the session's
+            profile.
         token_file: The file that holds token.
+        setup: The `server` token for /protected-a, of the WLCG profile,
+            for putting objects in place.
         stub_down: Why the stub does not serve, if it does not.
     """
 
@@ -213,6 +220,7 @@ class Test:
     stub: Stub
     token: str
     token_file: str
+    setup: str
     stub_down: Optional[str] = None
 
     @property
@@ -253,7 +261,7 @@ class Test:
         Raises:
             SetupError: The PUT failed.
         """
-        error = stores.put(origin, NAMESPACE, rel, data, self.token)
+        error = stores.put(origin, NAMESPACE, rel, data, self.setup)
         if error:
             raise SetupError(f"{origin.svc}: could not put {rel} in place ({error})")
 
@@ -274,7 +282,7 @@ class Test:
             stores.Unreadable: The origin could not say what it holds.
         """
         storage = origin.storage_namespace(namespace)
-        token = None if storage == "public" else self.session.token(storage)
+        token = None if storage == "public" else self.session.setup_token(storage)
         have = stores.held(origin, namespace, rel, token)
         if want is None:
             return f"{what} is there" if have is not None else None
@@ -529,7 +537,7 @@ def tpc_body(test: Test) -> dict[str, Row]:
         return {row: (SKIP, why)}
     data = os.urandom(SOURCE_SIZE)
     source_rel = f"{test.base}/{SOURCE}"
-    errors = stores.put_everywhere(test.fed.origins, NAMESPACE, source_rel, data, test.token)
+    errors = stores.put_everywhere(test.fed.origins, NAMESPACE, source_rel, data, test.setup)
     if errors:
         raise SetupError(f"could not put the source in place: {first(errors)}")
     found = Findings()
@@ -705,7 +713,7 @@ def mid_stream(test: Test, found: Findings) -> None:
             found.problems.append(
                 f"{origin.svc}: a COPY from a source that fails partway: {why}"
             )
-        have = stores.held(origin, NAMESPACE, rel, test.token)
+        have = stores.held(origin, NAMESPACE, rel, test.setup)
         staged = test.fed.posc or origin.pstore
         if have == common.digest(before):
             kept.append(f"/{NAMESPACE}/{rel}")
@@ -921,7 +929,7 @@ def seed_restart(test: Test, layout: Layout) -> dict[str, bytes]:
     fed = test.fed
     tree = f"{test.base}/tree"
     data = {"tree/obj": os.urandom(3000), "public-obj": os.urandom(4000)}
-    token = test.session.token(layout.listless)
+    token = test.session.setup_token(layout.listless)
     errors = stores.make_dirs(fed.origins, layout.listless, tree, token)
     errors += stores.seed_everywhere(
         fed.origins,
@@ -940,7 +948,7 @@ def seed_restart(test: Test, layout: Layout) -> dict[str, bytes]:
                 storage,
                 rel,
                 data["public-obj"],
-                test.session.token(storage),
+                test.session.setup_token(storage),
                 fed.exports[storage],
             )
             if error:
@@ -1331,7 +1339,7 @@ def gated_clients(test: Test, mode: str) -> tuple[list[str], str]:
         "object", "get", "--token", test.token_file, f"{fed.url}/{NAMESPACE}/{rel}", target
     )
     try:
-        held = stores.held(origin, NAMESPACE, rel, test.token)
+        held = stores.held(origin, NAMESPACE, rel, test.setup)
     except stores.Unreadable as e:
         held = None
         problems.append(str(e))
@@ -1352,7 +1360,7 @@ def gated_clients(test: Test, mode: str) -> tuple[list[str], str]:
             f"`pelican object put` of {uploaded}: exit {code}: {last_line(err or out)}"
         )
     elif common.digest(data) not in stores.held_anywhere(
-        fed.origins, NAMESPACE, uploaded, {NAMESPACE: test.token}
+        fed.origins, NAMESPACE, uploaded, {NAMESPACE: test.setup}
     ):
         problems.append(f"`pelican object put` of {uploaded}: no origin's store holds it")
     return problems, uploaded
@@ -1582,8 +1590,14 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     what they wrote.
     """
     fed = session.fed
-    tokens = session.tokens()
-    test = Test(session, Stub(), session.token(NAMESPACE), session.token_file(NAMESPACE))
+    tokens = session.setup_tokens()
+    test = Test(
+        session,
+        Stub(),
+        session.token(NAMESPACE),
+        session.token_file(NAMESPACE),
+        session.setup_token(NAMESPACE),
+    )
 
     def clean(when: str) -> None:
         errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/exports", tokens)
@@ -1605,7 +1619,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             if not test.writable():
                 for origin in fed.origins:
                     errors = stores.make_dirs(
-                        [origin], NAMESPACE, f"{test.base}/{origin.svc}", test.token
+                        [origin], NAMESPACE, f"{test.base}/{origin.svc}", test.setup
                     )
                     if errors:
                         die(f"could not make the run's collection: {errors[0]}")
@@ -1614,7 +1628,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                     NAMESPACE,
                     f"{test.base}/{PROBE}",
                     os.urandom(PROBE_SIZE),
-                    test.token,
+                    test.setup,
                 )
                 if errors:
                     die(f"could not put the probe in place: {errors[0]}")

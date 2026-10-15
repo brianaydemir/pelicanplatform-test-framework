@@ -22,6 +22,10 @@ stores.seed()), each read once, so that it is cold wherever it is read:
   list             Depth 1 of a collection through cache-2, where
                    /protected-a may be listed straight from an origin,
                    and otherwise a refusal
+
+The tokens that the clients and requests present are of the session's
+profile; the objects are put in place, and the federated caches asked
+what they hold, with WLCG tokens either way.
 """
 
 import json
@@ -47,6 +51,9 @@ SCENARIOS = {
     "upstream": "a cold read through the site-local cache fills a federated V2 cache",
     "list": "Depth 1 through the site-local cache: listed where origins list, else refused",
 }
+
+# The scenarios that present no token (see suites/__init__.py).
+ONE_PROFILE = ("get-public", "plugin-get-public")
 
 # What every object is: its size.
 SIZE = 10000
@@ -99,7 +106,7 @@ class Test:
         On a pstore origin, /public's storage is /protected-a's.
         """
         target = self.fed.storage_namespace(namespace)
-        token = self.session.token(target)
+        token = self.session.setup_token(target)
         caps = self.fed.exports[target]
         rel = f"{self.base}/{name}"
         errors: list[str] = []
@@ -249,6 +256,7 @@ def refused(test: Test) -> tuple[str, str]:
         "/",
         credentials.LONG,
         credentials.R,
+        profile=test.session.profile,
     )
     target = os.path.join(test.tmp, name)
     code, out, err = test.session.pelican_cmd(
@@ -297,13 +305,14 @@ def upstream(test: Test) -> tuple[str, str]:
     test.put("protected-a", name, os.urandom(SIZE))
     path = f"/protected-a/{test.base}/{name}"
     token = test.session.token("protected-a")
-    before = {c.svc: cached_upstream(c, path, token) for c in feds}
+    setup = test.session.setup_token("protected-a")
+    before = {c.svc: cached_upstream(c, path, setup) for c in feds}
     if any(held is not False for held in before.values()):
         return FAIL, f"before the read, only-if-cached got {before}, not 504 everywhere"
     answer = web.request("GET", f"{test.cache.url}{path}", token=token)
     if answer.status != 200 or answer.body != test.objects[name]:
         return FAIL, f"GET through {test.cache.svc}: {answer.describe()}"
-    after = {c.svc: cached_upstream(c, path, token) for c in feds}
+    after = {c.svc: cached_upstream(c, path, setup) for c in feds}
     holders = [svc for svc, held in after.items() if held]
     if not holders:
         return FAIL, f"after the read, only-if-cached got {after}: no federated cache holds it"
@@ -347,7 +356,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             directory = f"{origin.store_of(ns)}/data/sitelocal"
             if not origin.pstore and not os.path.isdir(directory):
                 die(f"framework/var/{directory} is missing; run ./fed.sh init")
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
     test = Test(session)
     print(
         f"Site-local cache {test.cache.svc} ({test.cache.url}),"

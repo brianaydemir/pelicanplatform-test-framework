@@ -9,7 +9,9 @@ own: generated/transfer-api says which (common.Federation.transfer_api).
 Its own tokens carry the pelican.transfer scope, from its host's
 issuer, which the suite mints with that host's key: origin-0's, or the
 transfer server's local issuer; storage credentials are the server's
-tokens for /protected-a. Objects go under /protected-a/data/xfer/<run>/;
+tokens for /protected-a, of the session's profile, so that the scenarios
+that keep none run in the WLCG pass alone. Objects go under
+/protected-a/data/xfer/<run>/;
 the suite removes them, and the credentials it added, afterward. A job
 of origin-0's API may read or write the origin's own filesystem only
 through an export, so `local-get` and `local-put` check that a job is
@@ -106,6 +108,20 @@ SCENARIOS = {
     ),
 }
 
+# The scenarios that keep no storage credential, whose tokens are the
+# API's own or its issuer's (see suites/__init__.py).
+ONE_PROFILE = (
+    "ping",
+    "auth-none",
+    "auth-unknown-key",
+    "unknown-credential",
+    "path-not-allowed",
+    "local-get",
+    "local-put",
+    "enabled-groups",
+    "oauth-clients",
+)
+
 # The scenarios that need the API's host configured otherwise (see
 # run_configured()), and the one that restarts it.
 CONFIGURED = ("enabled-groups", "oauth-clients")
@@ -193,8 +209,11 @@ class Test:
         url: The URL of the API's host.
         issuer: The issuer of the API's own tokens.
         key_dir: The key directory of the API's host.
-        storage: A storage token for /protected-a, for credentials.
+        storage: A storage token for /protected-a, for credentials, of
+            the session's profile.
         read_only: A read-only one.
+        setup: A storage token for /protected-a of the WLCG profile, for
+            putting the source object in place and reading the stores.
         token: The user's token for the API.
         data: The object that the jobs copy.
         credential_ids: The credentials added, each with the token that
@@ -232,6 +251,7 @@ class Test:
         self.base = f"data/xfer/{session.run}"
         self.storage = session.token("protected-a")
         self.read_only = session.token("protected-a", credentials.R)
+        self.setup = session.setup_token("protected-a")
         self.token = self.mint("user", common.signing_key(self.key_dir), credentials.SUBJECT)
         # Past pstore's chunk, so that a copy takes many reads and writes.
         self.data = os.urandom(blocks.CHUNK_UNDECLARED + 4321)
@@ -269,6 +289,7 @@ class Test:
             (),
             subject,
             raw_scopes=(SCOPE,),
+            profile=credentials.WLCG,
         )
         with open(path, encoding="utf-8") as f:
             return f.read().strip()
@@ -383,7 +404,7 @@ class Test:
         See stores.held_anywhere().
         """
         return stores.held_anywhere(
-            self.fed.origins, "protected-a", self.rel(name), {"protected-a": self.storage}
+            self.fed.origins, "protected-a", self.rel(name), {"protected-a": self.setup}
         )
 
     def add_credential(self, name: str, token: str, owner: Optional[str] = None) -> str:
@@ -1554,7 +1575,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         directory = f"{origin.store_of('protected-a')}/data/xfer"
         if not origin.pstore and not os.path.isdir(directory):
             die(f"framework/var/{directory} is missing; run ./fed.sh init")
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
     test = Test(session)
     confined_to = "the exports" if test.confined else "nothing"
     print(
@@ -1562,13 +1583,13 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         + f" objects under /protected-a/{test.base}/\n"
     )
     try:
-        errors = stores.make_dirs(fed.origins, "protected-a", test.base, test.storage)
+        errors = stores.make_dirs(fed.origins, "protected-a", test.base, test.setup)
         errors += stores.seed_everywhere(
             fed.origins,
             "protected-a",
             test.rel("src"),
             test.data,
-            test.storage,
+            test.setup,
             fed.exports["protected-a"],
         )
         if errors:

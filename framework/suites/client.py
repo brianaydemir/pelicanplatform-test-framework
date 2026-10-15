@@ -9,7 +9,10 @@ suite reads what the clients report.
 
 The suite's objects go under /<namespace>/data/client/<run>/, put at
 every origin, and are removed afterward. It needs /protected-a. The
-scenarios:
+clients present tokens of the session's profile, and
+`token-create-discovery` mints its tokens in it; the objects are put in
+place, the caches filled, and the stores read, with WLCG tokens either
+way. The scenarios:
 
   plugin-ads        stash_plugin's result ads: the bytes, URL, type,
                     name, and times of a download; its attempts, the
@@ -124,6 +127,9 @@ SCENARIOS = {
 }
 
 NAMESPACE = "protected-a"
+# The scenarios that present no token of the tests' minting (see
+# suites/__init__.py): the share's is the embedded issuer's.
+ONE_PROFILE = ("share-url",)
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.
 Row = tuple[str, str, str]
@@ -345,8 +351,12 @@ class Test:
     Attributes:
         base: Where the run's objects are in a namespace.
         tmp: The run's local directory, for the clients' files.
-        token: The `server` token for /protected-a.
+        token: The `server` token for /protected-a, of the session's
+            profile.
         token_file: Its file.
+        setup: The `server` token for /protected-a, of the WLCG profile,
+            for putting objects in place, filling the caches, and reading
+            the stores.
         caps: The capabilities of /protected-a.
         direct: Whether /protected-a takes direct clients.
         writes: Whether /protected-a takes writes.
@@ -363,6 +373,7 @@ class Test:
         os.makedirs(self.tmp)
         self.token = session.token(NAMESPACE)
         self.token_file = session.token_file(NAMESPACE)
+        self.setup = session.setup_token(NAMESPACE)
         self.caps = self.fed.exports[NAMESPACE]
         self.direct = "DirectReads" in self.caps
         self.writes = "Writes" in self.caps
@@ -397,7 +408,7 @@ class Test:
         pstore origin, /public's is /protected-a's.
         """
         target = self.fed.storage_namespace(namespace)
-        token = self.session.token(target)
+        token = self.session.setup_token(target)
         caps = self.fed.exports[target]
         rel = self.rel(name)
         where = list(origins) if origins is not None else stores.unique(self.fed.origins)
@@ -552,19 +563,20 @@ class Test:
 
         A cache says so with Age.
         """
-        answer = web.request("HEAD", f"{cache.url}{self.path(name)}", token=self.token)
+        answer = web.request("HEAD", f"{cache.url}{self.path(name)}", token=self.setup)
         return answer.status == 200 and answer.header("Age").strip().isdigit()
 
     def fill(self, cache: common.Cache, name: str) -> Optional[str]:
         """Read object name whole through cache, which must serve it.
 
-        For a V2 cache, wait until it says it holds it all.
+        For a V2 cache, wait until it says it holds it all. The read is
+        setup, with the setup token.
 
         Returns:
             What went wrong, or None.
         """
         answer = web.request(
-            "GET", f"{cache.url}{self.path(name)}", token=self.token, timeout=120
+            "GET", f"{cache.url}{self.path(name)}", token=self.setup, timeout=120
         )
         if answer.status != 200 or answer.body != self.objects[self.rel(name)]:
             return f"{cache.svc}: a GET of {name} got {answer.describe()}"
@@ -860,6 +872,7 @@ def unknown_token(test: Test) -> str:
         "/",
         credentials.LONG,
         credentials.RWM,
+        profile=test.session.profile,
     )
     with open(path, encoding="utf-8") as f:
         return f.read().strip()
@@ -939,7 +952,7 @@ def failover(test: Test) -> list[Row]:
         if why:
             return rows + [(case, SKIP if "no chaos" in why else FAIL, why)]
         for origin in test.fed.origins:
-            error = stores.delete(origin, NAMESPACE, test.rel(name), test.token)
+            error = stores.delete(origin, NAMESPACE, test.rel(name), test.setup)
             if error:
                 return rows + [(case, FAIL, error)]
         preferred = f"{first_cache.url},{second.url}"
@@ -1224,13 +1237,15 @@ def create_token(
 ) -> tuple[Optional[dict[str, Any]], str, Fetched]:
     """Run `pelican token create url --read --private-key key`.
 
-    It runs with flags, and with no --issuer or --scope-path.
+    It runs with flags, the session's --profile, and with no --issuer or
+    --scope-path.
 
     Returns:
         The token's claims and the token, if it printed one (else None and
         ""), and the run.
     """
     args = ["token", "create", url, "--read", "--lifetime", "300"]
+    args += ["--profile", credentials.PELICAN_PROFILES[test.session.profile]]
     args += ["--private-key", os.path.abspath(key), *flags]
     fetch = test.pelican(name, args)
     if fetch.status != 0:
@@ -1265,7 +1280,8 @@ def token_create_discovery(test: Test) -> list[Row]:
     data = os.urandom(OBJECT_SIZE)
     test.put(name, data)
     collection = test.url("token-create") + "/"
-    want_scope = f"storage.read:/{test.rel('token-create')}"
+    read = credentials.SCOPES[test.session.profile]["read"]
+    want_scope = f"{read}:/{test.rel('token-create')}"
     claims, token, fetch = create_token(
         test, "create-origin-key", collection, test.fed.origin_key
     )
@@ -1627,7 +1643,7 @@ def multi_source(test: Test) -> list[Row]:
 
     def landed(rel: str, data: bytes) -> bool:
         return common.digest(data) in stores.held_anywhere(
-            origins, NAMESPACE, rel, {NAMESPACE: test.token}
+            origins, NAMESPACE, rel, {NAMESPACE: test.setup}
         )
 
     for case, collection, make in (
@@ -1636,7 +1652,7 @@ def multi_source(test: Test) -> list[Row]:
     ):
         rel = test.rel(collection)
         if make:
-            errors = stores.make_dirs(origins, NAMESPACE, rel, test.token)
+            errors = stores.make_dirs(origins, NAMESPACE, rel, test.setup)
             if errors:
                 rows.append((case, FAIL, first(errors)))
                 continue
@@ -1665,7 +1681,7 @@ def multi_source(test: Test) -> list[Row]:
     elif "already exists" not in fetch.said:
         problems.append(f"failed, but not because the object exists: {last_line(fetch.said)}")
     if common.digest(old) not in stores.held_anywhere(
-        origins, NAMESPACE, test.rel("multi-object"), {NAMESPACE: test.token}
+        origins, NAMESPACE, test.rel("multi-object"), {NAMESPACE: test.setup}
     ):
         problems.append("the object was changed")
     rows.append(("put-object", *outcome(problems, "refused: it already exists (P10)")[1:]))
@@ -2025,7 +2041,7 @@ def async_job(test: Test) -> list[Row]:
                 cwd=os.path.dirname(local),
             )
             held = stores.held_anywhere(
-                test.fed.origins, NAMESPACE, rel, {NAMESPACE: test.token}
+                test.fed.origins, NAMESPACE, rel, {NAMESPACE: test.setup}
             )
             if code != 0:
                 rows.append(("copy", FAIL, f"exit {code}: {last_line(err or out)}"))
@@ -2093,7 +2109,7 @@ def guarded(name: str, test: Test) -> list[Row]:
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, and remove the run's objects."""
     fed = session.fed
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
     errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/client", tokens)
     if errors:
         die(f"could not remove earlier runs' objects: {first(errors)}")

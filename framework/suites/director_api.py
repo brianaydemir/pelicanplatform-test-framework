@@ -39,11 +39,14 @@ it, to one director alone, and looks for it at the other. It waits
 until the cache's own ads have restored both.
 
 `origin-stat` puts an object in /public at one origin, under
-data/director-api/<run>/, and the suite removes it afterward.
+data/director-api/<run>/, and the suite removes it afterward. Only
+`metrics`'s client requests present a storage token, of the session's
+profile; the rest present an admin's tokens, or the servers' own.
 """
 
 import functools
 import json
+import re
 import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
@@ -66,6 +69,10 @@ SCENARIOS = {
     "metadata-hosting": "no discovery document at a director; its comparison of the metadata",
     "forwarding": "an ad posted to one director reaches another, and lifts a shutdown there",
 }
+
+# The scenarios that present no storage token but their setup's (see
+# suites/__init__.py): only `metrics`'s client requests carry one.
+ONE_PROFILE = tuple(s for s in SCENARIOS if s != "metrics")
 
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.
@@ -1034,7 +1041,7 @@ def put_held(test: Test) -> tuple[Optional[Held], str]:
         return None, "the shape exports no /public, whose objects the admin may stat"
     holder = stores.unique(test.fed.origins)[-1]
     store_ns = holder.storage_namespace("public")
-    token = test.session.token(store_ns)
+    token = test.session.setup_token(store_ns)
     rel = f"{test.base}/held"
     errors = stores.make_dirs([holder], store_ns, test.base, token)
     error = (
@@ -1139,14 +1146,16 @@ def origin_stat(test: Test) -> list[Row]:
 def client_agent(test: Test) -> tuple[str, str, str]:
     """Return a Pelican client's User-Agent of a version of the run's own.
 
-    No other client sends that version.
+    No other client sends that version, nor another pass of the run.
 
     Returns:
         The User-Agent; its version, as a director's redirects count it;
         and its major and minor version, as its client requests do
         (collectClientVersionMetric).
     """
-    patch = int(test.run.replace("-", "")[-6:])
+    # The run's time of day, plus a million for each pass after WLCG's.
+    patch = int(re.sub(r"\D", "", test.run)[-6:])
+    patch += 1_000_000 * credentials.PROFILES.index(test.session.profile)
     version = f"7.99.{patch}"
     return f"pelican-client/{version}", version, "7.99"
 
@@ -1556,7 +1565,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         fed = session.fed
         exports = {ns: fed.exports[ns] for ns in credentials.exported(fed)}
         errors = stores.empty_tree_everywhere(
-            fed.origins, exports, "data/director-api", session.tokens()
+            fed.origins, exports, "data/director-api", session.setup_tokens()
         )
         if errors:
             warn(f"could not remove the suite's objects: {first(errors)}")

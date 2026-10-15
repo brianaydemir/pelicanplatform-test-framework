@@ -17,7 +17,11 @@ minutes. It skips under `-p server-unprivileged`, whose servers' keys
 the host may not write, and the tiny topology, whose one process holds
 every key. Its probe object goes under `/protected-a/data/keys/<run>/`,
 and is removed afterward. A scenario with several cases records a row
-per case, named `<scenario> <case>`.
+per case, named `<scenario> <case>`. The suite runs in the WLCG pass
+alone ([token profiles](README.md#token-profiles)), since a second pass
+would change the keys again while the servers still hold what the first
+left; `hot-rotate` presents tokens of both profiles in its one rotation
+instead.
 
 - `hot-add`: a verify-only key, written into the origins' key
   directories (origin-0's and origin-1's, which share a key) so that it
@@ -50,7 +54,10 @@ per case, named `<scenario> <case>`.
   up to 15 minutes (`origin_serve/authz.go`,
   `local_cache/cache_authz.go`), which the window may not outlast, and
   the row is then inconclusive; each must take the old key's tokens
-  throughout (`old-key`). Under `-p auth-external-issuer`, the exports
+  throughout (`old-key`). Each token is presented in both profiles, and
+  the SciTokens ones have rows of their own, named for the server and
+  `scitokens` (e.g. `new-key origin-0 scitokens`), which fail at a
+  native server (T6). Under `-p auth-external-issuer`, the exports
   trust none of the origins' keys, so the token rows skip. The
   issuer's tokens must come to carry the new kid (`issuer-kid`).
   The registry must come to list the origins'

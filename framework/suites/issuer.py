@@ -164,6 +164,9 @@ SCENARIOS = {
     "code-expiry": "device and authorization codes expire unredeemed",
     "registration": "a client that registers itself: its grants, URIs, name, user, and config",
 }
+# Every scenario: each presents only Pelican's tokens, its issuer's and
+# its web API's, beside its setup's (see suites/__init__.py).
+ONE_PROFILE = tuple(SCENARIOS)
 
 ROLES = ("analyst", "member", "stranger")
 USERS = {"analyst": "test-analyst", "member": "test-member", "stranger": "test-stranger"}
@@ -251,7 +254,8 @@ class Test:
         origin: The issuer origin.
         web: The issuer origin's web URL.
         namespace: The first protected namespace exported, the suite's.
-        server_token: A `server` token for the namespace.
+        server_token: A `server` token for the namespace, of the WLCG
+            profile, for reading objects back.
         gamma_rel: The collection's path within the namespace.
         shared_rel: The share's path within the namespace.
         ids: The users' IDs, by role.
@@ -277,7 +281,7 @@ class Test:
         self.caps = fed.exports[self.namespace]
         self.issuer_url = fed.issuer_of(self.namespace)
         self.lifetimes = fed.issuer_lifetimes
-        self.server_token = session.token(self.namespace)
+        self.server_token = session.setup_token(self.namespace)
         self.gamma_rel = f"{BASE}/collections/{self.run}/gamma"
         self.shared_rel = f"{self.gamma_rel}/shared"
         self.ids: dict[str, str] = {}
@@ -537,7 +541,7 @@ def seed(test: Test, namespace: str, prefixes: Sequence[str]) -> None:
     Each object has bytes of its own.
     """
     caps = test.fed.exports[namespace]
-    token = test.session.token(namespace)
+    token = test.session.setup_token(namespace)
     for prefix in prefixes:
         rel = f"{prefix}/obj"
         test.data[rel] = os.urandom(OBJECT_SIZE)
@@ -575,7 +579,7 @@ def finish(test: Test) -> None:
     for namespace in test.seeded:
         for origin in stores.unique(test.fed.origins):
             for error in stores.empty_tree(
-                origin, namespace, BASE, test.session.token(namespace)
+                origin, namespace, BASE, test.session.setup_token(namespace)
             ):
                 warn(error)
 
@@ -1564,7 +1568,7 @@ def collection_isolation(test: Test, other: str) -> list[str]:
         other,
         rel,
         os.urandom(OBJECT_SIZE),
-        test.session.token(other),
+        test.session.setup_token(other),
         test.fed.exports[other],
     )
     if other not in test.seeded:

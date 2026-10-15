@@ -35,6 +35,13 @@ The scenarios:
   backups      every server writes an encrypted backup of its database
                (Server.DatabaseBackup), which `pelican-server server
                database backup verify` opens with the server's keys
+
+Every scenario runs in the WLCG pass alone, since another pass would
+change the keys again while the servers still hold what the first left.
+`hot-rotate` presents tokens of every profile in its one rotation
+instead: its rows for a profile but WLCG's end in the profile's name
+(e.g. `new-key origin-0 scitokens`). The probe is put in place, and
+`master-key` reads it, with WLCG tokens.
 """
 
 import glob
@@ -86,6 +93,9 @@ SCENARIOS = {
 }
 
 NAMESPACE = "protected-a"
+# Every scenario (see suites/__init__.py, and above): hot-rotate presents
+# every profile's tokens itself.
+ONE_PROFILE = tuple(SCENARIOS)
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note. A scenario returns its status and note, or its rows.
 Row = tuple[str, str, str]
@@ -244,7 +254,7 @@ class Test:
         self.tmp = session.path("keys")
         os.makedirs(self.tmp)
         self.caps = self.fed.exports[NAMESPACE]
-        self.token = session.token(NAMESPACE)
+        self.token = session.setup_token(NAMESPACE)
         self.rel = f"{self.base}/probe"
         self.path = f"/{NAMESPACE}/{self.rel}"
         self.data = os.urandom(OBJECT_SIZE)
@@ -331,12 +341,13 @@ class Test:
             lambda: len(self.named(route, host)) == len(self.fed.directors), seconds, 5
         )
 
-    def signed_with(self, key: str) -> str:
+    def signed_with(self, key: str, profile: str) -> str:
         """Return a token like the `server` token, but signed with key.
 
-        Its claims are /protected-a's (see credentials.server_claims()).
+        Its claims are /protected-a's, of profile (see
+        credentials.server_claims()).
         """
-        claims = credentials.server_claims(self.fed, NAMESPACE)
+        claims = credentials.server_claims(self.fed, NAMESPACE, profile=profile)
         return jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), claims, key=key)
 
     def data_servers(self) -> list[tuple[str, str]]:
@@ -468,14 +479,15 @@ def hot_rotate(test: Test) -> list[Row]:
     cache (D5); and a cache never pushes a new key to the registry (R4).
     Origins and caches keep a namespace's keyset for up to 15 minutes too
     (origin_serve/authz.go, local_cache/cache_authz.go), so `new-key` is
-    inconclusive if the window is not enough.
+    inconclusive if the window is not enough. The tokens of each key are
+    of every profile, each with rows of its own.
     """
     fed = test.fed
     if not fed.registry_url or not fed.directors:
         return [("", SKIP, "a standalone origin has no registry or director")]
     test.put_probe()
     cache_name = test.cache_name()
-    old_tokens = test.signed_with(test.origin_key)
+    old_tokens = {p: test.signed_with(test.origin_key, p) for p in credentials.PROFILES}
     client: Optional[issuer.Client] = None
     admin_web = ""
     if fed.embedded_issuer and not fed.external_issuer:
@@ -502,7 +514,7 @@ def hot_rotate(test: Test) -> list[Row]:
         cache_name_on_disk = new_key(test, cache_dirs, first_of_all=True)
         test.rotated.append((cache_dirs, cache_name_on_disk))
         cache_kid = jwt.key_id(os.path.join(cache_dirs[0], cache_name_on_disk))
-    new_tokens = test.signed_with(new_origin_key)
+    new_tokens = {p: test.signed_with(new_origin_key, p) for p in credentials.PROFILES}
     # Under the external issuer, the exports trust none of the origins'
     # keys, so no token of either says anything.
     data_servers = [] if fed.external_issuer else test.data_servers()
@@ -510,8 +522,9 @@ def hot_rotate(test: Test) -> list[Row]:
     if test.cache:
         watched.append((test.cache.svc, "object", director.host(test.cache.url)))
     dropped: dict[str, float] = {}
-    accepted: dict[str, float] = {}
-    refused_old: dict[str, float] = {}
+    # By server and profile.
+    accepted: dict[tuple[str, str], float] = {}
+    refused_old: dict[tuple[str, str], float] = {}
     issuer_kid_at: Optional[float] = None
     registry_at: dict[str, float] = {}
     started = time.monotonic()
@@ -521,10 +534,12 @@ def hot_rotate(test: Test) -> list[Row]:
             if svc not in dropped and len(test.named(route, host)) != len(fed.directors):
                 dropped[svc] = now
         for svc, url in data_servers:
-            if svc not in accepted and test.served(url, new_tokens):
-                accepted[svc] = now
-            if svc not in refused_old and not test.served(url, old_tokens):
-                refused_old[svc] = now
+            for profile in credentials.PROFILES:
+                key = (svc, profile)
+                if key not in accepted and test.served(url, new_tokens[profile]):
+                    accepted[key] = now
+                if key not in refused_old and not test.served(url, old_tokens[profile]):
+                    refused_old[key] = now
         if client and issuer_kid_at is None:
             try:
                 minted = issuer.token(client, User(token=admin_web), ("storage.read:/",))
@@ -564,28 +579,35 @@ def hot_rotate(test: Test) -> list[Row]:
             ("tokens", SKIP, "the exports trust the external issuer, not the origins' keys")
         )
     for svc, _ in data_servers:
-        if svc in accepted:
-            rows.append(
-                (f"new-key {svc}", PASS, f"took the new key's token {accepted[svc]:.0f}s in")
-            )
-        else:
-            rows.append(
-                (
-                    f"new-key {svc}",
-                    INCONCLUSIVE,
-                    f"refused it for all {ROTATE_WINDOW}s (its keyset may be cached for up to 15 minutes)",
+        for profile in credentials.PROFILES:
+            key = (svc, profile)
+            case = svc if profile == credentials.WLCG else f"{svc} {profile}"
+            if key in accepted:
+                rows.append(
+                    (
+                        f"new-key {case}",
+                        PASS,
+                        f"took the new key's token {accepted[key]:.0f}s in",
+                    )
                 )
-            )
-        if svc in refused_old:
-            rows.append(
-                (
-                    f"old-key {svc}",
-                    FAIL,
-                    f"refused the old key's token {refused_old[svc]:.0f}s in",
+            else:
+                rows.append(
+                    (
+                        f"new-key {case}",
+                        INCONCLUSIVE,
+                        f"refused it for all {ROTATE_WINDOW}s (its keyset may be cached for up to 15 minutes)",
+                    )
                 )
-            )
-        else:
-            rows.append((f"old-key {svc}", PASS, "took the old key's token throughout"))
+            if key in refused_old:
+                rows.append(
+                    (
+                        f"old-key {case}",
+                        FAIL,
+                        f"refused the old key's token {refused_old[key]:.0f}s in",
+                    )
+                )
+            else:
+                rows.append((f"old-key {case}", PASS, "took the old key's token throughout"))
     if client:
         if issuer_kid_at is None:
             rows.append(
@@ -989,7 +1011,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 results.add(f"{name} {case}".strip(), status, note)
     finally:
         put_back(test)
-        tokens = session.tokens()
+        tokens = session.setup_tokens()
         errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/keys", tokens)
         if errors:
             common.warn(f"could not remove the run's objects: {first(errors)}")

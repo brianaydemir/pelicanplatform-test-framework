@@ -116,6 +116,10 @@ SCENARIOS = {
     "cli": "`pelican-server origin collection` manages collections through the device flow",
 }
 
+# Every scenario: each presents only Pelican's tokens, its web API's and
+# its issuer's, beside its setup's (see suites/__init__.py).
+ONE_PROFILE = tuple(SCENARIOS)
+
 REDEEM = "/api/v1.0/invites/redeem/collection-ownership"
 MY_GROUPS = "/api/v1.0/me/groups"
 # The director's list of origins, from which the CLI takes the first.
@@ -177,7 +181,9 @@ class Test:
         issuer_url: The namespace's issuer.
         base: Where the run's collections are within the namespace.
         prefix: Where they are in the federation.
-        server_token: The `server` token for the namespace.
+        server_token: The `server` token for the namespace, of the WLCG
+            profile, for putting objects in place, reading them back, and
+            removing them.
         ids: The users' IDs, by role.
         groups: The groups' IDs, by name.
         coll: The IDs of alpha and beta, by name.
@@ -196,7 +202,7 @@ class Test:
         self.issuer_url = fed.issuer_of(self.namespace)
         self.base = f"data/collections/{self.run}"
         self.prefix = f"/{self.namespace}/{self.base}"
-        self.server_token = session.token(self.namespace)
+        self.server_token = session.setup_token(self.namespace)
         self.ids: dict[str, str] = {}
         self.groups: dict[str, str] = {}
         self.coll: dict[str, str] = {}

@@ -26,7 +26,8 @@ origin, reads it, and removes it.
   token, expired ten minutes before, be refused. The claims' names, and
   the values that are the same from token to token, and the header,
   must first match the `server` token that `pelican token create`
-  minted. `jwt.verify()`, which checks an ES256 signature against a
+  minted, of the pass's [token profile](README.md#token-profiles).
+  `jwt.verify()`, which checks an ES256 signature against a
   JWKS, must then find the token's key, by its `kid`, in the first
   origin's published JWKS, and none in a JWKS of the `unknown` test key
   alone. It skips where the origins take no direct clients.

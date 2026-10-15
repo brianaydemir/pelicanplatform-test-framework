@@ -7,7 +7,8 @@ The suite checks that each does what the suites that use it rely on.
             (`X-Transfer-Status: true` and `TE: trailers`), and only then
   jwt       testlib.jwt signs tokens that the origins take: one with
             credentials.server_claims(), as `pelican token create` mints
-            them, is taken by every origin, and refused once expired
+            them in the session's profile, is taken by every origin, and
+            refused once expired
   metrics   testlib.metrics reads /metrics: a GET straight to a native
             origin raises its pelican_http_requests_total
   restart-cache
@@ -16,7 +17,8 @@ The suite checks that each does what the suites that use it rely on.
             again, and it serves the object, a V2 cache from its store
 
 Each reads an object of its own under /protected-a/data/selftest/<run>/,
-which the suite puts in place and removes.
+which the suite puts in place and removes, with a read token of the
+session's profile.
 """
 
 import json
@@ -83,12 +85,14 @@ class Test:
         rel: The object's path, in /protected-a.
         data: The object's contents.
         token: A read token for the object.
+        profile: The token's profile.
     """
 
     fed: common.Federation
     rel: str
     data: bytes
     token: str
+    profile: str
 
     @property
     def direct(self) -> bool:
@@ -144,7 +148,9 @@ def trailers(test: Test) -> tuple[str, str]:
     return PASS, f"{len(caches)} cache(s): '{TRANSFER_OK}' when asked, nothing otherwise"
 
 
-def claims_problems(ours: dict[str, object], theirs: dict[str, object]) -> list[str]:
+def claims_problems(
+    ours: dict[str, object], theirs: dict[str, object], profile: str
+) -> list[str]:
     """Return how claims ours differ from theirs.
 
     The claims that differ from token to token are left out.
@@ -153,11 +159,12 @@ def claims_problems(ours: dict[str, object], theirs: dict[str, object]) -> list[
         ours: Claims from credentials.server_claims().
         theirs: The claims of a token that `pelican token create` minted
             with the same arguments.
+        profile: The profile of both.
     """
     problems: list[str] = []
     if set(ours) != set(theirs):
         problems.append(f"claims {sorted(ours)}, not token create's {sorted(theirs)}")
-    for name in ("aud", "iss", "sub", "wlcg.ver"):
+    for name in ("aud", "iss", "sub", credentials.VERSIONS[profile][0]):
         if ours.get(name) != theirs.get(name):
             problems.append(f"{name} {ours.get(name)!r}, not {theirs.get(name)!r}")
     if set(str(ours.get("scope")).split()) != set(str(theirs.get("scope")).split()):
@@ -182,9 +189,9 @@ def jwt_tokens(test: Test) -> tuple[str, str]:
     fed = test.fed
     key = fed.origin_key
     head = jwt.header(jwt.algorithm(key), jwt.key_id(key))
-    claims = credentials.server_claims(fed, NAMESPACE, R)
+    claims = credentials.server_claims(fed, NAMESPACE, R, profile=test.profile)
     minted_head, minted = jwt.decode(test.token)
-    problems = claims_problems(claims, minted)
+    problems = claims_problems(claims, minted, test.profile)
     if head != minted_head:
         problems.append(f"header {head}, not token create's {minted_head}")
     if problems:
@@ -367,7 +374,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         directory = f"{origin.store_of(NAMESPACE)}/data/selftest"
         if not origin.pstore and not os.path.isdir(directory):
             die(f"framework/var/{directory} is missing; run ./fed.sh init")
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
         errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/selftest", tokens)
@@ -376,7 +383,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
 
     clean("before the run")
     base = f"data/selftest/{session.run}"
-    test = Test(fed, f"{base}/object", os.urandom(200_000), session.token(NAMESPACE, R))
+    read = session.token(NAMESPACE, R)
+    test = Test(fed, f"{base}/object", os.urandom(200_000), read, session.profile)
     try:
         errors = stores.make_dirs(fed.origins, NAMESPACE, base, tokens[NAMESPACE])
         errors += stores.seed_everywhere(

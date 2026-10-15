@@ -30,7 +30,11 @@ serve none of these routes but prestage, through the xrdhttp-pelican
 plugin, so only `prestage client` asks them, and judges them by their
 .cinfo files. Objects go under /protected-a/data/cache-api/<run>/, put at
 every origin (stores.seed_everywhere()), one set per cache, so that each
-is cold where it is first read.
+is cold where it is first read. The requests that the scenarios check
+present tokens of the session's profile; the objects are put in place,
+the caches filled, and what they hold asked, with WLCG tokens either
+way, so that `purge` and `usage`, which present nothing else but their
+admin's tokens, run in the WLCG pass alone.
 
 The routes that would destroy data are sent, in `admin-authz`, only
 requests that would harm nothing were they let through: chaos aimed at
@@ -66,6 +70,9 @@ SCENARIOS = {
 }
 
 NAMESPACE = "protected-a"
+# The scenarios that present no storage token beyond their setup's (see
+# suites/__init__.py).
+ONE_PROFILE = ("purge", "usage")
 
 # A small object, which a V2 cache stores in a file of its own, not
 # inline in its database (InlineThreshold, 4096 bytes), and which spans
@@ -95,9 +102,14 @@ class Test:
 
     Attributes:
         base: Where the run's objects are in /protected-a.
-        token: The `server` token for /protected-a.
+        token: The `server` token for /protected-a, of the session's
+            profile.
         token_file: The file that holds token.
-        read_token: A read-only token for /protected-a.
+        read_token: A read-only token for /protected-a, of the session's
+            profile.
+        setup: The `server` token for /protected-a, of the WLCG profile,
+            for putting objects in place, filling the caches, and asking
+            what they hold.
         caps: The capabilities of /protected-a.
         caches: The federated caches.
         v2: The federated V2 caches.
@@ -113,6 +125,7 @@ class Test:
         self.token = session.token(NAMESPACE)
         self.token_file = session.token_file(NAMESPACE)
         self.read_token = session.token(NAMESPACE, credentials.R)
+        self.setup = session.setup_token(NAMESPACE)
         self.caps = self.fed.exports[NAMESPACE]
         self.origins = self.fed.origins
         self.caches = self.fed.federated_caches
@@ -145,12 +158,12 @@ class Test:
         for rel, data in objects.items():
             parent = rel.rsplit("/", 1)[0]
             if parent not in self.made:
-                errors = stores.make_dirs(self.origins, NAMESPACE, parent, self.token)
+                errors = stores.make_dirs(self.origins, NAMESPACE, parent, self.setup)
                 if errors:
                     return errors[0]
                 self.made.add(parent)
             errors = stores.seed_everywhere(
-                self.origins, NAMESPACE, rel, data, self.token, self.caps
+                self.origins, NAMESPACE, rel, data, self.setup, self.caps
             )
             if errors:
                 return errors[0]
@@ -163,13 +176,14 @@ class Test:
     def held(self, cache: common.Cache, rel: str) -> Optional[bool]:
         """Return whether a V2 cache holds all of rel.
 
-        It asks with a HEAD with only-if-cached, which gets 504 if not.
+        It asks with a HEAD with only-if-cached, which gets 504 if not,
+        and the setup token.
 
         Returns:
             Whether it does, or None if the HEAD says neither.
         """
         answer = web.request(
-            "HEAD", self.url(cache.url, rel), token=self.token, headers=ONLY_IF_CACHED
+            "HEAD", self.url(cache.url, rel), token=self.setup, headers=ONLY_IF_CACHED
         )
         if answer.status == 200:
             return True
@@ -180,12 +194,13 @@ class Test:
     def fill(self, cache: common.Cache, rel: str, data: bytes) -> Optional[str]:
         """Read rel whole through a V2 cache until it says it holds it all.
 
-        The cache must serve data.
+        The cache must serve data. The reads are setup, with the setup
+        token.
 
         Returns:
             What went wrong, or None if nothing did.
         """
-        answer = self.get(cache, rel)
+        answer = web.request("GET", self.url(cache.url, rel), token=self.setup, timeout=120)
         if answer.status != 200 or answer.body != data:
             return f"{cache.svc}: a GET of {leaf(rel)} got {served(answer, data)}"
         if not common.wait_for(partial(holds, self, cache, rel), HELD_WAIT, interval=1):
@@ -214,6 +229,7 @@ class Test:
                 self.session.path("tokens/cache-api.elsewhere"),
                 NAMESPACE,
                 scope_path="/elsewhere/",
+                profile=self.session.profile,
             )
         return self._elsewhere
 
@@ -646,7 +662,7 @@ def public_object(test: Test) -> tuple[Optional[tuple[str, bytes]], str]:
         return None, "/public takes no writes, and a pstore origin's store is encrypted"
     rel = test.rel("public-object")
     data = os.urandom(OBJECT_SIZE)
-    token = test.session.token("public")
+    token = test.session.setup_token("public")
     errors = stores.make_dirs(test.origins, "public", rel.rsplit("/", 1)[0], token)
     errors += stores.seed_everywhere(test.origins, "public", rel, data, token, caps)
     if errors:
@@ -1718,7 +1734,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             directory = f"{origin.store_of(namespace)}/data/cache-api"
             if not origin.pstore and not os.path.isdir(directory):
                 die(f"framework/var/{directory} is missing; run ./fed.sh init")
-    tokens = session.tokens()
+    tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
         errors = stores.empty_tree_everywhere(

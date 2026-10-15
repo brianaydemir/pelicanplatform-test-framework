@@ -50,6 +50,12 @@ depend on owners are inconclusive. Objects go under
 /protected-a/data/users/<run>/, and mapfile's `path` row's under
 /protected-a/data/users/mapped/; public-tokenless's object under
 /public/data/users/<run>/.
+
+The tokens that the scenarios present are of the session's profile, but
+for their group claim, which is `wlcg.groups` in either, since that is
+the claim the origins read (Origin.ScitokensGroupsClaim's default);
+`public-tokenless` presents none. The suite makes its collections, and
+sees whether the federation serves again, with a WLCG token either way.
 """
 
 import contextlib
@@ -83,6 +89,8 @@ SCENARIOS = {
 Row = tuple[str, str]
 
 NAMESPACE = "protected-a"
+# The scenarios that present no token (see suites/__init__.py).
+ONE_PROFILE = ("public-tokenless",)
 
 # The rows of each scenario, in order. A scenario with cases records a
 # row per case, named `<scenario> <case>`.
@@ -314,8 +322,12 @@ class Test:
     Attributes:
         origins: The origins, each store once.
         base: The run's collection, as a path in /protected-a.
-        token: The tests' token for /protected-a.
-        other_token: A token for /protected-a for another subject.
+        token: The tests' token for /protected-a, of the session's
+            profile.
+        other_token: A token for /protected-a for another subject, of the
+            session's profile.
+        setup: The tests' token for /protected-a, of the WLCG profile, for
+            seeing whether the federation serves.
         unshown: Why the stores do not show who owns a file; empty if they
             do.
     """
@@ -326,6 +338,7 @@ class Test:
     base: str
     token: str
     other_token: str
+    setup: str
     unshown: list[str]
 
     def rel(self, origin: common.Origin, name: str) -> str:
@@ -340,7 +353,9 @@ class Test:
         origins' key under the tests' token's header, whose kid is the key's
         in the issuer's JWKS.
         """
-        claims = credentials.server_claims(self.fed, NAMESPACE, subject=subject)
+        claims = credentials.server_claims(
+            self.fed, NAMESPACE, subject=subject, profile=self.session.profile
+        )
         claims.update(extra or {})
         return jwt.encode(jwt.decode(self.token)[0], claims, key=self.fed.origin_key)
 
@@ -815,7 +830,8 @@ def grouped(test: Test) -> Row:
 
     The group is a Unix group (gid 10940), since a native origin acts as
     the token's first group, and refuses one that it can't find
-    (resolveIdentity).
+    (resolveIdentity). Its claim is the one the origins read
+    (Origin.ScitokensGroupsClaim's default), whatever the profile.
     """
     token = test.mint(GROUP_SUBJECT, {"wlcg.groups": [MAPPED_GROUP]})
     return uploads_owned(test, "group", token, PELICAN_UID)
@@ -917,21 +933,22 @@ def serving(test: Test) -> Optional[str]:
     """Return why /protected-a is not served as before, or None if it is.
 
     Every origin must answer a HEAD of the probe, every director name every
-    origin for it, and every federated cache answer a HEAD of it.
+    origin for it, and every federated cache answer a HEAD of it, with the
+    setup token.
     """
     rel = f"{test.base}/{PROBE}"
     for origin in test.fed.origins:
-        answer = web.request("HEAD", stores.url(origin, NAMESPACE, rel), token=test.token)
+        answer = web.request("HEAD", stores.url(origin, NAMESPACE, rel), token=test.setup)
         if answer.status != 200:
             return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
     path = f"/{NAMESPACE}/{rel}"
     for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.token)
+        where = director.ask(url, "origin", path, token=test.setup)
         for origin in test.fed.origins:
             if not where.names(director.host(origin.url)):
                 return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
     for cache in test.fed.federated_caches:
-        answer = web.request("HEAD", f"{cache.url}/{NAMESPACE}/{quote(rel)}", token=test.token)
+        answer = web.request("HEAD", f"{cache.url}/{NAMESPACE}/{quote(rel)}", token=test.setup)
         if answer.status != 200:
             return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
     return None
@@ -1110,17 +1127,20 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 )
     clean()
     token = session.token(NAMESPACE)
+    setup = session.setup_token(NAMESPACE)
     other = session.path("tokens/users-other")
-    other_token = credentials.mint_server(fed, other, NAMESPACE, subject="someone-else")
+    other_token = credentials.mint_server(
+        fed, other, NAMESPACE, subject="someone-else", profile=session.profile
+    )
     try:
         for directory in (base, MAPPED_DIR):
-            errors = stores.make_dirs(origins, NAMESPACE, directory, token)
+            errors = stores.make_dirs(origins, NAMESPACE, directory, setup)
             if errors:
                 die(f"could not make the test collection: {errors[0]}")
         unshown = [
             why for why in (shows_owners(o.store_of(NAMESPACE), base) for o in origins) if why
         ]
-        test = Test(session, fed, origins, base, token, other_token, unshown)
+        test = Test(session, fed, origins, base, token, other_token, setup, unshown)
         for name in selected:
             rows = ROWS[name]
             if len(rows) > 1:

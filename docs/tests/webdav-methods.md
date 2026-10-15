@@ -17,7 +17,10 @@ The scenarios that send WebDAV's other methods ask only native origins,
 and skip an XRootD origin; `symlink-writes` and `stored-html` ask every
 origin, so that an XRootD origin is a control. A scenario's row fails
 with the first thing it found wrong; each thing is printed as it is
-found. Its tokens are the origins' own, of the scopes each names.
+found. Its tokens are the origins' own, of the scopes each names, and
+of each [token profile](README.md#token-profiles) in turn; in the
+SciTokens pass, `storage.create`'s token is one of `write`, and
+`storage.read`'s one of `read`.
 
 - `post-create-only`: x/net serves a POST as a GET. A POST of an object
   with a token of `storage.create` alone, and with one of
@@ -45,7 +48,8 @@ found. Its tokens are the origins' own, of the scopes each names.
   says COPY is purely additive), so that row fails there. Then, with
   the `server` token, a COPY and a MOVE onto an object with
   `Overwrite: F` must each get 412, and change nothing (RFC 4918,
-  section 10.6).
+  section 10.6). SciTokens has no scope of create alone, so in its pass
+  the row checks only `Overwrite: F`, and its note says so.
 - `mkcol`: MKCOL with a `storage.read` token must be refused, and make
   nothing; with the `server` token, it must make a new collection
   (201), which a PROPFIND then shows; where a collection already is, it

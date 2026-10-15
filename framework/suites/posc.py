@@ -9,8 +9,10 @@ completes, judged by what the origins serve. None of the three: the suite is
 skipped.
 
 Uploads go straight to the first origin in
-framework/var/generated/origins, under /protected-a/data/posc/. Only
-`client` goes through the director. An interruption is judged only once
+framework/var/generated/origins, under /protected-a/data/posc/, with a
+token of the session's profile; what the stores hold is read, and
+removed, with a WLCG token either way. Only `client` goes through the
+director. An interruption is judged only once
 the upload is seen under way: a new staging file, or growth in
 pstore/objects on pstore. Afterward, /protected-a/data/posc is emptied on
 every store.
@@ -259,7 +261,10 @@ class Test:
         run: The run's ID, with which each object's name begins.
         base_url: Where the objects go, at the first origin.
         token_file: A file that holds token.
-        token: The token for /protected-a.
+        token: The token for /protected-a, of the session's profile, which
+            the uploads present.
+        setup: The token for /protected-a, of the WLCG profile, for
+            finding, reading, and removing what the stores hold.
         before: The staging files there were at mark().
         before_sizes: On pstore, the sizes of its objects' files at mark().
     """
@@ -287,10 +292,11 @@ class Test:
         self.base_url = f"{self.origin.url}/protected-a/data/posc"
         self.token_file = session.token_file("protected-a")
         self.token = session.token("protected-a")
+        self.setup = session.setup_token("protected-a")
         self.before: set[str] = set()
         self.before_sizes: dict[str, int] = {}
         if self.pstore:
-            errors = stores.make_dirs(fed.origins, "protected-a", "data/posc", self.token)
+            errors = stores.make_dirs(fed.origins, "protected-a", "data/posc", self.setup)
             if errors:
                 die(f"could not make /protected-a/data/posc: {errors[0]}")
 
@@ -370,7 +376,7 @@ class Test:
             return self.object_file(name)
         for origin in self.origins:
             url = f"{origin.url}/protected-a/data/posc/{name}"
-            answer = web.request("HEAD", url, token=self.token)
+            answer = web.request("HEAD", url, token=self.setup)
             if answer.status == 200:
                 return url
             if answer.status != 404:
@@ -381,7 +387,7 @@ class Test:
         """Return how big the object found() at where is."""
         if not self.pstore:
             return str(size_of(where))
-        return web.request("HEAD", where, token=self.token).header("Content-Length") or "?"
+        return web.request("HEAD", where, token=self.setup).header("Content-Length") or "?"
 
     def holds(self, name: str, data: bytes) -> bool:
         """Return whether the object that found() finds holds data."""
@@ -389,13 +395,13 @@ class Test:
             path = self.object_file(name)
             return path is not None and holds(path, data)
         return common.digest(data) in stores.held_anywhere(
-            self.origins, "protected-a", f"data/posc/{name}", {"protected-a": self.token}
+            self.origins, "protected-a", f"data/posc/{name}", {"protected-a": self.setup}
         )
 
     def remove(self, name: str) -> None:
         """Remove the object, wherever it is."""
         for origin in self.origins:
-            stores.delete(origin, "protected-a", f"data/posc/{name}", self.token)
+            stores.delete(origin, "protected-a", f"data/posc/{name}", self.setup)
 
     def full_put(self, data: bytes, name: str) -> web.Response:
         """Upload all of data to object name."""
@@ -1061,20 +1067,21 @@ def serving(test: Test) -> Optional[str]:
     """Return why the namespace is not served as before, or None if it is.
 
     Every origin must answer a HEAD of the probe, every director name every
-    origin for it, and every federated cache answer a HEAD of it.
+    origin for it, and every federated cache answer a HEAD of it, with the
+    setup token.
     """
     path = f"/protected-a/data/posc/{test.run}-probe"
     for origin in test.fed.origins:
-        answer = web.request("HEAD", f"{origin.url}{path}", token=test.token)
+        answer = web.request("HEAD", f"{origin.url}{path}", token=test.setup)
         if answer.status != 200:
             return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
     for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.token)
+        where = director.ask(url, "origin", path, token=test.setup)
         for origin in test.fed.origins:
             if not where.names(director.host(origin.url)):
                 return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
     for cache in test.fed.federated_caches:
-        answer = web.request("HEAD", f"{cache.url}{path}", token=test.token)
+        answer = web.request("HEAD", f"{cache.url}{path}", token=test.setup)
         if answer.status != 200:
             return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
     return None
@@ -1214,7 +1221,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         # Every scenario's objects, and whatever an interrupted upload left;
         # and posc-expiry's own staging directory.
         errors = stores.empty_tree_everywhere(
-            session.fed.origins, session.fed.exports, "data/posc", session.tokens()
+            session.fed.origins, session.fed.exports, "data/posc", session.setup_tokens()
         )
         if test.kind == "posc":
             try:

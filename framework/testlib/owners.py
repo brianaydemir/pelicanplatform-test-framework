@@ -158,9 +158,14 @@ def issuer_url(fed: common.Federation, cred: OwnerCredential, pair: Pair) -> str
 
 
 def mint(
-    fed: common.Federation, cred: OwnerCredential, pair: Pair, side: str, out: str
+    fed: common.Federation,
+    cred: OwnerCredential,
+    pair: Pair,
+    side: str,
+    out: str,
+    profile: str,
 ) -> Optional[str]:
-    """Write cred's token for side of pair to file out, and return it.
+    """Write cred's token of profile for side of pair to file out; return it.
 
     Its scopes are for reading and writing the whole namespace, so only
     its key and issuer decide.
@@ -179,6 +184,7 @@ def mint(
         "/",
         credentials.LONG,
         credentials.RWM,
+        profile=profile,
     )
     with open(out, encoding="utf-8") as f:
         return f.read().strip()

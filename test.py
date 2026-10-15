@@ -8,11 +8,18 @@ shape has. Exits non-zero if any case fails.
   ./test.py                          everything that applies
   ./test.py auth commands            only these suites
   ./test.py 'transfers/plugin-*'     only the scenarios of a suite that match
+  ./test.py --profile wlcg [ARG]...  only the WLCG pass (or `scitokens`)
   ./test.py -l [SUITE]...            list the suites and their scenarios
 
 Run it in the dev container, e.g. from the host:
 
   ./fed.sh test [ARG]...
+
+Each suite runs twice, once for each token profile: its scenarios
+present WLCG tokens, and then, as <suite>-scitokens, those that present
+a storage token of the tests' own minting present SciTokens instead. A
+suite's ONE_PROFILE scenarios, which present no such token, run in the
+WLCG pass alone.
 
 The suites are in framework/suites/, and run in this order: federation,
 selftest, commands, client, transfer-api, listings, names, blocks,
@@ -23,9 +30,10 @@ observability, webdav, auth, transfers, restart, and keys.
 `federation/ready` and `federation/caches` run first whatever is asked
 for, and if the federation never serves, nothing else runs. A suite
 that doesn't apply to the shape, such as posc without POSC or pstore, is
-skipped. Each suite writes a row per case to
-framework/var/results/<suite>.tsv; a run of everything first removes
-the results of earlier runs with the same RESULTS_TAG.
+skipped. Each pass of a suite writes a row per case to
+framework/var/results/<suite>.tsv (or <suite>-scitokens.tsv); a run of
+everything first removes the results of earlier runs with the same
+RESULTS_TAG.
 """
 
 import contextlib
@@ -44,6 +52,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fra
 # pylint: disable=wrong-import-position
 from suites import SUITES
 from testlib import common
+from testlib.credentials import PROFILES, WLCG
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP, Report
 from testlib.session import Session
 
@@ -71,6 +80,26 @@ def skip_reason(name: str, fed: common.Federation) -> Optional[str]:
         return None
 
 
+def suite_name(name: str, profile: str) -> str:
+    """Return how suite name's pass in profile is reported.
+
+    That is name for WLCG's pass, and <name>-<profile> for another's.
+    """
+    return name if profile == WLCG else f"{name}-{profile}"
+
+
+def in_pass(name: str, selected: list[str], profile: str) -> list[str]:
+    """Return the selected scenarios of suite name that run in profile's pass.
+
+    WLCG's pass runs every one; another's, all but the suite's
+    ONE_PROFILE ones.
+    """
+    if profile == WLCG:
+        return selected
+    once = getattr(SUITES[name], "ONE_PROFILE", ())
+    return [s for s in selected if s not in once]
+
+
 def list_suites(chosen: dict[str, list[str]]) -> None:
     """Print the chosen suites and scenarios, and which skip."""
     fed = current_shape()
@@ -80,9 +109,15 @@ def list_suites(chosen: dict[str, list[str]]) -> None:
         print(name + (f" (skipped in this shape: {why})" if why else ""))
         width = max(len(n) for n in module.SCENARIOS)
         required = getattr(module, "REQUIRED", ())
+        once = getattr(module, "ONE_PROFILE", ())
         for scenario in scenarios:
-            always = " (always runs)" if scenario in required else ""
-            print(f"  {scenario:<{width}} {module.SCENARIOS[scenario]}{always}")
+            notes = [
+                n
+                for n, of in (("always runs", required), ("WLCG only", once))
+                if scenario in of
+            ]
+            noted = f" ({'; '.join(notes)})" if notes else ""
+            print(f"  {scenario:<{width}} {module.SCENARIOS[scenario]}{noted}")
         print()
     if fed is None:
         print("Run ./fed.sh init to see which suites apply to the shape.")
@@ -119,16 +154,16 @@ def describe(fed: common.Federation) -> str:
 
 
 def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report, bool]:
-    """Run one suite's selected scenarios, and write its results.
+    """Run one suite's selected scenarios in session's pass; write its results.
 
     Returns:
-        The suite's report, and whether the suite finished; if it didn't,
+        The pass's report, and whether the suite finished; if it didn't,
         its report says why.
     """
     module = SUITES[name]
-    report = Report(name, RESULTS)
+    report = Report(suite_name(name, session.profile), RESULTS)
     results = common.Results(list(module.SCENARIOS), report)
-    print(f"\n==> {name}\n")
+    print(f"\n==> {report.suite}\n")
     error: Optional[str] = None
     try:
         why = module.skip(session.fed)
@@ -179,6 +214,29 @@ def summarize(reports: list[Report], seconds: float) -> None:
     print(f"\nTook {seconds:.0f}s. Results are in framework/var/results/.")
 
 
+def profile_option(args: list[str]) -> tuple[list[str], list[str]]:
+    """Return the profiles that `--profile` chooses, and the other args.
+
+    `--profile PROFILE`, or `--profile=PROFILE`, chooses one of PROFILES;
+    without it, every one, WLCG's first.
+    """
+    chosen: list[str] = []
+    rest: list[str] = []
+    pending = list(args)
+    while pending:
+        arg = pending.pop(0)
+        if arg == "--profile" and pending:
+            arg = f"--profile={pending.pop(0)}"
+        if not arg.startswith("--profile"):
+            rest.append(arg)
+            continue
+        profile = arg.partition("=")[2]
+        if profile not in PROFILES or chosen:
+            common.die_usage(f"--profile takes one of {', '.join(PROFILES)}, once")
+        chosen.append(profile)
+    return chosen or list(PROFILES), rest
+
+
 def main() -> int:
     """Run the suites that the arguments ask for, or list them.
 
@@ -192,6 +250,7 @@ def main() -> int:
     listing = args[:1] in (["-l"], ["--list"])
     if listing:
         args = args[1:]
+    profiles, args = profile_option(args)
     for arg in args:
         if arg.startswith("-"):
             common.die_usage(f"unknown option: {arg}")
@@ -206,22 +265,35 @@ def main() -> int:
         # Only this run's: with RESULTS_TAG, another tag's are another
         # run's.
         for name in SUITES:
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(Report(name, RESULTS).path)
+            for profile in PROFILES:
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(Report(suite_name(name, profile), RESULTS).path)
     reports: list[Report] = []
     started = time.monotonic()
     with tempfile.TemporaryDirectory() as tmp:
-        session = Session(tmp)
-        print(f"Testing {session.fed.url}: {describe(session.fed)}")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        first = Session(tmp, profiles[0], run=stamp)
+        sessions = [first] + [Session(tmp, p, first.fed, stamp) for p in profiles[1:]]
+        print(f"Testing {first.fed.url}: {describe(first.fed)}")
+        stopped = False
         for name, selected in chosen.items():
-            report, finished = run_suite(name, selected, session)
-            reports.append(report)
-            required = getattr(SUITES[name], "REQUIRED", ())
-            if not finished and required:
-                print(
-                    f"\n{common.PROG}: stopping: {name} did not finish, so nothing else can pass",
-                    file=sys.stderr,
-                )
+            for session in sessions:
+                scenarios = in_pass(name, selected, session.profile)
+                if not scenarios:
+                    continue
+                report, finished = run_suite(name, scenarios, session)
+                reports.append(report)
+                required = getattr(SUITES[name], "REQUIRED", ())
+                # The first pass shows whether the federation serves at all.
+                if not finished and required and session is first:
+                    print(
+                        f"\n{common.PROG}: stopping: {name} did not finish, so nothing else"
+                        + " can pass",
+                        file=sys.stderr,
+                    )
+                    stopped = True
+                    break
+            if stopped:
                 break
     summarize(reports, time.monotonic() - started)
     return 1 if any(r.failed for r in reports) else 0
