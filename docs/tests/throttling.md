@@ -40,7 +40,8 @@ named `<scenario> <case>`.
   the director sends the cache to it without asking whether it holds
   the object (`Director.AssumePresenceAtSingleOrigin`), and the cache
   then asks its scheduler for a fetch, which it may shed before the
-  origin says 404, so the row may fail there.
+  origin says 404, so the row may fail there: on v26.0.0-rc.3, in the
+  default shape, it does (`origin_slow`; C13).
 - `client-throttled`: at each V2 cache, a cold read of a 4 MiB object
   holds the origin's one slot, and another its one place in the queue.
   Meanwhile, `pelican object get --cache` and `stash_plugin` (with
@@ -59,7 +60,9 @@ named `<scenario> <case>`.
   object get` first asks for one byte (`Range: bytes=0-0`), which a V2
   cache serves by fetching only the blocks it reads, and those after it
   has answered; so whether it sheds that request with a 429 is less
-  plain from the code than for the plugin's whole read.
+  plain from the code than for the plugin's whole read: on
+  v26.0.0-rc.3, in the default shape, the `pelican` row fails, the
+  download failing by something other than a shed (C14).
 - `timeout-header`: a client says with `X-Pelican-Timeout` how long it
   will wait, and a V2 cache waits for a cold object's headers that long
   less a second, or half of it if under a second, and then answers 504,

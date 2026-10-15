@@ -1130,8 +1130,9 @@ def assembled_part(test: Test, cache: common.Cache, rel: str, found: Findings) -
 
     The cache fetches that range block by block (initObjectFromStat in
     local_cache/persistent_cache.go): its introspection must show the
-    range's blocks held, and not block 0, since it fills no object from
-    the start for a range in its middle.
+    range's blocks held, and none before them but block 0, since it fills
+    no object from the start for a range in its middle; block 0 it may
+    hold, as the byte its stat of the origin probed for.
 
     Returns:
         Whether its introspection said: if not, the caller falls back to
@@ -1144,13 +1145,19 @@ def assembled_part(test: Test, cache: common.Cache, rel: str, found: Findings) -
     start, end = blocks.ASSEMBLE[0]
     wanted = range(start // blocks.BLOCK, end // blocks.BLOCK + 1)
     lacking = [n for n in wanted if n in held.missing]
+    # Block 0 it may hold too: a V2 cache stores the byte that its stat of
+    # the origin probes for (the client's Range: bytes=0-0), observed.
+    before = [n for n in range(1, wanted[0]) if n not in held.missing]
     if lacking:
         found.fail(f"{cache.svc}: after the first range, it lacks its block {lacking[0]}")
-    elif held.complete or 0 not in held.missing:
+    elif held.complete or before:
         found.fail(
-            f"{cache.svc}: after a range from block {wanted[0]}, it holds block 0"
-            + f" ({held.describe()}), as if it filled the object from the start"
+            f"{cache.svc}: after a range from block {wanted[0]}, it holds block"
+            + f" {before[0] if before else 'every one'} ({held.describe()}), as if it"
+            + " filled the object from the start"
         )
+    elif 0 not in held.missing:
+        found.note(f"{cache.svc} holds block 0 too, after the first range")
     return True
 
 
@@ -2208,9 +2215,11 @@ def digest_overwrite(test: Test) -> tuple[str, str]:
     return PASS, ", ".join(notes)
 
 
-# How the client's transfer statistics (--transfer-stats) name each
-# checksum algorithm (ChecksumType in Pelican's client/handle_http.go).
-CLIENT_ALGORITHMS = {0: "md5", 1: "crc32c", 2: "crc32", 3: "sha"}
+# The algorithms the client knows (ChecksumType in client/handle_http.go),
+# each told by its digest: the client's stats number them, by a
+# numbering that v26.0.0-rc.3's stats do not share with its code (3 is
+# md5 there, not sha), so the number is not relied on.
+CLIENT_ALGORITHMS = ("md5", "crc32c", "crc32", "sha")
 # How long a V2 cache may take to record the origins' digests of an object
 # it has read whole: it asks an origin for them once the body has come.
 DIGEST_WAIT = 10
@@ -2270,34 +2279,30 @@ def relayed_soon(test: Test, url: str, data: bytes) -> Optional[str]:
     return last[0]
 
 
-def stats_checksums(path: str) -> tuple[dict[str, bytes], str]:
+def stats_checksums(path: str) -> tuple[list[bytes], str]:
     """Return the checksums a server gave, by the client's stats at path.
 
     Returns:
-        The checksums that the client's --transfer-stats file says a
-        server gave it, by algorithm (digests.ALGORITHMS' names), and "";
-        or nothing, and why.
+        The values that the client's --transfer-stats file says a server
+        gave it (ChecksumInfo.Value), each told by its digest alone (see
+        CLIENT_ALGORITHMS), and ""; or nothing, and why.
     """
     try:
         with open(path, encoding="utf-8") as f:
             found = json.load(f)
     except (OSError, ValueError) as e:
-        return {}, f"its --transfer-stats file could not be read: {e}"
-    checksums: dict[str, bytes] = {}
+        return [], f"its --transfer-stats file could not be read: {e}"
+    values: list[bytes] = []
     for results in common.as_array(found) or []:
         for result in common.as_array(results) or []:
             entry = common.as_object(result) or {}
             for item in common.as_array(entry.get("serverChecksums")) or []:
                 info = common.as_object(item) or {}
-                algorithm = info.get("Algorithm")
-                name = CLIENT_ALGORITHMS.get(algorithm) if isinstance(algorithm, int) else None
                 try:
-                    value = base64.b64decode(str(info.get("Value") or ""), validate=True)
+                    values.append(base64.b64decode(str(info.get("Value") or ""), validate=True))
                 except binascii.Error:
                     continue
-                if name:
-                    checksums[name] = value
-    return checksums, ""
+    return values, ""
 
 
 def client_digests(test: Test, cache: common.Cache, rel: str, data: bytes) -> Optional[str]:
@@ -2334,14 +2339,17 @@ def client_digests(test: Test, cache: common.Cache, rel: str, data: bytes) -> Op
     got, why = stats_checksums(stats)
     if why:
         return why
-    for algorithm, value in got.items():
-        if value != digests.compute(algorithm, data):
-            return f"the client got a {algorithm} from it that is not the object's"
-    lacking = [a for a in test.digests if a not in got]
+    found: set[str] = set()
+    for value in got:
+        names = [a for a in CLIENT_ALGORITHMS if digests.compute(a, data) == value]
+        if not names:
+            return f"the client got a digest from it that is not the object's ({value.hex()})"
+        found.update(names)
+    lacking = [a for a in test.digests if a not in found]
     if lacking:
         return (
             f"the client got no {', '.join(lacking)} from it"
-            + f" (its --transfer-stats lists {', '.join(sorted(got)) or 'none'})"
+            + f" (its --transfer-stats lists {len(got)} digest(s))"
         )
     return None
 

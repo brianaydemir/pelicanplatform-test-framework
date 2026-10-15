@@ -47,7 +47,8 @@ need a restart skip, and say why. A case's row is named `<scenario>
   `only-if-cached`.
 - `no-negative-cache`: a GET of an object that no origin holds yet,
   at each cache, must get 404, a V2 cache's a JSON body naming
-  `not_found`; as must one at each director's bare path, followed to
+  `not_found` (or `Not Found`, as v26.0.0-rc.3 spells its `error`); as
+  must one at each director's bare path, followed to
   wherever it leads. Once every origin holds the object, each must
   serve it at the first try. Where there are several origins, a
   director asks them which holds an object, and keeps an answer that
@@ -117,7 +118,12 @@ need a restart skip, and say why. A case's row is named `<scenario>
   introspection (`/api/v1.0/cache/introspect/list`, as its admin) must
   list none of the object; and its store's object files
   (`data/cache/<N>/persistent-cache/objects/`) must not have grown by
-  as much as the object.
+  as much as the object. A V2 cache passes a whole read of such an
+  object through, as it should, but a ranged read fills it block by
+  block as any object, with no regard to the directive (the range comes
+  back with the cache's own `max-age`), and the cache then holds and
+  serves it whole, so both rows fail, on v26.0.0-rc.3 (C26; main not
+  run).
 - `s-maxage`: under `max-age=120, s-maxage=20`, an object each V2
   cache has read is replaced at the origins by a longer one. RFC 9111
   (section 5.2.2.10) says that a shared cache, as every Pelican cache

@@ -77,7 +77,12 @@ logs them in again after each change of membership. The scenarios:
   alike, though `api_token/api_token.go` would limit any creator's
   token to the scopes the creator holds), so the user is refused (403),
   and the admin, logged in, makes one instead, creates a collection with
-  it, and is refused once it is deleted (`collection-admin-token`).
+  it, and is refused once it is deleted (`collection-admin-token`). The
+  collections API takes no API token at all (401, "Authentication
+  required"): the routes behind `AuthHandler` take web tokens and
+  login cookies alone, so an API token of `server.collection_admin` can
+  be used nowhere that the scope applies, and the row fails, on
+  v26.0.0-rc.3 and main alike (I15).
   Before each grant, and on the first request once `pelican.log_read`
   or `server.collection_admin` is revoked
   (`DELETE /api/v1.0/users/:id/scopes/:scope`), the user is refused

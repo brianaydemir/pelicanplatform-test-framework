@@ -92,7 +92,12 @@ client itself (RFC 7591). The scenarios:
   `..` into a path not allowed, nothing, and into one allowed, the
   scope as it resolves, never with `..`; `storage.delete`,
   `pelican.transfer` (granted only to the transfer API's users), and
-  `collection.create` (a collection administrator's), nothing;
+  `collection.create` (a collection administrator's), nothing (the
+  namespace's issuer grants `collection.create:/` to any user, as the
+  local issuer does, so `requests` and `code` fail, on v26.0.0-rc.3 and
+  main alike; the collections API then refuses the namespace issuer's
+  token, and checks the user's standing itself, so nothing is gained
+  by it: I13);
   `collection.read:/` and the standard scopes (`openid`, `wlcg`,
   `profile`, `email`), always; `test-stranger`'s `storage.read:/` as
   `gamma`'s read and `storage.modify:/` as nothing; `test-analyst`'s

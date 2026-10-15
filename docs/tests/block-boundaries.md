@@ -174,7 +174,10 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   get --cache` must bring the object, and its transfer statistics
   (`--transfer-stats`: the `serverChecksums` that it asked the cache
   for once the body came) must hold the same digests, each the
-  object's; the client has no `--require-checksum` for a download. A V2
+  object's, each told by its value alone, since the statistics number
+  the algorithms by a numbering that v26.0.0-rc.3's do not share with
+  the client's code (3 is `md5` there, not `sha`; L9); the client has no
+  `--require-checksum` for a download. A V2
   cache asks an origin for every digest in one `Want-Digest`, which an
   XRootD origin answers with one, `md5`, so over XRootD origins
   (`-p origin-xrootd`) the cold HEAD lacks `crc32c`, and the row fails
@@ -209,7 +212,12 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   such attributes (a filesystem without them, or a host that does not
   pass them through), or an origin notices the overwrite, the row is
   inconclusive. It runs only over `posixv2` origins that take direct
-  clients, which it asks first.
+  clients, which it asks first. A V2 cache checks the digests only of
+  an object it fetches whole: the cold GET fails as it should, and the
+  cache keeps nothing, but a ranged read then fills the object block by
+  block, unchecked, and the cache serves it whole afterward, `200: OK`;
+  `pelican object get` probes with a one-byte range first, so it
+  succeeds, and the row fails, on v26.0.0-rc.3 (C24; main not run).
 - Ranges past an object's end: a suffix longer than the object is all
   of it, and a range that runs past the end stops at its last byte; one
   that starts at or past the end (`past-end`) must get 416, or, from a
@@ -347,10 +355,13 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   the first and all of it after the last. A V2 cache's introspection
   (`/api/v1.0/cache/introspect/metadata`, as its admin) summarizes which
   blocks it holds: after the first range, which starts in the object's
-  middle, it must hold that range's blocks, and not block 0, since it
-  fetches a range's blocks rather than fill the object from its start
-  (`initObjectFromStat` in `local_cache/persistent_cache.go`); within 10
-  seconds of the last, it must hold every block. A V2 cache whose
+  middle, it must hold that range's blocks, and none of those before
+  them, since it fetches a range's blocks rather than fill the object
+  from its start (`initObjectFromStat` in
+  `local_cache/persistent_cache.go`), but for block 0, which a V2 cache
+  stores too, as the byte that its stat of the origin probes for, and
+  which the row's note then names; within 10 seconds of the last, it
+  must hold every block. A V2 cache whose
   introspection gives no summary is judged by `Age`, which it sends only
   once it holds every block. An XRootD cache's `.cinfo` (read from
   `data/cache/<N>/`) records which blocks it holds. When a cache cannot

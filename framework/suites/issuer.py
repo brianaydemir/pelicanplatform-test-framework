@@ -545,16 +545,19 @@ def prepare(test: Test) -> None:
 def seed(test: Test, namespace: str, prefixes: Sequence[str]) -> None:
     """Put an object, obj, in each prefix within namespace, at every origin.
 
-    Each object has bytes of its own.
+    Each object has bytes of its own. test.data keeps the suite's
+    namespace's, by rel: another namespace's (/protected-b's, under
+    `-p origin-export-templates`) share the rels, and no check reads
+    their bytes.
     """
     caps = test.fed.exports[namespace]
     token = test.session.setup_token(namespace)
     for prefix in prefixes:
         rel = f"{prefix}/obj"
-        test.data[rel] = os.urandom(OBJECT_SIZE)
-        errors = stores.seed_everywhere(
-            test.fed.origins, namespace, rel, test.data[rel], token, caps
-        )
+        data = os.urandom(OBJECT_SIZE)
+        if namespace == test.namespace:
+            test.data[rel] = data
+        errors = stores.seed_everywhere(test.fed.origins, namespace, rel, data, token, caps)
         if errors:
             die(f"could not put /{namespace}/{rel} in place: {errors[0]}")
     test.seeded.append(namespace)

@@ -593,7 +593,8 @@ def acl_scenario(test: Test) -> tuple[str, str]:
     """Check who may grant access, to what roles, and what the ACL lists."""
     problems: list[str] = []
     readers, writers = test.group_name("readers"), test.group_name("writers")
-    delta = make_collection(test, "delta", ((writers, "write"),))
+    # With the admins group as its admin group, which test-heir is in.
+    delta = make_collection(test, "delta", ((writers, "write"),), admins=True)
     owner = test.api("owner")
     answer = grant(test.api("writer"), delta, readers, "read")
     if answer.status != 404:

@@ -658,7 +658,8 @@ def no_negative_cache(test: Test, _value: str) -> Row:
                 kind = (common.as_object(json.loads(answer.body)) or {}).get("error")
             except ValueError:
                 kind = None
-            if kind != "not_found":
+            # `not_found` on main; v26.0.0-rc.3 writes the reason phrase.
+            if str(kind).lower().replace(" ", "_") != "not_found":
                 problems.append(f"{cache.svc}: a 404 whose body is not JSON with not_found")
     for url in directors:
         answer, where = bare_get(url, test, rel)

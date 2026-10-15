@@ -43,7 +43,12 @@ instead.
   prefixes), so `/protected-a`, which comes after `/public`, never
   learns the key, and `registry-namespace` fails, on v26.0.0-rc.3 and
   main alike (R8); `registry-server`, pushed in a request of its own,
-  passes.
+  passes. A key added while the origins are down (as `smoke.sh`'s
+  `keys rotate all` before its `restart`) is never pushed at all: an
+  origin pushes only a change it sees while it runs, and registering
+  again at startup leaves a registered prefix's keys as they were, so
+  the registry's JWKS lack it for good, and the `registry` suite's
+  `jwks` rows fail after such a rotation (R9).
 - `hot-rotate`: a new signing key on the origins, and another on the
   first federated V2 cache, each written to sort first, and watched for
   3 minutes, every 15 seconds. Every director must go on naming
@@ -60,7 +65,11 @@ instead.
   up to 15 minutes (`origin_serve/authz.go`,
   `local_cache/cache_authz.go`), which the window may not outlast, and
   the row is then inconclusive; each must take the old key's tokens
-  throughout (`old-key`). Each token is presented in both profiles, and
+  throughout (`old-key`). On v26.0.0-rc.3 the first V2 cache came to
+  refuse the old key's tokens about two minutes into the window, and
+  never took the new key's (`old-key cache-0`, `new-key cache-0`), which
+  reading the code has not explained; the rows' notes time it. Each
+  token is presented in both profiles, and
   the SciTokens ones have rows of their own, named for the server and
   `scitokens` (e.g. `new-key origin-0 scitokens`), which fail at a
   native server (T6). Under `-p auth-external-issuer`, the exports
