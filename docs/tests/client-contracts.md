@@ -116,7 +116,15 @@ several cases records a row per case, named `<scenario> <case>`.
   grants the namespace (`client/sharing_url.go`, `cmd/object_share.go`):
   the URL printed must be the collection's with `?authz=<token>`, whose
   scope is the collection's `storage.read` alone (`url`), and with
-  `--write` its `storage.create` (`url-write`). A GET of the object in
+  `--write` its `storage.create` (`url-write`). Pelican's client asks
+  the issuer for the scope of the collection's parent (`AcquireToken`
+  in `oauth2/oauth2.go` always asks for the directory of the path), and
+  then requires the token's scope to name the collection itself exactly
+  (`matchesResource` in `client/acquire_token.go`, for a shared
+  operation), so `pelican object share` of any collection below the
+  namespace's root gets a token it then refuses (error 4000), and both
+  rows fail, on v26.0.0-rc.3 and main alike (L3); the rows below then
+  have no token to try. A GET of the object in
   it at each director's object route, with the token in the query as
   curl sends it, must redirect with `authz` in `Location` and no token
   in `Link`, and following the redirect must serve the object (`curl`).

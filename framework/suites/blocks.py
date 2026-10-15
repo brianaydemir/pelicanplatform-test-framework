@@ -3697,8 +3697,11 @@ def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
     """Race RACERS PUTs that create rel in /protected-a at origin.
 
     Each has If-None-Match: * and bytes of its own, and rel does not
-    exist: exactly one must succeed, and the rest be refused (412), and
-    the store must then hold the winner's bytes.
+    exist: exactly one must succeed, and the rest be refused, with 412,
+    as RFC 9110 has it, or with 423: x/net's WebDAV, which a native
+    origin serves PUTs through, locks a path for a PUT, so one that
+    finds another in flight is Locked (RFC 4918), which refuses it as
+    well; and the store must then hold the winner's bytes.
 
     Returns:
         What is wrong; empty if nothing is.
@@ -3723,9 +3726,9 @@ def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
             f"{len(won)} of {RACERS} PUTs at once with If-None-Match: * of a new object"
             + " succeeded, not 1"
         )
-    other = [a for a in answers if not a.ok and a.status != 412]
+    other = [a for a in answers if not a.ok and a.status not in (412, 423)]
     if other:
-        problems.append(f"a racing PUT that lost: {other[0].describe()}, not 412")
+        problems.append(f"a racing PUT that lost: {other[0].describe()}, not 412 or 423")
     held = stores.held(origin, "protected-a", rel, test.setup)
     if not any(held == common.digest(bodies[n]) for n in won):
         problems.append("after the racing PUTs, the store holds no winner's bytes")

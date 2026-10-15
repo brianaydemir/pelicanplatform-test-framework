@@ -71,15 +71,17 @@ logs them in again after each change of membership. The scenarios:
   `pelican.log_read`, a user may read the log tail
   (`/api/v1.0/logs/tail`), but not the configuration
   (`/api/v1.0/config`, 403). With `server.collection_admin`, a user may
-  create a collection, and may make an API token of that scope
-  (`POST /api/v1.0/tokens`, from their login cookie) with which to
-  create one (`collection-admin-token`). Before each grant, and on the
-  first request once `pelican.log_read` or `server.collection_admin` is
-  revoked (`DELETE /api/v1.0/users/:id/scopes/:scope`), the user is
-  refused (403), and so is the API token, since a token keeps a
-  user-grantable scope only while its creator holds it
-  (`api_token/api_token.go`). A data scope, `storage.read:/`, may not be
-  granted (400).
+  create a collection, but may not make an API token of that scope from
+  their login cookie: `POST /api/v1.0/tokens` is the admin's alone
+  (`AdminAuthHandler` in `web_ui/ui.go`, on v26.0.0-rc.3 and main
+  alike, though `api_token/api_token.go` would limit any creator's
+  token to the scopes the creator holds), so the user is refused (403),
+  and the admin, logged in, makes one instead, creates a collection with
+  it, and is refused once it is deleted (`collection-admin-token`).
+  Before each grant, and on the first request once `pelican.log_read`
+  or `server.collection_admin` is revoked
+  (`DELETE /api/v1.0/users/:id/scopes/:scope`), the user is refused
+  (403). A data scope, `storage.read:/`, may not be granted (400).
 - `authority-groups`: an ordinary user may not create a group of
   either configured name, nor may the admin delete one (409). A user
   may not create a collection until the admin adds them to

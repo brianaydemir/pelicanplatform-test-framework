@@ -35,3 +35,17 @@ percent-encodes every character of a name but letters, digits, and
   (`--cache`), which alone may serve it, since the client builds that
   cache's URL of each name itself; `pelican object put` of a file of
   each name must land as the object of that name.
+- XRootD mishandles several of these names (XRootD 5.9.7, in the
+  v26.0.0-rc.3 images), so where it serves the origins or the caches
+  (`-p origin-xrootd`, `-p cache-xrootd`), these rows fail. An XRootD
+  origin decodes a PUT's path and then splits it at `?`, so `what?q=1`
+  lands as `what`, over the decoy (`origin-put`, `origin-get`,
+  `client-put`); its PROPFIND writes each name into its `href` as it
+  is, not percent-encoded, so `hash#tag` reads as `hash` with a
+  fragment, and `hash` is listed twice (`origin-list`), and `pelican
+  object ls` lists `a%20b` twice and `hash#tag` as `hash` (`client-ls`).
+  An XRootD cache decodes a name a second time as it asks the origin
+  for it: a cold read of `a b` or `hash#tag` gets 403, and one of
+  `x%41y` the decoy `xAy`, or 404 (`cache-get`, `director-get`,
+  `client-get`); and it lists no collection at all (`cache-list`; see
+  [listings](listings.md)).

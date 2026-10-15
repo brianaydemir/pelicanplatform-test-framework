@@ -57,6 +57,7 @@ way. The scenarios:
                     stopped
 """
 
+import functools
 import json
 import os
 import re
@@ -792,13 +793,28 @@ def plugin_ads(test: Test) -> list[Row]:
     rows: list[Row] = []
     cold_hosts: dict[str, str] = {}
     for case in ("cold", "warm"):
+        problems: list[str] = []
+        if case == "warm":
+            # A V2 cache says it holds an object, with Age, a moment after
+            # serving it whole; a read before then is cold there again.
+            for name, host in cold_hosts.items():
+                for cache in test.fed.federated_caches:
+                    if cache.kind != "v2" or director.host(cache.url) != host:
+                        continue
+                    holds = functools.partial(test.held, cache, name)
+                    if not common.wait_for(holds, HELD_WAIT, interval=1):
+                        problems.append(
+                            f"{cache.svc} did not say it holds {name} within {HELD_WAIT}s"
+                            + " of the cold read"
+                        )
         fetch = test.plugin(f"ads-{case}", urls, env)
         try:
             ads = parse_ads(fetch.said)
         except ValueError as e:
             rows.append((case, FAIL, f"unreadable ads ({e}): {last_line(fetch.said)}"))
             continue
-        by_url, problems = ads_by_url(ads, urls)
+        by_url, amiss = ads_by_url(ads, urls)
+        problems += amiss
         for url, name in zip(urls, names):
             ad = by_url.get(url)
             if ad is None:

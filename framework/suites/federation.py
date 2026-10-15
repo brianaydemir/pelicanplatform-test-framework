@@ -365,7 +365,12 @@ def ready(probe: Probe) -> tuple[str, str]:
 
 
 def caches(probe: Probe) -> tuple[str, str]:
-    """Check that each cache serves the object with the server's token."""
+    """Check that each cache serves the object with the server's token.
+
+    Raises:
+        Died: No cache serves it, in its first pass: nothing that reads
+            through a cache could pass.
+    """
     if not probe.fed.caches:
         return SKIP, "this shape has no cache"
     token = probe.session.token(probe.namespace)
@@ -385,10 +390,20 @@ def caches(probe: Probe) -> tuple[str, str]:
             time.sleep(INTERVAL)
             answer = web.request("GET", url, token=token)
         if answer.status != 200:
-            problems.append(f"{cache.svc}: {answer.describe()}")
+            # What the cache says of its failure, e.g. that its director
+            # serves no federation metadata (C16), tells why.
+            said = last_line(answer.body.decode(errors="replace"))[:200]
+            problems.append(
+                f"{cache.svc}: {answer.describe()}" + (f" ({said})" if said else "")
+            )
         elif answer.body != probe.data[probe.namespace]:
             problems.append(f"{cache.svc}: the body is not the object")
     if problems:
+        # Where no cache serves, nothing that reads through one could
+        # pass, and nearly every suite does: stop, as ready() does when
+        # the federation never serves, rather than fail for an hour.
+        if len(problems) == len(probe.fed.caches) and "caches" not in SETTLED:
+            die(f"no cache serves the object: {'; '.join(problems)}")
         return FAIL, common.first(problems)
     SETTLED.add("caches")
     return PASS, f"{len(probe.fed.caches)} cache(s)"

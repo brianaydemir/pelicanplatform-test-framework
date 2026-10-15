@@ -628,14 +628,18 @@ def scope_grants(test: Test) -> list[Row]:
         return outcome(problems, "creates a collection; refused once revoked")
 
     def collection_admin_token() -> Row:
-        """Check that an API token's scope goes with its creator's grant.
+        """Check who may make an API token of server.collection_admin.
 
-        A user granted server.collection_admin makes an API token of that
-        scope, from their login cookie (POST /tokens), and creates a
-        collection with it; once the grant is revoked, the token must be
-        refused: a token keeps a user-grantable scope only while its
-        creator holds it (intersectWithUserScopes in
-        api_token/api_token.go). The token is deleted afterward.
+        A user granted server.collection_admin asks for an API token of
+        that scope from their login cookie (POST /tokens), and must be
+        refused (403): the route is the admin's alone (AdminAuthHandler
+        in web_ui/ui.go), on v26.0.0-rc.3 and main alike, though
+        api_token/api_token.go would limit any creator's token to the
+        scopes the creator holds (intersectWithUserScopes). The admin,
+        logged in, makes one, which creates a collection, and which is
+        refused once deleted. The admin holds the scope by implication
+        (server.admin implies server.collection_admin), so no revoked
+        grant can be tried.
         """
         username = test.name("tokencurator")
         user_id = make_user(test, username)
@@ -646,42 +650,60 @@ def scope_grants(test: Test) -> list[Row]:
             "scopes": ["server.collection_admin"],
             "expiration": common.timestamp(datetime.now(timezone.utc) + timedelta(hours=1)),
         }
-        minted = web.request(
-            "POST",
-            test.web + webapi.TOKENS,
-            upload=json.dumps(body).encode(),
-            headers={**accounts.JSON, **webapi.cookie_header(login=cookie)},
-        )
-        made = webapi.made_token(minted)
-        if minted.status not in (200, 201) or made is None:
-            revoked(user_id, "server.collection_admin")
-            return ("", FAIL, f"making an API token: {minted.describe()}, with no token")
-        token, token_id, _ = made
-        api = Api(test.web, token)
-        problems: list[str] = []
-        try:
-            answer = create(api, "by-token", test.path("by-token"))
-            if answer.status != 201:
-                problems.append(f"creating a collection with the token: {answer.describe()}")
-            else:
-                must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
-            revoked(user_id, "server.collection_admin")
-            answer = create(api, "by-token", test.path("by-token"))
-            if answer.status not in (401, 403):
-                problems.append(
-                    f"creating a collection with the token once revoked: {answer.describe()}"
-                )
-                if answer.status == 201:
-                    must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
-        finally:
+
+        def mint(login: str) -> web.Response:
+            return web.request(
+                "POST",
+                test.web + webapi.TOKENS,
+                upload=json.dumps(body).encode(),
+                headers={**accounts.JSON, **webapi.cookie_header(login=login)},
+            )
+
+        def drop(login: str, token_id: str) -> None:
             dropped = web.request(
                 "DELETE",
                 f"{test.web}{webapi.TOKENS}/{token_id}",
-                headers=webapi.cookie_header(login=cookie),
+                headers=webapi.cookie_header(login=login),
             )
             if not dropped.ok:
                 warn(f"deleting API token {token_id}: {dropped.describe()}")
-        return outcome(problems, "the token creates a collection; refused once revoked")
+
+        problems: list[str] = []
+        minted = mint(cookie)
+        revoked(user_id, "server.collection_admin")
+        if minted.status != 403:
+            problems.append(f"a user's request for an API token: {minted.describe()}, not 403")
+            if (made := webapi.made_token(minted)) is not None:
+                drop(cookie, made[1])
+        admin_cookie = accounts.login(test.web, "admin", webapi.ADMIN_PASSWORD)
+        minted = mint(admin_cookie)
+        made = webapi.made_token(minted)
+        if minted.status not in (200, 201) or made is None:
+            problems.append(f"the admin's request for one: {minted.describe()}, with no token")
+            return outcome(problems, "")
+        token, token_id, _ = made
+        api = Api(test.web, token)
+        try:
+            answer = create(api, "by-token", test.path("by-token"))
+            if answer.status != 201:
+                problems.append(
+                    f"creating a collection with the admin's token: {answer.describe()}"
+                )
+            else:
+                must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
+        finally:
+            drop(admin_cookie, token_id)
+        answer = create(api, "by-token", test.path("by-token"))
+        if answer.status not in (401, 403):
+            problems.append(
+                f"creating a collection with the token once deleted: {answer.describe()}"
+            )
+            if answer.status == 201:
+                must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
+        return outcome(
+            problems,
+            "a user is refused one; the admin's creates a collection, and is refused once deleted",
+        )
 
     def ungrantable() -> Row:
         user_id = make_user(test, test.name("ungranted"))

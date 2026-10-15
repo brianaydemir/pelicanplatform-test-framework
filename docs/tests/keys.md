@@ -37,7 +37,13 @@ instead.
   note times each. Then the key is removed, and each must be rid of it
   within 120 seconds (`removed`). No director may drop origin-0
   meanwhile (`routing`). It skips for a standalone origin, which
-  registers nothing.
+  registers nothing. An origin pushes its exports' prefixes in one
+  request, and the registry commits the first of them and answers
+  (`updateNsKeySignChallengeCommit` returns inside its loop over the
+  prefixes), so `/protected-a`, which comes after `/public`, never
+  learns the key, and `registry-namespace` fails, on v26.0.0-rc.3 and
+  main alike (R8); `registry-server`, pushed in a request of its own,
+  passes.
 - `hot-rotate`: a new signing key on the origins, and another on the
   first federated V2 cache, each written to sort first, and watched for
   3 minutes, every 15 seconds. Every director must go on naming
@@ -59,13 +65,20 @@ instead.
   `scitokens` (e.g. `new-key origin-0 scitokens`), which fail at a
   native server (T6). Under `-p auth-external-issuer`, the exports
   trust none of the origins' keys, so the token rows skip. The
-  issuer's tokens must come to carry the new kid (`issuer-kid`).
+  issuer's tokens must come to carry the new kid (`issuer-kid`): the
+  embedded issuer takes the signing key once, as its provider for the
+  namespace is made (`NewOIDCProvider` in `oauth2/issuer/provider.go`),
+  and keeps it for the server's life, so it signs with the old key
+  until a restart, and the row fails, on v26.0.0-rc.3 and main alike
+  (I12).
   The registry must come to list the origins'
   new key (`registry-origins`), and the cache's (`registry-cache`): a
   cache reconciles its keys with the registry only as it starts
   (`RegisterNamespaceWithRetry` in `launcher_utils/register_namespace.go`),
   never when they change (R4), so that row fails, on v26.0.0-rc.3 and
-  main alike. Afterward both new keys are demoted, and every director
+  main alike; and `registry-origins` watches `/protected-a`'s JWKS,
+  which the origins' push never reaches (R8, as `hot-add` says), so it
+  fails too. Afterward both new keys are demoted, and every director
   must name origin-0 again.
 - `master-key`: a V2 cache seals its master key, with which its store
   is encrypted, with each of its keys, in `masterkey.json` under its

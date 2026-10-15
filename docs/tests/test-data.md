@@ -74,7 +74,17 @@ error (HTTP 5xx), a
 timeout, a refused connection, not found (error 5011), or a transfer error
 (6xxx) is not a refusal, even beside a 401 or 403; nor is a local
 `permission denied`. A batch killed after 600 seconds fails as `other`.
-Every `dne` batch must fail with not found (error 5011). The summary counts
+Every `dne` batch must fail with not found (error 5011). Before a `get`
+that refuses collections, Pelican's client asks each object server by
+PROPFIND whether the path is a collection, and takes a 404 for no
+answer (`objectCached` in `client/handle_http.go`), so with one origin,
+to which the director sends a client without checking that it holds the
+object, it refuses a missing object with a resolution error (2000, "no
+object server could confirm whether ... is a collection") rather than
+not found, and the `dne`, `direct-dne`, and `cache-dne` rows fail, on
+v26.0.0-rc.3 and main alike (L4). With several origins, the director's
+presence check answers 404 first, which the client reports as not found.
+`stash_plugin` refuses no collection, so its twins pass. The summary counts
 each scenario's batches that passed, failed, and went unexpectedly, says why
 the failed ones failed, and names the batch sizes that had unexpected
 results. `verify/problems` lists each unexpected result.

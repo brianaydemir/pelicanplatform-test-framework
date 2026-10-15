@@ -24,7 +24,11 @@ that a server that lists another namespace's lists the wrong tree.
   listings through the director to an origin, listing what the origin
   does. `cache-body` sends the propfind body that `pelican object ls`
   sends, which the cache must pass on as it follows the director's
-  redirect. A cache may refuse Depth infinity with 403 only if an origin
+  redirect: a V2 cache of v26.0.0-rc.3 hands its proxied PROPFIND the
+  request's body as a stream, which Go's client cannot send again after
+  the director's redirect, so it answers with the director's 307
+  instead, and the row fails there (C20; main reads the body first). A
+  cache may refuse Depth infinity with 403 only if an origin
   does; where no origin may be asked directly, a 403 is accepted, and
   the row's note says so.
 - Deeper than Depth 0, any server, directors included, lists only a
@@ -82,3 +86,15 @@ that a server that lists another namespace's lists the wrong tree.
   answer so, or refuse where it may not list. Then `pelican object ls -l
   --json` of it must list the object alone, where `/protected-a` has
   `Listings` (Pelican's `TestListPlainObjectPosixV2`).
+- XRootD falls short of some of this (XRootD 5.9.7, in the v26.0.0-rc.3
+  images), so where it serves the origins or the caches
+  (`-p origin-xrootd`, `-p cache-xrootd`), these rows fail. An XRootD
+  origin answers Depth infinity as Depth 1 would, listing the first
+  level alone (`origin-infinity`, and `cache-infinity` through it), and
+  its HTML listing comes with no `Content-Type` (`collection-get`). An
+  XRootD cache lists no collection: a PROPFIND of one deeper than Depth
+  0 is refused, with 409 (`is a directory`) or 502, whatever the token
+  (`cache-depth-1`, `cache-infinity`, `cache-body`, `public-no-token`,
+  and `new-object`'s cache rows); Pelican's own client never asks a
+  cache for a listing. Depth 0 of an object, and Depth 1 of one
+  (`plain-object-listing`), it answers.

@@ -122,7 +122,14 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   the store a second later: a native origin keeps digests by the file's
   modification time,
   to the second, and must not report a stale one; and its `ETag`, by
-  which a cache tells that an object has changed, must change too.
+  which a cache tells that an object has changed, must change too. An
+  XRootD origin (XRootD 5.9.7, in the v26.0.0-rc.3 images) reports
+  `crc32=ffffffff` of an empty object, the CRC-32 of nothing without
+  its final complement (`00000000` is right), so `digests` fails there
+  at its `whole/0` row; and it keeps an object's digests by the file's
+  modification time, to the second, so after a PUT within the same
+  second it reports the old version's, and `digest-overwrite` fails
+  there too.
 - `digest-defaults` asks each origin for the digests of an object of
   its own in the other ways a client may. A HEAD with no `Want-Digest`
   must get `crc32c` from a native origin, the first of
@@ -233,7 +240,13 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   cache, whose accounting may have charged its store the whole object.
   It skips on a pstore origin, whose store is encrypted, so that the
   object would have to go over HTTPS whole; and where a store keeps no
-  sparse files, so that the object would take 4 GiB on disk.
+  sparse files, so that the object would take 4 GiB on disk. A V2
+  cache asked for an object it lacks stats the origin for every digest
+  it knows (`HeadObject` in `local_cache/persistent_cache.go`), and a
+  native origin computes the digests it has not stored over the whole
+  object, which for this one takes longer than the cache waits, so
+  the HEAD through each director's object route gets 504, and the row
+  fails, on v26.0.0-rc.3 and main alike (C18).
 - `conditional` sends each server conditional GETs of two objects (RFC
   9110): with `If-None-Match` naming the `ETag` the server sent, among
   others, weakened (`W/`), or as `*`, and with `If-Modified-Since` at
@@ -288,7 +301,9 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   refused (412), changing nothing, since a `*` in the list still names
   any object. Then 8 PUTs at once of a new object, each with
   `If-None-Match: *` and bytes of its own: exactly one may succeed, the
-  rest must get 412, and the store must then hold the one's bytes. A
+  rest must get 412, or 423 (a native origin locks a path for a PUT,
+  through x/net's WebDAV, so a PUT that finds another in flight is
+  Locked), and the store must then hold the one's bytes. A
   native origin checks a PUT's condition before it writes
   (`checkPutPreconditions` in `origin_serve/preconditions.go`), and only
   a `pstore` origin checks it again as it commits the object, so
@@ -302,7 +317,10 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   later response, to a range in the third XRootD block (which neither
   kind of cache fetched for the first read) and to the whole object,
   must then succeed, and be entirely one version, the same for the
-  range as for the whole object.
+  range as for the whole object. A V2 cache of v26.0.0-rc.3 keeps the
+  block it holds and fetches the rest of the new version beside it, so
+  its whole object is the old first block and the new rest, and the
+  row fails there (C19; main not run).
 - `cache-overlap` reads ranges from objects of each cache's own, each
   plan in turn, so that every read after the first covers both blocks
   the cache fetched for an earlier one and blocks it must fetch now, at
@@ -354,7 +372,13 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   version, and only it, once its copy is stale. The scenarios wait up to
   about 75 seconds for it. An XRootD origin sends none
   (`Origin.CacheControl` is the native origin's), so there the caches
-  decide for themselves, as without.
+  decide for themselves, as without. An XRootD cache (`-p cache-xrootd`)
+  keeps the blocks it fetched and fetches the rest from the origins as
+  they are now, so after an overwrite its whole object mixes the
+  versions block by block (`mixed-version`), and it serves the version
+  it holds with a `Digest` it asks the origins for anew, the new
+  version's (`overwrite-cached` and `overwrite-range-first`, at the
+  object of the same size): the three rows fail there.
 - `write-through`: a V2 cache relays a PUT or DELETE to an origin through
   the director, and drops its own copy. Of an object each holds, a PUT
   with a read-only token must be refused, with nothing changed; one with

@@ -21,7 +21,13 @@ scenarios.
   them, those the origins' storage reports; see
   [block boundaries](block-boundaries.md)), and `du`'s totals must match
   it, `stat`'s modification time must be the file's, within a minute,
-  and a copy from `/public` must hold `/public`'s bytes.
+  and a copy from `/public` must hold `/public`'s bytes. `stat` names
+  every kind of checksum at once, and the client asks for them in one
+  `Want-Digest`, which XRootD's HTTP server answers with one digest, the
+  first it supports (as the `blocks` suite's `digest-relay` says of a V2
+  cache over XRootD origins), so where XRootD serves the origins or the
+  caches (`-p origin-xrootd`, `-p cache-xrootd`) `stat-protected-a` and
+  `stat-public` get `crc32c` alone, and fail.
 - `delete`, `copy`, and `sync` go through the director like any client.
   Under `topo-multi-origin` their effects land on one origin, so a success
   must show in some store, and a refusal in none. A copy between two
@@ -33,7 +39,11 @@ scenarios.
 - These commands' exit status says little about what went wrong (mostly
   1 or 11), so the tests require only a non-zero one, and judge
   failures by what the commands print, as the `transfers` suite judges
-  them.
+  them. `delete` prints a refusal as `Remove <path>: 400`, whatever the
+  origin answered (a native origin 401, an XRootD origin 403; the
+  WebDAV client it removes with turns the refusal into a 400 of its
+  own), so `delete-read-only` fails, on v26.0.0-rc.3 and main alike,
+  though nothing is removed (L5).
 - `ls -r` must list every object by its path in the tree, once.
 - `du --json` must give each collection's bytes, objects, and
   collections, and `du --count`, whose counts only its text output
@@ -44,7 +54,12 @@ scenarios.
   servers.
 - `get` onto a local file larger than the object must leave the object
   alone in it (row G1 of that document), and a failed `get` onto it must
-  leave it as it was. A `get` of a collection without `-r` must be
+  leave it as it was. The failed `get` is of an object that does not
+  exist, and must fail with not found: Pelican's client reports it as a
+  resolution error instead (2000, "no object server could confirm
+  whether ... is a collection"), with one origin, so `get-existing-file`
+  fails there, on v26.0.0-rc.3 and main alike (L4; see
+  [test data](test-data.md)). A `get` of a collection without `-r` must be
   refused, rather than write the listing into a file (G4); `get -r` lays
   the collection out flat, in an existing directory or a new one (G5,
   G6).

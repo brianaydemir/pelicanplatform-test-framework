@@ -53,8 +53,22 @@ The suites run in this order:
 A suite that doesn't apply to the shape is skipped, and says why.
 `federation`'s `ready` and `caches` checks run first, whatever else is
 asked for; `caches` tries each cache 20 times, 15 seconds apart, while
-it fails or doesn't answer. If the federation never serves, nothing
-else runs. The
+it fails or doesn't answer. If the federation never serves, or no cache
+does, nothing else runs. A V2 cache of v26.0.0-rc.3 or main fetches
+each object through a `pelican://` URL of its director's host, and
+looks for the federation's metadata there, which a director serves
+only as the discovery host (`Director.EnableFederationMetadataHosting`,
+which `framework/config.d/director/default/` turns off, as the OSDF's
+directors need not serve it): so in the default shape every V2 cache
+answers 500 ("Federation metadata discovery failed with HTTP status
+410"), `caches` fails, and the run stops there (C16). Where the
+director is the discovery host (`-p director-discovery`, `topo-tiny`),
+a v26.0.0-rc.3 V2 cache serves, but advertises itself `critical`, since
+`pelican cache serve` marks its `xrootd` component critical as it
+starts and the V2 cache never clears it, so no director names it, and
+`federation`'s `directors`, `redirects`, and `downtime` fail, as does
+every row that reads through a cache's director route (C17; main's V2
+cache is clean). The framework works around neither. The
 `expired` credential must be 70 seconds past its expiry before it is
 presented, so `auth` and `transfers` run after every suite but two, by
 which time it usually is. `restart` and `keys` come last of all, since
