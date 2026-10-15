@@ -733,6 +733,30 @@ def cache_hit_problems(fed: common.Federation, ad: Ad, cold_host: Optional[str])
     return []
 
 
+def ads_by_url(ads: Sequence[Ad], urls: Sequence[str]) -> tuple[dict[str, Ad], list[str]]:
+    """Return a batch's ads by their TransferUrl, and what is amiss.
+
+    The plugin writes each transfer's ad as it finishes, so their order is
+    not the batch's (cmd/plugin.go).
+
+    Returns:
+        The ad of each of urls that has one, and the problems: an ad of a
+        URL the batch did not name, a second ad of one, or none.
+    """
+    found: dict[str, Ad] = {}
+    problems: list[str] = []
+    for ad in ads:
+        url = str(ad.get_ci("TransferUrl") or "")
+        if url not in urls:
+            problems.append(f"an ad of {url!r}, which the batch did not name")
+        elif url in found:
+            problems.append(f"{transfers.local_name(url)}: two ads")
+        else:
+            found[url] = ad
+    problems += [f"{transfers.local_name(url)}: no ad" for url in urls if url not in found]
+    return found, problems
+
+
 def exit_problem(fetch: Fetched, ads: Sequence[Ad]) -> Optional[str]:
     """Return why the plugin's exit status disagrees with its ads, or None.
 
@@ -774,10 +798,11 @@ def plugin_ads(test: Test) -> list[Row]:
         except ValueError as e:
             rows.append((case, FAIL, f"unreadable ads ({e}): {last_line(fetch.said)}"))
             continue
-        problems: list[str] = []
-        if len(ads) != len(urls):
-            problems.append(f"{len(ads)} ads for {len(urls)} transfers")
-        for ad, url, name in zip(ads, urls, names):
+        by_url, problems = ads_by_url(ads, urls)
+        for url, name in zip(urls, names):
+            ad = by_url.get(url)
+            if ad is None:
+                continue
             data = test.objects[test.rel(name)]
             problems += ad_problems(ad, url, data)
             if ad.get_ci("TransferSuccess") is True:
@@ -836,22 +861,35 @@ def plugin_ads(test: Test) -> list[Row]:
             "refused", test.plugin("ads-refused", [urls[0]], unknown_env), "Authorization", None
         )
     )
-    fetch = test.plugin("ads-mixed", [urls[0], test.url("dne")], env)
+    # A failed download ends a batch: the plugin writes the ads of what
+    # finished before it, then the failure's, and no more (cmd/plugin.go).
+    # So the existing object's ad may come first, or not at all.
+    missing = test.url("dne")
+    fetch = test.plugin("ads-mixed", [urls[0], missing], env)
     try:
         ads = parse_ads(fetch.said)
-        problems = []
-        if len(ads) != 2:
+        problems = list[str]()
+        if not ads:
+            problems.append("no ads for two transfers")
+        elif len(ads) > 2:
             problems.append(f"{len(ads)} ads for two transfers")
         else:
-            problems += ad_problems(ads[0], urls[0], test.objects[test.rel(names[0])])
-            if ads[1].get_ci("TransferSuccess") is not False:
+            last = ads[-1]
+            if last.get_ci("TransferUrl") != missing:
                 problems.append(
-                    f"the missing object's TransferSuccess {ads[1].get_ci('TransferSuccess')!r}"
+                    f"the last ad is of {last.get_ci('TransferUrl')!r}, not {missing!r}"
                 )
+            elif last.get_ci("TransferSuccess") is not False:
+                problems.append(
+                    f"the missing object's TransferSuccess {last.get_ci('TransferSuccess')!r}"
+                )
+            for ad in ads[:-1]:
+                problems += ad_problems(ad, urls[0], test.objects[test.rel(names[0])])
         why = exit_problem(fetch, ads)
         if why:
             problems.append(why)
-        rows.append(("mixed", *outcome(problems, f"two ads, exit {fetch.status}")[1:]))
+        note = f"{len(ads)} ad(s), the last the missing object's failure, exit {fetch.status}"
+        rows.append(("mixed", *outcome(problems, note)[1:]))
     except ValueError as e:
         rows.append(("mixed", FAIL, f"unreadable ads ({e}): {last_line(fetch.said)}"))
     return rows
@@ -1051,58 +1089,70 @@ def plugin_failover_problems(
 # etag-agreement
 
 
+def head_and_get_etag(test: Test, svc: str, url: str, name: str) -> tuple[str, list[str]]:
+    """Return the ETag that svc, at url, reports of name, and what is amiss.
+
+    A server may send no ETag at all, as XRootD's HTTP server does; one
+    that it sends by HEAD or by GET, it must send by both, the same.
+
+    Returns:
+        The GET's ETag, or "" if it sent none; and the problems.
+    """
+    problems: list[str] = []
+    etags: dict[str, str] = {}
+    for method in ("HEAD", "GET"):
+        answer = test.ask(method, url, name)
+        if answer.status != 200:
+            problems.append(f"{svc}: {method} got {answer.describe()}")
+        elif answer.header("ETag"):
+            etags[method] = answer.header("ETag")
+    if problems:
+        return etags.get("GET", ""), problems
+    if len(etags) == 1:
+        sent = next(iter(etags))
+        lacking = "GET" if sent == "HEAD" else "HEAD"
+        problems.append(f"{svc}: {lacking} sent no ETag, but {sent} sent {etags[sent]}")
+    elif len(etags) == 2 and etags["HEAD"] != etags["GET"]:
+        problems.append(f"{svc}: HEAD's ETag {etags['HEAD']} is not GET's {etags['GET']}")
+    return etags.get("GET", ""), problems
+
+
 def etag_agreement(test: Test) -> tuple[str, str]:
     """Check that each server gives an object one ETag, by HEAD and GET.
 
     An object put at every origin: each origin that takes direct
     clients, and each federated cache, must report one ETag for it by
-    HEAD and by GET, and a cache's must be one of the origins', since it
-    relays the origin's (local_cache/persistent_cache_api.go). Origins
-    that share a store must agree; those with stores of their own hold
-    copies of their own, and may not, which the note says.
+    HEAD and by GET, or none by either (head_and_get_etag()), and a
+    cache's must be one of the origins', since it relays the origin's
+    (local_cache/persistent_cache_api.go). Origins that share a store
+    must agree; those with stores of their own hold copies of their own,
+    and may not, which the note says, as it names the servers that send
+    none, at which a client cannot tell that an object changed between
+    attempts.
     """
     name = "etag"
     test.put(name, os.urandom(OBJECT_SIZE))
     problems: list[str] = []
     origin_etags: dict[str, str] = {}
+    silent: list[str] = []
     for origin in test.fed.origins if test.direct else []:
-        etags: dict[str, str] = {}
-        for method in ("HEAD", "GET"):
-            answer = test.ask(method, origin.url, name)
-            if answer.status != 200:
-                problems.append(f"{origin.svc}: {method} got {answer.describe()}")
-            elif not answer.header("ETag"):
-                problems.append(f"{origin.svc}: {method} sent no ETag")
-            else:
-                etags[method] = answer.header("ETag")
-        if len(etags) == 2 and etags["HEAD"] != etags["GET"]:
-            problems.append(
-                f"{origin.svc}: HEAD's ETag {etags['HEAD']} is not GET's {etags['GET']}"
-            )
-        if "GET" in etags:
-            origin_etags[origin.svc] = etags["GET"]
+        etag, why = head_and_get_etag(test, origin.svc, origin.url, name)
+        problems += why
+        if etag:
+            origin_etags[origin.svc] = etag
+        elif not why:
+            silent.append(origin.svc)
     for cache in test.fed.federated_caches:
-        why = test.fill(cache, name)
-        if why:
-            problems.append(why)
+        fill_problem = test.fill(cache, name)
+        if fill_problem:
+            problems.append(fill_problem)
             continue
-        etags = {}
-        for method in ("HEAD", "GET"):
-            answer = test.ask(method, cache.url, name)
-            if answer.status != 200:
-                problems.append(f"{cache.svc}: {method} got {answer.describe()}")
-            elif not answer.header("ETag"):
-                problems.append(f"{cache.svc}: {method} sent no ETag")
-            else:
-                etags[method] = answer.header("ETag")
-        if len(etags) == 2 and etags["HEAD"] != etags["GET"]:
-            problems.append(
-                f"{cache.svc}: HEAD's ETag {etags['HEAD']} is not GET's {etags['GET']}"
-            )
-        if "GET" in etags and origin_etags and etags["GET"] not in origin_etags.values():
-            problems.append(
-                f"{cache.svc}'s ETag {etags['GET']} is none of the origins' {origin_etags}"
-            )
+        etag, why = head_and_get_etag(test, cache.svc, cache.url, name)
+        problems += why
+        if not etag and not why:
+            silent.append(cache.svc)
+        if etag and origin_etags and etag not in origin_etags.values():
+            problems.append(f"{cache.svc}'s ETag {etag} is none of the origins' {origin_etags}")
     shared: dict[str, set[str]] = {}
     for origin in test.fed.origins:
         if origin.svc in origin_etags:
@@ -1116,6 +1166,8 @@ def etag_agreement(test: Test) -> tuple[str, str]:
     note = f"{len(origin_etags)} origin(s), {len(test.fed.federated_caches)} cache(s)"
     if distinct > 1:
         note += f"; the origins' copies have {distinct} ETags, so a cache filled from one cannot resume at a cache filled from another"
+    if silent:
+        note += f"; {', '.join(silent)} sent no ETag, so a client resuming there cannot tell a changed object"
     return PASS, note
 
 

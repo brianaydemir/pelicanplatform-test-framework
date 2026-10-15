@@ -238,10 +238,14 @@ def last_line(text: str) -> str:
 
     That is the last that isn't blank, nor the client's "Errors are
     retryable", which it logs after the error itself (cmd/object_get.go
-    and its kin), and which would otherwise hide it. The line is cut to
-    300 characters; "(no output)" if there is none.
+    and its kin), and which would otherwise hide it; nor any from a
+    `Usage:` line on, the command's usage, which the client and server
+    print after an error of theirs (cobra). The line is cut to 300
+    characters; "(no output)" if there is none.
     """
     lines = [line for line in text.strip().splitlines() if line.strip()]
+    usage = next((i for i, line in enumerate(lines) if line.strip() == "Usage:"), len(lines))
+    lines = lines[:usage] or lines
     said = [line for line in lines if not line.rstrip().endswith('"Errors are retryable"')]
     return (said or lines or ["(no output)"])[-1][:300]
 

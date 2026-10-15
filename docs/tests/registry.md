@@ -110,7 +110,10 @@ the registry with them, or with a server's own key, through
     (`/api/v1.0/registry/<prefix>`), hands its admin each
     (`/api/v1.0/registry_ui/namespaces/<id>/pubkey`), and lists them
     with its servers (`/api/v1.0/registry_ui/servers`). Each must be a
-    JWKS.
+    JWKS. The registry may serve none of its own (404): v26.0.0-rc.3's
+    does not, since only the director, origins, and caches register the
+    route (`RegisterOIDCAPI` in `server_utils/oidc.go`), and the note
+    says so.
 - `registry-ui`: the registry's web API (`/api/v1.0/registry_ui`;
   `registry/registry_ui.go`). It registers two prefixes of the run's,
   and the admin approves one.
@@ -183,7 +186,10 @@ the registry with them, or with a server's own key, through
     description, and leave the site name, prefix, and key as they
     were, the registry still serving the key alone, and the
     registration Approved; `test-registry-heir`'s edit must get 403,
-    and change nothing.
+    and change nothing. This is Pelican's main: v26.0.0-rc.3, which
+    lacks `applyOwnerEdits`, refuses every edit of an approved
+    registration but the admin's (403, `registry/registry_ui.go`), so
+    the row fails there.
   - `deny-resubmit`: once the admin denies it, its owner's edit must
     succeed, and resubmit it as Pending, still the owner's
     (`createUpdateNamespace`).
@@ -232,7 +238,9 @@ the registry with them, or with a server's own key, through
     must not have it within 60 seconds.
   - `bound`: one the origin declares at the registry, naming the
     cache's ID and name in its body, must be recorded as the origin's,
-    with its ID and name.
+    with its ID and name. Its body says `"source": "Origin"`, as a
+    server's own push does; with no source, the registry would take
+    the downtime for its own, and refuse it (403).
   - `source-registry`: one the origin declares with `"source":
     "registry"` must get 403.
   - `admin-current`: one the registry's admin declares for the cache,

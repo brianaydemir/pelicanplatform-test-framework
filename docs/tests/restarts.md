@@ -17,7 +17,9 @@ restart, and `freshness`'s `stale-if-error` a stale copy served while
 every origin is stopped.
 
 - `cache-restart`: each cache, the site-local one included, holds three
-  1 MiB objects read whole (a V2 cache says so with `Age`). Restarted,
+  1 MiB objects read whole (a V2 cache says so with `Age`), and every
+  director must name a federated one (within 150 seconds, since
+  `state-survives` restarts director-0, in the pass before). Restarted,
   and once every director names it again (within 150 seconds, timed in
   the note), it must serve each from its store, intact, with `Age` for
   a V2 cache, and the native origins must have sent less than an
@@ -46,7 +48,9 @@ every origin is stopped.
   from a master key in its database (`oauth2/issuer/provider.go`).
   What the suite made is removed afterward.
 - `ad-expiry`: the first federated cache, and with several origins the
-  last origin, killed (SIGKILL, so it says nothing to the directors):
+  last origin, once every director names it (within 150 seconds, since
+  `state-survives` has just restarted director-0), killed (SIGKILL, so
+  it says nothing to the directors):
   within `Server.AdLifetime` (90 seconds here) and 30 more, no director
   may name it, since its ad has expired (the directors keep ads in a
   cache with that TTL, `director/cache_ads.go`; under

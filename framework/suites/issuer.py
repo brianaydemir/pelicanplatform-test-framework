@@ -169,7 +169,14 @@ SCENARIOS = {
 ONE_PROFILE = tuple(SCENARIOS)
 
 ROLES = ("analyst", "member", "stranger")
-USERS = {"analyst": "test-analyst", "member": "test-member", "stranger": "test-stranger"}
+# The admin is the server's built-in `admin`, whom a template grants all
+# of the namespace; the other roles are users the admin creates.
+USERS = {
+    "admin": "admin",
+    "analyst": "test-analyst",
+    "member": "test-member",
+    "stranger": "test-stranger",
+}
 CURATOR = "test-curator"
 # The groups a template names, which the admin creates, eligible to match.
 GROUPS = ("test-project-a", "test-project-b")

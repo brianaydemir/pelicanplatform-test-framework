@@ -15,7 +15,8 @@ afterward. It needs `/protected-a`, as `commands` does. A scenario with
 several cases records a row per case, named `<scenario> <case>`.
 
 - `plugin-ads`: stash_plugin's result ads (`cmd/plugin.go`), one per
-  line of its outfile, of a batch of two objects through a cache, cold
+  line of its outfile, in the order the transfers finished, so each is
+  known by its `TransferUrl`; of a batch of two objects through a cache, cold
   and then warm (`cold`, `warm`): each must say `TransferSuccess`,
   `TransferFileBytes` and `TransferTotalBytes` of the object's size,
   `TransferUrl` as given, `TransferType` `download`, `TransferFileName`
@@ -31,7 +32,11 @@ several cases records a row per case, named `<scenario> <case>`.
   of type `Specification` with `PelicanErrorCode` 5011, and nothing
   left. Of a download refused, with a token signed by a key no server
   knows (`refused`): an error of type `Authorization`. Of a batch of
-  one that exists and one that does not (`mixed`): two ads. The exit
+  one that exists and one that does not (`mixed`): a failed download
+  ends a batch, so the plugin writes the ads of what finished before it,
+  then the failure's, and no more; so one ad or two, the last the
+  missing object's failure, and any other the existing object's
+  success. The exit
   status must be 0 if every transfer succeeded, else 11 if any failure
   may be retried, else 1 (`writeOutfile`). It skips where there is no
   cache.
@@ -56,7 +61,9 @@ several cases records a row per case, named `<scenario> <case>`.
   its copy against origins that no longer hold the object.
 - `etag-agreement`: an object put at every origin: each origin that
   takes direct clients, and each federated cache once it holds the
-  object, must report one `ETag` by HEAD and by GET, and a cache's must
+  object, must report one `ETag` by HEAD and by GET, or none by either,
+  as XRootD's HTTP server sends none (so a client resuming there cannot
+  tell that the object changed, which the note says), and a cache's must
   be one of the origins', since a V2 cache relays the origin's
   (`local_cache/persistent_cache_api.go`); origins that share a store
   must agree. Origins with stores of their own hold copies of their

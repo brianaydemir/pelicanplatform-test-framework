@@ -882,9 +882,13 @@ def private_keys(test: Test, prefixes: Sequence[str]) -> Row:
     """
     documents: dict[str, Any] = {}
     problems: list[str] = []
+    absent: list[str] = []
 
-    def fetch(name: str, url: str) -> Any:
+    def fetch(name: str, url: str, may_lack: bool = False) -> Any:
         answer = web.request("GET", url)
+        if answer.status == 404 and may_lack:
+            absent.append(name)
+            return None
         if answer.status != 200:
             problems.append(f"{name}: {answer.describe()}")
             return None
@@ -896,8 +900,13 @@ def private_keys(test: Test, prefixes: Sequence[str]) -> Row:
     urls = {s.web_url for s in test.servers} | {c.web_url for c in test.fed.caches}
     urls |= set(test.fed.directors) | {test.registry}
     for url in sorted(urls):
+        # The registry may serve no JWKS of its own: v26.0.0-rc.3's does
+        # not, since only the director, origins, and caches register the
+        # route (RegisterOIDCAPI in server_utils/oidc.go).
         documents[f"{director.host(url)}'s JWKS"] = fetch(
-            f"{director.host(url)}'s JWKS", f"{url}/.well-known/issuer.jwks"
+            f"{director.host(url)}'s JWKS",
+            f"{url}/.well-known/issuer.jwks",
+            may_lack=url == test.registry,
         )
     for issuer in namespace_issuers(test.fed):
         config = common.as_object(fetch(issuer, f"{issuer}/.well-known/openid-configuration"))
@@ -942,7 +951,10 @@ def private_keys(test: Test, prefixes: Sequence[str]) -> Row:
             for p in registry.private_members(document)
         ]
     read = sum(1 for d in documents.values() if d is not None)
-    return row("private", problems, f"{read} JWKS documents, none with private key material")
+    note = f"{read} JWKS documents, none with private key material"
+    if absent:
+        note += f"; none served as {', '.join(absent)}"
+    return row("private", problems, note)
 
 
 def namespace_issuers(fed: common.Federation) -> list[str]:
@@ -1741,8 +1753,12 @@ def bound(
     """
     rows: list[Row] = []
     downtime_id = str(uuid.uuid4())
+    # Its source is the origin, as a server's own push says: with none, the
+    # registry takes the downtime for its own, which no server may create
+    # (HandleCreateDowntime in web_ui/server_api.go).
     body = {
         **downtime_body(test, "bound", *later),
+        "source": "Origin",
         "serverId": cache_id,
         "serverName": cache_name,
     }

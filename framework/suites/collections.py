@@ -1119,10 +1119,12 @@ def cli(test: Test) -> tuple[str, str]:
         return SKIP, f"the CLI manages only the first origin the director lists, {first}"
     problems: list[str] = []
     curator = test.api("curator")
+    # The server's -f takes the discovery host's URL, not a pelican:// one.
+    discovery = f"https://{urlsplit(test.fed.url).netloc}"
 
     def manage_as(role: str, *args: str) -> ClientRun:
         done = run_approving(
-            test, ["--json", "-f", test.fed.url, "origin", "collection", *args], role, server
+            test, ["--json", "-f", discovery, "origin", "collection", *args], role, server
         )
         problems.extend(done.problems)
         return done

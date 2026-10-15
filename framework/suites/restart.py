@@ -347,8 +347,17 @@ def cache_restart(test: Test) -> list[Row]:
         host = director.host(cache.url)
         federated = not cache.site_local
         path = test.path(names[0])
-        if federated and len(test.named_by("object", path, host)) != len(test.fed.directors):
-            rows.append((cache.svc, FAIL, "before the restart, not every director named it"))
+        # A director restarted just before (by state_survives(), in the
+        # pass before this one) learns of the cache again only from its
+        # next ad.
+        if federated and test.wait_named("object", path, host, NAMED_WAIT) is None:
+            rows.append(
+                (
+                    cache.svc,
+                    FAIL,
+                    f"before the restart, not every director named it within {NAMED_WAIT}s",
+                )
+            )
             continue
         before = sent_bytes(test.fed)
         try:
@@ -778,8 +787,16 @@ def ad_expiry(test: Test) -> list[Row]:
         return [("", SKIP, "no cache, and one origin")]
     rows: list[Row] = []
     for svc, route, host in targets:
-        if len(test.named_by(route, path, host)) != len(fed.directors):
-            rows.append((svc, FAIL, "before it was killed, not every director named it"))
+        # state_survives() restarts director-0 just before, which then
+        # learns of each server again only from its next ad.
+        if test.wait_named(route, path, host, NAMED_WAIT) is None:
+            rows.append(
+                (
+                    svc,
+                    FAIL,
+                    f"before it was killed, not every director named it within {NAMED_WAIT}s",
+                )
+            )
             continue
         try:
             control.kill(svc)

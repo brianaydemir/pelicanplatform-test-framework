@@ -810,6 +810,10 @@ def client_env(base: dict[str, str], store: str) -> dict[str, str]:
     The client may acquire a token with no terminal, and keeps its
     credentials apart from other users', since the issuer binds a client
     that registers itself to the first user who approves a flow for it.
+    It keeps them unencrypted (PELICAN_CLIENT_NOPASSWORD, config/encrypted.go
+    in Pelican), since it has no terminal to ask for a password with:
+    otherwise it cannot save its client's registration or tokens, and
+    `pelican-server origin collection` fails for it.
 
     Args:
         base: The environment to start from (session.env).
@@ -817,6 +821,7 @@ def client_env(base: dict[str, str], store: str) -> dict[str, str]:
     """
     env = dict(base)
     env["PELICAN_SKIP_TERMINAL_CHECK"] = "1"
+    env["PELICAN_CLIENT_NOPASSWORD"] = "1"
     os.makedirs(store, exist_ok=True)
     env["PELICAN_CLIENT_CREDENTIALFILE"] = os.path.join(store, "client-credentials.pem")
     return env

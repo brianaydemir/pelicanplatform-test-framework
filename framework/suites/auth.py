@@ -68,7 +68,7 @@ from collections.abc import Callable, Mapping
 from collections.abc import Set as AbstractSet
 from functools import cached_property
 from typing import Any, Optional
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 from testlib import accounts, common, credentials, director, jwt, stores, web
 from testlib.common import die, warn
@@ -967,6 +967,8 @@ def check_audience(test: Test, fed: common.Federation) -> None:
 # the authz query parameter, with or without the `Bearer ` prefix, as it
 # takes one in the Authorization header (Pelican's origin_serve/handlers.go
 # and local_cache/persistent_cache_api.go; XRootD's XrdSciTokensAccess).
+# The space is sent as %20, as they send it: XRootD strips a literal
+# `Bearer%20`, so a form-encoded `Bearer+` would hide the token from it.
 
 QUERY_FORMS = {"bare": "{}", "bearer": "Bearer {}"}
 
@@ -985,7 +987,7 @@ def check_query_token(test: Test, fed: common.Federation) -> None:
         for form, pattern in QUERY_FORMS.items():
             for name, cred in creds.items():
                 token = test.token(cred, "protected-a", "get") or ""
-                query = urlencode({"authz": pattern.format(token)})
+                query = f"authz={quote(pattern.format(token), safe='')}"
                 answer = web.request("GET", f"{url}/protected-a/{test.object}?{query}")
                 save(
                     f"{test.out}/responses/{target}-protected-a-get-authz-{form}-{name}", answer
