@@ -131,10 +131,10 @@ REGISTRY_ROUTES = (
 )
 
 DISCOVERY_SCOPE = "pelican.director_service_discovery"
-# A scope that a user may be granted, but the admin is not by default:
-# server.admin implies only server.user_admin and server.collection_admin
-# (EffectiveScopesForIdentity in web_ui/scopes.go).
-UNHELD_SCOPE = "pelican.transfer"
+# A scope that a user may be granted, and that no role derives: with it, an
+# outside Grafana queries a director's Prometheus, as the OSDF's does.
+QUERY_SCOPE = credentials.QUERY_SCOPE
+PROMQL = f"{API}/prometheus/query"
 
 
 class Missing(Exception):
@@ -354,6 +354,22 @@ def discover(server: Server, token: str) -> web.Response:
     return web.request("GET", server.web_url + DISCOVER, token=token)
 
 
+def query_up(server: Server, token: str) -> web.Response:
+    """Ask server's Prometheus for `up`, an instant query, with token."""
+    return web.request("GET", f"{server.web_url}{PROMQL}?query=up", token=token)
+
+
+def query_problems(answer: web.Response) -> list[str]:
+    """Return what is wrong with answer, a Prometheus query's, if it is 200.
+
+    A 200 must carry a successful query (Prometheus's own envelope).
+    """
+    if answer.status != 200:
+        return []
+    found = common.as_object(answer.json()) or {}
+    return [] if found.get("status") == "success" else ["the 200 is no successful query"]
+
+
 def listed_problems(answer: web.Response, token_id: str, name: str, secret: str) -> list[str]:
     """Return what is wrong with answer, the listing of API tokens.
 
@@ -381,9 +397,9 @@ def api_tokens(test: Access) -> list[Row]:
     of the service discovery's scope, use it, list it, present it with a
     wrong secret, and a bogus one; delete it, and use it again; make one
     that expires in API_TOKEN_EXPIRY seconds, and use it after; ask for
-    one with the admin's bearer token instead of the cookie; and ask for
-    one of a scope that the admin does not hold. Every token made is
-    deleted afterward.
+    one with the admin's bearer token instead of the cookie; and make one
+    of a user-grantable scope that no role derives, which must be minted
+    and then work. Every token made is deleted afterward.
     """
     if not test.fed.directors:
         return [("", SKIP, "a standalone origin has no director")]
@@ -444,25 +460,34 @@ def api_tokens(test: Access) -> list[Row]:
         if token:
             made.append(token[1])
         rows.append(judge("bearer-create", [("admin's bearer token", answer, (403,))]))
-        # A token may carry a user-grantable scope only if its creator
-        # holds it (validateScopesForCreator in api_token/api_token.go).
+        # A token keeps a user-grantable scope only while its creator
+        # holds it (validateScopesForCreator and intersectWithUserScopes
+        # in api_token/api_token.go), and a creator who holds server.admin
+        # holds them all (Pelican's main since October 2026, #3814). So
+        # the admin must be able to mint a token of monitoring.query,
+        # which no role derives, and it must query the director's
+        # Prometheus; a refusal must not be answered 200.
         answer = create_token(
             server,
-            f"{name}-unheld",
+            f"{name}-query",
             datetime.now(timezone.utc) + timedelta(hours=1),
             cookie,
-            scope=UNHELD_SCOPE,
+            scope=QUERY_SCOPE,
         )
         token = made_token(answer)
         if token:
             made.append(token[1])
-        rows.append(
-            judge(
-                "unheld-scope",
-                [(UNHELD_SCOPE, answer, (400, 403))],
-                ["it handed out a token"] if token else [],
+        if token is None:
+            rows.append(("admin-grantable", FAIL, f"{answer.describe()}, with no API token"))
+        else:
+            queried = query_up(server, token[0])
+            rows.append(
+                judge(
+                    "admin-grantable",
+                    [(QUERY_SCOPE, answer, (200, 201)), ("query", queried, (200,))],
+                    query_problems(queried),
+                )
             )
-        )
     finally:
         for token_id in made:
             gone = web.request(

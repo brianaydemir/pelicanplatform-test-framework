@@ -18,7 +18,11 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   `/protected-a` takes no writes, the objects are put straight in the
   stores instead, and the upload scenarios skip; where it takes no
   direct clients, the origins are read only through the caches, and
-  the clients' direct reads must be refused.
+  the clients' direct reads must be refused. An `ssh` origin answers a
+  PUT of an empty object with 405 (v26.0.0-rc.3), so `put-declared`,
+  `put-chunked`, `put-client`, and `put-plugin` fail there at their
+  0-byte object, and every scenario that reads what `put-declared` put
+  fails with them.
 - `put-checksum` runs `pelican object put --require-checksum` of every
   size, naming the first algorithm the origins' storage reports
   (`--checksum-algorithm`; the client asks for `crc32c` otherwise). The

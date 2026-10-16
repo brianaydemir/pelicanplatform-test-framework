@@ -1,7 +1,8 @@
 """Controlling the federation's services in the middle of a run.
 
 A test may restart, stop, start, pause, unpause, or kill a service, or
-restart one with configuration of its own.
+restart one with configuration of its own; and ask what state a
+service's container is in, as when a server may have exited on its own.
 
 The dev container has no Docker, so a helper on the host,
 framework/control.py, acts for the tests: `./fed.sh test` runs one
@@ -17,7 +18,7 @@ They talk through files under framework/var/control/:
                       and empty but while restart_with() runs
 
 The helper takes the actions in ACTIONS, one at a time, on the shape's
-services but `dev`, and refuses anything else. Each call here returns
+services but `dev`, and refuses anything else; `state` only looks. Each call here returns
 once its action is done, and raises ControlError if it failed. A Pelican
 server that is restarted, started, or unpaused must also answer on its
 web port again within SERVE_WAIT seconds. A scenario should put back
@@ -43,9 +44,9 @@ REQUESTS = os.path.join(DIR, "requests")
 CONFIG = os.path.join(DIR, "config")
 
 # What the helper does, each by `docker compose <action> <service>` but
-# `ping`, which only answers; and what puts back what an action leaves
-# undone.
-ACTIONS = ("ping", "restart", "stop", "start", "pause", "unpause", "kill")
+# `ping`, which only answers, and `state`, which only looks (`docker
+# compose ps`); and what puts back what an action leaves undone.
+ACTIONS = ("ping", "state", "restart", "stop", "start", "pause", "unpause", "kill")
 UNDO = {"stop": "start", "kill": "start", "pause": "unpause"}
 
 # How long the helper lets an action run, and how long a request waits
@@ -202,6 +203,19 @@ def kill(svc: str) -> None:
         ControlError: The action failed, or the helper did not answer.
     """
     _ask("kill", svc)
+
+
+def state(svc: str) -> str:
+    """Return the state of svc's container, as `docker compose ps` says it.
+
+    That is `running`, `exited`, `paused`, and so on; "" if it has no
+    container. A server that exited on its own, as an origin that lost
+    its storage may, shows here, and start() brings it back.
+
+    Raises:
+        ControlError: The helper did not answer, or could not look.
+    """
+    return _ask("state", svc).split("\n", maxsplit=1)[0].strip()
 
 
 @contextlib.contextmanager

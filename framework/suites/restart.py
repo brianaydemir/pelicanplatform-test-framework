@@ -515,7 +515,9 @@ def record_state(test: Test, found: Recorded) -> list[str]:
     problems: list[str] = []
     for server in servers_of(test.fed):
         found.metadata[server.svc] = local_metadata(test, server)
-        if not found.metadata[server.svc].get("id"):
+        # A registered server has an ID; a standalone origin, which
+        # registers nothing, has none to keep.
+        if test.fed.registry_url and not found.metadata[server.svc].get("id"):
             problems.append(f"{server.svc} records no ID of itself ({LOCAL_METADATA})")
     listed = registered_servers(test)
     if listed is None and test.fed.registry_url:
@@ -862,6 +864,30 @@ def restart_backend(backend: str) -> Optional[str]:
     return None
 
 
+def revived(svc: str) -> Optional[str]:
+    """Start svc again if its container has exited, and say so.
+
+    An origin that cannot reach its storage may give up and exit, as an
+    ssh origin does once Origin.SSH.MaxRetries is spent, and nothing
+    would start it again; so that the rest of the run finds it serving,
+    this does.
+
+    Returns:
+        What happened to svc, if its container was not running, or it
+        did not answer; None if it answers as before.
+    """
+    if control.answers(svc):
+        return None
+    try:
+        found = control.state(svc)
+        if found == "running":
+            return f"{svc} is running but does not answer on its web port"
+        control.start(svc)
+    except control.ControlError as e:
+        return f"{svc}'s container was not running: {e}"
+    return f"{svc}'s container had {found or 'gone'}, so it was started again"
+
+
 def backend_outage(test: Test) -> list[Row]:
     """Check that an origin answers 5xx while its backend is stopped.
 
@@ -942,20 +968,34 @@ def backend_outage(test: Test) -> list[Row]:
                 rows.append(("cache", PASS, f"through {cache.svc}: {answer.describe()}"))
         if component:
             seen = ""
+            gone = False
 
             def unwell() -> bool:
-                nonlocal seen
+                nonlocal seen, gone
                 seen = health_component(test, origin, component)
-                return seen not in ("", "ok")
+                # An origin that exits answers nothing: no use waiting.
+                gone = seen == "" and not control.answers(origin.svc)
+                return gone or seen not in ("", "ok")
 
-            if common.wait_for(unwell, HEALTH_WAIT, interval=5):
-                rows.append(("health", PASS, f"{component}: {seen}"))
-            else:
+            if not common.wait_for(unwell, HEALTH_WAIT, interval=5):
                 rows.append(("health", FAIL, f"{component} stayed {seen!r} for {HEALTH_WAIT}s"))
+            elif gone:
+                rows.append(
+                    ("health", FAIL, f"{origin.svc} stopped answering with {backend} stopped")
+                )
+            else:
+                rows.append(("health", PASS, f"{component}: {seen}"))
     finally:
         started_again = restart_backend(backend)
     if started_again:
         rows.append(("recovered", FAIL, started_again))
+        return rows
+    # An origin that gave up on its storage and exited would not serve
+    # again, nor would the rest of the run find it; put it back, and say
+    # so, since the row asks for a recovery without a restart.
+    exited = revived(origin.svc)
+    if exited:
+        rows.append(("recovered", FAIL, f"with {backend} stopped, {exited}"))
         return rows
 
     def serves() -> bool:

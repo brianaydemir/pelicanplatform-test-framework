@@ -14,7 +14,7 @@ the dev container (AlmaLinux 9) and macOS ship.
 | Path                     | Holds                                                                       |
 | ------------------------ | --------------------------------------------------------------------------- |
 | `fed.sh`                 | the shape: knobs, presets, generated configuration, and Docker Compose      |
-| `test.py`                | the runner: selects suites and scenarios, runs them, and sums up            |
+| `test.py`                | the runner: selects suites and scenarios, runs them under a watchdog, and sums up |
 | `framework/suites/`      | the suites; `__init__.py` gives their contract, and the order they run in   |
 | `framework/testlib/`     | what the suites share; `__init__.py` indexes its modules                    |
 | `framework/control.py`   | the helper on the host that restarts, stops, and pauses services for the tests ([service control](../README.md#service-control)) |
@@ -67,7 +67,9 @@ is a change to its page.
 `framework/testlib/control.py` has a function for each action the
 helper takes (`restart`, `stop`, `start`, `pause`, `unpause`, and
 `kill`), each of which returns once the action is done, and for a
-restart, once the server answers again; `restart_with()`, which
+restart, once the server answers again; `state()`, which asks what
+state a service's container is in, for a test to notice a server that
+exited on its own, and start it again; `restart_with()`, which
 configures a service for the length of a `with` block; and
 `unavailable()`, which says why the tests can't control services here,
 if they can't. Its docstring describes the files under

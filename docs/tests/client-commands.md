@@ -43,7 +43,13 @@ scenarios.
   origin answered (a native origin 401, an XRootD origin 403; the
   WebDAV client it removes with turns the refusal into a 400 of its
   own), so `delete-read-only` fails, on v26.0.0-rc.3 and main alike,
-  though nothing is removed (L5).
+  though nothing is removed (L5). At a standalone origin
+  (`-p topo-standalone`), whose answer to the client names no
+  collections URL, the client takes the other path, a plain DELETE,
+  and on the origin's 403 dies of a nil pointer ("Unrecoverable error
+  (panic) in DoDelete"), which `delete-read-only` reports as a failure
+  that is no refusal (seen with v26.0.0-rc.3 in the `standalone-ssh`
+  shape); nothing is removed there either.
 - `ls -r` must list every object by its path in the tree, once.
 - `du --json` must give each collection's bytes, objects, and
   collections, and `du --count`, whose counts only its text output
@@ -69,4 +75,5 @@ scenarios.
   lands in it by the file's name (P3); of a directory without `-r`, it
   must be refused, and upload nothing (P4); and `put -r` of a tree, with
   an empty file in it, lays it out flat, under a new collection or an
-  existing one (P5, P6).
+  existing one (P5, P6). An `ssh` origin answers the empty file's PUT
+  with 405 (v26.0.0-rc.3), so `put-recursive` fails there.

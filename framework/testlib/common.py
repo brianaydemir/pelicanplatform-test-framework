@@ -544,6 +544,17 @@ class Federation:
         """The federation's URL, e.g. pelican://discovery:8444."""
         return self._line("federation-url")
 
+    @property
+    def discovery_url(self) -> str:
+        """The federation's discovery URL, e.g. https://discovery:8444.
+
+        It is the discovery host of url (FED_DISCOVERY_URL in fed.sh): a
+        standalone origin's own, which the dev container's configuration
+        does not name, since Pelican refuses a standalone origin that is
+        told where a federation is.
+        """
+        return "https://" + self.url[len("pelican://") :]
+
     @cached_property
     def issuers(self) -> dict[str, str]:
         """The issuer URL that the origins give each namespace, by name.

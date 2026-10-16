@@ -66,8 +66,12 @@ backslashes, tabs, carriage returns, and newlines are written as `\\`,
 name (with `-scitokens` after it for its SciTokens pass), with `-<tag>`
 after that if `RESULTS_TAG` names a tag, as `smoke.sh` does to tell apart
 two runs of one suite. A suite that stops early records why, as a `FAIL`
-row named `setup` or `aborted`. A run of everything first removes
-earlier runs' results with the same tag. `transfers` has a row per
+row named `setup` or `aborted`; among the reasons is `test.py`'s
+watchdog, which abandons a pass that has printed nothing for 20 minutes,
+or has run for 90, so that a scenario stuck on a server that never
+answers cannot stall a run (`STALL_SECONDS` and `BUDGET_SECONDS` in
+`test.py`). A run of everything first removes earlier runs' results with
+the same tag. `transfers` has a row per
 scenario, and one per `served-by-*` check; `auth` and `owners` have one
 per request, and per document their `keys` check fetches. To read one:
 

@@ -163,5 +163,23 @@ Shapes that Pelican offers and this framework does not, and why:
   the retired OA4MP issuer read; `Issuer.UserStripDomain`; a login at
   a transfer server (`-p topo-transfer-server`); and the browser's own
   part, which the tests play ([OIDC login](oidc-login.md)).
+- `Origin.Concurrency`, by which an XRootD origin bounds its I/O
+  through XRootD's throttle plugin, and so its `IO-concurrency` health
+  component and `Origin.ConcurrencyDegradedThreshold`, past which the
+  directors deprioritize it; the `throttling` suite slows `posixv2`
+  origins by `Origin.TransferRateLimit`, which no XRootD origin honors
+  ([throttling](throttling.md)).
+- `Origin.EnableDiskUsageCalculation`, the origin's own crawl of each
+  export's size and object count (`pelican_origin_disk_usage_*`), off
+  by default; the `cache-api` and `pstore` suites measure what a V2
+  cache and a pstore origin report of their stores instead.
+- `Xrootd.AutoShutdownEnabled` with `Origin.SelfTestMaxAge` and
+  `Cache.SelfTestMaxAge`, the fail-safe that shuts an XRootD server
+  down after an hour without a passing director test; `Cache.DirectorTest`,
+  by which a cache opts out of those tests; `Server.EnablePKCS11`, keys
+  in a hardware token; `Logging.Rotation.*`, the servers' log rotation;
+  `Server.NewUserDefaultScopes` beyond its default; and
+  `Issuer.DisableGroupAutoCreation` and `Issuer.AssertedGroupMembershipTTL`,
+  of the groups an identity provider asserts.
 - `with-grafana`, which needs a data source the framework lacks
   ([Configuration](../configuration.md#presets)).

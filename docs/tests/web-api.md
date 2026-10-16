@@ -70,16 +70,27 @@ suite.
   204), and a token made to expire in 10 seconds, two seconds after it
   does, must each be refused with 403, not a server error; the last
   must work before it expires. A POST for a token with the admin's
-  bearer token instead of the cookie must get 403. A token may carry a
-  scope that a user may be granted only if its creator holds it
-  (`validateScopesForCreator`), and the admin holds no
-  `pelican.transfer` (`server.admin` implies only `server.user_admin`
-  and `server.collection_admin`), so a POST for a token of it must be
-  refused (400 or 403), with no token. Pelican refuses it, but answers
-  200, the status of its check of the cookie (`createApiToken` in
-  `web_ui/ui.go`), so the `unheld-scope` row fails, on main and
-  v26.0.0-rc.3 alike. Every token made is deleted afterward. It skips
-  for a standalone origin.
+  bearer token instead of the cookie must get 403. A token keeps a
+  scope that a user may be granted only while its creator holds it
+  (`validateScopesForCreator` as it is made, and
+  `intersectWithUserScopes` each time it is used, in
+  `api_token/api_token.go`), and a creator who holds `server.admin`
+  holds every such scope, though no role derives it, since an
+  administrator is assumed able to do whatever a user may be granted
+  (Pelican's main since October 2026, issue #3814, and its
+  `docs/user-group-design.md`). So the admin, logged in, must be able
+  to make a token of `monitoring.query`, which no role derives, and with
+  which an outside Grafana queries a director's Prometheus, as the
+  OSDF's does: the POST must get 200 or 201 and the token, and a query
+  of `up` at the director's Prometheus with it must get 200 and a
+  successful answer (`admin-grantable`); a refused creation must not be
+  answered 200. v26.0.0-rc.3 refuses the admin the scope, since
+  `server.admin` implied only `server.user_admin` and
+  `server.collection_admin` there, and answers that refusal 200, the
+  status of its check of the cookie (`createApiToken` in
+  `web_ui/ui.go`), so the row fails there, as the OSDF's directors'
+  Grafana keys failed at the v7.27.0 upgrade. Every token made is deleted
+  afterward. It skips for a standalone origin.
 - `login`, at every server: `POST /api/v1.0/auth/login` (form fields
   `user` and `password`) as `admin`/`asdf` must get 200, and a `login`
   cookie that is `HttpOnly`, `Secure`, `SameSite=Lax`, for `Path=/`,

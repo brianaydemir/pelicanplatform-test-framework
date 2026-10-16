@@ -960,6 +960,12 @@ def backups(test: Test) -> list[Row]:
             os.chmod(key, 0o600)
         env = dict(test.session.env)
         env["PELICAN_ISSUERKEYSDIRECTORY"] = os.path.abspath(keys)
+        # The command resolves the federation's discovery as it starts,
+        # which the dev container's configuration names for every
+        # federation but a standalone origin's own (see
+        # common.Federation.discovery_url).
+        if test.fed.standalone:
+            env["PELICAN_FEDERATION_DISCOVERYURL"] = test.fed.discovery_url
         verified = 0
         for path in found:
             status, out, err = verify_backup(server, os.path.abspath(path), env, test.tmp)

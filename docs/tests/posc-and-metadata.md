@@ -4,9 +4,11 @@ Part of [What the tests check](README.md).
 
 POSC and metadata are features of the `posixv2` origin, which is the
 default, and XRootD's POSC of its `posix` origin; `fed.sh` refuses each
-with any other. The `posc` and `metadata` suites run only where they
-apply, and skip otherwise; `./fed.sh test -l posc metadata` lists their
-scenarios.
+with any other. The `metadata` suite runs only where it applies, and
+skips otherwise; the `posc` suite runs wherever `/protected-a` takes
+writes, since an interrupted upload is every origin's to get right, and
+judges it by the staging that the shape has, or by the store alone.
+`./fed.sh test -l posc metadata` lists their scenarios.
 
 - **POSC** (`-p origin-posc`): the origin stages each upload in
   `<store>/.pelican-posc/` and renames it into place once it completes.
@@ -74,6 +76,41 @@ scenarios.
   `pstore/objects` has grown to show the upload under way (`chunked`
   sends just over pstore's 1 MiB spill threshold for this). `stalled`,
   `hidden`, and `posc-expiry`, which are about POSC's staging, skip.
+- **Without staging** (every other origin: `posixv2` without POSC,
+  XRootD's `posix` without atomic uploads, `httpsv2`, `s3v2`, `ssh`,
+  `https`, and `s3`), the `posc` suite runs the same interruptions, and
+  judges them by the stores alone, as a reader would: an upload cut
+  short of its `Content-Length` (`sized`), in chunks (`chunked`), or by
+  killing the client (`client`) must leave no object, since a server
+  must not act on an incomplete request (RFC 9110, section 8.6); while
+  an upload stalls, no object may be seen, by the store or by a HEAD
+  (`stalled`); an overwrite cut short must leave the old object, served
+  meanwhile (`overwrite`); two whole uploads at once must leave one of
+  them, whole (`concurrent`); and a complete upload must land whole
+  (`commit`). The suite watches each store for the object appearing or
+  growing under `data/posc/`, which shows the upload under way; an
+  origin whose backend keeps an upload out of the store until it
+  completes, as an object store does, shows nothing, and is judged by
+  what it leaves once the bytes are out, which the row's note says.
+  `hidden` and `posc-expiry` skip, having no staging directory to ask
+  about. An origin that writes an upload into place as it comes, as
+  `posixv2` without POSC, XRootD's `posix` without atomic uploads,
+  `httpsv2`, and `ssh` do, leaves what came of a cut-short upload, shows
+  a stalled one by its length so far, and truncates the old object as
+  an overwrite begins, so `stalled`, `sized`, `chunked`, `overwrite`,
+  and `client` fail there (seen with v26.0.0-rc.3 at an `ssh` origin,
+  where each cut-short upload got 405 and left its bytes in the store,
+  and at an XRootD `posix` origin, which answers a cut-short upload
+  with nothing at all, hanging up at the TLS layer, and serves a GET of
+  the object being overwritten as 500 with a few bytes): that is
+  the hazard that POSC, atomic uploads, and pstore exist to remove, and
+  the rows show which origins still have it. `concurrent` fails where
+  two writers reach the store at once; a native origin's WebDAV layer
+  locks a path for a PUT, so the second of two gets 423 while the first
+  writes, and the row passes there. An `s3v2` origin's backend commits
+  an object whole, or not at all, so there every row should pass. An
+  `ssh` origin answers a PUT of an empty object with 405, which
+  `commit`'s 1 MiB upload does not meet.
 - **Metadata** (`-p origin-metadata`): the origins send an event for every
   object committed, overwritten, or deleted to the `metadata` recorder. It
   saves each request in `framework/var/data/metadata/` (listed in

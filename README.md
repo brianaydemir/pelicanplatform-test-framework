@@ -49,7 +49,9 @@ suites (`framework/suites/`): `federation`, `selftest`, `commands`,
 `owners`, `sitelocal`, `collections`, `issuer`, `accounts`, `oidc`,
 `advertise`, `webapi`, `observability`, `webdav`, `auth`,
 `transfers`, `restart`, and `keys`.
-A suite that doesn't apply to the shape is skipped, and says why.
+A suite that doesn't apply to the shape is skipped, and says why. A
+pass of a suite that prints nothing for 20 minutes, or runs for 90, is
+abandoned and recorded as `aborted`, and the next runs.
 [What the tests check](docs/tests/README.md) describes each one. Each
 suite runs twice, presenting WLCG tokens, then SciTokens
 ([token profiles](docs/tests/README.md#token-profiles)).
@@ -68,8 +70,9 @@ to `framework/var/results/` ([Results](docs/ci.md#results)), and
 `test.py` exits non-zero if any case failed. Pass or fail, or
 interrupted, `./fed.sh test` then keeps every service's log, from when
 its container was created, in `framework/var/logs/<time>/`: a file per
-service; `ps.txt`, the containers' states; and `test.log`, everything
-the tests printed, as it was printed. The tests restart services but
+service; `ps.txt`, the containers' states; `shape.txt`, the presets,
+topology, profiles, tag, and images; and `test.log`, everything the
+tests printed, as it was printed. The tests restart services but
 never recreate them, so these cover the whole run, and the startup
 before it; `./fed.sh up` and `restart` start a recreated container's
 log afresh.
@@ -344,8 +347,10 @@ The dev container can't control Docker, so `./fed.sh test` runs a helper
 on the host beside the tests (`framework/control.py`), which does it for
 them, and stops it when they finish. They ask it through files in
 `framework/var/control/`, and it does only those actions, with `docker
-compose`, and only on the shape's services, never `dev`. `smoke.sh` runs
-the tests through `./fed.sh test`, so it has the helper too.
+compose`, and only on the shape's services, never `dev`; it also says
+what state a service's container is in, for a test to notice a server
+that exited on its own. `smoke.sh` runs the tests through
+`./fed.sh test`, so it has the helper too.
 
 To run `test.py` by hand in the dev container with the helper, run
 `./fed.sh control` on the host beside it, and stop it with Ctrl-C when
@@ -392,7 +397,7 @@ them.
 | `data/webdav-gate/`  | the `Authorization` of every request an `https` or `httpsv2` origin sent its backend through the gate (`exports`) |
 | `data/idp/`          | every request the identity provider served (`-p auth-oidc`), one JSON object per line, without its secrets         |
 | `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                   |
-| `logs/<time>/`       | every service's log, the containers' states, and what the tests printed, as each `./fed.sh test` ended           |
+| `logs/<time>/`       | every service's log, the containers' states, the shape, and what the tests printed, as each `./fed.sh test` ended |
 | `control/`           | the tests' requests to [control services](#service-control), and their configuration of a service (`config/<svc>/`) |
 | `issuer-keys/<svc>/` | each service's issuer keys (`/fed/issuer-keys`), and `issuer/`, the external issuer's                           |
 | `test-keys/`         | private keys for the [authorization tests](docs/tests/authorization.md)                                         |

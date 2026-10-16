@@ -13,7 +13,8 @@ serves at a time: another that finds it serving leaves the tests to it.
 
 framework/testlib/control.py describes the requests, which come through
 files under framework/var/control/. Each is done, one at a time, with
-`docker compose <action> <service>`, on the shape's services but `dev`.
+`docker compose <action> <service>`, on the shape's services but `dev`;
+`state` only asks `docker compose ps` what state a container is in.
 On starting and on stopping, the helper puts back what the tests left:
 it removes their configuration from control/config/, and restarts each
 service it was in, if running; and it starts, or unpauses, what they
@@ -124,6 +125,8 @@ class Helper:
                 f"the shape has no service {svc!r} that tests may control"
                 f" (try: {', '.join(self.services)})"
             )
+        if action == "state":
+            return compose("ps", "--all", "--format", "{{.State}}", svc)
         say(f"{action} {svc}")
         ok, output = compose(action, svc)
         if ok:

@@ -112,7 +112,12 @@ several cases records a row per case, named `<scenario> <case>`.
   origin-2's key for `/other`, the issuer must be origin-2's
   (`other-owner`). Each runs with the pass's `--profile`
   ([token profiles](README.md#token-profiles)), so that in the
-  SciTokens pass the scope is `read:` and the path.
+  SciTokens pass the scope is `read:` and the path. The `public` hint
+  comes from the client's look at the namespace's capabilities, which
+  it asks of the director's UI (`getNsAd` in `cmd/token.go`,
+  `/api/v1.0/director_ui/namespaces`); a standalone origin
+  (`-p topo-standalone`) serves no such route, so there the client says
+  only that no issuer was found, and the row fails.
 - `share-url`: `pelican object share` of a collection in
   `/protected-a`, its device flow approved as the admin, whom the issuer
   grants the namespace (`client/sharing_url.go`, `cmd/object_share.go`):

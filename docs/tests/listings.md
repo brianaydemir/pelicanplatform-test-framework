@@ -34,7 +34,10 @@ that a server that lists another namespace's lists the wrong tree.
 - Deeper than Depth 0, any server, directors included, lists only a
   namespace with `Listings`, and an origin answers only direct clients,
   which a namespace without `DirectReads` has none of. A PROPFIND that may
-  not be answered must be refused with 401, 403, or 405.
+  not be answered must be refused with 401, 403, or 405. The tree holds
+  an empty object, whose PUT an `ssh` origin answers with 405
+  (v26.0.0-rc.3), so there the suite's `setup` fails, and nothing else
+  of it runs.
 - Every object in a listing must have a `getcontentlength`, 0 included.
 - Listing `/protected-a` with no token, or one scoped elsewhere, must be
   refused everywhere; listing `/public` with none must work.

@@ -74,8 +74,19 @@ every origin is stopped.
   plain HTTP server, and so answers a missing backend as missing
   objects (O12; `probeBackendMode` in `origin_serve/backend_https.go`),
   so its `direct` and `cache` rows are expected to fail; this comes
-  from reading the code, not from a run. It skips where the storage is
-  the origin's own, or XRootD's.
+  from reading the code, not from a run. An `ssh` origin answers a GET
+  with its storage host stopped 404 too, and then, once its five tries
+  to connect again are spent (`Origin.SSH.MaxRetries`, about 13
+  seconds), exits for good ("SSH connection failed after max
+  retries"), so no health report says anything, and nothing serves
+  again when the lab server is back: `direct`, `health`, and
+  `recovered` fail there (seen with v26.0.0-rc.3, in the
+  `standalone-ssh` shape). The suite then asks the control helper what
+  state the origin's container is in, and starts it again if it has
+  exited, saying so in `recovered`'s note, so that the rest of the run
+  finds the origin serving; `recovered` still fails, since the origin
+  should have come back without a restart. It skips where the storage
+  is the origin's own, or XRootD's.
 - `cache-failover`, with several federated caches: the first is paused
   (its ports take connections that nothing answers), and then killed
   (they refuse). Each time, `pelican object get` and stash_plugin of

@@ -1,12 +1,16 @@
-"""Uploads that an origin persists only on successful close (POSC).
+"""Uploads interrupted, or racing, and what an origin keeps of them.
 
 POSC (`-p origin-posc`): interrupt uploads to an origin, or race two, and
 check what its store shows, and what it serves meanwhile. The same for
 XRootD's atomic uploads (`-p origin-atomic-uploads`), which stage each
 upload beside the exports' storage rather than inside it, and for a pstore
 origin (`-p origin-pstore`), which commits a new version only when an upload
-completes, judged by what the origins serve. None of the three: the suite is
-skipped.
+completes, judged by what the origins serve. Every other origin stages
+nothing (`plain`): the same interruptions, judged by what the stores show
+of the object itself, since an upload cut short must leave no object, an
+overwrite cut short the old one, and a reader never a half-written one;
+an origin that writes an upload into place as it comes fails them, which
+is what they are there to show.
 
 Uploads go straight to the first origin in
 framework/var/generated/origins, under /protected-a/data/posc/, with a
@@ -49,8 +53,8 @@ from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 
 SCENARIOS = {
-    "commit": "a complete upload lands, and leaves no staging file",
-    "stalled": "while an upload stalls, only its staging file exists",
+    "commit": "a complete upload lands, whole, and leaves no staging file",
+    "stalled": "while an upload stalls, no object is to be seen, only any staging file",
     "sized": "an upload cut short of its Content-Length leaves nothing",
     "chunked": "a chunked upload cut short leaves nothing",
     "overwrite": "the old object is served during an overwrite, and intact once it is cut",
@@ -67,8 +71,9 @@ Row = tuple[str, str]
 EXPIRY_CASES = ("mode", "stale", "staging-put", "staging-mkcol", "idle")
 
 # The scenarios that each kind of staging cannot have, and why. A pstore
-# origin has no staging file to watch, and XRootD stages uploads outside
-# the exports, where there is nothing to hide.
+# origin has no staging file to watch, XRootD stages uploads outside the
+# exports, where there is nothing to hide, and an origin that stages
+# nothing has no staging directory to hide or to reap.
 SKIPS: dict[str, dict[str, str]] = {
     "pstore": {
         "stalled": "pstore commits a version at close, with no staging file",
@@ -77,6 +82,10 @@ SKIPS: dict[str, dict[str, str]] = {
     },
     "atomic": {
         "hidden": "XRootD stages uploads outside the exports, so there is nothing to hide",
+        "posc-expiry": "only the native POSC has Origin.Posc.FileTimeout and its reaper",
+    },
+    "plain": {
+        "hidden": "the origins stage nothing, so there is no staging directory to hide",
         "posc-expiry": "only the native POSC has Origin.Posc.FileTimeout and its reaper",
     },
 }
@@ -107,6 +116,12 @@ CONFIG_FILE = "90-posc.yaml"
 SETTLE_WAIT = 150
 
 MIB = 1 << 20
+
+# How long partial_put() reads for an answer once it has closed its
+# sending side, and how long Upload.finish() then waits for it: a server
+# that answers nothing, or hangs up, must not hold a scenario up.
+REPLY_WAIT = 60
+FINISH_WAIT = 300
 
 
 class CouldNotConnect(Exception):
@@ -205,14 +220,23 @@ def partial_put(
             sock.shutdown(socket.SHUT_WR)
         except OSError:
             pass  # the server hung up first; it may have answered
+        # A server may answer with a status line, hang up, or say
+        # goodbye at the TLS layer with no status at all, as XRootD does,
+        # which read() reports as no bytes rather than an error; and it
+        # may do none of these.
         reply = b""
+        deadline = time.monotonic() + REPLY_WAIT
         try:
-            while b"\r\n" not in reply:
+            while b"\r\n" not in reply and time.monotonic() < deadline:
                 try:
-                    reply += tls.read(4096)
+                    piece = tls.read(4096)
                 except ssl.SSLWantReadError:
                     if not pump():
                         break
+                    continue
+                if not piece:
+                    break
+                reply += piece
         except (ssl.SSLError, OSError):
             pass
         fields = reply.split(b"\r\n", 1)[0].split()
@@ -251,8 +275,9 @@ class Test:
         origin: The first origin, to which uploads go.
         origin_web: The first origin's web URL, with no path.
         kind: How uploads are staged: `posc`, `atomic` (XRootD's), or
-            `pstore`.
+            `pstore`; or `plain`, for an origin that stages nothing.
         pstore: Whether kind is `pstore`.
+        plain: Whether kind is `plain`.
         origins: The origins, each store once.
         stores: /protected-a's storage in each store.
         roots: The stores themselves, where a pstore keeps its objects and
@@ -266,7 +291,8 @@ class Test:
         setup: The token for /protected-a, of the WLCG profile, for
             finding, reading, and removing what the stores hold.
         before: The staging files there were at mark().
-        before_sizes: On pstore, the sizes of its objects' files at mark().
+        before_sizes: On pstore, the sizes of its objects' files at mark();
+            on a plain origin, of the files under data/posc in each store.
     """
 
     def __init__(self, session: Session):
@@ -280,9 +306,12 @@ class Test:
             self.kind = "posc"
         elif fed.atomic_uploads:
             self.kind = "atomic"
-        else:
+        elif self.origin.pstore:
             self.kind = "pstore"
+        else:
+            self.kind = "plain"
         self.pstore = self.kind == "pstore"
+        self.plain = self.kind == "plain"
         self.origins = stores.unique(fed.origins)
         self.stores = sorted({o.store_of("protected-a") for o in fed.origins})
         self.roots = sorted({o.store for o in fed.origins})
@@ -295,10 +324,12 @@ class Test:
         self.setup = session.setup_token("protected-a")
         self.before: set[str] = set()
         self.before_sizes: dict[str, int] = {}
-        if self.pstore:
-            errors = stores.make_dirs(fed.origins, "protected-a", "data/posc", self.setup)
-            if errors:
-                die(f"could not make /protected-a/data/posc: {errors[0]}")
+        # So that the collection is there before any upload, whichever
+        # scenario comes first, and whatever a backend makes of a PUT
+        # into a collection that is not.
+        errors = stores.make_dirs(fed.origins, "protected-a", "data/posc", self.setup)
+        if errors:
+            die(f"could not make /protected-a/data/posc: {errors[0]}")
 
     def staging(self) -> set[str]:
         """Return the staging files.
@@ -306,7 +337,8 @@ class Test:
         Under POSC, they are <storage>/.pelican-posc/<user>/in_progress.*,
         where the storage is /protected-a's, and the user the token's
         subject; under XRootD's atomic uploads, whatever is under
-        <store>/.in-progress/<user>/ (ATOMIC_DIR); on pstore, none.
+        <store>/.in-progress/<user>/ (ATOMIC_DIR); on pstore, and on an
+        origin that stages nothing, none.
         """
         found: set[str] = set()
         if self.kind == "posc":
@@ -319,11 +351,20 @@ class Test:
                 found.update(glob.glob(f"{root}/{ATOMIC_DIR}/**", recursive=True))
         return {f for f in found if os.path.isfile(f)}
 
-    def pstore_sizes(self) -> dict[str, int]:
-        """Return each pstore origin's objects' files, and their sizes."""
+    def visible_sizes(self) -> dict[str, int]:
+        """Return the files that show an upload arriving, and their sizes.
+
+        On pstore, they are each origin's objects' files; on an origin
+        that stages nothing, the files under data/posc in each store,
+        where it writes an upload into place as it comes.
+        """
         found: dict[str, int] = {}
-        for root in self.roots:
-            for path in glob.glob(f"{root}/pstore/objects/**", recursive=True):
+        if self.pstore:
+            patterns = [f"{root}/pstore/objects/**" for root in self.roots]
+        else:
+            patterns = [f"{store}/data/posc/**" for store in self.stores]
+        for pattern in patterns:
+            for path in glob.glob(pattern, recursive=True):
                 if os.path.isfile(path):
                     found[path] = os.path.getsize(path)
         return found
@@ -331,21 +372,23 @@ class Test:
     def mark(self) -> None:
         """Remember the staging files there are now.
 
-        On pstore, remember how big its objects' files are.
+        On pstore, and on an origin that stages nothing, remember how big
+        the files that show an upload arriving are (visible_sizes()).
         """
         self.before = self.staging()
-        if self.pstore:
-            self.before_sizes = self.pstore_sizes()
+        if self.pstore or self.plain:
+            self.before_sizes = self.visible_sizes()
 
     def under_way(self) -> bool:
         """Return whether an upload has begun to arrive since mark().
 
         It has if there is a new staging file, or on pstore, an objects'
-        file that is new or bigger.
+        file that is new or bigger, or on an origin that stages nothing,
+        a file under data/posc that is.
         """
-        if not self.pstore:
+        if not (self.pstore or self.plain):
             return self.new_staging() is not None
-        now = self.pstore_sizes()
+        now = self.visible_sizes()
         return any(size > self.before_sizes.get(path, -1) for path, size in now.items())
 
     def new_staging(self) -> Optional[str]:
@@ -477,9 +520,15 @@ class Upload:
         return self.sent.is_set()
 
     def finish(self) -> None:
-        """Let the connection go, and wait for the answer."""
+        """Let the connection go, and wait for the answer.
+
+        A connection that does not end within FINISH_WAIT seconds is left
+        to its daemon thread, and counts as no response.
+        """
         self.released.set()
-        self.thread.join()
+        self.thread.join(FINISH_WAIT)
+        if self.thread.is_alive() and not self.error:
+            self.error = f"the upload's connection did not end within {FINISH_WAIT}s"
 
 
 def watch(test: Test, upload: Upload) -> bool:
@@ -499,8 +548,27 @@ def unseen(test: Test, upload: Upload) -> str:
     """
     if upload.error:
         return upload.error
-    what = "pstore/objects did not grow" if test.pstore else "no staging file appeared"
+    if test.pstore:
+        what = "pstore/objects did not grow"
+    elif test.plain:
+        what = "nothing appeared or grew under data/posc in any store"
+    else:
+        what = "no staging file appeared"
     return f"the upload never got under way: {what} ({http(upload.status)})"
+
+
+def blind(test: Test, upload: Upload, seen: bool) -> bool:
+    """Return whether to judge upload on a plain origin though not seen.
+
+    An origin that stages nothing may keep an upload out of its store
+    until it completes, as an object store does, so that nothing shows it
+    under way: what it leaves can still be judged, once the bytes are
+    out. Elsewhere, an upload not seen under way cannot be judged.
+    """
+    return not seen and test.plain and upload.sent.is_set()
+
+
+BLIND = "the store showed nothing of the upload while it was held open"
 
 
 def holds(path: str, data: bytes) -> bool:
@@ -555,7 +623,8 @@ def held_open(test: Test, name: str) -> tuple[str, str]:
             return FAIL, f"/metrics has no {POSC_ACTIVE}"
         if found.value(POSC_ACTIVE) < 1:
             return FAIL, f"{POSC_ACTIVE} is {found.value(POSC_ACTIVE):g}"
-    return PASS, shown(test.new_staging())
+    staged = test.new_staging()
+    return PASS, shown(staged) if staged else "nothing of the upload is to be seen"
 
 
 def stalled(test: Test) -> tuple[str, str]:
@@ -569,7 +638,8 @@ def stalled(test: Test) -> tuple[str, str]:
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
     verdict: Optional[tuple[str, str]] = None
     try:
-        if watch(test, upload):
+        seen = watch(test, upload)
+        if seen or blind(test, upload, seen):
             verdict = held_open(test, name)
     finally:
         upload.finish()
@@ -601,7 +671,8 @@ def interrupted(test: Test, scenario: str, mode: str, total: int, send: int) -> 
         seen = watch(test, upload)
     finally:
         upload.finish()
-    if not seen:
+    unseen_but_judged = blind(test, upload, seen)
+    if not seen and not unseen_but_judged:
         return FAIL, unseen(test, upload)
     status = upload.status
     if not wait_for(lambda: test.new_staging() is None, 10):
@@ -616,7 +687,7 @@ def interrupted(test: Test, scenario: str, mode: str, total: int, send: int) -> 
     wrong = wrong_answer(status)
     if wrong:
         return FAIL, wrong
-    return PASS, http(status)
+    return PASS, f"{http(status)}; {BLIND}" if unseen_but_judged else http(status)
 
 
 def sized(test: Test) -> tuple[str, str]:
@@ -651,7 +722,7 @@ def overwrite(test: Test) -> tuple[str, str]:
     served: Optional[web.Response] = None
     try:
         seen = watch(test, upload)
-        if seen:
+        if seen or blind(test, upload, seen):
             served = web.request("GET", f"{test.base_url}/{name}", token=test.token)
     finally:
         upload.finish()
@@ -730,8 +801,10 @@ def client(test: Test) -> tuple[str, str]:
         ) as upload,
     ):
         # Kill it once the upload is under way, unless it finishes first,
-        # or is not seen to begin within 30 seconds.
-        seen = False
+        # or is not seen to begin within 30 seconds; but on an origin that
+        # stages nothing, whose store may show nothing until an upload
+        # completes, kill it then anyway, and judge what is left.
+        seen = unseen_but_judged = False
         for _ in range(300):
             if upload.poll() is not None:
                 break
@@ -739,6 +812,8 @@ def client(test: Test) -> tuple[str, str]:
                 seen = True
                 break
             time.sleep(0.1)
+        if not seen and test.plain and upload.poll() is None:
+            seen = unseen_but_judged = True
         code = upload.poll()
         upload.kill()
     os.remove(source)
@@ -756,7 +831,9 @@ def client(test: Test) -> tuple[str, str]:
             return FAIL, f"{shown(path)} holds {test.size(path)} of {total} bytes"
         if not wait_for(lambda: test.new_staging() is None, 10):
             return FAIL, f"staging file left: {shown(test.new_staging())}"
-        return PASS, ""
+        return PASS, (
+            "the store showed nothing of the upload while it ran" if unseen_but_judged else ""
+        )
     finally:
         # Don't leave up to 1 GiB behind.
         if path is not None:
@@ -1175,20 +1252,19 @@ RUN = {
 def skip(fed: common.Federation) -> Optional[str]:
     """Return why there is nothing to test, or None if there is something.
 
-    There is nothing without staging of uploads, or without writes.
+    There is nothing without writes.
     """
-    if not fed.posc and not fed.atomic_uploads and not fed.origins[0].pstore:
-        return (
-            "the origins stage no uploads: POSC and XRootD's atomic uploads are off, and they"
-            " are not pstore ('-p origin-posc', '-p origin-atomic-uploads', or"
-            " '-p origin-pstore')"
-        )
     if "Writes" not in fed.exports.get("protected-a", ()):
         return "/protected-a takes no writes"
     return None
 
 
-KINDS = {"posc": "POSC", "atomic": "XRootD atomic upload", "pstore": "pstore"}
+KINDS = {
+    "posc": "POSC",
+    "atomic": "XRootD atomic upload",
+    "pstore": "pstore",
+    "plain": "Unstaged upload",
+}
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:

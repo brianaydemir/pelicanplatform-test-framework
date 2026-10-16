@@ -2371,15 +2371,23 @@ fed_control_stop() {
 }
 
 # Keep every service's log in framework/var/logs/$1/, once: <svc>.log,
-# from when its container was created, and ps.txt, the containers'
-# states, beside test.log, what the tests printed (see `test` below).
-# The tests restart services but never recreate them, so a log covers
-# the whole run, and the startup before it.
+# from when its container was created; ps.txt, the containers' states;
+# and shape.txt, the presets, topology, profiles, and images, beside
+# test.log, what the tests printed (see `test` below). The tests restart
+# services but never recreate them, so a log covers the whole run, and
+# the startup before it.
 fed_save_logs() {
   [ -n "$1" ] && [ -z "${fed_logs_saved:-}" ] || return 0
   fed_logs_saved=yes
   dir="framework/var/logs/$1"
   mkdir -p "${dir}" || { warn "cannot save the services' logs in ${dir}/"; return 0; }
+  {
+    printf 'Presets:  %s\nTopology: %s\nProfiles: %s\nTag:      %s\n' \
+        "${presets:-(default)}" "${fed_topology}" "${COMPOSE_PROFILES:-(none)}" \
+        "${PELICAN_TAG}"
+    printf 'Images:   %s %s %s %s\n' \
+        "${IMAGE_ORIGIN}" "${IMAGE_CACHE}" "${IMAGE_DIRECTOR}" "${IMAGE_REGISTRY}"
+  } >"${dir}/shape.txt"
   docker compose ps --all >"${dir}/ps.txt" 2>&1 || true
   for svc in $(docker compose ps --all --services 2>/dev/null); do
     docker compose logs --no-color --no-log-prefix --timestamps "${svc}" \

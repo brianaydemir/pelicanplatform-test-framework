@@ -68,8 +68,9 @@ each):
   tiering, posc, metadata, users, owners, sitelocal, collections,
   issuer, accounts
                  features that not every shape has; each skips where a
-                 shape lacks them. posc restarts the first origin with
-                 a short staging timeout; metadata restarts it with
+                 shape lacks them, but posc, which runs wherever
+                 /protected-a takes writes. posc restarts the first
+                 origin with a short staging timeout; metadata restarts it with
                  retries put off and its publish queue capped, and again
                  with a frequent reconcile sweep; users restarts the
                  origins with a username claim; each restores what it

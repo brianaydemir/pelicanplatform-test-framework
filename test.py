@@ -29,20 +29,25 @@ sitelocal, collections, issuer, accounts, oidc, advertise, webapi,
 observability, webdav, auth, transfers, restart, and keys.
 `federation/ready` and `federation/caches` run first whatever is asked
 for, and if the federation never serves, nothing else runs. A suite
-that doesn't apply to the shape, such as posc without POSC or pstore, is
-skipped. Each pass of a suite writes a row per case to
+that doesn't apply to the shape, such as pstore without a pstore origin,
+is skipped. Each pass of a suite writes a row per case to
 framework/var/results/<suite>.tsv (or <suite>-scitokens.tsv); a run of
 everything first removes the results of earlier runs with the same
-RESULTS_TAG.
+RESULTS_TAG. A pass that prints nothing for STALL_SECONDS, or runs for
+BUDGET_SECONDS, is abandoned, and recorded as `aborted`, so that a
+scenario stuck on a server that never answers cannot stall the run.
 """
 
 import contextlib
 import os
+import signal
 import sys
 import tempfile
+import threading
 import time
 import traceback
-from typing import Optional
+from collections.abc import Generator
+from typing import Any, Optional, TextIO
 
 # No __pycache__ in the checkout, where the dev container would leave it
 # root's.
@@ -59,6 +64,86 @@ from testlib.session import Session
 # pylint: enable=wrong-import-position
 
 RESULTS = os.path.join(common.VAR, "results")
+
+# A suite's pass is abandoned once it has printed nothing for this long
+# (every suite prints each row as it records it, and the long-running
+# ones their progress; the longest silence a healthy pass has is a few
+# minutes), or once it has run for this long, however much it prints.
+STALL_SECONDS = 20 * 60
+BUDGET_SECONDS = 90 * 60
+
+
+class Stalled(Exception):
+    """A suite's pass that the watchdog gave up on (see watched())."""
+
+
+class Activity:
+    """A text stream that notes when it was last written to.
+
+    It stands in for sys.stdout and sys.stderr, so that the watchdog can
+    tell a pass that is getting on from one that is stuck.
+    """
+
+    last_write = time.monotonic()
+
+    def __init__(self, stream: TextIO):
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        """Write text, and note the time."""
+        Activity.last_write = time.monotonic()
+        return self._stream.write(text)
+
+    def writelines(self, lines: Any) -> None:
+        """Write each of lines, and note the time."""
+        Activity.last_write = time.monotonic()
+        self._stream.writelines(lines)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+@contextlib.contextmanager
+def watched(name: str) -> Generator[None, None, None]:
+    """Abandon the pass of suite name within the block if it stalls.
+
+    A thread watches the output and the clock; when the pass has printed
+    nothing for STALL_SECONDS, or has run for BUDGET_SECONDS, it sends
+    the process SIGALRM, whose handler raises Stalled in the main thread,
+    wherever it is: a blocked read or join included, since a signal
+    interrupts those. The suite's cleanup runs as for any other error.
+    SIGALRM is ignored outside the block, so a late one does no harm.
+    """
+    why: list[str] = []
+    stop = threading.Event()
+    started = time.monotonic()
+    Activity.last_write = started
+
+    def watch() -> None:
+        while not stop.wait(5):
+            now = time.monotonic()
+            if now - started > BUDGET_SECONDS:
+                why.append(f"{name} ran for {BUDGET_SECONDS}s, and was abandoned")
+            elif now - Activity.last_write > STALL_SECONDS:
+                why.append(f"{name} printed nothing for {STALL_SECONDS}s, and was abandoned")
+            else:
+                continue
+            print(f"\n{common.PROG}: {why[0]}", file=sys.stderr)
+            os.kill(os.getpid(), signal.SIGALRM)
+            return
+
+    def alarm(_signum: int, _frame: Any) -> None:
+        raise Stalled(why[0] if why else f"{name} was abandoned")
+
+    signal.signal(signal.SIGALRM, alarm)
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        watcher.join()
+        signal.signal(signal.SIGALRM, signal.SIG_IGN)
 
 
 def current_shape() -> Optional[common.Federation]:
@@ -172,7 +257,8 @@ def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report,
             for scenario in selected:
                 report.add(scenario, SKIP, why, seconds=None)
         else:
-            module.run(session, selected, results)
+            with watched(report.suite):
+                module.run(session, selected, results)
     except common.Died as e:
         error = e.message
     except KeyboardInterrupt:
@@ -261,6 +347,9 @@ def main() -> int:
     chosen = with_required(chosen)
 
     common.enter_var()
+    sys.stdout = Activity(sys.stdout)
+    sys.stderr = Activity(sys.stderr)
+    signal.signal(signal.SIGALRM, signal.SIG_IGN)
     if not args:
         # Only this run's: with RESULTS_TAG, another tag's are another
         # run's.

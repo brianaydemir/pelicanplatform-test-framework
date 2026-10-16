@@ -59,3 +59,12 @@ percent-encodes every character of a name but letters, digits, and
   `x%41y` the decoy `xAy`, or 404 (`cache-get`, `director-get`,
   `client-get`); and it lists no collection at all (`cache-list`; see
   [listings](listings.md)).
+- An `ssh` origin (v26.0.0-rc.3, seen in the `standalone-ssh` shape)
+  gets most of these names wrong between its PUT, its GET, and its
+  listing: its store ends up with files named as the URL encodes them
+  (`%3Cangle%3E&amp;`, `%5Bbrackets%5D`, `caf%C3%A9-%E6%97%A5%E6%9C%AC`,
+  `it%27s%20%22quoted%22`, `star%2A`), a GET of `a b` serves the decoy
+  `a%20b`'s bytes, `x%41y` lands on the decoy `xAy`, and `hash#tag` and
+  `what?q=1` land on `hash` and `what`, cut at the `#` and the `?`; so
+  `origin-put`, `origin-get`, `origin-list`, `client-get`, `client-put`,
+  and `client-ls` fail there. The mechanism is not yet traced.

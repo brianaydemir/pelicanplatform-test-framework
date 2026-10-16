@@ -37,7 +37,10 @@ SciTokens pass, `storage.create`'s token is one of `write`, and
   refused (403), and change nothing at the source or the destination,
   in any store. With no `Destination`, it must get 400, and to another
   server (`https://elsewhere.invalid/...`), 502 (RFC 4918, sections 9.8
-  and 9.9), which x/net answers, changing nothing.
+  and 9.9), which x/net answers, changing nothing. An `ssh` origin's
+  helper on the storage host refuses every MOVE (403; `Rename` in
+  `ssh_posixv2/origin_filesystem.go` relays the helper's status), so
+  the MOVE within `/protected-a` fails there (v26.0.0-rc.3).
 - `copy-move-scopes`: with a `storage.create` token, a MOVE must be
   refused (401 or 403), since it removes its source, and change
   nothing; a COPY to a new path must succeed (201); and a COPY over an
