@@ -1056,16 +1056,17 @@ def serving(test: Test, filtered: frozenset[str] = frozenset()) -> Optional[str]
     """Return why the directors don't route the probe as before, or None.
 
     Each must name every federated cache, but those filtered (hosts), and
-    every origin.
+    every origin. Each is asked with the setup token, since this is a
+    check of the shape, not of the pass's tokens.
     """
     path = test.path("probe")
     for url in test.fed.directors:
         name = director.host(url)
-        found = director.ask(url, "object", path, token=test.token)
+        found = director.ask(url, "object", path, token=test.setup)
         for cache in test.caches:
             if cache.host not in filtered and not found.names(cache.host):
                 return f"{name} does not name {cache.svc}: {found.describe()}"
-        found = director.ask(url, "origin", path, token=test.token)
+        found = director.ask(url, "origin", path, token=test.setup)
         for origin in test.origins:
             if not found.names(origin.host):
                 return f"{name} does not name {origin.svc}: {found.describe()}"

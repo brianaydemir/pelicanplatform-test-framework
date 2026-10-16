@@ -30,7 +30,9 @@ needs native origins that take direct clients, since Pelican refuses
 `DirectReads` and `Listings` with `Origin.DisableDirectClients`
 (`-p origin-no-direct`); a control helper; and a topology other than
 `tiny`, whose origin is the whole federation's process. Elsewhere, those
-rows skip, and say why.
+rows skip, and say why. Nor does any shape give one origin an export
+nested in another, so `nested-export` restarts every origin once more,
+XRootD's too, with one, and restores them likewise.
 
 An `https` or `httpsv2` origin may have to present a token to its
 backend (`Origin.HttpAuthTokenFile`, a static one on every request;
@@ -131,6 +133,47 @@ skip.
   every export at once (`origin_serve/handlers.go`), so the row fails
   there, on main and v26.0.0-rc.3 alike. It skips where `/public` is not
   exported.
+- `nested-export`: an operator may nest a protected prefix in a public
+  one on one origin, as another owner may register one inside it
+  ([another owner](another-owner.md)): Pelican picks a path's export by
+  its longest prefix (`LongestNSMatch`), and its native origin's
+  authorization speaks of exports nested one inside another
+  (`origin_serve/authz.go`). Every origin, XRootD's too, is restarted
+  with `/public`'s exports and one more, nested in it,
+  `/public/data/exports/<run>/secret`, with `/protected-a`'s
+  capabilities, whose storage is that directory of `/public`'s, and
+  which the origins register as they start; before the restart, two
+  objects go into `/public`'s storage at every store, `open`, beside the
+  export, and `secret/obj`, inside it. With the origins restarted, a GET
+  of `open` straight to each origin, with no token, must get it, as
+  `/public`'s (`served`); a GET of `secret/obj` with a read token for
+  the export, from the issuer the origins give it (its own, under the
+  origin's `/api/v1.0/issuer/ns`, or the one every namespace has),
+  signed with the origins' key, must get it (`token`); with such a token
+  scoped to `/elsewhere/`, be refused (401 or 403), without its bytes
+  (`wrong-scope`); and with no token, be refused too (`protected`): the
+  export takes a token, though it is nested in `/public`, which anyone
+  may read. Afterward the origins are restored, and the export's
+  registration removed, with a token of the origins' key, as `pelican
+  namespace delete` mints one. Pelican's native origin registers a
+  route group with a catch-all per export, and its router (gin) refuses
+  a catch-all whose prefix holds another route, so an origin with an
+  export nested in another panics as it starts, and never serves (O14).
+  An XRootD `posix` origin lays each export out as a symbolic link under
+  its export root, at the export's prefix (`CheckOriginXrootdEnv` in
+  `xrootd/xrootd_config.go`), so a nested export's link would go inside
+  the outer export's, where its own storage already is, and the origin
+  stops with "file exists". So the restart fails on every origin, and
+  every row with it, on v26.0.0-rc.3 and main alike. Were a native
+  origin to start, `protected` would fail there too: it grants a
+  `PublicReads` export's reads to every path it encloses (`getAcls` in
+  `origin_serve/authz.go`), the `auth` suite's `nested-protected` at the
+  origin (T4); XRootD's authfile denies the inner prefix outright. It
+  needs `/public` exported, origins that take direct clients, a control
+  helper, and a topology other than `tiny`; elsewhere it skips, and
+  says why. Since no origin starts with the export, the restart's
+  failure takes the framework's wait for a restarted server, 180
+  seconds, before the origins are restored.
 - `backend-token`: with the origins reaching their backend through the
   gate, with the static token, everything must still work, straight at
   each origin with the `server` token: a PUT of an object with a

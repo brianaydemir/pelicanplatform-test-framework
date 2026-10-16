@@ -554,10 +554,10 @@ def seed(test: Test, namespace: str, prefixes: Sequence[str]) -> None:
     token = test.session.setup_token(namespace)
     for prefix in prefixes:
         rel = f"{prefix}/obj"
-        data = os.urandom(OBJECT_SIZE)
+        content = os.urandom(OBJECT_SIZE)
         if namespace == test.namespace:
-            test.data[rel] = data
-        errors = stores.seed_everywhere(test.fed.origins, namespace, rel, data, token, caps)
+            test.data[rel] = content
+        errors = stores.seed_everywhere(test.fed.origins, namespace, rel, content, token, caps)
         if errors:
             die(f"could not put /{namespace}/{rel} in place: {errors[0]}")
     test.seeded.append(namespace)

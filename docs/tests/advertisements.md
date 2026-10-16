@@ -33,13 +33,25 @@ suite puts at every origin, in the first protected namespace, at
   counted among the ads it refused
   (`pelican_director_rejected_advertisements`): with no token; signed
   by `unknown.pem`; with the server's key but not `pelican.advertise`;
-  with `/protected-a` as its registry prefix; a cache's ad posted as an
-  origin's (`registerOrigin`), with its own key; origin-0's ad with a
-  namespace that no one registered, after which no director may name
-  origin-0 for it; and under `-p topo-multi-owner`, origin-2's ad
-  claiming `/protected-a`, after which no director may name origin-2
-  for it. A director counts no ad that comes without a token
-  (`registerServerAd` returns first), so the `no-token` rows fail.
+  with the server's key and scope, but for another audience
+  (`https://elsewhere.invalid`), from another issuer (the same), or
+  with no `exp`, each of which RFC 7519 (sections 4.1.3 and 4.1.4) and
+  the WLCG token profile have a verifier refuse (`other-audience`,
+  `other-issuer`, `no-exp`); with `/protected-a` as its registry
+  prefix; a cache's ad posted as an origin's (`registerOrigin`), with
+  its own key; origin-0's ad with a namespace that no one registered,
+  after which no director may name origin-0 for it; and under
+  `-p topo-multi-owner`, origin-2's ad claiming `/protected-a`, after
+  which no director may name origin-2 for it. A director counts no ad
+  that comes without a token (`registerServerAd` returns first), so the
+  `no-token` rows fail. It checks an advertise token's signature,
+  against the registry's keys for the server's prefix, and its scope,
+  and nothing else of it (`verifyAdvertiseToken` in
+  `director/origin_api.go`), and jwx validates `exp` only if a token has
+  one, so a server's advertise token is good at any director, from any
+  issuer, and without `exp` for as long as its key is: the
+  `other-audience`, `other-issuer`, and `no-exp` rows fail, on
+  v26.0.0-rc.3 and main alike (D8, T8).
 - `bad-broker-url`: origin-0's own ad, but with a broker URL that Go's
   `url.Parse` refuses (`http://[::1`), must get 400, with one JSON body,
   and every director must then still list its servers and name origin-0.

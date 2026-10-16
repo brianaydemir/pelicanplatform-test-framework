@@ -1327,7 +1327,7 @@ def held_event(test: Test) -> tuple[str, str]:
 
     As the first origin publishes object.deleted for what it deletes, it
     writes an object straight to its store, and DELETEs it through the
-    origin.
+    origin, with the setup token, since this is setup.
 
     Returns:
         Its event's ID and object path, once its first delivery has
@@ -1344,7 +1344,7 @@ def held_event(test: Test) -> tuple[str, str]:
     )
     if error:
         raise Problem(error)
-    answer = web.request("DELETE", test.url(name), token=test.token)
+    answer = web.request("DELETE", test.url(name), token=test.setup)
     if not answer.ok:
         raise Problem(f"DELETE of {name} got {answer.describe()}")
     found: list[dict[str, Any]] = []

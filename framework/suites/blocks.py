@@ -4291,7 +4291,9 @@ def evict_object(run_id: str, n: int) -> bytes:
 def cached(test: Test, cache: common.Cache, rel: str) -> Optional[bool]:
     """Return whether a V2 cache holds all of rel.
 
-    A HEAD with only-if-cached says (504 if not).
+    A HEAD with only-if-cached says (504 if not). It is asked with the
+    setup token, as has_age() asks: this is a check of the cache's
+    state, not of the pass's tokens.
 
     Returns:
         Whether it does, or None if the HEAD says neither.
@@ -4299,7 +4301,7 @@ def cached(test: Test, cache: common.Cache, rel: str) -> Optional[bool]:
     answer = web.request(
         "HEAD",
         f"{cache.url}/protected-a/{rel}",
-        token=test.token,
+        token=test.setup,
         headers={"Cache-Control": "only-if-cached"},
     )
     return {200: True, 504: False}.get(answer.status or 0)

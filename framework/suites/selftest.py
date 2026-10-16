@@ -34,6 +34,12 @@ from testlib.credentials import R
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
 
+# `restart-cache` presents the setup token alone, since its reads are
+# how it fills the cache and sees it serve again, not what it checks; so
+# it runs in the WLCG pass alone (see suites/__init__.py), and cache-0
+# is restarted once.
+ONE_PROFILE = ("restart-cache",)
+
 SCENARIOS = {
     "trailers": "a V2 cache's X-Transfer-Status trailer comes back when asked for, and only then",
     "jwt": (
@@ -84,14 +90,17 @@ class Test:
     Attributes:
         rel: The object's path, in /protected-a.
         data: The object's contents.
-        token: A read token for the object.
-        profile: The token's profile.
+        token: A read token for the object, of the pass's profile.
+        setup: A read token for the object, of the WLCG profile, for
+            what is setup rather than the check (`restart-cache`).
+        profile: token's profile.
     """
 
     fed: common.Federation
     rel: str
     data: bytes
     token: str
+    setup: str
     profile: str
 
     @property
@@ -300,14 +309,14 @@ def restart_cache(test: Test) -> tuple[str, str]:
     host = director.host(cache.url)
     v2 = cache.kind == "v2"
 
-    why = test.served(web.request("GET", url, token=test.token))
+    why = test.served(web.request("GET", url, token=test.setup))
     if why:
         return FAIL, f"before the restart, GET got {why}"
     held = 0.0
     if v2:
 
         def says_held() -> bool:
-            return age(web.request("HEAD", url, token=test.token)) is not None
+            return age(web.request("HEAD", url, token=test.setup)) is not None
 
         if not common.wait_for(says_held, HELD_WAIT, interval=1):
             return FAIL, f"before the restart, no Age within {HELD_WAIT}s of a whole read"
@@ -331,7 +340,7 @@ def restart_cache(test: Test) -> tuple[str, str]:
 
     def serves() -> bool:
         nonlocal answer
-        answer = web.request("GET", url, token=test.token)
+        answer = web.request("GET", url, token=test.setup)
         return answer.ok
 
     common.wait_for(serves, SERVED_WAIT, interval=5)
@@ -384,7 +393,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     clean("before the run")
     base = f"data/selftest/{session.run}"
     read = session.token(NAMESPACE, R)
-    test = Test(fed, f"{base}/object", os.urandom(200_000), read, session.profile)
+    setup = session.setup_token(NAMESPACE, R)
+    test = Test(fed, f"{base}/object", os.urandom(200_000), read, setup, session.profile)
     try:
         errors = stores.make_dirs(fed.origins, NAMESPACE, base, tokens[NAMESPACE])
         errors += stores.seed_everywhere(

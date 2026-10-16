@@ -57,12 +57,12 @@ way. The scenarios:
                     stopped
 """
 
-import functools
 import json
 import os
 import re
 import shutil
 import subprocess  # nosec B404
+import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -144,6 +144,10 @@ FAILOVER_BLOCK = 128
 # How long a V2 cache may take to say, with Age, that it holds an object
 # read whole.
 HELD_WAIT = 30
+# How long to wait out the issuer's limit on client registrations, five
+# from an address and then one a minute (as the issuer suite's
+# `registration` does), which a run soon after another may find spent.
+REGISTRATION_WAIT = 61
 # How many times skipstat-failover reads, looking for a try at the origin
 # that lacks the object.
 SKIPSTAT_TRIES = 5
@@ -559,13 +563,19 @@ class Test:
             method, f"{server_url}{self.path(name)}", token=self.token, timeout=120
         )
 
-    def held(self, cache: common.Cache, name: str) -> bool:
-        """Return whether a V2 cache says it holds all of object name.
+    def age(self, cache: common.Cache, name: str) -> Optional[int]:
+        """Return the Age with which a V2 cache says it holds all of name.
 
-        A cache says so with Age.
+        A cache says so with Age, from 0 the moment it completes the
+        object; None if it says nothing, or does not answer 200.
         """
         answer = web.request("HEAD", f"{cache.url}{self.path(name)}", token=self.setup)
-        return answer.status == 200 and answer.header("Age").strip().isdigit()
+        age = answer.header("Age").strip()
+        return int(age) if answer.status == 200 and age.isdigit() else None
+
+    def held(self, cache: common.Cache, name: str) -> bool:
+        """Return whether a V2 cache says it holds all of object name."""
+        return self.age(cache, name) is not None
 
     def fill(self, cache: common.Cache, name: str) -> Optional[str]:
         """Read object name whole through cache, which must serve it.
@@ -797,15 +807,20 @@ def plugin_ads(test: Test) -> list[Row]:
         if case == "warm":
             # A V2 cache says it holds an object, with Age, a moment after
             # serving it whole; a read before then is cold there again.
+            # The plugin counts a hit only once Age is above 0
+            # (cmd/plugin.go), so wait for a second of it.
             for name, host in cold_hosts.items():
                 for cache in test.fed.federated_caches:
                     if cache.kind != "v2" or director.host(cache.url) != host:
                         continue
-                    holds = functools.partial(test.held, cache, name)
-                    if not common.wait_for(holds, HELD_WAIT, interval=1):
+
+                    def aged(c: common.Cache = cache, n: str = name) -> bool:
+                        return (test.age(c, n) or 0) >= 1
+
+                    if not common.wait_for(aged, HELD_WAIT, interval=1):
                         problems.append(
-                            f"{cache.svc} did not say it holds {name} within {HELD_WAIT}s"
-                            + " of the cold read"
+                            f"{cache.svc} did not say it holds {name}, with an Age of a"
+                            + f" second or more, within {HELD_WAIT}s of the cold read"
                         )
         fetch = test.plugin(f"ads-{case}", urls, env)
         try:
@@ -1453,6 +1468,26 @@ def token_create_discovery(test: Test) -> list[Row]:
 # share-url
 
 
+def share_once(
+    test: Test,
+    flags: Sequence[str],
+    collection: str,
+    store: str,
+    approver: Callable[[str, str], None],
+) -> issuer.ClientRun:
+    """Run `pelican object share <flags> <collection>`, approving its flow.
+
+    The client keeps its credentials in store.
+    """
+    return issuer.run_approving(
+        test.session.pelican,
+        ["object", "share", *flags, collection],
+        issuer.client_env(test.session.env, store),
+        test.tmp,
+        approver,
+    )
+
+
 def share_url(test: Test) -> list[Row]:
     """Check the URL that `pelican object share` hands out, and its token.
 
@@ -1493,13 +1528,12 @@ def share_url(test: Test) -> list[Row]:
         ("url-write", ["--write"], {f"storage.create:/{test.rel('share')}"}),
     ):
         store = os.path.join(test.tmp, f"share-{case}.store")
-        done = issuer.run_approving(
-            test.session.pelican,
-            ["object", "share", *flags, collection],
-            issuer.client_env(test.session.env, store),
-            test.tmp,
-            approver,
-        )
+        done = share_once(test, flags, collection, store, approver)
+        if done.status != 0 and "rate_limit_exceeded" in done.stderr + done.stdout:
+            # The client registers itself with the issuer first, which
+            # allows an address five registrations, then one a minute.
+            time.sleep(REGISTRATION_WAIT)
+            done = share_once(test, flags, collection, store, approver)
         if done.status != 0 or done.problems:
             why = (
                 first(done.problems) if done.problems else last_line(done.stderr or done.stdout)

@@ -163,6 +163,7 @@ class Test:
         self.base = f"data/throttling/{session.run}"
         self.token = session.token(NAMESPACE)
         self.token_file = session.token_file(NAMESPACE)
+        self.setup = session.setup_token(NAMESPACE)
         self.caps = self.fed.exports[NAMESPACE]
         self.direct = "DirectReads" in self.caps
         self.origins = self.fed.origins
@@ -225,9 +226,13 @@ class Test:
         """Return whether cache holds all of rel.
 
         It does if a HEAD with only-if-cached, which fetches nothing,
-        gets 200.
+        gets 200. It is asked with the setup token: this is a check of
+        the cache's state, not of the pass's tokens.
         """
-        return self.ask("HEAD", cache.url, rel, ONLY_IF_CACHED).status == 200
+        answer = web.request(
+            "HEAD", self.url(cache.url, rel), token=self.setup, headers=ONLY_IF_CACHED
+        )
+        return answer.status == 200
 
     def wait_held(self, cache: common.Cache, rels: Sequence[str], seconds: float) -> list[str]:
         """Wait up to seconds for cache to hold each of rels.
@@ -292,16 +297,18 @@ def serving(test: Test) -> Optional[str]:
     """Return why /protected-a is not served as before, or None.
 
     Every director must name every origin for the probe, and every cache
-    answer a HEAD of it, which fetches nothing.
+    answer a HEAD of it, which fetches nothing. Each is asked with the
+    setup token, since this is a check of the shape, not of the pass's
+    tokens.
     """
     path = test.path(test.rel(PROBE))
     for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.token)
+        where = director.ask(url, "origin", path, token=test.setup)
         for origin in test.origins:
             if not where.names(director.host(origin.url)):
                 return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
     for cache in test.fed.federated_caches:
-        answer = test.ask("HEAD", cache.url, test.rel(PROBE))
+        answer = web.request("HEAD", test.url(cache.url, test.rel(PROBE)), token=test.setup)
         if answer.status != 200 or answer.header("Content-Length") != str(PROBE_SIZE):
             return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
     return None

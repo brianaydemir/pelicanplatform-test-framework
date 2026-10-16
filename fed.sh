@@ -13,7 +13,8 @@
 #   ./fed.sh keys                 list issuer keys (also: init, add, rotate)
 #   ./fed.sh dev [CMD]...         run a shell (or CMD) in the dev container
 #   ./fed.sh test [ARG]...        run ./test.py in the dev container, then
-#                                 keep the services' logs in var/logs/
+#                                 keep its output and the services' logs
+#                                 in var/logs/
 #   ./fed.sh control              let a test.py run by hand control services
 #   ./fed.sh status               show containers, presets, and images
 #   ./fed.sh check                exit 0 if fed.sh accepts the presets
@@ -2296,8 +2297,8 @@ fed_require_certs() {
     warn "framework/var/certs/ has expired or expires within a day;" \
          "replace it with './${progname} init'"
   elif ! fed_certs_current; then
-    warn "framework/etc/tls.req names hosts that the server certificate" \
-         "does not; reissue it with './${progname} init'"
+    warn "framework/etc/tls.req has changed since the server certificate was" \
+         "issued; reissue it with './${progname} init'"
   fi
 }
 
@@ -2371,8 +2372,9 @@ fed_control_stop() {
 
 # Keep every service's log in framework/var/logs/$1/, once: <svc>.log,
 # from when its container was created, and ps.txt, the containers'
-# states. The tests restart services but never recreate them, so a log
-# covers the whole run, and the startup before it.
+# states, beside test.log, what the tests printed (see `test` below).
+# The tests restart services but never recreate them, so a log covers
+# the whole run, and the startup before it.
 fed_save_logs() {
   [ -n "$1" ] && [ -z "${fed_logs_saved:-}" ] || return 0
   fed_logs_saved=yes
@@ -2642,8 +2644,24 @@ case "${cmd}" in
     trap 'fed_control_stop; fed_save_logs "${logs}"; exit 130' INT
     trap 'fed_control_stop; fed_save_logs "${logs}"; exit 143' TERM
     status=0
-    docker compose -f framework/docker-compose.yaml \
-        exec ${no_tty:+"${no_tty}"} dev "$@" || status=$?
+    if [ -n "${logs}" ]; then
+      # What the tests print is kept beside the services' logs, as
+      # test.log (see fed_save_logs), through a pipe, so the tests get
+      # no TTY, and the subshell leaves the exit status in a file.
+      log_dir="framework/var/logs/${logs}"
+      mkdir -p "${log_dir}"
+      {
+        docker compose -f framework/docker-compose.yaml exec -T dev "$@" 2>&1 \
+            || printf '%s\n' "$?" >"${log_dir}/.status"
+      } | tee "${log_dir}/test.log"
+      if [ -f "${log_dir}/.status" ]; then
+        status=$(cat "${log_dir}/.status")
+        rm -f "${log_dir}/.status"
+      fi
+    else
+      docker compose -f framework/docker-compose.yaml \
+          exec ${no_tty:+"${no_tty}"} dev "$@" || status=$?
+    fi
     fed_control_stop
     fed_save_logs "${logs}"
     exit "${status}"

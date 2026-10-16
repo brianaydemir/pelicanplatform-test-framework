@@ -56,6 +56,8 @@ origin, reads it, and removes it.
   first said it held it all, which only the record it kept can give
   (`Age` counts from when the object was completed, and a cache that
   fetched it again would send none). An XRootD cache need only serve
-  the bytes. It skips where no helper serves the run, in the tiny
-  topology, whose cache is the whole federation's process, and where
-  there is no cache-0.
+  the bytes. Its reads present the setup token, since they fill the
+  cache and see it serve again, and check no token, so it runs in the
+  WLCG pass alone, and restarts cache-0 once. It skips where no helper
+  serves the run, in the tiny topology, whose cache is the whole
+  federation's process, and where there is no cache-0.

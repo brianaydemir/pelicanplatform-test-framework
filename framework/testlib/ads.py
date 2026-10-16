@@ -156,21 +156,22 @@ class Servers:
         return sign(key, kid, scope, web_url, self.director, web_url)
 
 
-def sign(key: str, kid: str, scope: str, issuer: str, audience: str, subject: str = "") -> str:
-    """Return a token of scope, from issuer, for audience.
+def claims(scope: str, issuer: str, audience: str, subject: str = "") -> dict[str, Any]:
+    """Return the claims of a token of scope, from issuer, for audience.
 
-    It lasts TOKEN_LIFETIME seconds.
+    They are those of a server's own advertise token (GetAdvertisementTok
+    in Pelican's server_utils/server_utils.go), issued now, lasting
+    TOKEN_LIFETIME seconds, for a test to change before sign_claims()
+    signs them.
 
     Args:
-        key: The PEM file, under framework/var, to sign it with.
-        kid: The key ID to sign it under.
         scope: Its scope.
         issuer: Its issuer.
         audience: Its audience.
         subject: Its subject, if not credentials.SUBJECT.
     """
     now = int(time.time())
-    claims = {
+    return {
         "aud": [audience],
         "exp": now + TOKEN_LIFETIME,
         "iat": now,
@@ -181,7 +182,33 @@ def sign(key: str, kid: str, scope: str, issuer: str, audience: str, subject: st
         "sub": subject or credentials.SUBJECT,
         "wlcg.ver": "1.0",
     }
-    return jwt.encode(jwt.header(jwt.algorithm(key), kid), claims, key=key)
+
+
+def sign_claims(key: str, kid: str, body: Mapping[str, Any]) -> str:
+    """Return a token of the claims body, signed with key under kid.
+
+    Args:
+        key: The PEM file, under framework/var, to sign it with.
+        kid: The key ID to sign it under.
+        body: Its claims, as claims() returns them.
+    """
+    return jwt.encode(jwt.header(jwt.algorithm(key), kid), body, key=key)
+
+
+def sign(key: str, kid: str, scope: str, issuer: str, audience: str, subject: str = "") -> str:
+    """Return a token of scope, from issuer, for audience.
+
+    It lasts TOKEN_LIFETIME seconds (see claims()).
+
+    Args:
+        key: The PEM file, under framework/var, to sign it with.
+        kid: The key ID to sign it under.
+        scope: Its scope.
+        issuer: Its issuer.
+        audience: Its audience.
+        subject: Its subject, if not credentials.SUBJECT.
+    """
+    return sign_claims(key, kid, claims(scope, issuer, audience, subject))
 
 
 def unknown_token(scope: str, issuer: str, audience: str) -> str:

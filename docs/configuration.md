@@ -62,7 +62,8 @@ EOF
   layer ([throttling](tests/throttling.md)).
 - No preset gives an export without `Listings`, or one without
   `DirectReads` beside others with them, or turns copies off
-  (`Origin.DisableCopies`). The `exports` suite restarts the origins
+  (`Origin.DisableCopies`); nor does one give an origin an export
+  nested in another. The `exports` suite restarts the origins
   so for a while, in the tests' own layer, with `fed.sh`'s
   `Origin.Exports` restated, which then also replaces any of yours
   ([exports and copies](tests/exports-and-copies.md)). Nor does one

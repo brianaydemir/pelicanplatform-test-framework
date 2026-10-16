@@ -7,7 +7,9 @@ turn away a caller who lies, and serve the real thing.
 
   forged-ads           an ad is taken only with its server's own key,
                        the advertise scope, a server's registry prefix of
-                       its kind, and, for an origin, its namespaces' keys
+                       its kind, and, for an origin, its namespaces' keys;
+                       and only with a token for this director, from the
+                       server, that expires
   bad-broker-url       an origin's ad whose broker URL does not parse gets
                        400, and the directors serve on
   spoofed-status       a cache's own key may take it out of routing, by
@@ -54,7 +56,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Optional
 from urllib.parse import quote, urlencode, urlsplit
 
-from testlib import accounts, common, credentials, director, jwt, metrics, stores, web
+from testlib import accounts, ads, common, credentials, director, jwt, metrics, stores, web
 from testlib.ads import (
     ADVERTISE,
     SERVERS,
@@ -74,7 +76,8 @@ from testlib.session import Session
 
 SCENARIOS = {
     "forged-ads": (
-        "an ad is taken only with its server's own key and scope, and a prefix of its kind"
+        "an ad is taken only with its server's own key and scope, a prefix of its kind, and a"
+        " token for this director, from the server, that expires"
     ),
     "bad-broker-url": "an ad whose broker URL does not parse gets 400; the directors serve on",
     "spoofed-status": (
@@ -236,12 +239,31 @@ def forged(
 Variant = tuple[str, str, dict[str, Any], Optional[str], Optional[tuple[str, Server]]]
 
 
+def everlasting(key: str, kid: str, issuer: str, audience: str) -> str:
+    """Return an advertise token like sign()'s, but with no `exp`.
+
+    The WLCG token profile requires `exp`; a token without one would be
+    good for as long as its key is.
+    """
+    body = ads.claims(ADVERTISE, issuer, audience, issuer)
+    del body["exp"]
+    return ads.sign_claims(key, kid, body)
+
+
 def forged_ads(test: Test) -> list[Row]:
     """Check that the directors take servers' own ads, and no forgeries.
 
     Post origin-0's and the first cache's own ads, as each, to every
     director, which must take them (200); then variants of each, each
-    changed in one way, which every director must refuse (403).
+    changed in one way, which every director must refuse (403): among
+    them the server's own ad with a token of its key and scope, but for
+    another audience, from another issuer, or with no `exp`, which RFC
+    7519 (sections 4.1.3 and 4.1.4) and the WLCG token profile say a
+    verifier must refuse. Pelican's director checks an advertise token's
+    signature, against the registry's keys for the server's prefix, and
+    its scope alone (verifyAdvertiseToken in director/origin_api.go),
+    and jwx validates `exp` only if a token has one, so those three rows
+    fail, on v26.0.0-rc.3 and main alike.
     """
     fed = test.fed
     origin = test.server("Origin", director.host(fed.origins[0].url))
@@ -290,6 +312,27 @@ def forged_ads(test: Test) -> list[Row]:
                 server.kind,
                 ad(server, **{"registry-prefix": f"/{test.namespace}"}),
                 genuine,
+                None,
+            ),
+            (
+                f"{kind}-other-audience",
+                server.kind,
+                ad(server),
+                sign(key, kid, ADVERTISE, web_url, ELSEWHERE, web_url),
+                None,
+            ),
+            (
+                f"{kind}-other-issuer",
+                server.kind,
+                ad(server),
+                sign(key, kid, ADVERTISE, ELSEWHERE, test.director, web_url),
+                None,
+            ),
+            (
+                f"{kind}-no-exp",
+                server.kind,
+                ad(server),
+                everlasting(key, kid, web_url, test.director),
                 None,
             ),
         ]

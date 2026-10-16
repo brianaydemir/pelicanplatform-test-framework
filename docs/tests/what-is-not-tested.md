@@ -14,6 +14,15 @@ Shapes that Pelican offers and this framework does not, and why:
   a key alone. Both of its connection modes run: the helper connecting
   back to the origin by default, and the origin dialing the helper
   through the SSH connection under `-p origin-ssh-tunnel`.
+- An `https` or `httpsv2` origin that gets the token it presents its
+  backend from an OAuth2 issuer, by client credentials
+  (`Origin.HttpAuthOAuth2Issuer`, `HttpAuthOAuth2ClientID`, and
+  `HttpAuthOAuth2ClientSecretFile`), which would need an issuer that
+  grants them; the `exports` suite has the origins present a static
+  token, and the client's own
+  ([exports and copies](exports-and-copies.md)).
+- Macaroons at XRootD origins (`Origin.EnableMacaroons`), which no
+  Pelican client presents.
 - Of an export that anyone may read and a token may write
   (`-p origin-public-writes`), a key of its own beside the origins'
   (`IssuerJwks`): `/public` trusts the origins' keys alone, so the
@@ -66,6 +75,12 @@ Shapes that Pelican offers and this framework does not, and why:
   `localcache` module, a client-side cache over a Unix socket; and
   `Client.FileRedirectRoots`, by which a cache sends a client that
   shares its filesystem to a file instead of bytes.
+- A V2 cache's data scan in its `once` mode (`Cache.DataScanMode`), for
+  storage that keeps its own integrity, which checks each object once
+  and never again; the `cache-api` suite scans in the default mode,
+  which checks every object every time ([cache APIs](cache-apis.md)).
+- A server whose web API refuses every change (`Server.WebReadOnly`),
+  under which the `webapi` suite's admin would be refused too.
 - A cache over several storage directories, as one with several disks
   is: a V2 cache's `LocalCache.StorageDirs`, across which it stripes
   objects larger than `LocalCache.ChunkSize` and evicts by each

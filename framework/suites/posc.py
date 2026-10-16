@@ -540,9 +540,10 @@ def held_open(test: Test, name: str) -> tuple[str, str]:
     """Return `stalled`'s verdict on object name's upload.
 
     Call it while the upload is held open and its staging file exists.
-    Only POSC counts the upload in a metric.
+    Only POSC counts the upload in a metric. The HEAD presents the setup
+    token: it checks what the origin shows, not the pass's tokens.
     """
-    answer = web.request("HEAD", f"{test.base_url}/{name}", token=test.token)
+    answer = web.request("HEAD", f"{test.base_url}/{name}", token=test.setup)
     path = test.object_file(name)
     if path is not None:
         return FAIL, f"{shown(path)} is visible before the upload finished"

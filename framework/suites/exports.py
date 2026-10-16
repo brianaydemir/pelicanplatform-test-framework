@@ -28,6 +28,10 @@ could serve, or destroy, more than its configuration allows.
   direct-reads-capability  an export without DirectReads, beside others
                            with it, refuses a GET straight to the origin,
                            and serves one through a cache
+  nested-export            an export nested in /public, which takes a
+                           token: the origin starts and serves both, the
+                           nested one to a token for it alone, and to no
+                           one without a token
   backend-token            an https or httpsv2 origin that reaches its
                            backend with a static token
                            (Origin.HttpAuthTokenFile): every request it
@@ -47,9 +51,11 @@ Listings and /public without DirectReads, and Origin.DisableCopies.
 Afterward it restores them. This needs native origins that take direct
 clients, a control helper, and a topology other than `tiny`, whose
 origin is the whole federation's process; elsewhere those rows skip.
-The backend scenarios likewise restart the origins to reach their
-backend through the `webdav-gate` service, which logs what each request
-carried (see GATE_LOG).
+`nested-export` restarts them once more, every origin, XRootD's too,
+with an export of the run's own nested in /public, which no shape has
+either (nest()). The backend scenarios likewise restart the
+origins to reach their backend through the `webdav-gate` service, which
+logs what each request carried (see GATE_LOG).
 
 Each scenario asks only the native origins (origin_serve/ in Pelican)
 but `multipart-put` and disable-copies's `public` row, which ask an
@@ -73,7 +79,7 @@ from functools import partial
 from typing import Optional
 from urllib.parse import quote
 
-from testlib import common, control, director, stores, web, webdav
+from testlib import common, control, credentials, director, jwt, registry, stores, web, webdav
 from testlib.common import Findings, die, first, warn
 from testlib.recorder import index
 from testlib.report import FAIL, PASS, SKIP
@@ -92,6 +98,10 @@ SCENARIOS = {
     "listings-capability": "an export without Listings refuses Depth 1 and HTML listings",
     "direct-reads-capability": (
         "an export without DirectReads refuses a direct GET, and serves one through a cache"
+    ),
+    "nested-export": (
+        "an export nested in /public, which takes a token: the origin serves both, and the"
+        " nested one to its own token alone"
     ),
     "backend-token": (
         "an HTTPS backend reached with a static token (Origin.HttpAuthTokenFile): every"
@@ -112,6 +122,7 @@ NAMESPACE = "protected-a"
 # row per case, named `<scenario> <case>`.
 MULTIPART_CASES = ("pelican-shaped", "form-shaped")
 FAILURE_CASES = ("bad-source", "source-error", "missing-source", "mid-stream")
+NESTED_CASES = ("served", "token", "wrong-scope", "protected")
 ROWS: dict[str, tuple[str, ...]] = {
     "multipart-put": tuple(f"multipart-put {c}" for c in MULTIPART_CASES),
     "tpc-body": ("tpc-body",),
@@ -119,6 +130,7 @@ ROWS: dict[str, tuple[str, ...]] = {
     "disable-copies": ("disable-copies public", "disable-copies disabled"),
     "listings-capability": ("listings-capability",),
     "direct-reads-capability": ("direct-reads-capability",),
+    "nested-export": tuple(f"nested-export {c}" for c in NESTED_CASES),
     "backend-token": ("backend-token",),
     "backend-passthrough": ("backend-passthrough",),
 }
@@ -164,6 +176,16 @@ GENERATED_EXPORTS = (
     "generated/instance/{svc}/60-origin-exports.yaml",
     "generated/conf/60-origin-exports.yaml",
 )
+
+# The nested export's restart: its configuration layer, fed.sh's
+# Origin.Exports with the export added (nest()); the export's name
+# under the run's collection in /public, and the object beside it; and
+# their size. Its tokens last a while.
+NESTED_FILE = "93-nested.yaml"
+NESTED = "secret"
+OPEN = "open"
+NESTED_SIZE = 3000
+NESTED_TOKEN_LIFETIME = 600
 
 # The HTTPS backends' gate (`webdav-gate` in docker-compose.yaml): nginx
 # in front of the `webdav` service, which relays every request and logs
@@ -894,6 +916,20 @@ def restate(text: str, caps: Mapping[str, Sequence[str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def generated_exports(svc: str) -> str:
+    """Return fed.sh's Origin.Exports for origin svc (GENERATED_EXPORTS).
+
+    Raises:
+        SetupError: It is missing.
+    """
+    for pattern in GENERATED_EXPORTS:
+        path = pattern.format(svc=svc)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return f.read()
+    raise SetupError(f"framework/var/{GENERATED_EXPORTS[-1]} is missing; run ./fed.sh init")
+
+
 def restart_files(svc: str, layout: Layout) -> dict[str, str]:
     """Return the configuration of origin svc's restart.
 
@@ -904,13 +940,8 @@ def restart_files(svc: str, layout: Layout) -> dict[str, str]:
         SetupError: fed.sh's Origin.Exports is missing, or lacks an
             export's Capabilities.
     """
-    for pattern in GENERATED_EXPORTS:
-        path = pattern.format(svc=svc)
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                text = f.read()
-            return {EXPORTS_FILE: restate(text, layout.caps), COPIES_FILE: COPIES_CONFIG}
-    raise SetupError(f"framework/var/{GENERATED_EXPORTS[-1]} is missing; run ./fed.sh init")
+    text = generated_exports(svc)
+    return {EXPORTS_FILE: restate(text, layout.caps), COPIES_FILE: COPIES_CONFIG}
 
 
 def seed_restart(test: Test, layout: Layout) -> dict[str, bytes]:
@@ -982,21 +1013,22 @@ def serving(test: Test) -> Optional[str]:
 
     To be served, every origin must answer a HEAD of the probe, every
     director name every origin for it, and every federated cache answer
-    a HEAD of it.
+    a HEAD of it. Each is asked with the setup token, since this is a
+    check of the shape, not of the pass's tokens.
     """
     rel = f"{test.base}/{PROBE}"
     for origin in test.fed.origins:
-        answer = web.request("HEAD", stores.url(origin, NAMESPACE, rel), token=test.token)
+        answer = web.request("HEAD", stores.url(origin, NAMESPACE, rel), token=test.setup)
         if answer.status != 200:
             return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
     path = f"/{NAMESPACE}/{rel}"
     for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.token)
+        where = director.ask(url, "origin", path, token=test.setup)
         for origin in test.fed.origins:
             if not where.names(director.host(origin.url)):
                 return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
     for cache in test.fed.federated_caches:
-        answer = web.request("HEAD", f"{cache.url}/{NAMESPACE}/{quote(rel)}", token=test.token)
+        answer = web.request("HEAD", f"{cache.url}/{NAMESPACE}/{quote(rel)}", token=test.setup)
         if answer.status != 200:
             return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
     return None
@@ -1151,6 +1183,368 @@ def direct_reads_capability(test: Test, layout: Layout, data: Mapping[str, bytes
     if not caches:
         found.notes.append("no federated cache to read it through")
     return found.row(f"/{namespace} without DirectReads")
+
+
+# --------------------------------------------------------------------------
+# nested-export
+
+
+def unnestable(test: Test) -> Optional[str]:
+    """Return why no export can be nested in /public for a while, or None.
+
+    The origins must export /public, and take direct clients, since
+    Pelican refuses an export with DirectReads or Listings beside
+    Origin.DisableDirectClients; and the restart needs a control helper,
+    and a topology other than `tiny`.
+    """
+    fed = test.fed
+    if "public" not in fed.exports:
+        return "this shape does not export /public"
+    if "DirectReads" not in fed.exports[NAMESPACE]:
+        return (
+            "the origins take no direct clients (Origin.DisableDirectClients), with which Pelican"
+            " refuses an export with DirectReads or Listings"
+        )
+    if fed.tiny:
+        return "the tiny topology's origin is the whole federation's process"
+    return control.unavailable()
+
+
+def nested_issuer(fed: common.Federation, prefix: str) -> str:
+    """Return the issuer URL that the origins give an export of prefix.
+
+    It is derived as fed.sh derives /protected-a's (fed_issuer_url):
+    with the embedded issuer, each namespace has one of its own, under
+    the origin's /api/v1.0/issuer/ns; otherwise every namespace has one,
+    the origin itself, or the external issuer.
+    """
+    known = fed.issuer_of(NAMESPACE)
+    route = f"/api/v1.0/issuer/ns/{NAMESPACE}"
+    if known.endswith(route):
+        return known[: -len(route)] + "/api/v1.0/issuer/ns" + prefix
+    return known
+
+
+def nest(text: str, prefix: str, caps: Sequence[str], issuer: str) -> str:
+    """Return text, fed.sh's Origin.Exports, with an export of prefix added.
+
+    The export is nested in /public: a copy of /public's entry, with
+    prefix as its FederationPrefix, caps as its Capabilities, and what
+    of prefix is below /public appended to its StoragePrefix, so that
+    its storage is a directory of /public's. Where fed.sh pinned the
+    exports' issuers (IssuerUrls), the export's is pinned to issuer.
+    Everything else stays as fed.sh wrote it, since a later layer
+    replaces a list whole.
+
+    Raises:
+        SetupError: text has no entry for /public, or one without a
+            StoragePrefix.
+    """
+    lines = text.rstrip("\n").split("\n")
+    starts = [i for i, line in enumerate(lines) if re.match(r"\s*- FederationPrefix:", line)]
+    public = [i for i in starts if re.match(r"\s*- FederationPrefix:\s*/public\s*$", lines[i])]
+    if not public:
+        raise SetupError("fed.sh's Origin.Exports has no entry for /public")
+    start = public[0]
+    end = next((i for i in starts if i > start), len(lines))
+    below = prefix[len("/public") :]
+    listed = ", ".join(f'"{c}"' for c in caps)
+    entry: list[str] = []
+    for line in lines[start:end]:
+        if not line.strip() or re.match(r"\s*(IssuerUrls|IssuerJwks):", line):
+            continue
+        if re.match(r"\s*- FederationPrefix:", line):
+            line = re.sub(r"(FederationPrefix:\s*).*", lambda m: m.group(1) + prefix, line)
+        elif re.match(r"\s*Capabilities:", line):
+            line = re.sub(r"(Capabilities:\s*).*", lambda m: f"{m.group(1)}[{listed}]", line)
+            entry.append(line)
+            if "IssuerUrls:" in text:
+                indent = line[: len(line) - len(line.lstrip())]
+                entry.append(f'{indent}IssuerUrls: ["{issuer}"]')
+            continue
+        elif re.match(r"\s*StoragePrefix:", line):
+            m = re.match(r"(\s*StoragePrefix:\s*)(\S+)", line)
+            if m is None:
+                raise SetupError("fed.sh's Origin.Exports gives /public no StoragePrefix")
+            line = f"{m.group(1)}{m.group(2).rstrip('/')}{below}"
+        entry.append(line)
+    return "\n".join(lines) + "\n\n" + "\n".join(entry) + "\n"
+
+
+def nested_files(svc: str, prefix: str, caps: Sequence[str], issuer: str) -> dict[str, str]:
+    """Return the configuration of origin svc's restart with the nested export.
+
+    Returns:
+        YAML text, by file name.
+
+    Raises:
+        SetupError: fed.sh's Origin.Exports is missing, or has no /public.
+    """
+    return {NESTED_FILE: nest(generated_exports(svc), prefix, caps, issuer)}
+
+
+def seed_nested(test: Test) -> dict[str, bytes]:
+    """Put the nested export's objects in /public's storage, at every store.
+
+    Do so while the exports are as the shape has them: OPEN, beside the
+    nested export, and NESTED/obj, inside it.
+
+    Returns:
+        Their bytes, by name.
+
+    Raises:
+        SetupError: An object could not be put in place.
+    """
+    data = {OPEN: os.urandom(NESTED_SIZE), f"{NESTED}/obj": os.urandom(NESTED_SIZE)}
+    errors: list[str] = []
+    for origin in stores.unique(test.fed.origins):
+        storage = origin.storage_namespace("public")
+        token = test.session.setup_token(storage)
+        errors += stores.make_dirs([origin], storage, f"{test.base}/{NESTED}", token)
+        for name, content in data.items():
+            error = stores.seed(
+                origin,
+                storage,
+                f"{test.base}/{name}",
+                content,
+                token,
+                test.fed.exports[storage],
+            )
+            if error:
+                errors.append(error)
+    if errors:
+        raise SetupError(f"could not put the nested export's objects in place: {first(errors)}")
+    return data
+
+
+def nested_token(test: Test, prefix: str, scope_path: str) -> str:
+    """Return a read token for the export of prefix, of the session's profile.
+
+    It is like the `server` token, but names the issuer that the origins
+    give the export (nested_issuer()), and is scoped to scope_path within
+    it; the origins' key signs it.
+    """
+    fed = test.fed
+    body = credentials.server_claims(
+        fed,
+        NAMESPACE,
+        ("read",),
+        scope_path,
+        NESTED_TOKEN_LIFETIME,
+        profile=test.session.profile,
+    )
+    body["iss"] = nested_issuer(fed, prefix)
+    key = fed.origin_key
+    return jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), body, key=key)
+
+
+def unregister(test: Test, prefix: str) -> Optional[str]:
+    """Remove prefix's registration, which the origins made as they started.
+
+    A DELETE of /api/v1.0/registry/<prefix> takes a token of
+    pelican.namespace_delete signed with a key registered for the prefix,
+    here the origins' (deleteNamespaceHandler in registry/registry.go),
+    as `pelican namespace delete` mints one. A prefix never registered
+    (400), as when the origins never started with the export, or one
+    already gone (404), leaves nothing to do.
+
+    Returns:
+        Why the registration stays, or None if it is gone, or there is
+        no registry (a standalone origin).
+    """
+    if not test.fed.registry_url:
+        return None
+    url = f"{test.fed.registry_url}/api/v1.0/registry{quote(prefix, safe='/:')}"
+    token = registry.token(
+        test.fed.origin_key, registry.NAMESPACE_DELETE, "origin", url, audience="registry"
+    )
+    answer = web.request("DELETE", url, token=token)
+    if answer.status in (200, 400, 404):
+        return None
+    return f"DELETE of {prefix}'s registration got {answer.describe()}"
+
+
+def nested_get(
+    test: Test, origin: common.Origin, name: str, token: Optional[str]
+) -> web.Response:
+    """GET object name of the nested export's collection at origin, in /public."""
+    return web.request("GET", stores.url(origin, "public", f"{test.base}/{name}"), token=token)
+
+
+def nested_served(
+    test: Test, prefix: str, data: Mapping[str, bytes], _token: str, _wrong: str
+) -> Row:
+    """Check that each origin serves OPEN, beside the nested export, to anyone.
+
+    /public is as it was, so a GET with no token must get the object.
+    """
+    found = Findings()
+    for origin in test.fed.origins:
+        answer = nested_get(test, origin, OPEN, None)
+        if answer.status != 200:
+            found.problems.append(
+                f"{origin.svc}: a GET of {OPEN} with no token got {answer.describe()}"
+            )
+        elif answer.body != data[OPEN]:
+            found.problems.append(
+                f"{origin.svc}: a GET of {OPEN} with no token got other bytes"
+            )
+    return found.row(f"/public beside {prefix}, at {len(test.fed.origins)} origin(s)")
+
+
+def nested_with_token(
+    test: Test, prefix: str, data: Mapping[str, bytes], token: str, _wrong: str
+) -> Row:
+    """Check that each origin serves the nested export's object to its token.
+
+    A GET of NESTED/obj with a read token for the export, from its
+    issuer, must get the object.
+    """
+    found = Findings()
+    for origin in test.fed.origins:
+        answer = nested_get(test, origin, f"{NESTED}/obj", token)
+        if answer.status != 200:
+            found.problems.append(
+                f"{origin.svc}: a GET with the export's token got {answer.describe()}"
+            )
+        elif answer.body != data[f"{NESTED}/obj"]:
+            found.problems.append(
+                f"{origin.svc}: a GET with the export's token got other bytes"
+            )
+    return found.row(f"{prefix}, with its token, at {len(test.fed.origins)} origin(s)")
+
+
+def nested_refused(
+    test: Test, token: Optional[str], data: Mapping[str, bytes], how: str
+) -> Findings:
+    """Return what is wrong with each origin's answer to a GET it must refuse.
+
+    A GET of NESTED/obj with token (how says what it is) must be refused
+    (401 or 403), with none of the object's bytes.
+    """
+    found = Findings()
+    for origin in test.fed.origins:
+        answer = nested_get(test, origin, f"{NESTED}/obj", token)
+        if answer.status not in REFUSED:
+            found.problems.append(
+                f"{origin.svc}: a GET {how} got {answer.describe()}, not 401 or 403"
+            )
+        if data[f"{NESTED}/obj"] in answer.body:
+            found.problems.append(f"{origin.svc}: a GET {how} got the object's bytes")
+    return found
+
+
+def nested_wrong_scope(
+    test: Test, prefix: str, data: Mapping[str, bytes], _token: str, wrong: str
+) -> Row:
+    """Check that a token of the export's issuer scoped elsewhere is refused."""
+    found = nested_refused(test, wrong, data, "with a token for /elsewhere/ in the export")
+    return found.row(
+        f"{prefix}, with a token scoped elsewhere, at {len(test.fed.origins)} origin(s)"
+    )
+
+
+def nested_protected(
+    test: Test, prefix: str, data: Mapping[str, bytes], _token: str, _wrong: str
+) -> Row:
+    """Check that no origin serves the nested export's object to no token.
+
+    The export takes a token, though it is nested in /public, which
+    anyone may read. Pelican's native origin grants a token's reads, and
+    a PublicReads export's, by any export that encloses a path (getAcls
+    in origin_serve/authz.go), so it would serve the object to anyone
+    (T4), and the row fail there, were the origin to start; XRootD's
+    authfile denies the inner prefix (xrootd/authorization.go).
+    """
+    found = nested_refused(test, None, data, "with no token")
+    return found.row(f"{prefix}, with no token, at {len(test.fed.origins)} origin(s)")
+
+
+NestedCheck = Callable[[Test, str, Mapping[str, bytes], str, str], Row]
+NESTED_CHECKS: dict[str, NestedCheck] = {
+    "served": nested_served,
+    "token": nested_with_token,
+    "wrong-scope": nested_wrong_scope,
+    "protected": nested_protected,
+}
+
+
+def nested_export(test: Test) -> dict[str, Row]:
+    """Check an export nested in /public, which takes a token, at each origin.
+
+    An operator may nest a protected prefix in a public one on one
+    origin, as another owner may register one inside it (the `auth`
+    suite's `nested-protected`, under `-p topo-multi-owner`): Pelican
+    picks the export of a path by its longest prefix (LongestNSMatch),
+    and its native origin's authorization speaks of exports nested one
+    inside another (origin_serve/authz.go). So every origin, XRootD's
+    too, is restarted with /public's exports and one more, nested in it,
+    /public/<the run's collection>/secret, with /protected-a's
+    capabilities (nested_files()), after the objects it serves are put
+    in /public's storage (seed_nested()); afterward the origins are
+    restored, and the export's registration, which they made as they
+    started, is removed (unregister()). Pelican's native origin
+    registers a route group with a catch-all per export, and its router
+    (gin) refuses a catch-all whose prefix holds another route, so an
+    origin with an export nested in another panics as it starts, and
+    never serves (O14). An XRootD `posix` origin lays each export out as
+    a symbolic link under its export root, at the export's prefix
+    (CheckOriginXrootdEnv in xrootd/xrootd_config.go), so a nested
+    export's link would go inside the outer export's, where its own
+    storage already is, and the origin stops with "file exists". So the
+    restart fails on every origin, and every row with it, on
+    v26.0.0-rc.3 and main alike. Where an origin starts, NESTED_CHECKS
+    run: it must serve /public as before (`served`), the export's object
+    to a token for the export (`token`), and not to a token of its issuer
+    scoped elsewhere (`wrong-scope`), nor to no token (`protected`).
+    """
+    rows = ROWS["nested-export"]
+    why = unnestable(test)
+    if why:
+        return {
+            row: (SKIP, f"needs the origins restarted with a nested export, but {why}")
+            for row in rows
+        }
+    fed = test.fed
+    prefix = f"/public/{test.base}/{NESTED}"
+    caps = sorted(fed.exports[NAMESPACE])
+    issuer = nested_issuer(fed, prefix)
+    try:
+        files = {o.svc: nested_files(o.svc, prefix, caps, issuer) for o in fed.origins}
+        data = seed_nested(test)
+    except SetupError as e:
+        return {row: (FAIL, str(e)) for row in rows}
+    print(f"\nRestarting the origins with {prefix} exported, nested in /public")
+    found: dict[str, Row] = {}
+    try:
+        with restarted(test, files):
+            why = settle(test)
+            token = nested_token(test, prefix, "/")
+            wrong = nested_token(test, prefix, "/elsewhere/")
+            for case in NESTED_CASES:
+                if why:
+                    found[f"nested-export {case}"] = (
+                        FAIL,
+                        f"with the origins restarted, {why}",
+                    )
+                else:
+                    found[f"nested-export {case}"] = attempt(
+                        partial(NESTED_CHECKS[case], test, prefix, data, token, wrong)
+                    )
+    except control.ControlError as e:
+        # Restarting, or restoring, failed: what is left unrun fails.
+        for row in rows:
+            found.setdefault(
+                row, (FAIL, f"restarting the origins with {prefix} nested in /public: {e}")
+            )
+        warn(f"restarting the origins with {prefix} nested in /public: {e}")
+    why = settle(test)
+    if why:
+        warn(f"with the origins restored, {why}")
+    error = unregister(test, prefix)
+    if error:
+        warn(f"{prefix} stays registered: {error}")
+    return found
 
 
 # --------------------------------------------------------------------------
@@ -1645,6 +2039,10 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             later = [r for name in selected for r in ROWS[name] if r in RESTARTED]
             if later:
                 run_restarted(test, later, record)
+            if "nested-export" in selected:
+                print("  nested-export ...")
+                for row, result in nested_export(test).items():
+                    record(row, result)
             for name in ("backend-token", "backend-passthrough"):
                 if name in selected:
                     print(f"  {name} ...")

@@ -24,7 +24,9 @@ several cases records a row per case, named `<scenario> <case>`.
   `TransferEndTime`; its `DeveloperData` must count the attempts and
   name `Endpoint0`; on a warm read through a V2 cache, which sends
   `Age`, the last attempt's `CacheHit` must be true, with a `DataAge`
-  above 0, and on a cold one not; and `ServerChecksums` must hold the
+  above 0 (the plugin counts a hit only once `Age` is above 0, so the
+  warm read waits until the cache's `Age` is a second or more), and on
+  a cold one not; and `ServerChecksums` must hold the
   object's `crc32c` after a whole read through a V2 cache, which relays
   the origin's digests or computes its own, and whatever digests any
   ad reports must be the object's. Of an object that does not exist
@@ -116,7 +118,10 @@ several cases records a row per case, named `<scenario> <case>`.
   grants the namespace (`client/sharing_url.go`, `cmd/object_share.go`):
   the URL printed must be the collection's with `?authz=<token>`, whose
   scope is the collection's `storage.read` alone (`url`), and with
-  `--write` its `storage.create` (`url-write`). Pelican's client asks
+  `--write` its `storage.create` (`url-write`); the client registers
+  itself with the issuer first, which allows an address five
+  registrations, then one a minute, so a share refused for the limit
+  is tried once more after a minute. Pelican's client asks
   the issuer for the scope of the collection's parent (`AcquireToken`
   in `oauth2/oauth2.go` always asks for the directory of the path), and
   then requires the token's scope to name the collection itself exactly

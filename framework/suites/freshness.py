@@ -248,8 +248,12 @@ def age(answer: web.Response) -> Optional[int]:
 
 
 def holds(test: Test, cache: common.Cache, rel: str) -> bool:
-    """Return whether a V2 cache says, with Age, it holds all of rel."""
-    answer = test.ask("HEAD", cache.url, rel)
+    """Return whether a V2 cache says, with Age, it holds all of rel.
+
+    It is asked with the setup token: this is a check of the cache's
+    state, not of the pass's tokens.
+    """
+    answer = web.request("HEAD", test.url(cache.url, rel), token=test.setup)
     return answer.status == 200 and age(answer) is not None
 
 
@@ -413,16 +417,18 @@ def serving(test: Test) -> Optional[str]:
     """Return why /protected-a is not served as before, or None if it is.
 
     Every director must name every origin for the probe, and every cache
-    answer a HEAD of it, which fetches nothing.
+    answer a HEAD of it, which fetches nothing. Each is asked with the
+    setup token, since this is a check of the shape, not of the pass's
+    tokens.
     """
     path = test.path(test.rel(PROBE))
     for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.token)
+        where = director.ask(url, "origin", path, token=test.setup)
         for origin in test.origins:
             if not where.names(director.host(origin.url)):
                 return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
     for cache in test.caches:
-        answer = test.ask("HEAD", cache.url, test.rel(PROBE))
+        answer = web.request("HEAD", test.url(cache.url, test.rel(PROBE)), token=test.setup)
         if answer.status != 200 or answer.header("Content-Length") != str(PROBE_SIZE):
             return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
     return None
@@ -442,12 +448,18 @@ def settle(test: Test) -> Optional[str]:
 def not_sent(test: Test, value: str) -> Optional[str]:
     """Return why the origins do not send Cache-Control value, or None.
 
-    They are asked directly, where they take direct clients.
+    They are asked directly, where they take direct clients, with the
+    setup token, since this is a check of the shape.
     """
     if not test.direct:
         return None
     for origin in test.origins:
-        answer = test.ask("GET", origin.url, test.rel(PROBE), {"Range": "bytes=0-0"})
+        answer = web.request(
+            "GET",
+            test.url(origin.url, test.rel(PROBE)),
+            token=test.setup,
+            headers={"Range": "bytes=0-0"},
+        )
         if not answer.ok:
             return f"{origin.svc}: GET of the probe got {answer.describe()}"
         sent = answer.header("Cache-Control")
