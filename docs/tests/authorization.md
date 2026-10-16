@@ -69,20 +69,25 @@ The director rejects any expired token it is shown, whatever the
 namespace.
 
 - **Through the clients**, the `transfers` suite runs the `get-` and
-  `put-` scenarios with `pelican object`, and their `plugin-` twins with
-  `stash_plugin`. Its `failures` column says who refused: `client` (it
-  had no token to send), `director` (it rejects expired tokens),
-  `unsupported` (the director found no origin that allows the operation
-  in the namespace, e.g. a put to `/public`), or
+  `put-` scenarios with `pelican object`, their `plugin-` twins with
+  `stash_plugin`, and their `http-` twins as a plain HTTP client, which
+  presents the token to the director and follows its redirect as curl
+  does ([test data](test-data.md)). Its `failures` column says who
+  refused: `client` (it had no token to send), `director` (it rejects
+  expired tokens), `unsupported` (the director found no origin that
+  allows the operation in the namespace, e.g. a put to `/public`), or
   `server` (an origin or cache answered 401 or 403, with no server
   error, timeout, or not found beside it). Any other failure
   is unexpected, since it doesn't show a refusal. A `pelican object get`
   into a directory, as the suite's batches are, stats each object
   first, asking the director without the token, so one whose token is
-  refused is `server`, even when the token has expired. With no token,
-  `pelican object` tries to acquire one, which
+  refused is `server`, even when the token has expired; the plain HTTP
+  client shows the director every token, so its expired ones are
+  `director`, for a read of `/public` too, which the servers would
+  allow. With no token, `pelican object` tries to acquire one, which
   should fail at once with error 4010, since the test gives it no
-  terminal and an empty credential store.
+  terminal and an empty credential store; the plain HTTP client sends
+  the request without one, and the server refuses it.
 - **At each server**, the `auth` suite sends GET, HEAD, PUT, and DELETE
   to every origin, and GET and HEAD to every cache, over HTTPS, in every
   namespace. An allowed request must return or store the right bytes (a

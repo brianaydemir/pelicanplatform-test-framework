@@ -18,7 +18,8 @@ way. The scenarios:
                     name, and times of a download; its attempts, the
                     cache's age of the object, and the server's
                     checksums; what a missing object, a refusal, and a
-                    mixed batch say; and the exit status
+                    mixed batch say; the exit status; and the ads of an
+                    upload, and of one refused
   failover          with a V2 cache beside another, of either kind: a
                     download that fails partway at the first cache, whose
                     copy its chaos API spoiled, resumes at the second, by
@@ -30,7 +31,11 @@ way. The scenarios:
                     BEARER_TOKEN_FILE, _CONDOR_CREDS, a token the
                     director's hints rule out, one that looks right but
                     is not, and the token file a URL's scheme prefix
-                    names
+                    names; by `pelican object get`, and by stash_plugin
+  url-forms         the forms of a URL the clients take: a bare path,
+                    with the federation configured, given by -f, or in
+                    the environment; osdf:/// and stash:/// URLs, with
+                    the federation given; and osdf:// with two slashes
   token-create-discovery
                     `pelican token create` without --issuer or
                     --scope-path: the issuer whose keys match the signing
@@ -46,7 +51,7 @@ way. The scenarios:
   multi-source      `get` and `put` with several sources (rows G8-G10
                     and P8-P10 of Pelican's
                     docs/object-transfer-semantics.md), and ?recursive in
-                    place of -r
+                    place of -r, by the client and by stash_plugin
   preferred-cache-down
                     a preferred cache that is down: with `+`, a director's
                     cache serves instead; without, the client fails to
@@ -89,7 +94,7 @@ from testlib.session import CLIENT_TIMEOUT, Session, last_line
 SCENARIOS = {
     "plugin-ads": (
         "stash_plugin's result ads: bytes, URL, type, name, times, attempts, cache age,"
-        " checksums, and what failures say"
+        " checksums, what failures say, and an upload's"
     ),
     "failover": (
         "a download that fails partway at one cache resumes at the next, by Range, with the"
@@ -97,8 +102,12 @@ SCENARIOS = {
     ),
     "etag-agreement": "every server reports one ETag by HEAD and by GET; a cache's is an origin's",
     "token-discovery": (
-        "which token the client presents: BEARER_TOKEN, BEARER_TOKEN_FILE, _CONDOR_CREDS, the"
-        " director's hints, and a URL's scheme prefix"
+        "which token the client and the plugin present: BEARER_TOKEN, BEARER_TOKEN_FILE,"
+        " _CONDOR_CREDS, the director's hints, and a URL's scheme prefix"
+    ),
+    "url-forms": (
+        "a bare path with the federation configured, by -f, or in the environment; osdf:///"
+        " and stash:/// with -f; and osdf:// with two slashes, by the client and the plugin"
     ),
     "token-create-discovery": (
         "`pelican token create` finds the issuer whose keys match the signing key, and says when"
@@ -115,7 +124,7 @@ SCENARIOS = {
     ),
     "multi-source": (
         "`get` and `put` with several sources: a directory, a collection, or refused"
-        " (G8-G10, P8-P10); and ?recursive"
+        " (G8-G10, P8-P10); and ?recursive, by the client and the plugin"
     ),
     "preferred-cache-down": (
         "a preferred cache that is down: with `+`, a director's cache serves; without, a"
@@ -644,10 +653,12 @@ def endpoint_host(attempt: Mapping[str, Any]) -> str:
 # plugin-ads
 
 
-def ad_problems(ad: Ad, url: str, data: bytes) -> list[str]:
-    """Return what is wrong with the plugin's ad of a download of url.
+def ad_problems(ad: Ad, url: str, data: bytes, kind: str = "download") -> list[str]:
+    """Return what is wrong with the plugin's ad of a transfer of url.
 
-    The download must have succeeded, and url holds data.
+    The transfer, a download or an upload (kind), must have succeeded,
+    and url holds data. An upload's TransferFileName is the local file's
+    base name, which here is the object's.
     """
     problems: list[str] = []
     name = transfers.local_name(url)
@@ -659,7 +670,7 @@ def ad_problems(ad: Ad, url: str, data: bytes) -> list[str]:
         ("TransferFileBytes", len(data)),
         ("TransferTotalBytes", len(data)),
         ("TransferUrl", url),
-        ("TransferType", "download"),
+        ("TransferType", kind),
         ("TransferFileName", name),
     ):
         if ad.get_ci(attr) != want:
@@ -790,8 +801,9 @@ def plugin_ads(test: Test) -> list[Row]:
 
     The ads (cmd/plugin.go), which HTCondor reads, are those of a batch of
     two objects through a cache, cold and then warm; of an object that
-    does not exist; of a refused download; and of a batch with one of
-    each.
+    does not exist; of a refused download; of a batch with one of each;
+    and, where /protected-a takes writes, of an upload of two files, and
+    of one refused.
     """
     if not test.fed.federated_caches:
         return [("", SKIP, "this shape has no cache for a download to go through")]
@@ -923,6 +935,77 @@ def plugin_ads(test: Test) -> list[Row]:
         rows.append(("mixed", *outcome(problems, note)[1:]))
     except ValueError as e:
         rows.append(("mixed", FAIL, f"unreadable ads ({e}): {last_line(fetch.said)}"))
+    rows += upload_ads(test, failed_row)
+    return rows
+
+
+def upload_ads(
+    test: Test, failed_row: Callable[[str, Fetched, str, Optional[int]], Row]
+) -> list[Row]:
+    """Return the rows of stash_plugin's ads of an upload (`-upload`).
+
+    Of a batch of two files to /protected-a (`upload`): each ad must say
+    `TransferSuccess`, `TransferType` `upload`, `TransferFileName` the
+    local file's name, the bytes, the URL, and the times, as
+    ad_problems() says, and name an `Endpoint0`; the exit status must be
+    0; and an origin must hold each file. Of an upload with a token
+    signed by a key no server knows (`upload-refused`): an error of type
+    `Authorization`, and no origin may hold the file.
+    """
+    if not test.writes:
+        reason = "/protected-a takes no writes"
+        return [("upload", SKIP, reason), ("upload-refused", SKIP, reason)]
+    rows: list[Row] = []
+    files = {"ads-up-a": os.urandom(OBJECT_SIZE), "ads-up-b": os.urandom(OBJECT_SIZE // 2)}
+    sources = [test.local(f"ads-up/{name}", data) for name, data in files.items()]
+    urls = [test.url(name) for name in files]
+    env = test.creds_env(test.server_creds("plugin-ads-upload"))
+    fetch = test.plugin("ads-upload", urls, env, upload=True, sources=sources)
+    try:
+        ads = parse_ads(fetch.said)
+    except ValueError as e:
+        rows.append(("upload", FAIL, f"unreadable ads ({e}): {last_line(fetch.said)}"))
+    else:
+        by_url, problems = ads_by_url(ads, urls)
+        for url, (name, data) in zip(urls, files.items()):
+            ad = by_url.get(url)
+            if ad is None:
+                continue
+            problems += ad_problems(ad, url, data, "upload")
+            if common.digest(data) not in stores.held_anywhere(
+                test.fed.origins, NAMESPACE, test.rel(name), {NAMESPACE: test.setup}
+            ):
+                problems.append(f"{name}: no origin holds it")
+        why = exit_problem(fetch, ads)
+        if why:
+            problems.append(why)
+        served = sorted({served_by(ad) for ad in ads if ad.get_ci("TransferSuccess") is True})
+        rows.append(
+            (
+                "upload",
+                *outcome(problems, f"{len(ads)} ads agree with the uploads ({served})")[1:],
+            )
+        )
+    unknown_env = test.creds_env(
+        test.creds("plugin-ads-upload-refused", {"scitokens.use": unknown_token(test)})
+    )
+    name = "ads-up-refused"
+    source = test.local(f"ads-up/{name}", os.urandom(OBJECT_SIZE // 4))
+    fetch = test.plugin(
+        "ads-upload-refused", [test.url(name)], unknown_env, upload=True, sources=[source]
+    )
+    row = failed_row("upload-refused", fetch, "Authorization", None)
+    if any(
+        stores.held_anywhere(
+            test.fed.origins, NAMESPACE, test.rel(name), {NAMESPACE: test.setup}
+        )
+    ):
+        row = (
+            "upload-refused",
+            FAIL,
+            "an origin holds the file, though the upload was refused",
+        )
+    rows.append(row)
     return rows
 
 
@@ -1241,10 +1324,40 @@ def refused(fetch: Fetched) -> Optional[str]:
     return None
 
 
-def token_discovery(test: Test) -> list[Row]:
-    """Check which token the client presents, of those in its environment.
+def plugin_refused(fetch: Fetched) -> Optional[str]:
+    """Return why the plugin's download was not refused, or None.
 
-    The cases (tokenContentIterator in client/acquire_token.go):
+    Its ad must report an error of type `Authorization`.
+    """
+    if fetch.status == 0:
+        return "succeeded, but should have been refused"
+    try:
+        ads = parse_ads(fetch.said)
+    except ValueError as e:
+        return f"unreadable ads ({e}): {last_line(fetch.said)}"
+    if not any(kind == "Authorization" for ad in ads for kind, _ in error_types(ad)):
+        return f"failed, but not by refusal: {last_line(fetch.said)}"
+    return None
+
+
+# How each client runs a token-discovery case: its row prefix, how it
+# gets an object, and how a refusal shows.
+Discoverer = tuple[
+    str,
+    Callable[[Test, str, str, Mapping[str, str]], Fetched],
+    Callable[[Fetched], Optional[str]],
+]
+DISCOVERERS: tuple[Discoverer, ...] = (
+    ("", discovery_get, refused),
+    ("plugin-", lambda test, name, url, env: test.plugin(name, [url], env), plugin_refused),
+)
+
+
+def token_discovery(test: Test) -> list[Row]:
+    """Check which token each client presents, of those in its environment.
+
+    The cases (tokenContentIterator in client/acquire_token.go, which
+    stash_plugin runs too, through the client's transfer engine):
     BEARER_TOKEN, BEARER_TOKEN_FILE, and _CONDOR_CREDS/scitokens.use, each
     alone, with the server's token (`bearer-token`, `bearer-token-file`,
     `condor-creds`); a token scoped elsewhere in BEARER_TOKEN beside the
@@ -1255,7 +1368,12 @@ def token_discovery(test: Test) -> list[Row]:
     URL whose scheme names a token file (`<name>+pelican://`, `prefix`), or
     with `_` for `.` in the name (`<na_me>+pelican://`,
     `prefix-underscore`), which selects `<name>.use` in _CONDOR_CREDS before
-    scitokens.use (GetTokenName in pelican_url/parse.go).
+    scitokens.use (GetTokenName in pelican_url/parse.go). Each runs by
+    `pelican object get`, and again by stash_plugin, as `plugin-<case>`.
+    Neither client honors the prefix on v26.0.0-rc.3: each hands the
+    transfer engine the URL with its scheme normalized (GetRawUrl), so
+    the token generator finds no name and opens scitokens.use first; and
+    `_` in a scheme never parses (docs/tests/client-contracts.md, L8).
     """
     name = "discovery"
     data = os.urandom(OBJECT_SIZE)
@@ -1268,46 +1386,138 @@ def token_discovery(test: Test) -> list[Row]:
     unknown = unknown_token(test)
     good_creds = test.server_creds("discovery-good")
     rows: list[Row] = []
-    env = {**base, "BEARER_TOKEN": test.token}
-    why = got_named(discovery_get(test, "bearer-token", url, env), data)
-    rows.append(("bearer-token", FAIL, why) if why else ("bearer-token", PASS, ""))
-    env = {**base, "BEARER_TOKEN_FILE": test.token_file}
-    why = got_named(discovery_get(test, "bearer-token-file", url, env), data)
-    rows.append(("bearer-token-file", FAIL, why) if why else ("bearer-token-file", PASS, ""))
-    env = {**base, "_CONDOR_CREDS": good_creds}
-    why = got_named(discovery_get(test, "condor-creds", url, env), data)
-    rows.append(("condor-creds", FAIL, why) if why else ("condor-creds", PASS, ""))
-    env = {**base, "BEARER_TOKEN": wrong_path or "", "_CONDOR_CREDS": good_creds}
-    why = got_named(discovery_get(test, "skips-unacceptable", url, env), data)
-    rows.append(
-        ("skips-unacceptable", FAIL, why)
-        if why
-        else ("skips-unacceptable", PASS, "the wrong-path token was passed over")
-    )
-    env = {**base, "BEARER_TOKEN": unknown, "_CONDOR_CREDS": good_creds}
-    why = refused(discovery_get(test, "acceptable-wins", url, env))
-    rows.append(
-        ("acceptable-wins", FAIL, why)
-        if why
-        else ("acceptable-wins", PASS, "the unknown key's token was presented, and refused")
-    )
-    # The scheme prefix: the good token under the name the prefix selects,
-    # and the unknown key's as scitokens.use, which would otherwise win.
-    for case, prefix, file_name in (
-        ("prefix", NAMESPACE, f"{NAMESPACE}.use"),
-        (
-            "prefix-underscore",
-            NAMESPACE.replace("-", "_"),
-            f"{NAMESPACE.replace('-', '.')}.use",
-        ),
-    ):
-        creds = test.creds(
-            f"discovery-{case}", {"scitokens.use": unknown, file_name: test.token}
+    for prefix, get, denied in DISCOVERERS:
+
+        def row(case: str, why: Optional[str], passed: str = "", client: str = prefix) -> Row:
+            return (client + case, FAIL, why) if why else (client + case, PASS, passed)
+
+        env = {**base, "BEARER_TOKEN": test.token}
+        rows.append(
+            row("bearer-token", got_named(get(test, f"{prefix}bearer-token", url, env), data))
         )
-        prefixed = f"{prefix}+{url}"
-        env = {**base, "_CONDOR_CREDS": creds}
-        why = got_named(discovery_get(test, case, prefixed, env), data)
-        rows.append((case, FAIL, why) if why else (case, PASS, f"{file_name} was selected"))
+        env = {**base, "BEARER_TOKEN_FILE": test.token_file}
+        rows.append(
+            row(
+                "bearer-token-file",
+                got_named(get(test, f"{prefix}bearer-token-file", url, env), data),
+            )
+        )
+        env = {**base, "_CONDOR_CREDS": good_creds}
+        rows.append(
+            row("condor-creds", got_named(get(test, f"{prefix}condor-creds", url, env), data))
+        )
+        env = {**base, "BEARER_TOKEN": wrong_path or "", "_CONDOR_CREDS": good_creds}
+        rows.append(
+            row(
+                "skips-unacceptable",
+                got_named(get(test, f"{prefix}skips-unacceptable", url, env), data),
+                "the wrong-path token was passed over",
+            )
+        )
+        env = {**base, "BEARER_TOKEN": unknown, "_CONDOR_CREDS": good_creds}
+        rows.append(
+            row(
+                "acceptable-wins",
+                denied(get(test, f"{prefix}acceptable-wins", url, env)),
+                "the unknown key's token was presented, and refused",
+            )
+        )
+        # The scheme prefix: the good token under the name the prefix
+        # selects, and the unknown key's as scitokens.use, which would
+        # otherwise win.
+        for case, scheme, file_name in (
+            ("prefix", NAMESPACE, f"{NAMESPACE}.use"),
+            (
+                "prefix-underscore",
+                NAMESPACE.replace("-", "_"),
+                f"{NAMESPACE.replace('-', '.')}.use",
+            ),
+        ):
+            creds = test.creds(
+                f"{prefix}discovery-{case}", {"scitokens.use": unknown, file_name: test.token}
+            )
+            prefixed = f"{scheme}+{url}"
+            env = {**base, "_CONDOR_CREDS": creds}
+            why = got_named(get(test, f"{prefix}{case}", prefixed, env), data)
+            rows.append(row(case, why, f"{file_name} was selected"))
+    return rows
+
+
+# --------------------------------------------------------------------------
+# url-forms
+
+
+def url_forms(test: Test) -> list[Row]:
+    """Check the forms of a URL that the clients take, of one object.
+
+    Pelican's URLs (pelican_url/parse.go): a bare path, which needs a
+    federation to be given, as the dev container's configuration does
+    (`configured`), as `-f` does (`flag`), and as
+    PELICAN_FEDERATION_DISCOVERYURL does (`env`); `osdf:///` and
+    `stash:///` URLs, which take the OSDF's federation unless one is
+    given, as it is here, by `-f` (`osdf`, `stash`); and `osdf://` with
+    two slashes, which the client reads as three (`osdf-two-slashes`).
+    Each must get the object by `pelican object get`. Where /protected-a
+    takes writes, `pelican object put` to an `osdf:///` URL, with `-f`,
+    must land the file at an origin (`put-osdf`). And stash_plugin,
+    which HTCondor hands `osdf:///` URLs, with the federation in its
+    environment, must get the object (`plugin-osdf`). Pelican's client
+    applies the federation it is given only to a schemeless URL
+    (handleSchemelessIfNeeded in client/main.go), so the osdf and stash
+    rows go to the OSDF, and fail (docs/tests/client-contracts.md, L10).
+    """
+    name = "forms"
+    data = os.urandom(OBJECT_SIZE)
+    test.put(name, data)
+    path = test.path(name)
+    discovery = test.fed.discovery_url
+    base = dict(test.session.env)
+    base.pop("PELICAN_FEDERATION_DISCOVERYURL", None)
+    token = ["--token", test.token_file]
+    rows: list[Row] = []
+
+    def get(case: str, args: Sequence[str], env: Mapping[str, str], note: str) -> Row:
+        fetch = test.pelican(case, ["object", "get", *args, "."], env)
+        why = got(fetch, data, name)
+        return (case, FAIL, why) if why else (case, PASS, note)
+
+    if test.fed.standalone:
+        rows.append(
+            ("configured", SKIP, "a standalone origin's client is told of no federation")
+        )
+    else:
+        rows.append(get("configured", [*token, path], base, "the configured federation"))
+    rows.append(get("flag", ["-f", discovery, *token, path], base, f"-f {discovery}"))
+    env = {**base, "PELICAN_FEDERATION_DISCOVERYURL": discovery}
+    rows.append(get("env", [*token, path], env, "PELICAN_FEDERATION_DISCOVERYURL"))
+    for case, url in (
+        ("osdf", f"osdf://{path}"),
+        ("stash", f"stash://{path}"),
+        ("osdf-two-slashes", f"osdf:/{path}"),
+    ):
+        rows.append(get(case, ["-f", discovery, *token, url], base, url))
+    if not test.writes:
+        rows.append(("put-osdf", SKIP, "/protected-a takes no writes"))
+    else:
+        upload = os.urandom(OBJECT_SIZE // 2)
+        source = test.local("forms-up", upload)
+        url = f"osdf://{test.path('forms-up')}"
+        fetch = test.pelican(
+            "put-osdf", ["object", "put", "-f", discovery, *token, source, url]
+        )
+        problems: list[str] = []
+        if fetch.status != 0:
+            problems.append(f"exit {fetch.status}: {last_line(fetch.said)}")
+        if common.digest(upload) not in stores.held_anywhere(
+            test.fed.origins, NAMESPACE, test.rel("forms-up"), {NAMESPACE: test.setup}
+        ):
+            problems.append("no origin holds the file")
+        rows.append(("put-osdf", *outcome(problems, f"landed by {url}")[1:]))
+    env = test.creds_env(test.server_creds("forms"), PELICAN_FEDERATION_DISCOVERYURL=discovery)
+    url = f"osdf://{path}"
+    fetch = test.plugin("plugin-osdf", [url], env)
+    why = got(fetch, data, name)
+    rows.append(("plugin-osdf", FAIL, why) if why else ("plugin-osdf", PASS, url))
     return rows
 
 
@@ -1810,8 +2020,31 @@ def multi_source(test: Test) -> list[Row]:
     rows.append(
         ("put-recursive-query", *outcome(problems, "the tree landed flat (P6, ?recursive)")[1:])
     )
+    # stash_plugin, which HTCondor hands a URL with ?recursive for a tree,
+    # uploads it to a collection of its own.
+    plugin_env = test.creds_env(test.server_creds("multi-plugin"))
+    fetch = test.plugin(
+        "plugin-put-recursive-query",
+        [test.url("plugin-recursive", query="recursive")],
+        plugin_env,
+        upload=True,
+        sources=[os.path.join(test.tmp, "recursive")],
+    )
+    problems = []
+    if fetch.status != 0:
+        problems.append(f"exit {fetch.status}: {last_line(fetch.said)}")
+    for path, data in tree.items():
+        if not landed(f"{test.rel('plugin-recursive')}/{path}", data):
+            problems.append(f"no origin holds plugin-recursive/{path}")
+    rows.append(
+        (
+            "plugin-put-recursive-query",
+            *outcome(problems, "the tree landed flat (?recursive, by the plugin)")[1:],
+        )
+    )
     if "Listings" not in test.caps:
-        rows.append(("get-recursive-query", SKIP, "/protected-a has no Listings"))
+        why = "/protected-a has no Listings"
+        rows += [("get-recursive-query", SKIP, why), ("plugin-get-recursive-query", SKIP, why)]
         return rows
     directory = test.directory("get-recursive-query")
     fetch = test.pelican(
@@ -1835,6 +2068,37 @@ def multi_source(test: Test) -> list[Row]:
     rows.append(
         ("get-recursive-query", *outcome(problems, "the tree came back (G5, ?recursive)")[1:])
     )
+    # The plugin's download of the tree, to its directory (`.`): the
+    # plugin lands a download whose destination is a directory under the
+    # object's name in it (parseDestination in cmd/plugin.go), so the
+    # tree may come back there, or in the directory itself; the note
+    # says which.
+    fetch = test.plugin(
+        "plugin-get-recursive-query",
+        [test.url("multi-recursive", query="recursive")],
+        plugin_env,
+        sources=["."],
+    )
+    problems = []
+    if fetch.status != 0:
+        problems.append(f"exit {fetch.status}: {last_line(fetch.said)}")
+    where = next(
+        (
+            d
+            for d in (fetch.directory, os.path.join(fetch.directory, "multi-recursive"))
+            if all(
+                common.sha256(os.path.join(d, path)) == common.digest(data)
+                for path, data in tree.items()
+            )
+        ),
+        None,
+    )
+    if where is None:
+        problems.append(f"the tree is missing or wrong; the directory holds {fetch.files()}")
+    note = "the tree came back " + (
+        "under the collection's name" if where != fetch.directory else "in the directory itself"
+    )
+    rows.append(("plugin-get-recursive-query", *outcome(problems, note)[1:]))
     return rows
 
 
@@ -2184,6 +2448,7 @@ RUN: dict[str, Callable[[Test], Rows]] = {
     "failover": failover,
     "etag-agreement": etag_agreement,
     "token-discovery": token_discovery,
+    "url-forms": url_forms,
     "token-create-discovery": token_create_discovery,
     "share-url": share_url,
     "director-decision": director_decision,

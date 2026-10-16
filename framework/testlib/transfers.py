@@ -6,15 +6,22 @@ writes the objects that the gets fetch.
 
 A scenario is a set of transfers through one client, in one namespace,
 with one credential. Each runs through `pelican object get` or `put`,
-and again through stash_plugin as plugin-<scenario>, with the same
-batches. Each get also has a direct-<scenario> twin, which asks the
-director for an origin instead of a cache, and a cache-<scenario> twin,
-which names the first federated cache (`--cache`, or
-Client.PreferredCaches for the plugin) and takes the objects from it,
-asking the director only what the namespace wants: the three ways a
-client can reach an object. A batch is one client invocation, of as
-many objects as the next of LOAD's sizes (see make_batches() and
-batch_count()).
+again through stash_plugin as plugin-<scenario>, and again as a plain
+HTTP client, such as curl, as http-<scenario>, with the same batches.
+Each get also has a direct-<scenario> twin, which asks the director for
+an origin instead of a cache, and a cache-<scenario> twin, which names
+the first federated cache (`--cache`, or Client.PreferredCaches for the
+plugin) and takes the objects from it, asking the director only what
+the namespace wants: the three ways a client can reach an object. The
+plain HTTP client asks the director for the object's bare path, which
+it sends to a cache (or, under `-p director-default-origin`, to an
+origin), or with `?directread`, which it sends to an origin; names a
+cache by asking it straight; and PUTs to the bare path, which the
+director sends to an origin. It follows each redirect as curl does
+(see HTTP_HOPS): to the Location as given, whose `authz` carries the
+token, without the Authorization header, which curl drops when the
+host changes. A batch is one client invocation, of as many objects as
+the next of LOAD's sizes (see make_batches() and batch_count()).
 
 What a scenario should do depends on the namespace's capabilities in
 the shape (see outcome()). /public, which has no keys of its own, gets
@@ -58,7 +65,7 @@ class Scenario:
     """A set of transfers through one client, namespace, and credential.
 
     Attributes:
-        client: "pelican" or "plugin".
+        client: "pelican", "plugin", or "http" (a plain HTTP client).
         route: A get's: "cache" (the director's choice), "direct" (an
             origin), or "named" (a cache the client names); a put's:
             "origin".
@@ -100,6 +107,16 @@ class Scenario:
         """Whether its gets come from a cache the client names."""
         return self.route == "named"
 
+    @property
+    def asks_director(self) -> bool:
+        """Whether its requests go through a director.
+
+        A get from a named cache does not: the Pelican clients ask the
+        director only what the namespace wants, and a plain HTTP client
+        asks the cache straight.
+        """
+        return not self.named
+
 
 def exported(scenario: Scenario, exports: Exports) -> bool:
     """Return whether the federation exports scenario's namespace.
@@ -115,12 +132,23 @@ def outcome(scenario: Scenario, exports: Exports) -> Outcome:
     A refusal comes before anything else, even a missing object's: e.g. a
     namespace without DirectReads refuses every direct read. A scenario
     with no token expects no refusal but that one.
+
+    The Pelican clients send no token for a read of /public, so a bad one
+    cannot break it; a plain HTTP client sends whatever it is given, and
+    the director refuses an expired token it is shown, whatever the
+    namespace (validateClientToken in director/director.go), while the
+    servers ignore a token on a public read. So `http-get-public-expired`
+    and its direct twin are refused, and its named twin, which asks no
+    director, is not.
     """
-    verdict = scenario.credential.verdict if scenario.credential else ALLOW
+    cred = scenario.credential
+    verdict = cred.verdict if cred else ALLOW
     if (
         credentials.decide(verdict, exports[scenario.namespace], scenario.op, scenario.direct)
         != ALLOW
     ):
+        return Outcome.REFUSED
+    if scenario.client == "http" and cred and cred.expired and scenario.asks_director:
         return Outcome.REFUSED
     if scenario.missing:
         return Outcome.NOT_FOUND
@@ -229,26 +257,40 @@ def _puts() -> list[Scenario]:
     return scenarios
 
 
-def plugin_twin(scenario: Scenario) -> Scenario:
-    """Return the same scenario through stash_plugin.
+def twin(scenario: Scenario, client: str) -> Scenario:
+    """Return the same scenario through another client.
 
-    Only its uploads go elsewhere, so that the two clients never write
-    the same object.
+    Only its uploads go elsewhere, so that no two clients write the same
+    object.
     """
-    name = f"plugin-{scenario.name}"
+    name = f"{client}-{scenario.name}"
     collection = scenario.collection
     description = scenario.description
     if scenario.op == "put":
         collection = f"/{scenario.namespace}/data/put/{name}/"
         description = description.replace(scenario.collection, collection)
     return dataclasses.replace(
-        scenario, name=name, client="plugin", collection=collection, description=description
+        scenario, name=name, client=client, collection=collection, description=description
     )
 
 
+def plugin_twin(scenario: Scenario) -> Scenario:
+    """Return the same scenario through stash_plugin."""
+    return twin(scenario, "plugin")
+
+
+def http_twin(scenario: Scenario) -> Scenario:
+    """Return the same scenario as a plain HTTP client."""
+    return twin(scenario, "http")
+
+
+# The clients, in the order their scenarios are listed and reported.
+CLIENTS = ("pelican", "plugin", "http")
+
 PELICAN_SCENARIOS = tuple(_gets("cache") + _gets("direct") + _gets("named") + _puts())
 PLUGIN_SCENARIOS = tuple(plugin_twin(s) for s in PELICAN_SCENARIOS)
-SCENARIOS = PELICAN_SCENARIOS + PLUGIN_SCENARIOS
+HTTP_SCENARIOS = tuple(http_twin(s) for s in PELICAN_SCENARIOS)
+SCENARIOS = PELICAN_SCENARIOS + PLUGIN_SCENARIOS + HTTP_SCENARIOS
 BY_NAME = {s.name: s for s in SCENARIOS}
 
 
@@ -289,10 +331,13 @@ def placed(scenario: Scenario, exports: Exports) -> Scenario:
 # where `pelican object get` puts an object and what `pelican object put`
 # names an upload after. So a batch is its URLs, and LocalFileName is
 # derived from them (local_name), never chosen on its own. A direct get
-# through the plugin asks for it with ?directread on each URL, since the
-# plugin has no flag for it; `pelican object get` is given --direct. A
-# named get's cache is in neither: the plugin takes it from
-# Client.PreferredCaches, and `pelican object get` from --cache.
+# through the plugin, or as a plain HTTP client, asks for it with
+# ?directread on each URL, since neither has a flag for it; `pelican
+# object get` is given --direct. A named get's cache is in none of them:
+# the plugin takes it from Client.PreferredCaches, `pelican object get`
+# from --cache, and the plain HTTP client asks the cache itself. The
+# plain HTTP client asks for each URL's path at the director (or at the
+# cache), as http_target() says.
 
 
 @dataclass(frozen=True)
@@ -376,8 +421,29 @@ def rel_path(url: str) -> str:
 
 def batch_url(federation: str, scenario: Scenario, name: str) -> str:
     """Return the URL of object name in scenario's collection."""
-    query = DIRECT_QUERY if scenario.direct and scenario.client == "plugin" else ""
+    query = DIRECT_QUERY if scenario.direct and scenario.client != "pelican" else ""
     return f"{federation}{scenario.collection}{name}{query}"
+
+
+def http_target(
+    scenario: Scenario, url: str, federation: str, director: str, cache: str
+) -> str:
+    """Return where a plain HTTP client sends its request for url.
+
+    url is a batch URL of scenario's, at the federation (see batch_url()).
+    A named get goes to the cache's own URL; everything else to the
+    director, by the object's bare path, with the URL's query (e.g.
+    ?directread) kept.
+
+    Args:
+        scenario: The batch's scenario, of the http client.
+        url: The batch URL.
+        federation: The federation's URL, which url begins with.
+        director: The director's URL, as the federation names it.
+        cache: The named cache's data URL.
+    """
+    rest = url[len(federation) :]
+    return f"{cache if scenario.named else director}{rest}"
 
 
 def format_batch(batch: Batch) -> str:
@@ -416,8 +482,8 @@ def make_batches(
 
     Batch <x> holds as many objects as the <x mod n>th of the n sizes. A
     get's are distinct, each picked by pick(load.objects); a put's are
-    named <x>.<z>. A plugin twin gets its scenario's objects, in its own
-    collection. Each scenario is as placed() puts it.
+    named <x>.<z>. A plugin twin, and an http twin, gets its scenario's
+    objects, in its own collection. Each scenario is as placed() puts it.
     """
     batches: dict[str, list[Batch]] = {}
     for scenario in PELICAN_SCENARIOS:
@@ -436,7 +502,7 @@ def make_batches(
                 if n not in numbers:
                     numbers.append(n)
             picks.append([f"{scenario.stem}.{n}" for n in numbers])
-        for each in (scenario, plugin_twin(scenario)):
+        for each in (scenario, plugin_twin(scenario), http_twin(scenario)):
             batches[each.name] = [
                 Batch(each, x, tuple(batch_url(federation, each, name) for name in names))
                 for x, names in enumerate(picks)
@@ -498,6 +564,38 @@ FAILURE_RULES = (
 )
 # fmt: on
 REFUSALS = {"client", "director", "unsupported", "server"}
+
+# A plain HTTP client's failures are its statuses: who answered, and
+# with what. A director refuses an expired token with 401, finds no
+# origin that allows the request with 405 (noOriginsForReqErr in
+# director/director.go), and finds no object with 404; a server refuses
+# with 401 or 403, and lacks an object with 404. Anything else, a
+# redirect that led nowhere included, is `other`.
+HTTP_RULES: dict[tuple[str, int], str] = {
+    ("director", 401): "director",
+    ("director", 405): "unsupported",
+    ("director", 404): "not found",
+    ("server", 401): "server",
+    ("server", 403): "server",
+    ("server", 404): "not found",
+}
+# How many redirects a plain HTTP client follows, as curl -L does by
+# default (curl's --max-redirs is 50; a director's redirect is one, and
+# a tiering cache's one more).
+HTTP_HOPS = 5
+
+
+def http_category(status: Optional[int], at_director: bool) -> str:
+    """Return the category of a plain HTTP client's failure.
+
+    Args:
+        status: The status of the last answer; None if none came.
+        at_director: Whether the director answered it, rather than a
+            server it sent the client to.
+    """
+    if status is None:
+        return "other"
+    return HTTP_RULES.get(("director" if at_director else "server", status), "other")
 
 
 def classify(line: str) -> str:
@@ -726,7 +824,10 @@ def check_served_by(
     A director that routes around its caches would pass every scenario,
     so each namespace with a download through a cache must have had some
     served by a cache (`cache-<N>`). A direct download must come from an
-    origin, as must every download where there is no cache (cacheless).
+    origin, as must every download where there is no cache (cacheless),
+    and a plain HTTP client's download of a bare path where the director
+    sends those to an origin (`-p director-default-origin`), which the
+    suite passes as cacheless too.
     A named download must come from the cache the client named (named,
     its host), and from nowhere else: a client that fell back to the
     director's choice would pass otherwise. In the tiny topology, one

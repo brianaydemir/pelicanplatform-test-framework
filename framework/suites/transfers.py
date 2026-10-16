@@ -1,22 +1,25 @@
 """Transfers through the clients: each scenario's batches, run together.
 
 Each batch of objects is one `pelican object get` or `put`. The plugin-*
-scenarios run the same batches through stash_plugin instead; the
-direct-* scenarios get from an origin rather than a cache, and the
-cache-* scenarios from the first federated cache, which the client
-names. Then compare every byte moved with the origins' stores, and
-check that no batch left anything else in its directory, nor a failed
-get any file; and outside the tiny topology, check that in each
-namespace some cache served the downloads meant for one, only an origin
-the direct ones, and only the named cache the named ones.
+scenarios run the same batches through stash_plugin instead, and the
+http-* scenarios as a plain HTTP client, such as curl, which asks the
+director for each object's bare path and follows its redirect (see
+http_transfer()); the direct-* scenarios get from an origin rather
+than a cache, and the cache-* scenarios from the first federated cache,
+which the client names. Then compare every byte moved with the origins'
+stores, and check that no batch left anything else in its directory,
+nor a failed get any file; and outside the tiny topology, check that in
+each namespace some cache served the downloads meant for one, only an
+origin the direct ones, and only the named cache the named ones.
 
 What each scenario expects, how many batches it runs, and how a batch
 is judged, is in framework/testlib/transfers.py. Results go to
 framework/var/data/transfers, by <scenario>/<batch>: input/ (the batch,
 in stash_plugin's format), output/ (the pelican client's transfer
-stats, or the plugin's result ads), log/ (client logs, ending with the
-exit status), files/ (what each batch downloaded or uploaded), and
-verify/problems (every unexpected result).
+stats, or the plugin's result ads), log/ (client logs, or the plain
+HTTP client's requests and answers, ending with the exit status),
+files/ (what each batch downloaded or uploaded), and verify/problems
+(every unexpected result).
 
 Each credential's token is of the session's profile, and must fare as
 its twin of the other profile does; the scenarios that present no token
@@ -38,9 +41,9 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
-from testlib import common, credentials, stores, transfers
+from testlib import common, credentials, stores, transfers, web
 from testlib.common import die, warn
 from testlib.report import FAIL, PASS, SKIP, Report
 from testlib.session import CLIENT_TIMEOUT, TIMED_OUT, Session, timed_out
@@ -111,8 +114,13 @@ class Plan:
         out: Where the results go, under framework/var.
         batches: Each scenario's batches, by name.
         token_files: Each scenario's token file (None for none), by name.
-        statuses: Each batch's exit status, by ID.
+        statuses: Each batch's exit status, by ID; a plain HTTP client's
+            is 0 if every request succeeded, else 1.
         killed: The IDs of the batches that timed out.
+        http_failures: Why each plain HTTP client's batch failed, by ID
+            (see transfers.http_category()), for those that did.
+        http_hosts: The host that served each object a plain HTTP
+            client's batch got, by ID.
     """
 
     def __init__(self, out: str, scenarios: list[Scenario], batches: dict[str, list[Batch]]):
@@ -122,6 +130,8 @@ class Plan:
         self.token_files: dict[str, Optional[str]] = {}
         self.statuses: dict[str, int] = {}
         self.killed: set[str] = set()
+        self.http_failures: dict[str, str] = {}
+        self.http_hosts: dict[str, list[str]] = {}
 
     @property
     def puts(self) -> list[Scenario]:
@@ -139,7 +149,9 @@ def runnable(fed: common.Federation, selected: list[str], report: Report) -> lis
     transfers.placed() places each. Those that can test nothing here are
     left out, and recorded in report as skipped: those in a namespace the
     shape does not export, those that name a cache where the shape has no
-    federated one, and those whose credential is moot.
+    federated one, those of a plain HTTP client where there is no
+    director for it to ask (a standalone origin), and those whose
+    credential is moot.
     """
     scenarios: list[Scenario] = []
     moot: dict[str, str] = {}
@@ -149,6 +161,8 @@ def runnable(fed: common.Federation, selected: list[str], report: Report) -> lis
             why = f"this shape does not export /{scenario.namespace}"
         elif scenario.named and not fed.federated_caches:
             why = "this shape has no federated cache for the client to name"
+        elif scenario.client == "http" and not fed.director_url:
+            why = "this shape has no director for a plain HTTP client to ask"
         elif scenario.credential is not None:
             why = credentials.moot(fed, scenario.credential)
         if why:
@@ -327,12 +341,115 @@ def command(session: Session, plan: Plan, batch: Batch) -> tuple[list[str], dict
     return args, env
 
 
+def redact(url: str) -> str:
+    """Return url with the token in its authz query parameter hidden."""
+    return re.sub(r"([?&]authz=)[^&]*", r"\1<token>", url)
+
+
+def http_fetch(
+    method: str, url: str, token: Optional[str], upload: Optional[str] = None
+) -> list[tuple[str, web.Response]]:
+    """Send method to url, and follow its redirects, as `curl -L` does.
+
+    The Authorization header goes with the first request, and with a
+    redirect to the same host; curl drops it when the host changes (since
+    7.58.0, unless told --location-trusted), as Go's and Python's HTTP
+    clients do, so a redirect to another host is followed as given, with
+    the token in its authz query parameter if the director put it there.
+    The body goes again with each PUT.
+
+    Args:
+        method: `GET` or `PUT`.
+        url: Where to send it first.
+        token: The bearer token to present, if any.
+        upload: For a PUT, the file to send.
+
+    Returns:
+        Each request's URL and answer, in order, up to transfers.HTTP_HOPS
+        of them.
+    """
+    hops: list[tuple[str, web.Response]] = []
+    current, send_token = url, token
+    for _ in range(transfers.HTTP_HOPS):
+        answer = web.request(method, current, token=send_token, upload=upload, timeout=120)
+        hops.append((current, answer))
+        location = answer.header("Location")
+        if answer.status not in (301, 302, 307, 308) or not location:
+            break
+        following = urljoin(current, location)
+        if urlsplit(following).hostname != urlsplit(current).hostname:
+            send_token = None
+        current = following
+    return hops
+
+
+def http_transfer(session: Session, plan: Plan, batch: Batch) -> None:
+    """Run batch as a plain HTTP client, one request per object.
+
+    A get asks the director for the object's bare path (with ?directread
+    for a direct read), or, for a named get, the named cache itself, and
+    follows the redirect (see http_fetch()); what comes back with 200
+    goes in the batch's directory, under the object's name, as `curl -o`
+    would put it. A put PUTs the file to its bare path at the director,
+    and follows the redirect with the file again. The log keeps each
+    request's hops; the failure, if any, is of the last answer
+    (transfers.http_category()), and a batch of several objects fails as
+    its failures combine (transfers.combine()).
+    """
+    s = batch.scenario
+    fed = session.fed
+    token: Optional[str] = None
+    token_file = plan.token_files[s.name]
+    if token_file:
+        with open(token_file, encoding="utf-8") as f:
+            token = f.read().strip()
+    cache = named_cache(fed).url if fed.federated_caches else ""
+    directory = f"{plan.out}/files/{batch.id}"
+    failures: list[str] = []
+    hosts: list[str] = []
+    with open(f"{plan.out}/log/{batch.id}", "w", encoding="utf-8") as log:
+        for url in batch.urls:
+            name = transfers.local_name(url)
+            target = transfers.http_target(s, url, fed.url, fed.director_url, cache)
+            method = "GET" if s.op == "get" else "PUT"
+            upload = f"{directory}/{name}" if s.op == "put" else None
+            hops = http_fetch(method, target, token, upload)
+            for asked, answer in hops:
+                log.write(f"{method} {redact(asked)}: {answer.describe()}")
+                if answer.header("Location"):
+                    log.write(f" -> {redact(answer.header('Location'))}")
+                log.write("\n")
+            last_url, last = hops[-1]
+            if last.ok and (s.op == "put" or last.status == 200):
+                hosts.append(urlsplit(last_url).hostname or "")
+                if s.op == "get":
+                    with open(f"{directory}/{name}", "wb") as f:
+                        f.write(last.body)
+                continue
+            at_director = len(hops) == 1 and not s.named
+            category = transfers.http_category(last.status, at_director)
+            failures.append(category)
+            log.write(
+                f"Failure {'getting' if s.op == 'get' else 'putting'} {name}: {category}\n"
+            )
+        status = 1 if failures else 0
+        log.write(f"\nexit status {status}\n")
+    plan.statuses[batch.id] = status
+    plan.http_hosts[batch.id] = hosts
+    if failures:
+        plan.http_failures[batch.id] = transfers.combine(failures)
+
+
 def transfer(session: Session, plan: Plan, batch: Batch) -> None:
     """Run batch in its directory, where its files are, with no terminal.
 
     With no token, `pelican object` would try to acquire one
-    interactively. A batch that outlasts CLIENT_TIMEOUT is killed.
+    interactively. A batch that outlasts CLIENT_TIMEOUT is killed. A
+    plain HTTP client's batch is http_transfer().
     """
+    if batch.scenario.client == "http":
+        http_transfer(session, plan, batch)
+        return
     args, env = command(session, plan, batch)
     with open(f"{plan.out}/log/{batch.id}", "wb") as log:
         try:
@@ -403,6 +520,8 @@ def observe(plan: Plan, batch: Batch) -> Observation:
     failure = None
     if batch.id in plan.killed:
         passed, failure = False, "other"
+    elif not passed and s.client == "http":
+        failure = plan.http_failures.get(batch.id, "other")
     elif not passed:
         lines = transfers.failure_lines(s.client, said)
         failure = transfers.combine(transfers.classify(line) for line in lines)
@@ -567,8 +686,11 @@ def served_by(plan: Plan, batch: Batch) -> list[str]:
     In the plugin's result ads, that is the highest-numbered EndpointN of
     each successful transfer; in the pelican client's transfer stats,
     which it writes only if every object moved, the endpoint of each
-    result's highest-numbered attempt.
+    result's highest-numbered attempt; and for a plain HTTP client, the
+    host of the last request that answered 200.
     """
+    if batch.scenario.client == "http":
+        return list(plan.http_hosts.get(batch.id, []))
     if batch.scenario.client == "plugin":
         try:
             with open(f"{plan.out}/output/{batch.id}.ad", encoding="utf-8") as f:
@@ -600,8 +722,11 @@ def check_served(
     They are judged by client and route, by transfers.check_served_by():
     outside `tiny`, a cache must have served some of those meant for one
     in each namespace, an origin every direct one, and every one where
-    there is no cache, and the named cache every named one. Uploads go
-    straight to an origin, so they don't count.
+    there is no cache, and the named cache every named one. A plain HTTP
+    client's bare paths go where the director sends them: to an origin
+    under `-p director-default-origin`, where every one must then come
+    from an origin. Uploads go straight to an origin, so they don't
+    count.
 
     Returns:
         Whether every verdict passed or skipped.
@@ -609,8 +734,13 @@ def check_served(
     ok = True
     origin_hosts = {o.svc for o in fed.origins}
     header = False
-    for client in ("pelican", "plugin"):
+    for client in transfers.CLIENTS:
         for route in ("cache", "direct", "named"):
+            cacheless = not fed.caches or (
+                client == "http"
+                and route == "cache"
+                and fed.director_default_response == "origin"
+            )
             gets = [
                 s
                 for s in plan.scenarios
@@ -643,7 +773,7 @@ def check_served(
             if route == "named":
                 named = urlsplit(named_cache(fed).url).hostname or named_cache(fed).svc
             verdict, note = transfers.check_served_by(
-                route, served, origin_hosts, fed.tiny, not fed.caches, named
+                route, served, origin_hosts, fed.tiny, cacheless, named
             )
             if verdict == FAIL:
                 warn(f"{note} ({client})")

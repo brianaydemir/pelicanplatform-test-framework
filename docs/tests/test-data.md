@@ -32,12 +32,25 @@ object get --cache`) and takes the objects from it, asking the director
 only what the namespace wants: the three ways a client reaches an
 object. Every scenario also has a plugin twin, `plugin-<scenario>`
 (e.g. `plugin-direct-exist`), which runs the same batches through
-`stash_plugin`. The plugin has no flag for a direct read, so its direct
-batches add `?directread` to each URL, and takes the named cache from
-`Client.PreferredCaches`. Only the plugin's uploads go elsewhere, to
-`put/plugin-put-<ns>-<cred>/`. A shape without a federated cache
+`stash_plugin`, and an HTTP twin, `http-<scenario>`, which runs them as
+a plain HTTP client, such as curl, would. The plugin has no flag for a
+direct read, so its direct batches add `?directread` to each URL, and
+takes the named cache from `Client.PreferredCaches`. The plain HTTP
+client asks the director for each object's bare path, which it sends
+to a cache (or, under `-p director-default-origin`, to an origin), or
+with `?directread`, which it sends to an origin; for a named get, it
+asks the cache itself; and it PUTs each upload to its bare path, which
+the director sends to an origin. It follows each redirect as `curl -L`
+does: to the `Location` as given, whose `authz` query parameter carries
+the token, and without the `Authorization` header, which curl (since
+7.58.0), Go's HTTP client, and Python's drop when the host changes; so
+a director that left the token out of its redirect would fail every
+protected read. Only the plugin's and the HTTP client's uploads go
+elsewhere, to `put/plugin-put-<ns>-<cred>/` and
+`put/http-put-<ns>-<cred>/`. A shape without a federated cache
 (`topo-standalone`, `topo-no-cache`) has no named scenarios, and its
-other gets, asking for a cache, must be sent to an origin.
+other gets, asking for a cache, must be sent to an origin; a standalone
+origin has no director, so every HTTP twin skips there.
 
 What each scenario should do follows the
 [authorization](authorization.md) rules: every get of `/public` should
@@ -52,12 +65,23 @@ namespace instead. Without `DirectReads` (`origin-no-direct`),
 scenarios, and the summary after a run shows what each was expected to
 do.
 
+The Pelican clients send no token for a read of `/public`, so a bad one
+cannot break it, and every `get-public-<cred>` should pass. A plain
+HTTP client sends whatever it is given, and the director refuses an
+expired token it is shown, whatever the namespace
+(`validateClientToken` in `director/director.go`), while the servers
+ignore a token on a public read: so `http-get-public-expired` and
+`http-direct-get-public-expired`, which ask the director, should be
+refused, by the director, and `http-cache-get-public-expired`, which
+asks the cache itself, should pass.
+
 `exist`, `dne`, and each scenario that a token should let through run
 two batches, of one object and then two (a put of two goes to a
 collection rather than to an object's URL); the rest run one, of one
-object. In the default shape that is 238 scenarios and 298 client
-invocations, 16 at a time. Each batch picks distinct objects, uniformly
-at random. `framework/testlib/transfers.py` sets these numbers.
+object. In the default shape that is 357 scenarios and 447 client
+invocations (119 and 149 for each of the three clients), 16 at a time.
+Each batch picks distinct objects, uniformly at random.
+`framework/testlib/transfers.py` sets these numbers.
 
 The suite mints the tokens and writes new random bytes for each upload.
 Before the run, it empties every put collection in every store, a `pstore`
@@ -84,17 +108,29 @@ object server could confirm whether ... is a collection") rather than
 not found, and the `dne`, `direct-dne`, and `cache-dne` rows fail, on
 v26.0.0-rc.3 and main alike (L4). With several origins, the director's
 presence check answers 404 first, which the client reports as not found.
-`stash_plugin` refuses no collection, so its twins pass. The summary counts
-each scenario's batches that passed, failed, and went unexpectedly, says why
-the failed ones failed, and names the batch sizes that had unexpected
-results. `verify/problems` lists each unexpected result.
+`stash_plugin` refuses no collection, so its twins pass, and so do the
+HTTP twins, which stat nothing. The plain HTTP client's failures are its
+statuses: a 401 from the director (an expired token) is `director`, a
+405 from it (no origin allows the request in the namespace, as for a
+put to `/public`) `unsupported`, a 404 from it or from a server `not
+found`, and a 401 or 403 from the server the redirect led to `server`;
+anything else, a redirect that led nowhere included, is `other`, and so
+unexpected. A get that got 200 goes in the batch's directory under the
+object's name, as `curl -o` would put it; nothing else is written. The
+summary counts each scenario's batches that passed, failed, and went
+unexpectedly, says why the failed ones failed, and names the batch
+sizes that had unexpected results. `verify/problems` lists each
+unexpected result; `log/<scenario>/<batch>` keeps the plain HTTP
+client's requests and the answers to each, its tokens redacted.
 
 Last, it shows which servers served the successful downloads, by client and
 route. In each namespace with downloads meant for a cache, a cache must have
 served some, since a director that routed around its caches would otherwise
 pass every scenario; only an origin may serve a direct one; and only the
 named cache a named one, since a client that fell back to the director's
-caches would otherwise pass. Under `topo-tiny`, whose cache and origin are
+caches would otherwise pass. The plain HTTP client's bare paths go where
+the director sends them, so under `-p director-default-origin` only an
+origin may serve those too. Under `topo-tiny`, whose cache and origin are
 one host, these checks are skipped. Where a namespace takes no direct
 clients (`origin-no-direct`), every direct read must be refused.
 

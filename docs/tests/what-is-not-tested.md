@@ -135,13 +135,25 @@ Shapes that Pelican offers and this framework does not, and why:
   ([transfer API](transfer-api.md)).
 - Of the clients: the order of the client's tries among servers it
   probes, which it ranks by their answers; `osdf://` and `stash://`
-  URLs, whose discovery is hard-coded to osg-htc.org
-  ([client contracts](client-contracts.md)); `?pack`, by which `pelican
+  URLs against the OSDF itself, whose discovery host they default to
+  (the `client` suite's `url-forms` names this federation for them with
+  `-f`, which Pelican's client does not apply to them;
+  [client contracts](client-contracts.md)); a client's tokens from
+  `XDG_RUNTIME_DIR/bt_u<uid>`, `/tmp/bt_u<uid>`, and `TOKEN`, the older
+  places `tokenContentIterator` looks, which the tests refuse to run
+  beside, since any token there would win over each scenario's
+  (`credentials.client_env()`); `?pack`, by which `pelican
   object get` and `put` move a collection as one archive, which the
   native origin does not serve, and which no suite asks an XRootD
   origin for; and of the client agent, a job cancelled while it runs,
   and the agent's wallet, which `pelican client-agent warm` fills with
   tokens acquired interactively ([client contracts](client-contracts.md)).
+- Of a plain HTTP client: one that re-sends its `Authorization` header
+  to wherever a redirect leads (`curl --location-trusted`), which the
+  `federation` suite's `redirects` and the `blocks` suite's
+  `director-read` do with the `server` token; the `transfers` suite's
+  HTTP twins follow each redirect as curl does by default, with the
+  token in the `Location`'s `authz` alone ([test data](test-data.md)).
 - A site's HTTP proxy, which the client sends its transfers through
   when `http_proxy` or its kin is set (`Client.DisableHttpProxy` turns
   that off), trying without it when it fails, unless

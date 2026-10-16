@@ -40,8 +40,15 @@ several cases records a row per case, named `<scenario> <case>`.
   missing object's failure, and any other the existing object's
   success. The exit
   status must be 0 if every transfer succeeded, else 11 if any failure
-  may be retried, else 1 (`writeOutfile`). It skips where there is no
-  cache.
+  may be retried, else 1 (`writeOutfile`). Where `/protected-a` takes
+  writes, of an upload (`-upload`) of two files (`upload`): each ad must
+  say `TransferSuccess`, `TransferType` `upload`, `TransferFileName`
+  the local file's name, the file's bytes, its URL, and its times, as a
+  download's does, and name an `Endpoint0`; the exit status must be 0;
+  and an origin must hold each file. Of an upload with a token signed
+  by a key no server knows (`upload-refused`): an error of type
+  `Authorization`, and no origin may hold the file. It skips where
+  there is no cache.
 - `failover`, with a federated V2 cache beside another cache, of
   either kind (`-p cache-mixed` makes cache-1 an XRootD cache, so that
   the failover crosses kinds): both hold a 1 MiB object whole, and the
@@ -91,10 +98,48 @@ several cases records a row per case, named `<scenario> <case>`.
   `scitokens.use`, the `unknown` token (`prefix`), as must
   `protected_a+pelican://...`, whose `_` the client reads as `.`
   (`protected.a.use`; `GetTokenName` in `pelican_url/parse.go`;
-  `prefix-underscore`). Pelican's main has a V2 cache hint at the
-  namespace's issuer when it refuses a token, which the client may act
-  on by retrying with another token it holds; whether that lets
-  `acceptable-wins` through is for a run on main to show.
+  `prefix-underscore`). Each case runs again through stash_plugin, as
+  `plugin-<case>`, since the plugin finds its tokens the same way,
+  through the client's transfer engine, and HTCondor is where
+  `_CONDOR_CREDS` and the scheme prefix come from: the plugin must get
+  the object where the client does, and where the client is refused,
+  its ad must report an error of type `Authorization`. Neither client
+  honors the prefix on v26.0.0-rc.3: each hands its transfer engine
+  the URL with its scheme normalized (`GetRawUrl` in
+  `pelican_url/parse.go`), so the token generator, which takes the
+  token's name from the URL it is given (`GetTokenName`), finds none,
+  opens `scitokens.use` first, and presents the unknown key's token,
+  which is refused; and `protected_a+pelican://` never parses, since
+  Go's URL parser refuses `_` in a scheme, before the client could read
+  the `_` as `.`. So `prefix` and `prefix-underscore` fail, by either
+  client, on v26.0.0-rc.3 and main alike (L8). Pelican's main
+  has a V2 cache hint at the namespace's issuer when it refuses a
+  token, which the client may act on by retrying with another token it
+  holds; whether that lets `acceptable-wins` through is for a run on
+  main to show.
+- `url-forms`: the forms of a URL that the clients take
+  (`pelican_url/parse.go`), of an object in `/protected-a`. By `pelican
+  object get`: a bare path, which needs a federation to be given, as
+  the dev container's configuration does (`Federation.DiscoveryUrl`;
+  `configured`, which skips for a standalone origin, whose client is
+  told of none), as `-f` does (`flag`), and as
+  `PELICAN_FEDERATION_DISCOVERYURL` does (`env`); `osdf:///` and
+  `stash:///` URLs, which take the OSDF's federation unless one is
+  given, here by `-f` (`osdf`, `stash`); and `osdf://` with two
+  slashes, which the client reads as three (`osdf-two-slashes`). Each
+  must get the object. Where `/protected-a` takes writes, `pelican
+  object put` to an `osdf:///` URL, with `-f`, must land the file at an
+  origin (`put-osdf`). And stash_plugin, which HTCondor hands
+  `osdf:///` URLs, with the federation in its environment, must get the
+  object (`plugin-osdf`); a bare path is not tried, since HTCondor
+  takes one for a local file. Pelican's client applies the federation
+  it is given only to a schemeless URL (`handleSchemelessIfNeeded` in
+  `client/main.go`), though its URL parser would take it for an
+  `osdf:///` URL too (`PopulateFedInfo` in `pelican_url/discovery.go`,
+  with a warning), so every `osdf:///` and `stash:///` URL goes to the
+  OSDF's director, whatever `-f` or the environment says, and `osdf`,
+  `stash`, `osdf-two-slashes`, `put-osdf`, and `plugin-osdf` fail, on
+  v26.0.0-rc.3 and main alike (L10); the bare-path rows pass.
 - `token-create-discovery`: `pelican token create` without `--issuer`
   or `--scope-path` (`cmd/token.go`), for a collection in
   `/protected-a`: with the origins' key, the token's issuer must be the
@@ -173,7 +218,13 @@ several cases records a row per case, named `<scenario> <case>`.
   directory to a URL with `?recursive` lays the tree out flat, as `-r`
   would (P6; `put-recursive-query`), and `get` of a collection's URL
   with `?recursive` brings it back, where the namespace has `Listings`
-  (`get-recursive-query`).
+  (`get-recursive-query`). stash_plugin, which HTCondor hands a URL
+  with `?recursive` for a tree, must upload the directory to a
+  collection of its own (`plugin-put-recursive-query`), and bring the
+  collection back (`plugin-get-recursive-query`): the plugin lands a
+  download whose destination is a directory under the object's name in
+  it (`parseDestination` in `cmd/plugin.go`), so the tree may come
+  back there, or in the directory itself, and the note says which.
 - `preferred-cache-down`: `pelican object get --cache
   https://<cache>:1,+`, a preferred cache that answers nothing (no
   server listens on port 1) and then, with `+`, the director's caches:
