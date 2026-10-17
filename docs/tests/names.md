@@ -14,8 +14,14 @@ mishandles the encoding would take for its own: `x%41y` beside `xAy`,
 percent-encodes every character of a name but letters, digits, and
 `-._~`, and so does what the client is given.
 
-- A PUT of each name must land in each store on disk as a file of exactly
-  that name.
+- A PUT of each name must land in each store under exactly that name,
+  and nothing else may: in a store on disk as a file, with its bytes;
+  and in a pstore origin's catalog, as its storage API lists it, as an
+  entry of its object's size, whose checksums, as the store recorded
+  them as it wrote it, are its bytes' ([pstore](pstore.md)). After
+  `pelican object put` of a file of each name, too, no store may hold
+  an object of another name in that collection, a pstore's catalog
+  included.
 - Every origin and cache must serve each object by its name: any bytes
   but its own fail, and a decoy's are named.
 - Every director, asked for each object by its name through its object

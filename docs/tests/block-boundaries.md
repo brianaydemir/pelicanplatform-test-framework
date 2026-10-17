@@ -77,7 +77,11 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   bytes, and a 512-byte object, which a V2 cache keeps in its database:
   each of an object of its own, read cold and then warm. A GET that
   does not ask must get no trailer; a HEAD that asks has no body, and
-  so no trailer, but must get the object's length.
+  so no trailer, but must get the object's length. Each V2 cache's
+  introspection (`introspect/metadata`, as its admin) must then say
+  that it holds the 512-byte object inline (`is_inline`), since that
+  is the path the read is for; where it says otherwise, the row is
+  inconclusive, and where it cannot say, the note says so.
 - `transfer-status-failure`: each federated V2 cache holds an object
   whole; its chaos API then corrupts the object's fourth block, past
   what the cache reads before it sends the headers, and the object is

@@ -160,3 +160,23 @@ def blocks_held(cache: common.Cache, token: str, url: str) -> tuple[Optional[Blo
         ),
         "",
     )
+
+
+def held_inline(cache: common.Cache, token: str, url: str) -> tuple[Optional[bool], str]:
+    """Return whether cache holds the object it keys by url inline.
+
+    That is in its database, rather than in a file of blocks: a V2 cache
+    keeps an object under 4,096 bytes so (InlineMaxBytes, in
+    local_cache/persistent_cache.go). The cache's admin, the holder of
+    token, asks introspect/metadata, whose is_inline says.
+
+    Returns:
+        Whether it does, and ""; or None, and why the cache did not say.
+    """
+    answer = introspect(cache, token, "GET", "metadata", url=url)
+    if answer.status != 200:
+        return None, f"introspect/metadata answered {answer.describe()}"
+    inline = (common.as_object(decoded(answer)) or {}).get("is_inline")
+    if not isinstance(inline, bool):
+        return None, "introspect/metadata did not say whether it is inline"
+    return inline, ""

@@ -14,7 +14,11 @@ catalog. The `pstore` suite checks them. Its objects go under
 removes them afterward. At another native origin, only `storage-api`'s
 `absent` row runs, and the suite skips XRootD origins. A scenario with
 several cases records a row per case, named `<scenario> <case>`, or
-`<scenario> <origin> <case>` where it asks each origin.
+`<scenario> <origin> <case>` where it asks each origin. Where other
+suites would read a store on disk, they ask a pstore origin's storage
+API what its catalog holds instead: [names](names.md) its names and
+checksums, and [listings](listings.md) and
+[client commands](client-commands.md) its modification times.
 
 - `storage-api`: each pstore origin serves, on its web port, `GET
   /api/v1.0/origin/storage/pstore/ls/<path>`, `stat/<path>`,
@@ -81,12 +85,34 @@ several cases records a row per case, named `<scenario> <case>`, or
   must begin again, and succeed. No pass may have failed
   (`pelican_pstore_scheduled_pass_failures_total`); the index check
   must find nothing (`pelican_pstore_fsck_findings`); and the data scan
-  must have verified objects, and found none changed
-  (`pelican_pstore_data_scan_mismatches_total`). The index check's
-  `pending_instances`, writes under way or abandoned less than 10
-  minutes ago, which only the janitor reclaims, are reported but not
+  must have verified objects, and found none changed while the scenario
+  watched (`pelican_pstore_data_scan_mismatches_total`, which
+  `corruption`, in an earlier run, may have counted before). The index
+  check's `pending_instances`, writes under way or abandoned less than
+  10 minutes ago, which only the janitor reclaims, are reported but not
   failed (`pstore/fsck.go`): a copy that failed in the `exports` suite
   may leave some.
+- `corruption`: a store's data scan is the only thing that finds what
+  its disk has spoiled, since an origin, unlike a cache, has nowhere to
+  fetch a good copy from. At each pstore origin, the suite puts an
+  object of 100,000 bytes, which the store writes to a block file of its
+  own, the one new file of its size in `objects/` under the store
+  (`framework/var/data/origin/<N>/pstore/`), and then, from the dev
+  container, inverts a byte of the object's second block in that file,
+  as a failing disk would, so that the block no longer matches its
+  AES-GCM tag. A GET of the object must then not be served whole, or
+  the change missed it, and the row is inconclusive; and the next data
+  scan to begin after the change, and succeed, within 150 seconds, must
+  count it (`pelican_pstore_data_scan_mismatches_total`). The scan reads
+  each object back through the block store, which checks each block's
+  tag before any checksum is compared, and takes a block that fails it
+  for an error reading the object, which it logs as a warning ("Error
+  verifying object"), and counts nothing (`verifyObjectChecksum` in
+  `local_cache/consistency.go`, which `pstore/integrity.go` runs), so
+  the row is expected to fail, on v26.0.0-rc.3 and main alike (read in
+  the code, not yet run): a V2 cache's scan does the same
+  (`cache-api`'s `consistency` rows; [cache APIs](cache-apis.md)). The
+  note says what the GET got. The object is deleted afterward.
 
 No shape bounds a store, or backs one up. So for `capacity`, `backups`,
 and `restore`, the suite restarts the first origin, once, as the last of
@@ -101,8 +127,8 @@ the suite removes afterward. The suite then restores the origin, and
 waits, as `freshness` does, until every director names every origin and
 every cache answers. The restart needs a control helper, and skips the
 `tiny` topology, whose origin is the whole federation's process;
-otherwise the three scenarios skip, and say why. `scheduled-passes` runs
-before it, since a restart starts the passes over.
+otherwise the three scenarios skip, and say why. `scheduled-passes` and
+`corruption` run before it, since a restart starts the passes over.
 
 - `capacity`: straight at the origin, in order. A pstore never evicts:
   past its bound, a write gets 507 until something is deleted

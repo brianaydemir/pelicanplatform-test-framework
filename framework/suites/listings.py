@@ -21,9 +21,10 @@ objects are put in place, and the stores read, with WLCG tokens either
 way.
 
 An object's getlastmodified at an origin must be when its file was
-written. Who may list depends on the namespace's capabilities (see
-may_list()): an origin serves only direct clients, which a namespace
-without DirectReads has none of (`-p origin-no-direct`); a cache answers
+written (in a pstore origin's catalog, as its storage API says). Who may
+list depends on the namespace's capabilities (see may_list()): an origin
+serves only direct clients, which a namespace without DirectReads has
+none of (`-p origin-no-direct`); a cache answers
 Depth 0 of anything it may read, and a director redirects it; and
 anything deeper, at any server, needs Listings. A PROPFIND that may not
 be answered must be refused, with 401, 403, or 405.
@@ -293,16 +294,17 @@ def origin_url(origin: common.Origin, path: str) -> str:
 def modified_problem(test: Test, origin: common.Origin, ns: str, entry: webdav.Entry) -> str:
     """Return why entry's getlastmodified is not when its file was written.
 
-    The file is the object's in origin's store, if the store is on disk.
-    Return "" if the time is right, or the store cannot say. The origins
-    and the tests keep different time zones (TZ_STORAGE), so a time
-    rendered in the wrong one shows.
+    The file is the object's in origin's store: on disk, its modification
+    time; in a pstore origin's catalog, its entry's (stores.written_at()).
+    Return "" if the time is right. The origins and the tests keep
+    different time zones (TZ_STORAGE), so a time rendered in the wrong one
+    shows.
     """
     if entry.modified is None:
         return "no getlastmodified"
-    if origin.pstore:
-        return ""
-    written = os.stat(f"{origin.store_of(ns)}/{test.base}/tree/b").st_mtime
+    written, why = stores.written_at(test.session, origin, ns, f"{test.base}/tree/b")
+    if written is None:
+        return why
     off = entry.modified.timestamp() - written
     if abs(off) > MODIFIED_SLACK:
         when = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(written))

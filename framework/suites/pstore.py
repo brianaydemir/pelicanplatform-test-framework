@@ -15,6 +15,8 @@ its catalog.
   scheduled-passes  at each pstore origin, the index check and the data
                     scan run and find nothing wrong, and an object
                     overwritten and one deleted are reclaimed
+  corruption        at each pstore origin, a block of an object, changed
+                    in its file, is counted by the next data scan
   capacity          the first origin's store, bounded just above what it
                     holds and filled: a PUT that would not fit gets 507
                     before its body, with or without Expect:
@@ -36,8 +38,10 @@ that takes writes, at every pstore origin, and removes it afterward. The
 requests that its checks make of the data port present tokens of the
 session's profile; what it puts in place, and the requests that see
 whether the federation serves again, present WLCG tokens either way, so
-that `introspect-cli`, `scheduled-passes`, and `backups`, which present
-nothing else but an admin's tokens, run in the WLCG pass alone.
+that `introspect-cli`, `scheduled-passes`, `corruption`, and `backups`,
+which present nothing else but an admin's tokens, run in the WLCG pass
+alone. `corruption` changes the block file of an object of its own,
+from the dev container, which can write the stores.
 
 Nothing bounds a store, or backs one up, as the shape is: a bound would
 bound every suite's writes. So for `capacity`, `backups`, and `restore`
@@ -52,8 +56,9 @@ and starts it again on the restored catalog. That needs a control
 helper, and a topology other than `tiny`, whose origin is the whole
 federation's process; otherwise the three skip, and say why. The
 scheduled passes run as the shape is
-(config.d/origin/pstore/50-origin.yaml shortens their intervals), before
-the restart, which would start them over.
+(config.d/origin/pstore/50-origin.yaml shortens their intervals), and
+`scheduled-passes` and `corruption` wait for them before the restart,
+which would start them over.
 """
 
 import glob
@@ -83,13 +88,14 @@ from testlib import (
     web,
 )
 from testlib.common import first, warn
-from testlib.report import FAIL, PASS, SKIP
+from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 
 SCENARIOS = {
     "storage-api": "the pstore storage API: its admin alone; pages; agrees with the data port",
     "introspect-cli": "`pelican-server origin introspect` says what the storage API says",
     "scheduled-passes": "the index check and data scan run clean, and reclaim old versions",
+    "corruption": "a block of an object, changed in its file, is counted by the next data scan",
     "capacity": "a full store refuses a PUT with 507 before its body, and takes it once freed",
     "backups": "catalog backups at startup and every interval, keeping only the newest",
     "restore": (
@@ -100,15 +106,11 @@ SCENARIOS = {
 
 # The scenarios that present no storage token beyond their setup's (see
 # suites/__init__.py).
-ONE_PROFILE = ("introspect-cli", "scheduled-passes", "backups")
+ONE_PROFILE = ("introspect-cli", "scheduled-passes", "corruption", "backups")
 
 # The protected namespaces, of which the suite writes in the first that
 # takes writes.
 NAMESPACES = ("protected-a", "protected-b")
-
-# The storage API, under each origin's web URL (RegisterStorageAPI in
-# Pelican's origin_serve/storage_api.go).
-API = "/api/v1.0/origin/storage/pstore"
 
 # How long the suite's own web tokens last, in seconds: the whole suite.
 TOKEN_LIFETIME = 3600
@@ -146,6 +148,15 @@ NEXT_PASS_WAIT = 150
 # The size of the object overwritten and of the one deleted: in a block
 # file, not the catalog.
 RECLAIM_SIZE = 100000
+
+# corruption: an object in a block file, not the catalog, and below the
+# spill threshold, so in one file of blocks.stored() bytes; the block of
+# it whose bytes change in that file, where each block is followed by its
+# tag (BlockOffset in Pelican's local_cache/schema.go); and how far into
+# that block.
+CORRUPT_SIZE = 100000
+CORRUPT_BLOCK = 1
+CORRUPT_AT = 100
 
 # The first origin's store (Origin.PStoreLocation, in
 # config.d/origin/pstore/50-origin.yaml), which the restart bounds.
@@ -264,10 +275,9 @@ class Test:
     def catalog(self, origin: common.Origin, rel: str) -> str:
         """Return rel's path in origin's store, which the storage API takes.
 
-        It is under the export's StoragePrefix (fed_storage_prefix in
-        fed.sh).
+        It is under the export's StoragePrefix (stores.catalog()).
         """
-        return f"/{common.storage_dir(origin.storage_namespace(self.namespace))}/{rel}"
+        return stores.catalog(origin, self.namespace, rel)
 
     def web_token(self, origin: common.Origin, user: str) -> str:
         """Return the file of a token that origin's web API takes as user's.
@@ -307,7 +317,7 @@ class Test:
 
         path is e.g. `usage`, or `ls/<path>`.
         """
-        url = f"{origin.web_url}{API}/{path}"
+        url = f"{origin.web_url}{stores.STORAGE_API}/{path}"
         if query:
             url += "?" + urlencode(query)
         return web.request("GET", url, token=token)
@@ -334,6 +344,14 @@ class Test:
         return stores.put(origin, self.namespace, rel, data, self.setup)
 
 
+def store_dir(origin: common.Origin) -> str:
+    """Return origin's store, under framework/var.
+
+    It is STORE (/data/pstore) in the origin, whose /data is origin.store.
+    """
+    return f"{origin.store}/{STORE[len('/data/') :]}"
+
+
 def read_token(path: str) -> str:
     """Return the token in the file at path."""
     with open(path, encoding="utf-8") as f:
@@ -346,15 +364,6 @@ def decoded(answer: web.Response) -> Any:
         return json.loads(answer.body)
     except ValueError:
         return None
-
-
-def route(kind: str, path: str) -> str:
-    """Return the storage API's route of kind for the store's path.
-
-    kind is `ls`, `stat`, or `digest`. Each segment of path is encoded,
-    as the CLI sends it.
-    """
-    return f"{kind}{quote(path)}"
 
 
 def usage(test: Test, origin: common.Origin) -> tuple[Optional[dict[str, Any]], str]:
@@ -394,7 +403,12 @@ def absent(test: Test, origin: common.Origin) -> Row:
     origin registers none (RegisterStorageAPI).
     """
     problems: list[str] = []
-    routes = ("usage", route("ls", "/"), route("stat", "/"), route("digest", "/x"))
+    routes = (
+        "usage",
+        stores.storage_route("ls", "/"),
+        stores.storage_route("stat", "/"),
+        stores.storage_route("digest", "/x"),
+    )
     for path in routes:
         for who, token in (("no token", None), ("the admin", test.admin(origin))):
             answer = test.api(origin, path, token)
@@ -429,9 +443,9 @@ def authz(test: Test, origin: common.Origin, _objects: Mapping[str, bytes]) -> R
     """
     directory = test.catalog(origin, test.rel("api"))
     routes = (
-        route("ls", directory),
-        route("stat", f"{directory}/{FILED}"),
-        route("digest", f"{directory}/{FILED}"),
+        stores.storage_route("ls", directory),
+        stores.storage_route("stat", f"{directory}/{FILED}"),
+        stores.storage_route("digest", f"{directory}/{FILED}"),
         "usage",
     )
     tries = (
@@ -481,7 +495,7 @@ def listing(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> 
     admin = test.admin(origin)
     directory = test.catalog(origin, test.rel("api"))
     problems: list[str] = []
-    whole, more = entries(test.api(origin, route("ls", directory), admin))
+    whole, more = entries(test.api(origin, stores.storage_route("ls", directory), admin))
     if whole is None:
         return FAIL, "ls of the collection did not answer 200 with a listing"
     names = [str(e.get("name")) for e in whole]
@@ -505,7 +519,9 @@ def listing(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> 
         query: dict[str, Any] = {"limit": PAGE}
         if after:
             query["after"] = after
-        page, more = entries(test.api(origin, route("ls", directory), admin, **query))
+        page, more = entries(
+            test.api(origin, stores.storage_route("ls", directory), admin, **query)
+        )
         pages += 1
         if page is None:
             problems.append(f"page {pages} did not answer 200 with a listing")
@@ -522,7 +538,7 @@ def listing(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> 
     if pages != wanted_pages:
         problems.append(f"{pages} pages of {PAGE}, not {wanted_pages}")
     for path, wanted in ((f"{directory}/{FILED}", 400), (f"{directory}/nothing", 404)):
-        answer = test.api(origin, route("ls", path), admin)
+        answer = test.api(origin, stores.storage_route("ls", path), admin)
         if answer.status != wanted:
             problems.append(
                 f"ls of {path.rsplit('/', 1)[-1]}: {answer.describe()}, not {wanted}"
@@ -543,7 +559,9 @@ def stat(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row
     for name in (FILED, INLINED):
         rel = test.rel("api", name)
         path = test.catalog(origin, rel)
-        found = common.as_object(decoded(test.api(origin, route("stat", path), admin)))
+        found = common.as_object(
+            decoded(test.api(origin, stores.storage_route("stat", path), admin))
+        )
         if found is None:
             problems.append(f"stat of {name} did not answer 200 with an object")
             continue
@@ -566,12 +584,17 @@ def stat(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row
             if found.get(key) != value:
                 problems.append(f"stat of {name}: {key} {found.get(key)!r}, not {value!r}")
     path = test.catalog(origin, test.rel("api", "sub"))
-    found = common.as_object(decoded(test.api(origin, route("stat", path), admin))) or {}
+    found = (
+        common.as_object(decoded(test.api(origin, stores.storage_route("stat", path), admin)))
+        or {}
+    )
     if found.get("isDir") is not True or found.get("etag"):
         problems.append(
             f"stat of sub: isDir {found.get('isDir')!r}, etag {found.get('etag')!r}"
         )
-    answer = test.api(origin, route("stat", test.catalog(origin, test.rel("nothing"))), admin)
+    answer = test.api(
+        origin, stores.storage_route("stat", test.catalog(origin, test.rel("nothing"))), admin
+    )
     if answer.status != 404:
         problems.append(f"stat of nothing: {answer.describe()}, not 404")
     return outcome(problems, f"{FILED}, {INLINED}, and sub, as HEAD says")
@@ -590,7 +613,9 @@ def digest(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> R
     data = objects[rel]
     problems: list[str] = []
     found = common.as_object(
-        decoded(test.api(origin, route("digest", test.catalog(origin, rel)), admin))
+        decoded(
+            test.api(origin, stores.storage_route("digest", test.catalog(origin, rel)), admin)
+        )
     )
     header = str((found or {}).get("digest", ""))
     wrong, right = digests.check(header, data)
@@ -606,7 +631,7 @@ def digest(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> R
         if got != value:
             problems.append(f"Want-Digest {algorithm} at the data port: {got!r}, not {value!r}")
     path = test.catalog(origin, test.rel("api", "sub"))
-    answer = test.api(origin, route("digest", path), admin)
+    answer = test.api(origin, stores.storage_route("digest", path), admin)
     if answer.status != 400:
         problems.append(f"digest of a collection: {answer.describe()}, not 400")
     return outcome(problems, f"'{header}', as Want-Digest says")
@@ -820,9 +845,11 @@ def introspect_cli(test: Test) -> dict[str, Row]:
             p
             for p in (
                 cli.compare(["usage"], "usage"),
-                cli.compare(["ls", directory], f"{route('ls', directory)}?limit=1000"),
-                cli.compare(["stat", filed], route("stat", filed)),
-                cli.compare(["digest", filed], route("digest", filed)),
+                cli.compare(
+                    ["ls", directory], f"{stores.storage_route('ls', directory)}?limit=1000"
+                ),
+                cli.compare(["stat", filed], stores.storage_route("stat", filed)),
+                cli.compare(["digest", filed], stores.storage_route("digest", filed)),
             )
             if p
         ]
@@ -894,9 +921,11 @@ def passes_at(test: Test, origin: common.Origin) -> Row:
     succeed. None may have failed
     (pelican_pstore_scheduled_pass_failures_total); the index check must
     find nothing (every pelican_pstore_fsck_findings 0); and the data
-    scan must have verified objects, and found none changed
-    (pelican_pstore_data_scan_mismatches_total 0).
+    scan must have verified objects, and found none changed while the
+    scenario watched (pelican_pstore_data_scan_mismatches_total), which
+    `corruption`, in an earlier run, may have counted before.
     """
+    start = fetch_metrics(origin)
     ok, snapshot = wait_metrics(
         origin,
         lambda s: all(v > 0 for v in last_success(s).values()),
@@ -960,7 +989,7 @@ def passes_at(test: Test, origin: common.Origin) -> Row:
     for kind, value in findings.items():
         if value and kind != PENDING:
             problems.append(f"the index check found {value:.0f} {kind}")
-    mismatches = snapshot.value("pelican_pstore_data_scan_mismatches_total")
+    mismatches = metrics.delta(start, snapshot, "pelican_pstore_data_scan_mismatches_total")
     if mismatches:
         problems.append(f"the data scan found {mismatches:.0f} objects changed")
     verified = snapshot.value("pelican_pstore_data_scan_objects_total")
@@ -976,6 +1005,112 @@ def passes_at(test: Test, origin: common.Origin) -> Row:
 def scheduled_passes(test: Test) -> dict[str, Row]:
     """Run passes_at() at each pstore origin."""
     return {origin.svc: passes_at(test, origin) for origin in test.pstores}
+
+
+# --------------------------------------------------------------------------
+# corruption
+
+
+def block_files(origin: common.Origin) -> dict[str, int]:
+    """Return the size of each block file in origin's store, by path.
+
+    Each is in its objects/, two directories down, by the first
+    characters of its name, which is its version's hash
+    (GetInstanceStoragePath in Pelican's local_cache/schema.go). The paths
+    are under framework/var.
+    """
+    found: dict[str, int] = {}
+    for path in glob.glob(f"{store_dir(origin)}/{OBJECTS_DIR}/*/*/*"):
+        try:
+            found[path] = os.path.getsize(path)
+        except OSError:
+            pass  # reclaimed meanwhile
+    return found
+
+
+def flip_byte(path: str, offset: int) -> Optional[str]:
+    """Invert the byte at offset in the file at path.
+
+    Returns:
+        Why that failed, or None.
+    """
+    try:
+        with open(path, "r+b") as f:
+            f.seek(offset)
+            was = f.read(1)
+            if len(was) != 1:
+                return f"framework/var/{path} has no byte {offset}"
+            f.seek(offset)
+            f.write(bytes([was[0] ^ 0xFF]))
+    except OSError as e:
+        return f"writing framework/var/{path}: {e.strerror}"
+    return None
+
+
+def corrupted_at(test: Test, origin: common.Origin) -> Row:
+    """Check that origin's data scan counts a block corrupted at rest.
+
+    An object is put, which the store writes to a block file of its own,
+    the one new file of its size in the store's objects/; then a byte of
+    its second block is changed in that file, as a failing disk would
+    change it, so that the block's AES-GCM tag no longer matches. The
+    origin must no longer serve the object whole, or the change missed it,
+    and the row is inconclusive. The next data scan to begin after the
+    change, and succeed, must count it
+    (pelican_pstore_data_scan_mismatches_total). The scan reads each
+    object back through the block store, which checks each block's tag
+    before any checksum is compared, and it takes a block that fails as an
+    error reading the object, which it logs, and counts nothing
+    (verifyObjectChecksum in Pelican's local_cache/consistency.go, which
+    pstore/integrity.go runs), so the row fails. Afterward the object is
+    deleted.
+    """
+    rel = test.rel("corruption", origin.svc)
+    data = os.urandom(CORRUPT_SIZE)
+    known = set(block_files(origin))
+    why = test.put(origin, rel, data)
+    if why:
+        return FAIL, why
+    try:
+        size = blocks.stored(CORRUPT_SIZE)
+        made = [p for p, n in block_files(origin).items() if p not in known and n == size]
+        if len(made) != 1:
+            return INCONCLUSIVE, f"{len(made)} new block files of {size} bytes, not 1"
+        before = fetch_metrics(origin)
+        why = flip_byte(made[0], CORRUPT_BLOCK * (blocks.BLOCK + blocks.TAG) + CORRUPT_AT)
+        if why:
+            return INCONCLUSIVE, why
+        changed = time.time()
+        # Passes begun before now may have read the object before it
+        # changed.
+        begun = pass_counts(fetch_metrics(origin))["data_scan"]
+        answer = web.request("GET", test.url(origin, rel), token=test.setup)
+        if answer.status == 200 and answer.body == data:
+            return INCONCLUSIVE, "with a block of its file changed, the object was served whole"
+        served = answer.describe()
+        if answer.status == 200:
+            served += f", with {len(answer.body)} bytes that are not the object"
+
+        def scanned(s: metrics.Snapshot) -> bool:
+            began = pass_counts(s)["data_scan"] > begun
+            return began and last_success(s)["data_scan"] >= int(changed)
+
+        ok, after = wait_metrics(origin, scanned, NEXT_PASS_WAIT)
+        if not ok:
+            return FAIL, f"no data scan began and succeeded within {NEXT_PASS_WAIT}s"
+        found = metrics.delta(before, after, "pelican_pstore_data_scan_mismatches_total")
+        if found < 1:
+            return FAIL, f"the data scan after the change counted no mismatch (a GET: {served})"
+        return PASS, f"the data scan counted {found:.0f} mismatch(es) (a GET: {served})"
+    finally:
+        why = stores.delete(origin, test.namespace, rel, test.setup)
+        if why:
+            warn(why)
+
+
+def corruption(test: Test) -> dict[str, Row]:
+    """Run corrupted_at() at each pstore origin."""
+    return {origin.svc: corrupted_at(test, origin) for origin in test.pstores}
 
 
 # --------------------------------------------------------------------------
@@ -1211,7 +1346,7 @@ class Capacity:
         head = web.request("HEAD", self.test.url(self.origin, rel), token=self.test.token)
         if head.status != 404:
             return f"after the refused chunked PUT, a HEAD of it got {head.describe()}", ""
-        path = route("stat", self.test.catalog(self.origin, rel))
+        path = stores.storage_route("stat", self.test.catalog(self.origin, rel))
         stat_answer = self.test.api(self.origin, path, self.test.admin(self.origin))
         if stat_answer.status != 404:
             return f"after the refused chunked PUT, stat of it got {stat_answer.describe()}", ""
@@ -1568,12 +1703,8 @@ class Restore:
 
     @property
     def store(self) -> str:
-        """The store, under framework/var.
-
-        It is STORE (/data/pstore) in the origin, whose /data is
-        origin.store.
-        """
-        return f"{self.origin.store}/{STORE[len('/data/') :]}"
+        """The store, under framework/var (store_dir())."""
+        return store_dir(self.origin)
 
     @property
     def catalog(self) -> str:
@@ -1958,6 +2089,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 "storage-api": storage_api,
                 "introspect-cli": introspect_cli,
                 "scheduled-passes": scheduled_passes,
+                "corruption": corruption,
             }[scenario]
             try:
                 rows = check(test)

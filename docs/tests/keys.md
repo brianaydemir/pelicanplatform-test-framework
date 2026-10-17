@@ -9,18 +9,19 @@ before it tests again. The `keys` suite changes keys while the servers
 run, as `./fed.sh keys add` and `keys rotate` do, writing into
 `framework/var/issuer-keys/` from the dev container, and puts them back:
 a key it added is removed, and one it made the signer is renamed to
-sort last, so it stays as a verify-only key, since a V2 cache must keep
-the keys that sealed its store. It comes last of all: a rotation takes a
-server out of the directors' routing until the keys are back, and the
-servers keep what they cached of a namespace's keys for up to 15
-minutes. It skips under `-p server-unprivileged`, whose servers' keys
-the host may not write, and the tiny topology, whose one process holds
-every key. Its probe object goes under `/protected-a/data/keys/<run>/`,
-and is removed afterward. A scenario with several cases records a row
-per case, named `<scenario> <case>`. The suite runs in the WLCG pass
-alone ([token profiles](README.md#token-profiles)), since a second pass
-would change the keys again while the servers still hold what the first
-left; `hot-rotate` presents tokens of both profiles in its one rotation
+sort last, so it stays as a verify-only key, since a V2 cache and a
+pstore origin must keep the keys that sealed their stores. It comes
+last of all: a rotation takes a server out of the directors' routing
+until the keys are back, and the servers keep what they cached of a
+namespace's keys for up to 15 minutes. It skips under
+`-p server-unprivileged`, whose servers' keys the host may not write,
+and the tiny topology, whose one process holds every key. Its probe
+object goes under `/protected-a/data/keys/<run>/`, and is removed
+afterward. A scenario with several cases records a row per case, named
+`<scenario> <case>`. The suite runs in the WLCG pass alone
+([token profiles](README.md#token-profiles)), since a second pass would
+change the keys again while the servers still hold what the first left;
+`hot-rotate` presents tokens of both profiles in its one rotation
 instead.
 
 - `hot-add`: a verify-only key, written into the origins' key
@@ -107,6 +108,35 @@ instead.
   keys and the master key file are put back, and the cache restarted
   again; should that not bring it back, the note says to run
   `./reset.sh`. It needs a control helper.
+- `pstore-master-key`: the same of the first pstore origin
+  (`-p origin-pstore`), whose store is encrypted with a master key that
+  `masterkey.json` in the store (`framework/var/data/origin/<N>/pstore/`)
+  seals with each of the origin's keys, as a V2 cache's does: a pstore
+  keeps it with the cache's code (`local_cache/encryption.go`). Given a
+  verify-only key on the origins (one the suite adds, if `hot-rotate`
+  left none), the file must be sealed with every key in the origin's
+  key directory before a restart (`sealed`) and after one
+  (`sealed-after-restart`). The launcher registers the callback that
+  re-seals the file for its local cache module alone, a pstore
+  registers none, and opening the store never re-saves the file, so
+  both rows are expected to fail, on v26.0.0-rc.3 and main alike (read
+  in the code, not yet run). Then, destructively, with every key but the
+  newest removed from the origin's own key directory (a replica,
+  `origin-1`, keeps its own), the origin restarted must still open its
+  store, and its storage API (`stat` of the probe, as its admin, by a
+  token signed with the key that is left; [pstore](pstore.md)) must say
+  it holds the probe (`retired`). An origin that cannot unseal its
+  master key makes a new one, and overwrites the file with it
+  (`loadOrCreateMasterKey`), with which its catalog cannot be opened, so
+  the origin does not start; the note says so where the file was
+  replaced. For an origin, whose store holds the only copy of its
+  objects, that is all of them lost. Afterward the keys and the master
+  key file are put back, and the origin restarted again, whose storage
+  API must then say it holds the probe; should it not, the note says to
+  run `./reset.sh`. Were the origin to start with the newest key alone,
+  it would sign with it, and push it to the registry, as `hot-rotate`'s
+  rotation does, so a director might drop it from its routing for as
+  long as `hot-rotate` says. It needs a control helper.
 - `backups`: each server (every origin, cache, and director, and the
   registry) keeps encrypted backups of its database under
   `framework/var/state/<service>/backups/` (`Server.DatabaseBackup`;

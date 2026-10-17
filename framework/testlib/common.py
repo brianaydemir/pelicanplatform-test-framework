@@ -12,6 +12,7 @@ import io
 import json
 import os
 import platform
+import re
 import shutil
 import sys
 import time
@@ -251,6 +252,26 @@ def timestamp(when: datetime) -> str:
     That is RFC 3339, to the second.
     """
     return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_rfc3339(value: str) -> Optional[datetime]:
+    """Return the time an RFC 3339 string stands for, or None if not one.
+
+    Go writes a time.Time in JSON as one, with as many fractional digits
+    as it needs, up to nine. Python 3.9 reads neither `Z` nor any number
+    of them but three or six, so the fraction is cut or padded to six.
+    """
+    found = re.fullmatch(r"([^.]+?)(?:\.(\d+))?([Zz]|[+-]\d\d:\d\d)", value.strip())
+    if found is None:
+        return None
+    whole, fraction, zone = found.groups()
+    if fraction:
+        whole += "." + (fraction + "00000")[:6]
+    try:
+        when = datetime.fromisoformat(whole + ("+00:00" if zone in ("Z", "z") else zone))
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None else None
 
 
 def empty_dir(path: str) -> None:

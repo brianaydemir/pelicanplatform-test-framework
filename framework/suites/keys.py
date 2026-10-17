@@ -3,18 +3,18 @@
 This covers the registry learning a key the origins add, the directors
 going on accepting the origins' and a cache's advertisements once each
 signs with a new key, every server taking tokens signed with it, the
-issuer's own tokens carrying its kid, a V2 cache's master key, sealed
-with its keys, and the database backups that every server writes. The
-suite writes keys into the services' key directories under
-framework/var/issuer-keys/ (the dev container mounts the checkout
-read-write), as `./fed.sh keys add` and `keys rotate` do, and puts them
-back as they were: a key it added is removed, and a key it made the
-signer is made verify-only, by its prefix, since a V2 cache must keep
-the keys that sealed its store. It runs last: a rotation takes a server
-out of every director's routing until each is put back, and what it
-leaves in the servers' key caches lasts up to 15 minutes. It skips under
-`-p server-unprivileged`, whose servers' keys the host may not write.
-The scenarios:
+issuer's own tokens carrying its kid, the master keys of a V2 cache and
+of a pstore origin, each sealed with its keys, and the database backups
+that every server writes. The suite writes keys into the services' key
+directories under framework/var/issuer-keys/ (the dev container mounts
+the checkout read-write), as `./fed.sh keys add` and `keys rotate` do,
+and puts them back as they were: a key it added is removed, and a key
+it made the signer is made verify-only, by its prefix, since a V2 cache
+and a pstore origin must keep the keys that sealed their stores. It
+runs last: a rotation takes a server out of every director's routing
+until each is put back, and what it leaves in the servers' key caches
+lasts up to 15 minutes. It skips under `-p server-unprivileged`, whose
+servers' keys the host may not write. The scenarios:
 
   hot-add      a verify-only key added to the origins shows in their
                JWKS, and the registry's for the namespace and for
@@ -32,6 +32,10 @@ The scenarios:
                destructively, with every key but the newest retired,
                the cache must still open its store; afterward the keys
                and the master key file are put back
+  pstore-master-key
+               the same of a pstore origin's master key, whose store
+               holds the only copy of its objects (it is not sealed so,
+               either)
   backups      every server writes an encrypted backup of its database
                (Server.DatabaseBackup), which `pelican-server server
                database backup verify` opens with the server's keys
@@ -86,6 +90,10 @@ SCENARIOS = {
         "a V2 cache's master key is sealed with each of its keys, before and after a"
         " restart; with the rest retired, it still opens its store (destructive)"
     ),
+    "pstore-master-key": (
+        "a pstore origin's master key is sealed with each of its keys, before and after a"
+        " restart; with the rest retired, it still opens its store (destructive)"
+    ),
     "backups": (
         "every server backs up its database, encrypted, which `pelican-server server database"
         " backup verify` opens with its keys"
@@ -113,8 +121,12 @@ ROTATE_INTERVAL = 15
 NAMED_WAIT = 150
 # How long a V2 cache may take to say, with Age, that it holds an object.
 HELD_WAIT = 30
-# A V2 cache's master key file, under its store (local_cache/encryption.go).
+# A V2 cache's master key file, under its store (local_cache/encryption.go);
+# and a pstore origin's, under its /data, in its store
+# (Origin.PStoreLocation, /data/pstore, in
+# config.d/origin/pstore/50-origin.yaml), which pstore/ keeps alike.
 MASTER_KEY = "persistent-cache/masterkey.json"
+PSTORE_MASTER_KEY = "pstore/masterkey.json"
 # Where each service backs its database up (Server.DatabaseBackup.Location
 # in config.d/base/20-server.yaml), under its state; each backup is PEM
 # (database/backup.go).
@@ -660,14 +672,15 @@ def hot_rotate(test: Test) -> list[Row]:
 # master-key
 
 
-def master_key_kids(cache: common.Cache) -> Optional[frozenset[str]]:
-    """Return the kids with which a V2 cache's master key is sealed.
+def sealed_with(path: str) -> Optional[frozenset[str]]:
+    """Return the kids with which the master key file at path is sealed.
+
+    path is under framework/var. The file seals the master key once for
+    each kid, under `keys` (local_cache/encryption.go).
 
     Returns:
-        The kids in its master key file, or None if the file is missing
-        or unreadable.
+        The kids in the file, or None if it is missing or unreadable.
     """
-    path = f"data/cache/{cache.svc.rsplit('-', 1)[-1]}/{MASTER_KEY}"
     try:
         with open(path, encoding="utf-8") as f:
             found = common.as_object(json.load(f)) or {}
@@ -679,6 +692,94 @@ def master_key_kids(cache: common.Cache) -> Optional[frozenset[str]]:
 def master_key_path(cache: common.Cache) -> str:
     """Return the master key file of cache, under framework/var."""
     return f"data/cache/{cache.svc.rsplit('-', 1)[-1]}/{MASTER_KEY}"
+
+
+def pstore_key_path(origin: common.Origin) -> str:
+    """Return the master key file of a pstore origin, under framework/var."""
+    return f"{origin.store}/{PSTORE_MASTER_KEY}"
+
+
+def sealed_row(case: str, path: str, keys: Sequence[str]) -> Row:
+    """Return a row: whether the master key file at path is sealed with keys.
+
+    keys are the files of private keys, each of whose kids it must hold.
+    """
+    found = sealed_with(path)
+    if found is None:
+        return (case, FAIL, "the master key file is missing or unreadable")
+    missing = sorted(os.path.basename(k) for k in keys if jwt.key_id(k) not in found)
+    if missing:
+        return (case, FAIL, f"not sealed with {', '.join(missing)}")
+    return (case, PASS, f"sealed with all {len(keys)} keys")
+
+
+def with_verify_only_key(test: Test, dirs: Sequence[str], whose: str) -> None:
+    """Add a verify-only key to dirs, if they hold one key alone.
+
+    Then wait a minute for it to load, as the servers reread their key
+    directories every minute.
+
+    Args:
+        test: What the scenarios share.
+        dirs: The key directories of one keyset.
+        whose: Whose keys they are, for a message, e.g. `cache-0's`.
+    """
+    if len(prefixes_in(dirs[0])) >= 2:
+        return
+    name = new_key(test, dirs, first_of_all=False)
+    test.added.append((list(dirs), name))
+    print(f"Added {name} to {whose} keys; waiting a minute for it to load ...")
+    time.sleep(65)
+
+
+def set_aside(test: Test, svc: str, retired: Sequence[str], key_file: str) -> str:
+    """Copy the keys that svc is to lose, and its master key file, aside.
+
+    Returns:
+        The directory they are copied to, under test.tmp.
+    """
+    kept = os.path.join(test.tmp, f"kept-{svc}")
+    os.makedirs(kept, exist_ok=True)
+    for key in retired:
+        shutil.copyfile(key, os.path.join(kept, os.path.basename(key)))
+    shutil.copyfile(key_file, os.path.join(kept, "masterkey.json"))
+    return kept
+
+
+def put_keys_back(
+    svc: str, dirs: Sequence[str], kept: str, retired: Sequence[str], key_file: str
+) -> Optional[str]:
+    """Put svc's retired keys and master key file back, and start it again.
+
+    It is stopped first.
+
+    Args:
+        svc: A V2 cache or a pstore origin.
+        dirs: The key directories that the keys were retired from.
+        kept: Where set_aside() copied them, and the master key file.
+        retired: The retired keys.
+        key_file: svc's master key file, under framework/var.
+
+    Returns:
+        Why it did not start again, or None if it did.
+    """
+    try:
+        control.stop(svc)
+    except control.ControlError as e:
+        warn(str(e))
+    for key in retired:
+        for key_dir in dirs:
+            shutil.copyfile(
+                os.path.join(kept, os.path.basename(key)),
+                os.path.join(key_dir, os.path.basename(key)),
+            )
+            os.chmod(os.path.join(key_dir, os.path.basename(key)), 0o640)
+    shutil.copyfile(os.path.join(kept, "masterkey.json"), key_file)
+    try:
+        control.start(svc)
+    except control.ControlError as e:
+        return f"once its keys were put back, {e}; run ./reset.sh if {svc} does not recover"
+    return None
 
 
 def held_with_age(test: Test, cache: common.Cache) -> Optional[int]:
@@ -718,29 +819,14 @@ def master_key(test: Test) -> list[Row]:
     if why:
         return [("", SKIP, why)]
     test.put_probe()
-    if master_key_kids(cache) is None:
-        return [("", FAIL, f"framework/var/{master_key_path(cache)} is missing or unreadable")]
+    path = master_key_path(cache)
+    if sealed_with(path) is None:
+        return [("", FAIL, f"framework/var/{path} is missing or unreadable")]
     dirs = key_dirs_of(fed, cache.svc)
-    if len(prefixes_in(dirs[0])) < 2:
-        name = new_key(test, dirs, first_of_all=False)
-        test.added.append((dirs, name))
-        print(f"Added {name} to {cache.svc}'s keys; waiting a minute for it to load ...")
-        time.sleep(65)
+    with_verify_only_key(test, dirs, f"{cache.svc}'s")
     keys = sorted(glob.glob(os.path.join(dirs[0], "[0-9][0-9]-*.pem")))
-    kids = {jwt.key_id(k): k for k in keys}
     host = director.host(cache.url)
-    rows: list[Row] = []
-
-    def sealed_row(case: str) -> Row:
-        found = master_key_kids(cache)
-        if found is None:
-            return (case, FAIL, "the master key file is missing or unreadable")
-        missing = sorted(os.path.basename(kids[k]) for k in kids if k not in found)
-        if missing:
-            return (case, FAIL, f"not sealed with {', '.join(missing)}")
-        return (case, PASS, f"sealed with all {len(kids)} keys")
-
-    rows.append(sealed_row("sealed"))
+    rows: list[Row] = [sealed_row("sealed", path, keys)]
     if held_with_age(test, cache) is None:
         answer = web.request("GET", f"{cache.url}{test.path}", token=test.token, timeout=120)
         if answer.status != 200 or answer.body != test.data:
@@ -763,15 +849,11 @@ def master_key(test: Test) -> list[Row]:
                 f"{NAMED_WAIT}s after the restart, not every director named it",
             )
         ]
-    rows.append(sealed_row("sealed-after-restart"))
+    rows.append(sealed_row("sealed-after-restart", path, keys))
     # The destructive part: keep the newest key alone.
     newest = keys[-1]
     retired = [k for k in keys if k != newest]
-    kept = os.path.join(test.tmp, f"kept-{cache.svc}")
-    os.makedirs(kept, exist_ok=True)
-    for key in retired:
-        shutil.copyfile(key, os.path.join(kept, os.path.basename(key)))
-    shutil.copyfile(master_key_path(cache), os.path.join(kept, "masterkey.json"))
+    kept = set_aside(test, cache.svc, retired, path)
     before = sent_bytes(fed)
     problems: list[str] = []
     try:
@@ -816,6 +898,8 @@ def restore_cache(
 ) -> Optional[str]:
     """Put cache's retired keys and master key file back, and restart it.
 
+    That is put_keys_back(); then every director must name it again.
+
     Args:
         test: What the scenarios share.
         cache: The V2 cache.
@@ -826,29 +910,125 @@ def restore_cache(
     Returns:
         Why that failed, or None if it did not.
     """
-    try:
-        control.stop(cache.svc)
-    except control.ControlError as e:
-        warn(str(e))
-    for key in retired:
-        for key_dir in dirs:
-            shutil.copyfile(
-                os.path.join(kept, os.path.basename(key)),
-                os.path.join(key_dir, os.path.basename(key)),
-            )
-            os.chmod(os.path.join(key_dir, os.path.basename(key)), 0o640)
-    shutil.copyfile(os.path.join(kept, "masterkey.json"), master_key_path(cache))
-    try:
-        control.start(cache.svc)
-    except control.ControlError as e:
-        return (
-            f"once its keys were put back, {e}; run ./reset.sh if {cache.svc} does not recover"
-        )
+    why = put_keys_back(cache.svc, dirs, kept, retired, master_key_path(cache))
+    if why:
+        return why
     if not test.wait_named("object", director.host(cache.url)):
         return (
             f"{NAMED_WAIT}s after its keys were put back, not every director names {cache.svc}"
         )
     return None
+
+
+# --------------------------------------------------------------------------
+# pstore-master-key
+
+
+def stored_probe(test: Test, origin: common.Origin, key: Optional[str] = None) -> Optional[str]:
+    """Return why a pstore origin's storage API does not stat the probe.
+
+    Its admin asks, by a token signed with key, or with the origin's
+    signing key (stores.storage_admin()); the answer must give the
+    probe's size.
+
+    Returns:
+        Why not, or None if it does.
+    """
+    token = stores.storage_admin(test.session, origin, key)
+    found, why = stores.catalog_answer(test.session, origin, "stat", NAMESPACE, test.rel, token)
+    if found is None:
+        return why
+    if found.get("size") != OBJECT_SIZE:
+        return f"the storage API's stat of the probe gave its size as {found.get('size')!r}"
+    return None
+
+
+def pstore_master_key(test: Test) -> list[Row]:
+    """Check that a pstore origin's master key is sealed with each of its keys.
+
+    As master_key() checks a V2 cache's, at the first pstore origin,
+    whose store is encrypted with a master key that the master key file
+    in it seals with each of the origin's keys (pstore/ keeps it as the
+    cache does, in local_cache/encryption.go). Given a verify-only key
+    on the origins, which the suite adds if hot-rotate left none, the
+    file must seal the master key with every key in the origin's key
+    directory, before a restart (`sealed`) and after one
+    (`sealed-after-restart`): the launcher registers the callback that
+    re-seals the file for its local cache module alone
+    (launchers/launcher.go), a pstore registers none, and opening the
+    store never re-saves it. Then, destructively, with every key but the
+    newest removed from the origin's own key directory (a replica keeps
+    them), the origin restarted must still open its store, and its
+    storage API stat the probe, for its admin, by a token signed with
+    that key (`retired`): a master key that the origin cannot unseal is
+    replaced by a new one, with which its catalog cannot be opened, so
+    the origin does not start, and the store, which holds the only copy
+    of its objects, is lost. Afterward the keys and the master key file
+    are put back, and the origin restarted again, whose storage API must
+    then stat the probe.
+    """
+    origin = next((o for o in test.fed.origins if o.pstore), None)
+    if origin is None:
+        return [("", SKIP, "no pstore origin")]
+    why = control.unavailable()
+    if why:
+        return [("", SKIP, why)]
+    test.put_probe()
+    path = pstore_key_path(origin)
+    if sealed_with(path) is None:
+        return [("", FAIL, f"framework/var/{path} is missing or unreadable")]
+    with_verify_only_key(test, test.origin_dirs, "the origins'")
+    own = f"issuer-keys/{origin.svc}"
+    keys = sorted(glob.glob(os.path.join(own, "[0-9][0-9]-*.pem")))
+    rows: list[Row] = [sealed_row("sealed", path, keys)]
+    try:
+        control.restart(origin.svc)
+    except control.ControlError as e:
+        return rows + [("sealed-after-restart", FAIL, str(e))]
+    why = stored_probe(test, origin)
+    if why:
+        return rows + [("sealed-after-restart", FAIL, f"after the restart, {why}")]
+    rows.append(sealed_row("sealed-after-restart", path, keys))
+    # The destructive part: keep the newest key alone.
+    newest = keys[-1]
+    retired = [k for k in keys if k != newest]
+    sealed = sealed_with(path) or frozenset()
+    kept = set_aside(test, origin.svc, retired, path)
+    problems: list[str] = []
+    try:
+        control.stop(origin.svc)
+        for key in retired:
+            os.remove(os.path.join(own, os.path.basename(key)))
+        try:
+            control.start(origin.svc)
+            why = stored_probe(test, origin, newest)
+            if why:
+                problems.append(f"with the old keys retired, {why}")
+        except control.ControlError as e:
+            problems.append(f"with the old keys retired, {e}")
+        now = sealed_with(path)
+        if now is not None and not now & sealed:
+            problems.insert(
+                0,
+                "with the old keys retired, it replaced its master key with one sealed with"
+                + f" {os.path.basename(newest)} alone",
+            )
+    finally:
+        why = put_keys_back(origin.svc, [own], kept, retired, path)
+        if why is None and (unstored := stored_probe(test, origin)):
+            why = (
+                f"once its keys were put back, {unstored}; run ./reset.sh if {origin.svc}"
+                + " does not recover"
+            )
+        if why:
+            problems.append(why)
+    rows.append(
+        (
+            "retired",
+            *outcome(problems, f"opened its store with {os.path.basename(newest)} alone")[1:],
+        )
+    )
+    return rows
 
 
 def sent_bytes(fed: common.Federation) -> Optional[float]:
@@ -985,6 +1165,7 @@ RUN: dict[str, Callable[[Test], Rows]] = {
     "hot-add": hot_add,
     "hot-rotate": hot_rotate,
     "master-key": master_key,
+    "pstore-master-key": pstore_master_key,
     "backups": backups,
 }
 

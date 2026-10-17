@@ -20,8 +20,10 @@ scenarios.
   checksums (`crc32c` and `md5`, in hex, as `pelican object stat` prints
   them, those the origins' storage reports; see
   [block boundaries](block-boundaries.md)), and `du`'s totals must match
-  it, `stat`'s modification time must be the file's, within a minute,
-  and a copy from `/public` must hold `/public`'s bytes. `stat` names
+  it, `stat`'s modification time must be the file's, within a minute
+  (a pstore origin's, as its catalog records it, which its storage API
+  gives; see [pstore](pstore.md)), and a copy from `/public` must hold
+  `/public`'s bytes. `stat` names
   every kind of checksum at once, and the client asks for them in one
   `Want-Digest`, which XRootD's HTTP server answers with one digest, the
   first it supports (as the `blocks` suite's `digest-relay` says of a V2

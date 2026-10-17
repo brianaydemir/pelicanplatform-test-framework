@@ -12,9 +12,10 @@ that a server that lists another namespace's lists the wrong tree.
 - An origin must list the tree exactly. It may refuse Depth infinity
   with 403, as RFC 4918 allows, but must not answer it as Depth 1. An
   object's `getlastmodified` must be when its file was written, within a
-  minute, where the store is on disk: the origins and the tests keep
-  different time zones (`TZ_STORAGE`), so a time rendered in the wrong
-  one is hours off.
+  minute: on disk, its modification time, and at a pstore origin, as its
+  catalog records it, which its storage API gives
+  ([pstore](pstore.md)). The origins and the tests keep different time
+  zones (`TZ_STORAGE`), so a time rendered in the wrong one is hours off.
 - A director must redirect a PROPFIND to an origin: Depth 0 (a stat)
   for any namespace that can be read, and deeper only with `Listings`
   (Pelican's `director/sort.go`). The origin's listing must then be

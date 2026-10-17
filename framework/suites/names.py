@@ -12,8 +12,9 @@ but letters,
 digits, and `-._~` percent-encoded (stores.url()); the client is given
 it so too. A listing's hrefs are decoded before they are compared.
 
-  origin-put   a PUT of each name lands in each store on disk as a file
-               of that name (where /protected-a takes writes)
+  origin-put   a PUT of each name lands in each store under that name:
+               on disk as a file, and in a pstore origin's catalog as an
+               entry (where /protected-a takes writes)
   origin-get   each origin serves each object by its name
   cache-get    each cache does, cold
   director-get each director's redirect, followed as a plain HTTP client
@@ -32,17 +33,17 @@ it so too. A listing's hrefs are decoded before they are compared.
 import json
 import os
 import traceback
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote
 
-from testlib import common, director, stores, transfers, web, webdav
+from testlib import common, digests, director, stores, transfers, web, webdav
 from testlib.common import die, first
 from testlib.names import NAMES
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, json_objects, last_line
 
 SCENARIOS = {
-    "origin-put": "a PUT of each name lands in each store on disk under that name",
+    "origin-put": "a PUT of each name lands under that name in each store, a pstore's too",
     "origin-get": "each origin serves each object by its name, and no decoy",
     "cache-get": "each cache serves each object by its name, cold, and no decoy",
     "director-get": (
@@ -133,19 +134,82 @@ class Test:
             )
 
 
-def origin_put(test: Test) -> tuple[str, str]:
-    """Check that a PUT of each name lands in each store on disk, by name.
+def catalogued_sizes(
+    test: Test, origin: common.Origin, collection: str
+) -> tuple[Optional[dict[str, Any]], str]:
+    """Return the size of each entry of collection in a pstore's catalog.
 
-    The PUTs were made as the test began. Each lands as a file of that
-    name, with its bytes, and nothing else does.
+    collection is in /protected-a, and the origin's admin lists it
+    through its storage API (stores.catalog_answer()).
+
+    Returns:
+        Each entry's size, by its name as the catalog holds it, and "";
+        or None, and why the origin did not say.
+    """
+    found, why = stores.catalog_answer(test.session, origin, "ls", "protected-a", collection)
+    if found is None:
+        return None, why
+    entries = common.objects(common.as_array(found.get("entries")) or [])
+    return {str(e.get("name")): e.get("size") for e in entries}, ""
+
+
+def catalogued(test: Test, origin: common.Origin) -> list[str]:
+    """Return why a pstore origin's catalog does not hold each name.
+
+    Its storage API must list the run's collection as one entry of each
+    name, with its object's size, and nothing else; and the checksums
+    that the store recorded of each, as it wrote it, must be its
+    object's.
+
+    Returns:
+        What is wrong; empty if nothing is.
+    """
+    sizes, why = catalogued_sizes(test, origin, test.base)
+    if sizes is None:
+        return [why]
+    problems: list[str] = []
+    extra = sorted(set(sizes) - set(NAMES))
+    if extra:
+        problems.append(f"its catalog also holds {extra}")
+    for name in NAMES:
+        data = test.objects[name]
+        if name not in sizes:
+            problems.append(f"its catalog lacks {name!r}")
+            continue
+        if sizes[name] != len(data):
+            # Each object is a size of its own.
+            other = next((n for n, d in test.objects.items() if len(d) == sizes[name]), "")
+            held = f"{other!r}'s size" if other else f"{sizes[name]} bytes"
+            problems.append(f"{name!r}: its catalog holds {held}, not its own")
+            continue
+        found, why = stores.catalog_answer(
+            test.session, origin, "digest", "protected-a", test.rel(name)
+        )
+        if found is None:
+            problems.append(why)
+            continue
+        header = str(found.get("digest", ""))
+        wrong, right = digests.check(header, data)
+        if wrong or not right:
+            problems.append(f"{name!r}: its recorded checksums '{header}' are not its bytes'")
+    return problems
+
+
+def origin_put(test: Test) -> tuple[str, str]:
+    """Check that a PUT of each name lands in each store, by name.
+
+    The PUTs were made as the test began. In a store on disk, each lands
+    as a file of that name, with its bytes, and nothing else does; in a
+    pstore origin's catalog, as an entry of that name, which checksums
+    the store recorded of its bytes (catalogued()).
     """
     if "Writes" not in test.caps:
         return SKIP, "/protected-a takes no writes, so each name was written in each store"
-    disk = [o for o in test.origins if not o.pstore]
     problems = list(test.unseeded)
-    if not disk and not problems:
-        return SKIP, "no store on disk: a pstore origin's names are its own"
-    for origin in disk:
+    for origin in test.origins:
+        if origin.pstore:
+            problems += [f"{origin.svc}: {p}" for p in catalogued(test, origin)]
+            continue
         directory = f"{origin.store_of('protected-a')}/{test.base}"
         found = set(os.listdir(directory))
         extra = sorted(found - set(NAMES))
@@ -161,7 +225,7 @@ def origin_put(test: Test) -> tuple[str, str]:
                 problems.append(f"{origin.svc}: {why}")
     if problems:
         return FAIL, first(problems)
-    return PASS, f"{len(disk)} store(s)"
+    return PASS, f"{len(test.origins)} store(s)"
 
 
 def served(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
@@ -378,8 +442,9 @@ def client_put(test: Test) -> tuple[str, str]:
     """Check that `pelican object put` of each name lands as that object.
 
     A put of a file of each name into a new collection must make an
-    object of each name, with the file's bytes, at some origin; and in a
-    store on disk, no file of any other name.
+    object of each name, with the file's bytes, at some origin; and no
+    store may hold one of any other name there: on disk, no file, and in
+    a pstore origin's catalog, as its storage API lists it, no entry.
     """
     if "Writes" not in test.caps:
         return SKIP, "/protected-a takes no writes"
@@ -409,11 +474,16 @@ def client_put(test: Test) -> tuple[str, str]:
         if common.digest(data) not in held:
             return FAIL, f"no origin holds {name!r} as its file"
     for origin in test.origins:
-        if not origin.pstore:
-            directory = f"{origin.store_of('protected-a')}/{collection}"
-            extra = sorted(set(os.listdir(directory)) - set(NAMES))
-            if extra:
-                return FAIL, f"{origin.svc} also holds {extra}"
+        if origin.pstore:
+            sizes, why = catalogued_sizes(test, origin, collection)
+            if sizes is None:
+                return FAIL, f"{origin.svc}: {why}"
+            held_names = set(sizes)
+        else:
+            held_names = set(os.listdir(f"{origin.store_of('protected-a')}/{collection}"))
+        extra = sorted(held_names - set(NAMES))
+        if extra:
+            return FAIL, f"{origin.svc} also holds {extra}"
     return PASS, f"{len(files)} files"
 
 

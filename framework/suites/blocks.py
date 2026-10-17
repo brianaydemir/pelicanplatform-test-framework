@@ -1111,6 +1111,13 @@ class Findings:
         return PASS, "; ".join(self.notes)
 
 
+def cache_admin(test: Test, cache: common.Cache) -> str:
+    """Return a V2 cache's admin token, minted once (cacheapi.admin_token())."""
+    if cache.svc not in test.admins:
+        test.admins[cache.svc] = cacheapi.admin_token(test.session, cache)
+    return test.admins[cache.svc]
+
+
 def summary(test: Test, cache: common.Cache, rel: str) -> tuple[Optional[cacheapi.Blocks], str]:
     """Return which blocks of rel in /protected-a a V2 cache holds.
 
@@ -1119,10 +1126,8 @@ def summary(test: Test, cache: common.Cache, rel: str) -> tuple[Optional[cacheap
     Returns:
         The blocks it holds, or None; and why it did not say.
     """
-    if cache.svc not in test.admins:
-        test.admins[cache.svc] = cacheapi.admin_token(test.session, cache)
     url = cacheapi.object_url(test.fed, f"/protected-a/{rel}")
-    return cacheapi.blocks_held(cache, test.admins[cache.svc], url)
+    return cacheapi.blocks_held(cache, cache_admin(test, cache), url)
 
 
 def assembled_part(test: Test, cache: common.Cache, rel: str, found: Findings) -> bool:
@@ -1742,7 +1747,9 @@ def transfer_status(test: Test) -> tuple[str, str]:
     Unasked, a GET of the whole object must come with no trailer. A HEAD
     so asked has no body, and so no trailer, but must be answered as any
     HEAD, with the object's length. A site-local cache reads through
-    another cache, and is passed over.
+    another cache, and is passed over. Each V2 cache's introspection must
+    then say that it holds the small object inline, which is the path
+    that read is for; if it says otherwise, the row is inconclusive.
     """
     caches = test.fed.federated_caches
     if not caches:
@@ -1781,10 +1788,23 @@ def transfer_status(test: Test) -> tuple[str, str]:
             problems.append(f"{cache.svc}: a HEAD that asked: Content-Length {length}")
     if problems:
         return FAIL, first(problems)
-    return (
-        PASS,
-        f"{len(caches)} cache(s): '{STATUS_OK}' for {len(STATUS_READS)} reads, cold and warm",
-    )
+    note = f"{len(caches)} cache(s): '{STATUS_OK}' for {len(STATUS_READS)} reads, cold and warm"
+    doubts: list[str] = []
+    inline_at: list[str] = []
+    for cache in (c for c in caches if c.kind == "v2"):
+        url = cacheapi.object_url(test.fed, f"/protected-a/{base}/{cache.svc}-small")
+        inline, why = cacheapi.held_inline(cache, cache_admin(test, cache), url)
+        if inline is None:
+            note += f"; {cache.svc} did not say how it holds the small object ({why})"
+        elif not inline:
+            doubts.append(f"{cache.svc} holds the small object in blocks, not inline")
+        else:
+            inline_at.append(cache.svc)
+    if inline_at:
+        note += f"; the small object inline at {', '.join(inline_at)}"
+    if doubts:
+        return INCONCLUSIVE, f"{first(doubts)}, so its inline path went untested; {note}"
+    return PASS, note
 
 
 def origin_transfer_status(test: Test) -> tuple[str, str]:

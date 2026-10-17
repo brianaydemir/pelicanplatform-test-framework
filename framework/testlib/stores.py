@@ -6,17 +6,19 @@ them for a request. Each namespace has storage of its own, a directory
 in each origin's store (common.Origin.store_of()). A pstore origin's
 store is encrypted: only the running origin can read or write it, so it
 is asked over HTTPS instead; and there, /public, which takes no writes,
-reads /protected-a's storage.
+reads /protected-a's storage. Its admin may also ask its storage API what
+its catalog holds: names, sizes, modification times, and checksums.
 """
 
 import hashlib
 import os
 from collections.abc import Iterable, Mapping
 from collections.abc import Set as AbstractSet
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote
 
 from . import common, credentials, web, webdav
+from .session import Session
 
 
 class Unreadable(Exception):
@@ -52,6 +54,14 @@ ORIGIN_DIGESTS = ("crc32c", "md5")
 # the service keeps no MD5 of an object held in parts. A declared length
 # sends the object whole.
 S3_PART = 5 << 20
+
+# A pstore origin's storage API, on its web port, which answers its admin
+# alone (RegisterStorageAPI in Pelican's origin_serve/storage_api.go): ls,
+# stat, and digest of a path in the store's catalog (catalog()), and
+# usage. How long the admin's tokens for it last, in seconds: a whole
+# suite.
+STORAGE_API = "/api/v1.0/origin/storage/pstore"
+STORAGE_TOKEN_LIFETIME = 3600
 
 
 def url(origin: common.Origin, namespace: str, rel: str) -> str:
@@ -136,6 +146,105 @@ def held(
             return None
         raise Unreadable(f"GET {target}: {answer.describe()}")
     return common.sha256(f"{origin.store_of(namespace)}/{rel}")
+
+
+def catalog(origin: common.Origin, namespace: str, rel: str) -> str:
+    """Return the path of rel in namespace in a pstore origin's catalog.
+
+    The storage API takes it. It is under the export's StoragePrefix
+    (fed_storage_prefix in fed.sh), e.g. /protected-a/data/0.17; /public's
+    is /protected-a's (see common.Origin.storage_namespace()).
+    """
+    return f"/{common.storage_dir(origin.storage_namespace(namespace))}/{rel}"
+
+
+def storage_route(kind: str, path: str) -> str:
+    """Return the storage API's route of kind for path in the catalog.
+
+    kind is `ls`, `stat`, or `digest`. Each segment of path is encoded,
+    as the CLI sends it.
+    """
+    return f"{kind}{quote(path)}"
+
+
+def storage_admin(session: Session, origin: common.Origin, key: Optional[str] = None) -> str:
+    """Return a token that origin's storage API takes as its admin's.
+
+    It is minted as credentials.mint_admin() mints one, signed with key,
+    or with origin's signing key, and lasts STORAGE_TOKEN_LIFETIME. A
+    session mints it once for each key.
+    """
+    fed = session.fed
+    key = key or common.signing_key(credentials.key_dir_of(fed, origin.web_url))
+    out = session.path(f"tokens/stores.{origin.svc}.{os.path.basename(key)}")
+    if not os.path.exists(out):
+        issuer = credentials.local_issuer(fed, origin.web_url)
+        credentials.mint_user(fed, out, issuer, key, "admin", STORAGE_TOKEN_LIFETIME)
+    with open(out, encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def catalog_answer(
+    session: Session,
+    origin: common.Origin,
+    kind: str,
+    namespace: str,
+    rel: str,
+    token: Optional[str] = None,
+) -> tuple[Optional[dict[str, Any]], str]:
+    """Return what a pstore origin's storage API says of rel in namespace.
+
+    Its admin asks.
+
+    Args:
+        session: The session, whose scratch directory keeps the token.
+        origin: The pstore origin.
+        kind: `stat`; `ls`, of a collection, which lists up to 1,000
+            entries; or `digest`.
+        namespace: The namespace, e.g. `protected-a`.
+        rel: The path, relative to namespace.
+        token: The admin's token; storage_admin()'s if None.
+
+    Returns:
+        Its answer, a JSON object, and ""; or None, and why there is none.
+    """
+    route = storage_route(kind, catalog(origin, namespace, rel))
+    answer = web.request(
+        "GET",
+        f"{origin.web_url}{STORAGE_API}/{route}",
+        token=token or storage_admin(session, origin),
+    )
+    found = common.as_object(answer.json()) if answer.status == 200 else None
+    if found is None:
+        return None, f"the storage API's {kind} of {rel} answered {answer.describe()}"
+    return found, ""
+
+
+def written_at(
+    session: Session, origin: common.Origin, namespace: str, rel: str
+) -> tuple[Optional[float], str]:
+    """Return when origin's store last wrote rel in namespace, in Unix time.
+
+    A store on disk keeps it as the file's modification time; a pstore
+    origin's catalog, as its entry's, which its storage API's `stat` gives
+    (with its zone: the origins keep TZ_STORAGE's).
+
+    Returns:
+        The time, and ""; or None, and why the store did not say.
+    """
+    if not origin.pstore:
+        path = f"{origin.store_of(namespace)}/{rel}"
+        try:
+            return os.stat(path).st_mtime, ""
+        except OSError as e:
+            return None, f"framework/var/{path}: {e.strerror}"
+    found, why = catalog_answer(session, origin, "stat", namespace, rel)
+    if found is None:
+        return None, why
+    when = common.parse_rfc3339(str(found.get("modified", "")))
+    if when is None:
+        return None, f"the storage API's stat of {rel} gave no time: {found.get('modified')!r}"
+    return when.timestamp(), ""
 
 
 def storage_namespaces(

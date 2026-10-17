@@ -10,7 +10,8 @@ origins' stores, or the local files.
 The read-only commands run against a tree uploaded straight to every
 origin, /<namespace>/data/cmd/<run>/tree/, so that they agree whichever
 origin the director picks: in each namespace, the same paths and sizes,
-but bytes of its own; `stat`'s modification time must be the file's.
+but bytes of its own; `stat`'s modification time must be when the
+stores wrote it (a pstore origin's, as its storage API says).
 The rest go through the director like any client. Under
 `topo-multi-origin` their effects land on one origin, so a success must
 show in some store, and a refusal in none. /public takes no writes (see
@@ -39,7 +40,6 @@ import time
 import traceback
 from collections import Counter
 from collections.abc import Callable, Iterable
-from datetime import datetime
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
@@ -195,24 +195,9 @@ def checksum_matches(kind: str, value: str, data: bytes) -> bool:
     return got == hashlib.md5(data, usedforsecurity=False).digest()
 
 
-# How far `stat`'s ModTime may be from the object's file's modification
-# time, in seconds. A time parsed in the wrong zone is hours off.
+# How far `stat`'s ModTime may be from when the stores wrote the object,
+# in seconds. A time parsed in the wrong zone is hours off.
 MODIFIED_SLACK = 60
-
-
-def parse_rfc3339(value: str) -> Optional[datetime]:
-    """Return the time an RFC 3339 string stands for, or None if not one.
-
-    Go writes a time.Time in JSON as one. Python 3.9 reads neither `Z`
-    nor more than six fractional digits.
-    """
-    text = re.sub(r"(\.\d{6})\d+", r"\1", value.strip())
-    text = re.sub(r"[Zz]$", "+00:00", text)
-    try:
-        when = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    return when if when.tzinfo is not None else None
 
 
 # --------------------------------------------------------------------------
@@ -579,20 +564,25 @@ def ls_no_token(test: Test) -> tuple[str, str]:
 def modified_problem(test: Test, namespace: str, info: dict[str, Any]) -> Optional[str]:
     """Return why `stat`'s ModTime is not when the stores wrote the object.
 
-    The origins and the tests keep different time zones (TZ_STORAGE), so
-    a time parsed in the wrong one shows.
+    That is the earliest of the stores' times: a file's modification time,
+    or the catalog's of a pstore origin (stores.written_at()). The origins
+    and the tests keep different time zones (TZ_STORAGE), so a time parsed
+    in the wrong one shows.
 
     Returns:
-        Why, or None if they agree, or if no store is on disk.
+        Why, or None if they agree.
     """
-    when = parse_rfc3339(str(info.get("ModTime", "")))
+    when = common.parse_rfc3339(str(info.get("ModTime", "")))
     if when is None:
         return f"ModTime {info.get('ModTime')!r} is not a time"
-    disk = [o for o in stores.unique(test.origins) if not o.pstore]
-    if not disk:
-        return None
     rel = f"{test.base}/tree/b"
-    written = min(os.stat(f"{o.store_of(namespace)}/{rel}").st_mtime for o in disk)
+    times: list[float] = []
+    for origin in stores.unique(test.origins):
+        found, why = stores.written_at(test.session, origin, namespace, rel)
+        if found is None:
+            return f"{origin.svc}: {why}"
+        times.append(found)
+    written = min(times)
     off = when.timestamp() - written
     if abs(off) > MODIFIED_SLACK:
         shown = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(written))
