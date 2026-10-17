@@ -58,18 +58,19 @@ every origin is stopped.
   alive); started again, every director must name it within 150
   seconds. The note times both.
 - `backend-outage`, where the origins' storage is a service of the
-  framework's (`s3` under `-p origin-s3v2`, `webdav` under
-  `-p origin-httpsv2`, `lab-server` under `-p origin-ssh`): with it
-  stopped, at origin-0, where it takes direct clients, a GET and a HEAD
-  of an object, and a PUT of a new one, must each get a server error
-  (5xx), never 404 or 405, nor the object's bytes (`direct`); through
-  the first federated cache, a GET of an object it does not hold must
-  get a server error too, not 404 (`cache`); and an `ssh` origin's
-  health must say its `ssh-backend` is not ok within 60 seconds
-  (`health`; the other backends have no component). Once the service
-  is back, the origin must serve the object again within 120 seconds,
-  without a restart, and its HEAD, a PUT, and the cache's read must
-  work (`recovered`), and the health component say ok. An `httpsv2`
+  framework's (`s3` under `-p origin-s3v2` or `-p origin-s3`, `webdav`
+  under `-p origin-httpsv2` or `-p origin-https`, `lab-server` under
+  `-p origin-ssh`): with it stopped, at origin-0, where it takes direct
+  clients, a GET and a HEAD of an object, and a PUT of a new one, must
+  each get a server error (5xx), never 404 or 405, nor the object's
+  bytes (`direct`); through the first federated cache, a GET of an
+  object it does not hold must get a server error too, not 404
+  (`cache`); and an `ssh` origin's health must say its `ssh-backend` is
+  not ok within 60 seconds (`health`; the other backends have no
+  component). Once the service is back, the origin must serve the
+  object again within 120 seconds, without a restart, and its HEAD, a
+  PUT, and the cache's read must work (`recovered`), and the health
+  component say ok. An `httpsv2`
   origin whose `OPTIONS` probe of its backend fails takes it for a
   plain HTTP server, and so answers a missing backend as missing
   objects (`probeBackendMode` in `origin_serve/backend_https.go`),
@@ -80,13 +81,15 @@ every origin is stopped.
   seconds), exits for good ("SSH connection failed after max
   retries"), so no health report says anything, and nothing serves
   again when the lab server is back: `direct`, `health`, and
-  `recovered` fail there (seen with v26.0.0-rc.3, in the
-  `standalone-ssh` shape). The suite then asks the control helper what
-  state the origin's container is in, and starts it again if it has
-  exited, saying so in `recovered`'s note, so that the rest of the run
-  finds the origin serving; `recovered` still fails, since the origin
-  should have come back without a restart. It skips where the storage
-  is the origin's own, or XRootD's.
+  `recovered` fail there (seen with v26.0.0-rc.3, under
+  `-p topo-standalone -p origin-ssh`). The suite then asks the control
+  helper what state the origin's container is in, and starts it again
+  if it has exited, saying so in `recovered`'s note, so that the rest
+  of the run finds the origin serving; `recovered` still fails, since the origin
+  should have come back without a restart. How XRootD's S3 and HTTPS
+  plugins (`-p origin-s3`, `-p origin-https`) answer with their backend
+  gone, no run has yet shown. It skips where the origin stores on its
+  own disk.
 - `cache-failover`, with several federated caches: the first is paused
   (its ports take connections that nothing answers), and then killed
   (they refuse). Each time, `pelican object get` and stash_plugin of

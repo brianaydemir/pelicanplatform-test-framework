@@ -112,8 +112,16 @@ EXPIRY_SLACK = 30
 BACKEND_WAIT = 120
 # How long an origin's health may take to notice its backend gone.
 HEALTH_WAIT = 60
-# The storage services behind the native backends, by ORIGIN_VARIANT.
-BACKENDS = {"s3v2": "s3", "httpsv2": "webdav", "ssh": "lab-server"}
+# The storage services behind the origins, by ORIGIN_VARIANT: the native
+# backends', and those of XRootD's S3 and HTTPS plugins. The rest store
+# on the origin's own disk.
+BACKENDS = {
+    "s3v2": "s3",
+    "httpsv2": "webdav",
+    "ssh": "lab-server",
+    "s3": "s3",
+    "https": "webdav",
+}
 # The health component of each, where there is one (metrics/health.go).
 BACKEND_COMPONENTS = {"ssh": "ssh-backend"}
 # A downtime's severity, as the web UI offers it.
@@ -904,7 +912,7 @@ def backend_outage(test: Test) -> list[Row]:
     fed = test.fed
     backend = BACKENDS.get(fed.origin_variant)
     if backend is None:
-        return [("", SKIP, f"a {fed.origin_variant} origin has no storage service to stop")]
+        return [("", SKIP, f"a {fed.origin_variant} origin stores on its own disk")]
     origin = fed.origins[0]
     direct = "DirectReads" in test.caps
     test.put("outage", os.urandom(OBJECT_SIZE))

@@ -5,10 +5,11 @@ in Docker on your machine, fills it with known objects, and tests it. It
 has two uses:
 
 - **Smoke tests.** `smoke.sh` runs the tests over a matrix of federation
-  shapes, which together make every pair of choices that the presets
-  offer ([with a few exceptions](docs/configuration.md#presets)), from a
-  clean start each time, and writes results that people and CI can both
-  read ([CI and results](docs/ci.md)).
+  shapes, each as simple as it can be, which together make every pair of
+  choices that the presets offer
+  ([with a few exceptions](docs/configuration.md#presets)), from a clean
+  start each time, and writes results that people and CI can both read
+  ([CI and results](docs/ci.md)).
 - **Testing your changes.** Point it at your own images, client, or
   configuration, and run the tests, or anything else, against them
   ([Testing your changes](#testing-your-changes)).
@@ -229,14 +230,14 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | Preset                  | Effect                                                                                                                                            |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `topo-basic`            | the default: each server in a container of its own                                                                                                |
-| `topo-tiny`             | the whole federation in one container; refuses `cache-xrootd`, `auth-external-issuer`, `director-discovery`, and every preset that adds a service but `origin-metadata`, `origin-metadata-tx`, and `auth-oidc` |
-| `topo-multi-origin`     | adds origin-1, a replica: origin-0's prefixes and key                                                                                             |
-| `topo-multi-cache`      | adds cache-1                                                                                                                                      |
-| `topo-multi-owner`      | adds origin-2, another owner: `/other`, and `/public/other` and `/public/secret` inside origin-0's `/public`, with a key and an issuer of its own; see `owners` |
-| `topo-multi-director`   | adds director-1, which shares director-0's key                                                                                                    |
-| `topo-site-local-cache` | adds cache-2, a site-local cache that the director does not know of; see `sitelocal`                                                              |
-| `topo-transfer-server`  | adds `transfer`, a transfer server of its own (`pelican-server serve --module transfer`), tested in place of origin-0's transfer API, which it refuses beside it; see `transfer-api` |
-| `topo-no-cache`         | removes cache-0: a federation that serves straight from its origins, whose directors send every read to an origin; refuses every `cache-*` preset but `cache-v2`, every preset that adds a cache, and `origin-no-direct`; see `federation`'s `directors` and `redirects` |
+| `topo-tiny`             | the whole federation in one process: the director, registry, origin, and V2 cache; `posixv2`, `xrootd`, or `pstore` origins only; what restarts one server alone skips |
+| `topo-multi-origin`     | adds origin-1, a replica of origin-0: the same prefixes, key, and issuer, over a store of its own (under `origin-ssh`, the same one)              |
+| `topo-multi-cache`      | adds cache-1, so the directors choose between caches                                                                                              |
+| `topo-multi-owner`      | adds origin-2, another owner, with a key and an issuer of its own: `/other`, and `/public/other` and `/public/secret` inside origin-0's `/public`; the registry stops requiring key chaining; see `owners` |
+| `topo-multi-director`   | adds director-1, which shares director-0's key; every server advertises to both, but the clients ask director-0 alone (unless `director-ha`)      |
+| `topo-site-local-cache` | adds cache-2, a site-local cache: no director knows of it, so a client must name it, and it reads through a federated cache; see `sitelocal`      |
+| `topo-transfer-server`  | adds `transfer`, a transfer server of its own (`pelican-server serve --module transfer`), whose jobs no export confines, tested in place of origin-0's transfer API; `transfer-api` skips unless `/protected-a` takes writes |
+| `topo-no-cache`         | removes cache-0, so the directors send every read to an origin; see `federation`'s `directors` and `redirects`                                    |
 | `topo-standalone`       | origin-0 alone, as a standalone origin: no discovery host, director, registry, or cache; native origins only                                      |
 
 **Origin storage** (one of)
@@ -245,12 +246,12 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | ---------------- | -------------------------------------------------------------------------------- |
 | `origin-posixv2` | the default: native `posixv2`                                                    |
 | `origin-xrootd`  | XRootD in front of the origins (`posix`)                                         |
-| `origin-pstore`  | the encrypted Pelican store                                                      |
-| `origin-ssh`     | the `lab-server` container, over SSH                                             |
-| `origin-httpsv2` | native `httpsv2`, in front of the `webdav` service (rclone); `/protected-a` only |
-| `origin-s3v2`    | native `s3v2`, in front of the `s3` service (rclone)                             |
-| `origin-https`   | XRootD in front of the `webdav` service (rclone); `/protected-a` only            |
-| `origin-s3`      | XRootD in front of the `s3` service (rclone)                                     |
+| `origin-pstore`  | the encrypted Pelican store, filled by uploads; `/public` reads `/protected-a`'s objects; v26.0.0-rc.0 or later |
+| `origin-ssh`     | the `lab-server` container, over SSH, logging in with a key; every origin shares its one store; no checksums |
+| `origin-httpsv2` | native `httpsv2`, in front of the `webdav` service (rclone), which takes no credentials; `/protected-a` only; no checksums |
+| `origin-s3v2`    | native `s3v2`, in front of the `s3` service (rclone), a bucket per origin; MD5 only, no CRC32C |
+| `origin-https`   | XRootD in front of the `webdav` service (rclone); `/protected-a` only; no checksums |
+| `origin-s3`      | XRootD in front of the `s3` service (rclone), a bucket per export; no deletes or checksums |
 
 **Caches** (one of)
 
@@ -258,63 +259,63 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `cache-v2`     | the default: V2 caches                                                                                                                 |
 | `cache-xrootd` | XRootD caches                                                                                                                          |
-| `cache-mixed`  | cache-1 is an XRootD cache beside the V2 ones (`CACHE_1_VARIANT`); needs `topo-multi-cache`; refuses `cache-xrootd`, `cache-tiered`, and `cache-memory`; see `client`'s `failover` |
+| `cache-mixed`  | cache-1 is an XRootD cache beside the V2 ones (`CACHE_1_VARIANT`); needs `topo-multi-cache`; see `client`'s `failover`                 |
 
 **Cache features**
 
 | Preset         | Effect                                                                                                 |
 | -------------- | ------------------------------------------------------------------------------------------------------ |
-| `cache-tiered` | V2 caches tier objects of 16 MiB or more to the `s3` service; Pelican's main only; see `tiering`       |
-| `cache-memory` | V2 caches keep decrypted blocks in memory (`Cache.MemoryCacheSize`)                                    |
+| `cache-tiered` | V2 caches move objects of 16 MiB or more to the `s3` service, and send clients there (cache-1 proxies them); Pelican's main only; see `tiering` |
+| `cache-memory` | V2 caches keep up to 64 MB of decrypted blocks in memory (`Cache.MemoryCacheSize`)                     |
 | `cache-small`  | caches evict once they hold 128 MiB, down to 96 MiB (V2: `Cache.HighWaterMark`; XRootD: `Cache.FilesMaxSize`); see `blocks`'s `cache-evicted` |
 
 **Origin features**
 
 | Preset                  | Effect                                                                                                    |
 | ----------------------- | --------------------------------------------------------------------------------------------------------- |
-| `origin-posc`           | stages uploads until they complete (POSC); `posixv2` only                                                 |
+| `origin-posc`           | stages uploads until they complete (POSC); `posixv2` only; see `posc`                                     |
 | `origin-atomic-uploads` | XRootD's POSC (`Origin.EnableAtomicUploads`); `origin-xrootd` only; see `posc`                            |
-| `origin-metadata`       | publishes object events to a recorder; `posixv2` only                                                     |
-| `origin-metadata-tx`    | `origin-metadata`, in transactional mode                                                                  |
-| `origin-max-age`        | origins send `max-age=30`, so V2 caches revalidate                                                        |
-| `origin-no-direct`      | origins serve only caches (`Origin.DisableDirectClients`); `/protected-a` only, and only reads            |
-| `origin-multiuser`      | the origin reads and writes as each token's user (`Origin.Multiuser`); `posixv2` and `origin-xrootd` only |
-| `origin-broker`         | origin-0 uses director-0 as its connection broker; XRootD origins only, `/protected-a` only               |
-| `origin-ssh-tunnel`     | the origin dials its helper on the lab server through the SSH connection (`Origin.SSH.TunnelCallback`), as it must where the storage host cannot reach the origin; `origin-ssh` only |
-| `origin-transfer-api`   | the origins run the transfer API (`Origin.EnableTransferAPI`); see `transfer-api`                         |
+| `origin-metadata`       | publishes an event for each object committed, overwritten, or deleted, with its uploader's metadata, to a recorder (eventual mode); `posixv2` only; see `metadata` |
+| `origin-metadata-tx`    | `origin-metadata` in transactional mode: an upload whose event is not delivered fails, and is rolled back |
+| `origin-max-age`        | the origins send `max-age=30` (`Origin.CacheControl`), so caches fetch an object again once they have held it 30 seconds; native origins only; `freshness` skips the rows that need another value |
+| `origin-no-direct`      | origins serve only caches (`Origin.DisableDirectClients`); one export, read-only: `/protected-a`, or `/public` with `origin-public`; the suites that write skip |
+| `origin-multiuser`      | the origin reads and writes as each token's user (`Origin.Multiuser`); `posixv2` and `origin-xrootd` only; see `users` |
+| `origin-broker`         | origin-0 uses director-0 as its connection broker; XRootD origins only; one export: `/protected-a`, or `/public` with `origin-public` |
+| `origin-ssh-tunnel`     | the origin reaches its helper on the lab server through the SSH connection (`Origin.SSH.TunnelCallback`), as it must where the storage host cannot reach the origin; `origin-ssh` only |
+| `origin-transfer-api`   | the origins run the transfer API (`Origin.EnableTransferAPI`), of which `transfer-api` tests origin-0's, but skips unless `/protected-a` takes writes |
 | `origin-short-tokens`   | the origins' issuer mints access tokens and codes that last a minute and refresh tokens four (`Issuer.*Lifetime`); see `issuer` |
 | `origin-export-templates` | `/protected-b` has authorization templates of its own, replacing the global ones there; see `issuer`'s `templates` |
-| `origin-public`         | the origins export only `/public`, as an origin of public data does: no writes, and no issuer; the suites that need `/protected-a` skip; refuses `origin-pstore`, `origin-export-templates`, and `topo-multi-owner` with `origin-no-direct` |
-| `origin-public-writes`  | `/public` takes writes too, with an issuer, as an origin of public data that a project writes to does (`PublicReads` and `Writes`, the example in Pelican's documentation of exports): its reads still take no token, its writes one; the `transfers`, `auth`, `federation`, `commands`, and `owners` suites write there too; refuses `origin-no-direct`, `origin-pstore`, and a shape that does not export `/public` |
+| `origin-public`         | the origins export only `/public`: no issuer, and no writes (but see `origin-public-writes`); the suites that need `/protected-a`, nearly every one of the data path, skip |
+| `origin-public-writes`  | `/public` takes writes too (`PublicReads` and `Writes`), so it has an issuer: its reads take no token, its writes one; the `transfers`, `auth`, `federation`, `commands`, and `owners` suites write there |
 
 **Authorization**
 
 | Preset                 | Effect                                                                            |
 | ---------------------- | --------------------------------------------------------------------------------- |
 | `auth-oidc`            | web UI login, and the registry's `--with-identity`, through an identity provider of the framework's own, the `idp` service (`framework/idp/idp.py`), whose users are `framework/etc/idp-users.json`; see `oidc` |
-| `auth-external-issuer` | the exports trust `https://discovery:8444/issuer` instead of the origins' issuers |
-| `auth-no-issuer`       | the origins run no issuer (`Origin.EnableIssuer`, Pelican's default): each namespace's issuer is the origin itself, whose own key signs its tokens out of band, as `pelican token create` does; the `collections`, `issuer`, and `accounts` suites skip |
+| `auth-external-issuer` | the exports trust `https://discovery:8444/issuer`, whose key signs the tests' tokens, instead of the origins' issuers, which are off, so the suites that need one skip, as under `auth-no-issuer` |
+| `auth-no-issuer`       | the origins run no issuer (`Origin.EnableIssuer`, Pelican's default): each namespace's issuer is the origin itself, whose own key signs its tokens out of band, as `pelican token create` does; the `collections`, `issuer`, and `accounts` suites skip, and parts of others |
 
 **Director and registry**
 
 | Preset                    | Effect                                                                                                             |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `director-default-origin` | the directors send a GET of a bare path to an origin, not a cache (`Director.DefaultResponse`); see `federation`'s `redirects` |
-| `director-discovery`      | director-0 serves the federation's metadata (`Director.EnableFederationMetadataHosting`), as its discovery host, so the federation is `pelican://director-0:8444`, and the nginx host runs only for `auth-external-issuer`; see `federation`'s `discovery` |
-| `director-ha`             | adds `director`, a load balancer in front of director-0 and director-1, which the federation names as its director; each director's `Server.ExternalWebUrl` is that name, and its `Director.AdvertiseUrl` its own; needs `topo-multi-director`; refuses `origin-broker` |
-| `registry-approval`       | nothing serves until an administrator approves its registration (`Registry.Require{Origin,Cache}Approval`), which the `federation` suite does |
+| `director-default-origin` | the directors send a GET of a bare path to an origin, not a cache (`Director.DefaultResponse`), which affects curl and browsers, not the Pelican client; see `federation`'s `redirects` |
+| `director-discovery`      | director-0 (under `director-ha`, every director) serves the federation's metadata (`Director.EnableFederationMetadataHosting`), in place of the `discovery` service, so the federation is `pelican://director-0:8444` (`pelican://director:8444` under `director-ha`); see `federation`'s `discovery` |
+| `director-ha`             | adds `director`, a load balancer that passes TLS through to director-0 and director-1, which the federation names as its director, and the clients use; needs `topo-multi-director` |
+| `registry-approval`       | nothing serves until an administrator approves its registration (`Registry.Require{Origin,Cache}Approval`), which the `federation` suite's `ready` does |
 
 **Every server**
 
 | Preset                | Effect                                                                  |
 | --------------------- | ----------------------------------------------------------------------- |
-| `server-unprivileged` | each server drops root for the `pelican` user (`Server.DropPrivileges`) |
+| `server-unprivileged` | each server drops root for the `pelican` user (`Server.DropPrivileges`); `keys` skips |
 
 **Helpers**
 
 | Preset         | Effect       |
 | -------------- | ------------ |
-| `with-grafana` | adds Grafana |
+| `with-grafana` | adds Grafana, with no data source (see the preset); no suite uses it |
 
 Each preset is a short file in `framework/presets/`, so read it for the
 details, including what it refuses. To write your own, see
@@ -378,6 +379,8 @@ framework/    the framework itself; don't edit it for local changes
   suites/     the test suites that test.py runs
   testlib/    the tests' shared code, and their credentials and scenarios
   report.py   merges results and converts them to JUnit XML and Markdown
+  smoke-shapes.tsv
+              the shapes that smoke.sh runs (framework/matrix.py writes it)
   var/        everything generated (ignored by Git, emptied by reset.sh)
 smoke-logs/   smoke.sh's logs and results (ignored by Git)
 ```
@@ -471,3 +474,5 @@ in your hosts file, as any user of `framework/etc/idp-users.json`.
   results format.
 - [Developing the framework](docs/development.md): its layout, what a
   suite is made of, and the checks that keep it consistent.
+- [Glossary](docs/glossary.md): the terms these docs use, and what the
+  framework tests and doesn't.

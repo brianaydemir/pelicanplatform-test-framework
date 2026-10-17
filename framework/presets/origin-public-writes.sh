@@ -17,13 +17,13 @@
 # own key's and Server.IssuerJwks's must be taken; the federation
 # suite's redirects and hints check that the directors send a bare-path
 # PUT to an origin, and still name /public's issuer; and the commands
-# suite's /public rows run as they do, with no token, and must still be
-# refused. /public has no keys of its own (no IssuerJwks), so the
-# credentials that need a namespace's own key stay /protected-a's and
-# /protected-b's. fed.sh refuses `origin-no-direct`, under which Pelican
-# allows only reads; `origin-pstore`, whose /public reads /protected-a's
-# storage; and a shape that does not export /public (`origin-https`,
-# `origin-httpsv2`, and `origin-broker` export /protected-a alone, unless
-# `origin-public` picks /public instead).
+# suite's `delete` and `copy` in /public, with the `server` token, must
+# land rather than be refused. /public has no keys of its own (no
+# IssuerJwks), so the credentials that need a namespace's own key stay
+# /protected-a's and /protected-b's. fed.sh refuses `origin-no-direct`,
+# under which Pelican allows only reads; `origin-pstore`, whose /public
+# reads /protected-a's storage; and a shape that does not export /public
+# (`origin-https`, `origin-httpsv2`, and `origin-broker` export
+# /protected-a alone, unless `origin-public` picks /public instead).
 
 ORIGIN_PUBLIC_WRITES=true

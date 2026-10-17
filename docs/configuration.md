@@ -194,8 +194,11 @@ name. It can set any knob in `framework/presets/default.sh`, or call
 `fed_enable_profile` to start optional services.
 
 - **Coverage.** The shapes that `smoke.sh` runs (`./smoke.sh -l`) make,
-  together, every pair of choices that the presets offer, and rotating every
-  key, which some shapes do before running every suite again. The
+  together, every pair of choices that the presets offer, and rotating
+  every key, which some shapes do before running every suite again.
+  Each makes at most eight choices, and none could be left out, or make
+  one choice fewer, without leaving some pair uncovered
+  ([Developing the framework](development.md#the-smoke-matrix)). The
   exceptions: `with-grafana`, which needs a data source that the
   framework lacks; rotated keys with `server-unprivileged`, whose
   servers' keys the host may not write; and `cache-mixed`,
@@ -208,24 +211,22 @@ name. It can set any knob in `framework/presets/default.sh`, or call
   likewise `origin-public`, `origin-public-writes`, and `director-ha`,
   which test the federation's way with a namespace that has no issuer,
   or one that anyone reads and a token writes, and the directors behind
-  one name, not the origins' storage.
-  Under
-  `origin-no-direct`, `/protected-a` takes no writes, so the `posc`,
-  `metadata`, and `users` suites skip; its pairs with `origin-posc`,
-  `origin-atomic-uploads`, `origin-metadata`, `origin-metadata-tx`, and
-  `origin-multiuser` test reads with those features on. Beyond the
-  pairs, two shapes are baselines, whose failures are none of the
-  presets' doing: `default` makes only the framework's own choices,
+  one name, not the origins' storage. Nor do they run a transfer API
+  (`origin-transfer-api` or `topo-transfer-server`) where `/protected-a`
+  takes no writes (`origin-no-direct` or `origin-public`): the
+  `transfer-api` suite then has nowhere to copy to, and skips. Under
+  `origin-no-direct`, the `posc`, `metadata`, and `users` suites skip
+  too; its pairs with `origin-posc`, `origin-atomic-uploads`,
+  `origin-metadata`, `origin-metadata-tx`, and `origin-multiuser` test
+  reads with those features on. Beyond the pairs, two shapes are
+  baselines, whose failures are none of the presets' doing: `default` makes only the framework's own choices,
   what `./fed.sh up` runs, and `pelican-defaults` only those that
   Pelican makes when told nothing. A preset of your own is in no shape,
   so `smoke.sh` never runs it.
-- **Presets not offered.** The choices Pelican offers that no preset
-  makes, and why, are in
+- **Presets not offered.** The notable choices Pelican offers that no
+  preset makes, and why, are in
   [What is not tested](tests/what-is-not-tested.md); those that a suite
   makes itself, for a while, are [above](#pelican-configuration).
-- **The connection broker** (`origin-broker`) is on, but the origin stays
-  reachable, so only the director always goes through it: Pelican's
-  brokered path to an unreachable origin does not work end to end.
 
 
 ## Issuer keys

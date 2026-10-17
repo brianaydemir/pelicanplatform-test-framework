@@ -4101,8 +4101,6 @@ def overwrite(test: Test, range_first: bool) -> tuple[str, str]:
     fresh = blocks.freshness(control) if control else None
     problems: list[str] = []
     notes: list[str] = []
-    if test.fed.origin_cache_control and not control:
-        notes.append("XRootD origins send no Cache-Control")
     for cache in test.caches:
         counts, wrong = versions.battery(cache)
         problems += wrong

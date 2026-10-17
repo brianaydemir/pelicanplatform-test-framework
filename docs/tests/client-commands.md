@@ -50,8 +50,8 @@ scenarios.
   collections URL, the client takes the other path, a plain DELETE,
   and on the origin's 403 dies of a nil pointer ("Unrecoverable error
   (panic) in DoDelete"), which `delete-read-only` reports as a failure
-  that is no refusal (seen with v26.0.0-rc.3 in the `standalone-ssh`
-  shape); nothing is removed there either.
+  that is no refusal (seen with v26.0.0-rc.3, under `-p topo-standalone
+  -p origin-ssh`); nothing is removed there either.
 - `ls -r` must list every object by its path in the tree, once.
 - `du --json` must give each collection's bytes, objects, and
   collections, and `du --count`, whose counts only its text output

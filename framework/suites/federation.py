@@ -19,7 +19,8 @@ The suite uploads an object straight to every origin, under
              approves every pending one through the registry's admin
              API before it waits, and first asks the directors where
              they would send the object: none may name a server whose
-             registration was still pending
+             registration was still pending; inconclusive where none
+             was, as on a rerun
   directors  each director must name every federated cache for it, and
              no site-local one, and every origin; and, for a client's
              direct read (?directread), every origin, or where the
@@ -85,7 +86,7 @@ from urllib.parse import parse_qs, urlsplit
 from testlib import accounts, common, credentials, director, owners, stores, transfers, web
 from testlib.common import die
 from testlib.credentials import ALLOW
-from testlib.report import FAIL, PASS, SKIP
+from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 
 SCENARIOS = {
@@ -413,7 +414,8 @@ def approval(probe: Probe) -> tuple[str, str]:
     """Check that no director named a server whose registration was pending.
 
     `ready` found which did as it approved the registrations (see
-    approve_pending()).
+    approve_pending()). Where it found nothing pending, as on a rerun,
+    after an earlier run approved everything, there is nothing to judge.
     """
     found = probe.approval
     if not probe.fed.registry_approval:
@@ -423,7 +425,7 @@ def approval(probe: Probe) -> tuple[str, str]:
     if found.named_early:
         return FAIL, common.first(found.named_early)
     if not found.approved:
-        return PASS, "nothing was pending: an earlier run approved every registration"
+        return INCONCLUSIVE, "nothing was pending: an earlier run approved every registration"
     return PASS, f"approved {len(found.approved)}: {', '.join(found.approved)}"
 
 

@@ -592,6 +592,14 @@ if [ "${ORIGIN_ATOMIC_UPLOADS}" = true ]; then
       || die "ORIGIN_ATOMIC_UPLOADS ('origin-atomic-uploads') needs the XRootD posix" \
              "origin ('origin-xrootd'), not '${ORIGIN_VARIANT}'"
 fi
+
+# Only the native origins send Origin.CacheControl (origin_serve/ in
+# Pelican); an XRootD origin ignores it.
+if [ -n "${ORIGIN_CACHE_CONTROL}" ]; then
+  ! fed_xrootd_origin \
+      || die "ORIGIN_CACHE_CONTROL ('origin-max-age') needs a native origin, not" \
+             "'${ORIGIN_VARIANT}', since XRootD's send no Origin.CacheControl"
+fi
 if [ "${ORIGIN_METADATA}" = true ]; then
   fed_has_profile metadata \
       || die "ORIGIN_METADATA needs the metadata receiver; use '-p origin-metadata'"

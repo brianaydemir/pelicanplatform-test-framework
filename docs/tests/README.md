@@ -89,8 +89,8 @@ It approves them as the registry's built-in `admin`, with a token like the one `
 (`credentials.mint_user()`). Before approving, it asks each director
 where it would send the object: `approval` fails if any named a server
 whose registration was still pending, since the directors refuse the
-advertisements of such a server. On a rerun, nothing is pending, and
-`approval` says so.
+advertisements of such a server. On a rerun, nothing is pending, so
+`approval` has nothing to judge, and is `INCONCLUSIVE`.
 
 These are functional checks, not stress tests: each moves a few
 objects, the largest about 16 MiB, but for `blocks`'s `cache-evicted`,
@@ -104,8 +104,9 @@ for 20 minutes, or runs for 90, is abandoned by `test.py`'s watchdog,
 recorded as `aborted`, and the next suite runs. Each suite removes what it wrote from
 every origin's store afterward, a `pstore` origin's included.
 
-[What is not tested](what-is-not-tested.md) lists the shapes and features
-that Pelican offers and this framework does not, and why.
+[What is not tested](what-is-not-tested.md) lists the features of
+Pelican that no preset offers, and what the presets imply about the
+handling of data that the tests don't exercise.
 
 
 ## Token profiles

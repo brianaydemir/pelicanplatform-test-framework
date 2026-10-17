@@ -1,31 +1,43 @@
 #!/usr/bin/env python3
-"""A federation's choices, and whether smoke.sh's shapes cover every pair.
+"""A federation's choices, and the shapes that smoke.sh runs by default.
 
   framework/matrix.py check     check smoke.sh's shapes (see below)
   framework/matrix.py pairs     list every pair of choices a shape can make
-  framework/matrix.py suggest   print shapes that cover what smoke.sh's miss
+  framework/matrix.py generate  rewrite SHAPES_FILE, keeping what it can
+  framework/matrix.py generate --fresh
+                                rewrite SHAPES_FILE from scratch
 
 Each preset makes one choice (see PRESETS); rotating every key, which
 smoke.sh does after the tests in some shapes, is one more. A shape is
 the choices its presets make, and every other factor's default. Some
 shapes fed.sh refuses (REFUSED, which mirrors its checks), and some
-smoke.sh does not run (SMOKE_LIMITS). Of the rest, every pair of choices
+smoke.sh does not run (SMOKE_LIMITS), since they would test nothing, or
+nothing that simpler shapes don't. Of the rest, every pair of choices
 must be in some shape that smoke.sh runs. A pair is possible if some
 such shape makes it with at most SEARCH_DEPTH other factors away from
 their defaults (see completion()): there are too many shapes to try
 them all.
 
+smoke.sh runs the BASELINES, and as many other shapes as are useful,
+each as simple as it can be: each makes at most MAX_CHOICES choices,
+makes some pair that no other shape makes, and would leave some pair
+uncovered if any one of its choices were the default instead.
+SHAPES_FILE lists them, as `generate` writes it.
+
 `check` reads the shapes from `smoke.sh --table`, and reports any shape
-that makes no sense or that fed.sh would refuse, any preset no shape
-runs, and any pair no shape covers. It exits 1 if it found any.
-`suggest` picks shapes greedily, to add to smoke.sh's until they cover
-every pair, for a person to trim and paste into smoke.sh.
+that makes no sense, that fed.sh would refuse, or that breaks the rules
+above; any preset no shape runs; and any pair no shape covers. It exits
+1 if it found any. `generate` keeps the shapes in SHAPES_FILE that still
+pass (or none, with --fresh), picks shapes greedily until they cover
+every pair, then simplifies them, and drops any that adds nothing.
 """
 
 import itertools
 import os
 import subprocess  # nosec B404
 import sys
+import textwrap
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Optional
@@ -135,6 +147,32 @@ ADDED_LEVELS = (("transfer_api", "server"),)
 # How many factors besides a pair's completion() may change.
 SEARCH_DEPTH = 3
 
+# How many choices a shape that smoke.sh runs may make (Shape.choices()).
+# A simpler shape points at fewer presets when it fails; at 8, the
+# shapes are about as many as with no limit.
+MAX_CHOICES = 8
+
+# The shapes that smoke.sh runs whatever else it runs: references whose
+# failures are none of the other presets' doing. By name: the presets,
+# whether it rotates every key, and why it is run.
+BASELINES: dict[str, tuple[tuple[str, ...], bool, str]] = {
+    "default": (
+        ("topo-basic", "origin-posixv2", "cache-v2"),
+        True,
+        "The framework's own defaults, what `./fed.sh up` runs, each named.",
+    ),
+    "pelican-defaults": (
+        ("origin-xrootd", "cache-xrootd", "auth-no-issuer", "director-discovery"),
+        False,
+        "Pelican's own defaults: an XRootD origin (Origin.StorageType posix),"
+        + " XRootD caches (Cache.EnableV2 off), no issuer, and the director as"
+        + " the discovery host, as Pelican's documentation sets up a federation.",
+    ),
+}
+
+# The shapes that smoke.sh runs, which `generate` writes.
+SHAPES_FILE = os.path.join(TOP, "framework", "smoke-shapes.tsv")
+
 Pair = tuple[tuple[str, str], tuple[str, str]]
 
 
@@ -151,6 +189,10 @@ class Shape:
         """Return every pair of choices it makes."""
         choices = [(f, self.levels[f]) for f in FACTORS]
         return set(itertools.combinations(choices, 2))
+
+    def choices(self) -> int:
+        """Return how many factors it moves from their defaults."""
+        return sum(self.levels[f] != levels[0] for f, levels in FACTORS.items())
 
     def adds_server(self) -> bool:
         """Return whether it adds a server to the full topology."""
@@ -243,6 +285,10 @@ REFUSED: list[Rule] = [
     (
         "XRootD's atomic uploads are its posix origin's",
         lambda s: s["atomic"] == "on" and s["origin"] != "xrootd",
+    ),
+    (
+        "Origin.CacheControl is the native origins': an XRootD origin sends none",
+        lambda s: s["max_age"] == "on" and s["origin"] in XROOTD_ORIGINS,
     ),
     (
         "a pstore origin is seeded through its writes, which no-direct takes away",
@@ -347,6 +393,12 @@ SMOKE_LIMITS: list[Rule] = [
         "a transfer server runs over posixv2 and xrootd origins only: what it tests beyond"
         + " origin-0's API is the server's own confinement and issuer, not the origins' storage",
         lambda s: s["transfer_api"] == "server" and s["origin"] not in ("posixv2", "xrootd"),
+    ),
+    (
+        "a transfer API runs only where /protected-a takes writes: without them, the"
+        + " transfer-api suite has nowhere to copy to, and skips",
+        lambda s: s["transfer_api"] != "off"
+        and (s["direct"] == "no" or s["namespaces"] == "public"),
     ),
     (
         "once the servers drop privileges, the host may not write their keys",
@@ -482,7 +534,8 @@ def grow(start: Pair, left: set[Pair]) -> Shape:
     """Return a shape that makes start, and covers pairs of left greedily.
 
     The shape makes start as completion() does, and, for each other
-    factor in turn, the level that covers the most pairs of left.
+    factor in turn, the level that covers the most pairs of left, the
+    default on a tie, without making more than MAX_CHOICES choices.
     """
     shape = completion(dict(start))
     if shape is None:
@@ -494,40 +547,149 @@ def grow(start: Pair, left: set[Pair]) -> Shape:
         best, gain = levels[factor], -1
         for level in choices:
             trial = Shape({**levels, factor: level})
-            if not refusals(trial) and len(trial.pairs() & left) > gain:
+            if trial.choices() > MAX_CHOICES or refusals(trial):
+                continue
+            if len(trial.pairs() & left) > gain:
                 best, gain = level, len(trial.pairs() & left)
         levels[factor] = best
     return Shape(levels)
 
 
-def suggest(existing: Iterable[Shape]) -> list[Shape]:
-    """Return shapes that cover every valid pair that existing shapes miss.
+def pair_counts(shapes: Iterable[Shape], valid: set[Pair]) -> Counter[Pair]:
+    """Return how many of shapes make each pair of valid."""
+    counts: Counter[Pair] = Counter()
+    for shape in shapes:
+        counts.update(shape.pairs() & valid)
+    return counts
 
-    The shapes are picked greedily: of the shapes that grow() from each
-    pair still uncovered, the one that covers the most of them.
+
+def adds_nothing(shape: Shape, counts: Counter[Pair], valid: set[Pair]) -> bool:
+    """Return whether another shape makes every pair of valid that shape does.
+
+    counts is pair_counts() of every shape, shape among them.
     """
-    left = valid_pairs() - covered(existing)
-    picked: list[Shape] = []
+    return all(counts[p] > 1 for p in shape.pairs() & valid)
+
+
+def simpler(shape: Shape, counts: Counter[Pair], valid: set[Pair]) -> Optional[Shape]:
+    """Return shape with one of its choices the default, if that loses no pair.
+
+    The simpler shape must be one that smoke.sh could run, and make every
+    pair of valid that shape makes and no other does. counts is
+    pair_counts() of every shape, shape among them.
+
+    Returns:
+        The first such shape, by FACTORS' order, or None.
+    """
+    for factor, levels in FACTORS.items():
+        if shape[factor] == levels[0]:
+            continue
+        trial = Shape({**shape.levels, factor: levels[0]})
+        if refusals(trial):
+            continue
+        kept = trial.pairs()
+        if all(counts[p] > 1 or p in kept for p in shape.pairs() & valid):
+            return trial
+    return None
+
+
+def baseline_shapes() -> list[Shape]:
+    """Return the shapes that BASELINES make."""
+    found: list[Shape] = []
+    for name, (presets, rotated, _) in BASELINES.items():
+        shape, wrong = shape_of(presets, rotated)
+        if shape is None:
+            raise ValueError(f"the baseline {name}: {'; '.join(wrong)}")
+        found.append(shape)
+    return found
+
+
+def generate(current: Iterable[Shape]) -> list[Shape]:
+    """Return the shapes that smoke.sh should run, but the baselines.
+
+    Of current, it keeps each that smoke.sh could run that makes at most
+    MAX_CHOICES choices. It adds shapes greedily until every pair is
+    covered: of the shapes that grow() from each pair still uncovered,
+    the one that covers the most, the simpler on a tie. Then, until
+    nothing changes, it makes each shape simpler that can be (simpler()),
+    and drops each that adds nothing (adds_nothing()), those that make
+    the most choices first.
+
+    Returns:
+        The shapes, the simplest first.
+    """
+    valid = valid_pairs()
+    baselines = baseline_shapes()
+    picked = [s for s in current if s.choices() <= MAX_CHOICES and not refusals(s)]
+    left = valid - covered([*baselines, *picked])
     while left:
         grown = [grow(start, left) for start in sorted(left)]
-        shape = max(grown, key=lambda s: len(s.pairs() & left))
-        picked.append(shape)
-        left -= shape.pairs()
-    return picked
+        best = max(grown, key=lambda s: (len(s.pairs() & left), -s.choices()))
+        picked.append(best)
+        left -= best.pairs()
+    changed = True
+    while changed:
+        changed = False
+        counts = pair_counts([*baselines, *picked], valid)
+        for n, shape in enumerate(picked):
+            trial = simpler(shape, counts, valid)
+            if trial is not None:
+                counts.subtract(shape.pairs() & valid)
+                counts.update(trial.pairs() & valid)
+                picked[n] = trial
+                changed = True
+        for shape in sorted(picked, key=lambda s: (-s.choices(), name_of(s))):
+            if adds_nothing(shape, counts, valid):
+                counts.subtract(shape.pairs() & valid)
+                picked.remove(shape)
+                changed = True
+    return sorted(picked, key=lambda s: (s.choices(), name_of(s)))
+
+
+# The factors that a shape's name begins with (see name_of()).
+NAMED_FIRST = ("topology", "caches", "origin", "cache")
 
 
 def presets_of(shape: Shape) -> list[str]:
     """Return the presets that make shape.
 
     Returns:
-        One per factor not at its default, but `keys`.
+        One per factor not at its default, but `keys`: those of
+        NAMED_FIRST first, then the rest in FACTORS' order, as name_of()
+        names them.
     """
     by_choice = {choice: preset for preset, choice in PRESETS.items()}
+    order = [*NAMED_FIRST, *(f for f in FACTORS if f not in NAMED_FIRST)]
     return [
-        by_choice[(f, shape[f])]
-        for f, choices in FACTORS.items()
-        if f != "keys" and shape[f] != choices[0]
+        by_choice[(f, shape[f])] for f in order if f != "keys" and shape[f] != FACTORS[f][0]
     ]
+
+
+def name_of(shape: Shape) -> str:
+    """Return the name that smoke.sh gives shape, if it is no baseline.
+
+    The name is the topology, if not the full one, and the origin; or
+    `nocache`, if there is no cache, and the origin; or else the origin
+    and the kind of cache. Then come the other choices, in FACTORS'
+    order, each its preset's name without the prefix (`topo-`,
+    `origin-`, ...), and `rotated` if it rotates every key: e.g.
+    `xrootd-v2-multi-cache-no-direct`, or `tiny-pstore-small-rotated`.
+    """
+    if shape["topology"] != "full":
+        parts = [shape["topology"], shape["origin"]]
+    elif shape["caches"] == "none":
+        parts = ["nocache", shape["origin"]]
+    else:
+        parts = [shape["origin"], shape["cache"]]
+    by_choice = {choice: preset for preset, choice in PRESETS.items()}
+    for factor, levels in FACTORS.items():
+        if factor in NAMED_FIRST or shape[factor] == levels[0]:
+            continue
+        if factor == "keys":
+            parts.append("rotated")
+        else:
+            parts.append(by_choice[(factor, shape[factor])].split("-", 1)[1])
+    return "-".join(parts)
 
 
 # --------------------------------------------------------------------------
@@ -582,43 +744,108 @@ def all_presets() -> set[str]:
     }
 
 
-def made(shapes: Sequence[SmokeShape]) -> tuple[list[Shape], list[str]]:
-    """Return the shapes made by smoke.sh's, and what is wrong with them."""
+def made(shapes: Sequence[SmokeShape]) -> tuple[list[tuple[SmokeShape, Shape]], list[str]]:
+    """Return smoke.sh's shapes, each with what it makes, and what is wrong."""
     found: list[str] = []
     names = [s.name for s in shapes]
     for name in sorted({n for n in names if names.count(n) > 1}):
         found.append(f"two shapes are named {name}")
-    shapes_made: list[Shape] = []
+    shapes_made: list[tuple[SmokeShape, Shape]] = []
     for smoke in shapes:
         shape, wrong = shape_of(smoke.presets, smoke.rotated)
         if shape is None:
             found += [f"{smoke.name}: {why}" for why in wrong]
             continue
         found += [f"{smoke.name}: {why}" for why in refusals(shape)]
-        shapes_made.append(shape)
+        shapes_made.append((smoke, shape))
     return shapes_made, found
 
 
 def check(shapes: Sequence[SmokeShape]) -> list[str]:
     """Return what is wrong with smoke.sh's shapes."""
     shapes_made, found = made(shapes)
+    by_name = {smoke.name: smoke for smoke in shapes}
+    for name, (presets, rotated, _) in BASELINES.items():
+        smoke = by_name.get(name)
+        if smoke is None:
+            found.append(f"no shape is the baseline {name}")
+        elif set(smoke.presets) != set(presets) or smoke.rotated != rotated:
+            found.append(f"{name}: not the baseline that BASELINES describes")
+    valid = valid_pairs()
+    counts = pair_counts((shape for _, shape in shapes_made), valid)
+    for smoke, shape in shapes_made:
+        if smoke.name in BASELINES:
+            continue
+        if shape.choices() > MAX_CHOICES:
+            found.append(
+                f"{smoke.name}: makes {shape.choices()} choices, more than {MAX_CHOICES}"
+            )
+        if smoke.name != name_of(shape):
+            found.append(f"{smoke.name}: should be named {name_of(shape)}")
+        trial = simpler(shape, counts, valid)
+        if adds_nothing(shape, counts, valid):
+            found.append(f"{smoke.name}: makes no pair that another shape does not")
+        elif trial is not None:
+            found.append(f"{smoke.name}: {name_of(trial)}, which is simpler, covers as much")
     run = {p for s in shapes for p in s.presets}
     for preset in sorted(all_presets() - run - set(NOT_RUN)):
         found.append(f"no shape runs {preset}")
     for preset in sorted(all_presets() - set(PRESETS) - set(NOT_RUN)):
         found.append(f"{preset} is not in framework/matrix.py")
-    for (f1, l1), (f2, l2) in sorted(valid_pairs() - covered(shapes_made)):
+    for (f1, l1), (f2, l2) in sorted(valid - covered(shape for _, shape in shapes_made)):
         found.append(f"no shape has both {f1}={l1} and {f2}={l2}")
     return found
+
+
+# The head of SHAPES_FILE.
+SHAPES_HEADER = """\
+# The shapes that ./smoke.sh runs when it is given none: one per line,
+# its name, whether it rotates every key after the tests and runs them
+# again (yes or no), and its presets, separated by tabs.
+#
+# `framework/matrix.py generate` writes this file (see "The smoke
+# matrix" in docs/development.md). Rather than edit it, change
+# framework/matrix.py, and run that again; `framework/matrix.py check`
+# checks it.
+"""
+
+
+def write_shapes(shapes: Sequence[Shape]) -> None:
+    """Write SHAPES_FILE: the BASELINES, then shapes, in their order."""
+
+    def row(name: str, rotated: bool, presets: Iterable[str]) -> str:
+        return f"{name}\t{'yes' if rotated else 'no'}\t{' '.join(presets)}\n"
+
+    text = SHAPES_HEADER
+    for name, (presets, rotated, why) in BASELINES.items():
+        text += "#\n" + "".join(f"# {line}\n" for line in textwrap.wrap(why, 70))
+        text += row(name, rotated, presets)
+    text += "#\n# The rest, the simplest first.\n"
+    for shape in shapes:
+        text += row(name_of(shape), shape["keys"] == "rotated", presets_of(shape))
+    with open(SHAPES_FILE, "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 def main() -> None:
     """Run the command that the arguments name."""
     args = sys.argv[1:]
-    if len(args) != 1 or args[0] in ("-h", "--help"):
+    if not args or args[0] in ("-h", "--help"):
         print((__doc__ or "").strip("\n"))
         sys.exit(0 if args else 2)
-    if args[0] == "check":
+    command, rest = args[0], args[1:]
+    if command == "generate" and rest in ([], ["--fresh"]):
+        before = smoke_shapes() if os.path.exists(SHAPES_FILE) else []
+        current = [] if rest else [s for b, s in made(before)[0] if b.name not in BASELINES]
+        picked = generate(current)
+        write_shapes(picked)
+        old, new = {s.name for s in before}, {name_of(s) for s in picked} | set(BASELINES)
+        for name in sorted(new - old):
+            print(f"added {name}")
+        for name in sorted(old - new):
+            print(f"removed {name}")
+        print(f"{len(new)} shapes cover all {len(valid_pairs())} pairs")
+    elif command == "check" and not rest:
         shapes = smoke_shapes()
         found = check(shapes)
         for problem in found:
@@ -626,16 +853,12 @@ def main() -> None:
         if found:
             sys.exit(1)
         print(f"{len(shapes)} shapes cover all {len(valid_pairs())} pairs")
-    elif args[0] == "pairs":
+    elif command == "pairs" and not rest:
         for (f1, l1), (f2, l2) in sorted(valid_pairs()):
             print(f"{f1}={l1} {f2}={l2}")
-    elif args[0] == "suggest":
-        for shape in suggest(made(smoke_shapes())[0]):
-            rotated = "yes" if shape["keys"] == "rotated" else "no"
-            print(f"{rotated}\t{' '.join(presets_of(shape))}")
     else:
         print(
-            f"matrix.py: unknown command: {args[0]} (try: check, pairs, suggest)",
+            f"matrix.py: unknown command: {' '.join(args)} (try: check, pairs, generate)",
             file=sys.stderr,
         )
         sys.exit(2)
