@@ -406,20 +406,32 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   after which the cache must answer 404. Where `/protected-a` takes no
   writes, the PUT must be refused. An XRootD cache takes no writes, so
   its PUT must be refused, and change no origin.
-- `cache-evicted`, under `-p cache-small`, which bounds each V2 cache's
-  store (`Cache.HighWaterMark` 128 MiB, `Cache.LowWaterMark` 96 MiB;
-  Pelican's defaults are a share of the whole disk, which no suite could
-  fill): each cache reads, cold and whole, enough 8 MiB objects to exceed
-  its high water mark by half, and reads the first again once it has read
-  as many as fit under the mark, less one. Within 60 seconds its store
-  (`data/cache/<N>/persistent-cache/objects/`) must have come back under
-  the mark, and not fallen below the low one by more than an object.
-  Then, asked with `only-if-cached`, it must still hold the three
-  objects read last, and none of at least two of the oldest. The first
-  object, read again, may be held or gone: a V2 cache records an access
-  for its LRU order at most once in ten minutes (`UpdateLRU` in
+- `cache-evicted`, under `-p cache-small`, which bounds each cache's
+  store at 128 MiB, down to 96 MiB (Pelican's defaults are a share of
+  the whole disk, which no suite could fill): a V2 cache's water marks
+  (`Cache.HighWaterMark` and `Cache.LowWaterMark`), and an XRootD
+  cache's bounds on its files (`Cache.FilesMaxSize` and
+  `Cache.FilesBaseSize`), since its water marks are of the whole
+  filesystem under its store, which a bind mount cannot bound. Each
+  cache reads, cold and whole, enough 8 MiB objects to exceed its high
+  mark by half, and reads the first again once it has read as many as
+  fit under the mark, less one. Within 60 seconds at a V2 cache, or 180
+  at an XRootD cache, which checks once a minute, and spares from a
+  purge what was read since the last (`heart_beat` in XrdPfc's
+  `ResourceMonitor`), its store must have come back under the mark, and
+  not fallen below the low one by more than an object: a V2 cache's
+  object files (`data/cache/<N>/persistent-cache/objects/`), by size,
+  and an XRootD cache's data space (`data/cache/<N>/data/`), by the
+  disk blocks they take, as XRootD counts them. Then a V2 cache, asked
+  with `only-if-cached`, must still hold the three objects read last,
+  and none of at least two of the oldest. The first object, read again,
+  may be held or gone: a V2 cache records an access for its LRU order
+  at most once in ten minutes (`UpdateLRU` in
   `local_cache/database.go`), so reading it again may move it nowhere;
-  the row's note says which. Last, every object must still come back
-  whole and in a range, as must the first by `pelican object get
-  --cache`. An XRootD cache measures its filesystem, which a bind mount
-  cannot bound, so `fed.sh` refuses the preset with `cache-xrootd`.
+  the row's note says which. An XRootD cache need only have dropped at
+  least two, as their `.cinfo`s say, which it removes with them: it
+  purges the oldest by its `.cinfo`'s mtime, in whole seconds
+  (`FPurgeState` in XrdPfc), which it writes some seconds after a read,
+  and not after every one, so its order does not follow reads a second
+  apart. Last, every object must still come back whole and in a range,
+  as must the first by `pelican object get --cache`.

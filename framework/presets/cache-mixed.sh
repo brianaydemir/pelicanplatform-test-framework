@@ -9,8 +9,8 @@
 # `failover`), and the directors route to both.
 #
 # Needs `topo-multi-cache`, for cache-1. Refuses `cache-xrootd`, with
-# which nothing would be mixed, and `cache-tiered`, `cache-memory`, and
-# `cache-small`, whose settings reach every cache, and which the XRootD
-# cache reads otherwise, or not at all.
+# which nothing would be mixed, and `cache-tiered` and `cache-memory`,
+# whose settings reach every cache, and which the XRootD cache does not
+# read. `cache-small` bounds each cache its own way.
 
 CACHE_1_VARIANT=xrootd

@@ -4,10 +4,50 @@ Part of [What the tests check](README.md).
 
 Shapes that Pelican offers and this framework does not, and why:
 
-- `globus` and `globusv2` origins, which need Globus credentials;
+- `globus` and `globusv2` origins, which need a Globus collection and
+  Globus's credentials, which nothing in Docker stands in for; and
   `s3v2` in front of GCS or Azure (`Origin.ObjectProviderURL`), which
-  need theirs; and the `xroot` origin, which fronts another XRootD
-  server.
+  need theirs.
+- The `xroot` origin, which relays to another XRootD server through
+  XRootD's own proxy (`pss.origin` in
+  `xrootd/resources/xrootd-origin.cfg`), as a bridge from the OSDF's
+  legacy origins (`OriginStorageXRoot` in `server_structs/origin.go`):
+  Pelican's part is the configuration it writes, and the data path is
+  XRootD's.
+- The OSDF's own flavor of the servers (`osdf-server`, in Pelican's
+  `osdf-*` images), which differs from Pelican's by its defaults
+  (`osdf_default` in `docs/parameters.yaml`): the OSDF's discovery host,
+  legacy XRootD redirector (`Xrootd.ManagerHost`), and monitoring
+  collectors; required approval (`-p registry-approval`); and OSG
+  Topology (`Federation.Topology*`), from which the director takes ads
+  and downtime for servers that never advertise (`AdvertiseOSDF` in
+  `director/advertise.go`), the registry namespaces
+  (`PopulateTopology` in `registry/registry_db.go`), and the XRootD
+  servers authfiles (`getOSDFAuthFiles` in `xrootd/authorization.go`).
+  Like the `xroot` origin, it bridges the OSDF's legacy services, in
+  formats that only they serve.
+- An origin's one export given by `Origin`'s own keys
+  (`Origin.FederationPrefix`, `StoragePrefix`, `EnableReads`, and the
+  like) or by `pelican origin serve -v`, rather than by
+  `Origin.Exports`, which `fed.sh` always writes: Pelican makes the same
+  exports of each (`configureExports` in `server_utils/origin.go`), so
+  the choice is the configuration's syntax, not the federation's shape.
+- A connection broker in a server of its own (`pelican-server serve
+  --module broker`): every director runs one, by default
+  (`Director.EnableBroker`), which `-p origin-broker` uses, and which a
+  director needs anyway to take an origin's connection back
+  (`InitializeBrokerClient` in `launchers/launcher.go`); Pelican
+  documents no other way to run it.
+- A federation on an IPv6 network: the address family is the network's
+  choice, not a setting of Pelican's, and every server reaches the
+  others by name. Pelican treats IPv6 apart only in the client's order
+  of a server's addresses (IPv4 first), the directors' sort by a
+  client's address, the issuer's rate limit by address, and the
+  origins' SSRF ranges; Pelican's own unit tests cover the sort and the
+  ranges with IPv6 addresses (`director/sort_utilities_test.go` and
+  `config/ssrf_transport_test.go`). Every service here is on Docker's
+  IPv4 networks, whose ranges the origins' SSRF allow-list names
+  (`Server.SSRFProtection.AllowedCIDRs`).
 - Of an `ssh` origin: logging in to the storage host with a password,
   a keyboard-interactive prompt, or an agent (`Origin.SSH.AuthMethods`),
   or through a jump host (`Origin.SSH.ProxyJump`); the lab server takes
@@ -53,7 +93,18 @@ Shapes that Pelican offers and this framework does not, and why:
   (`requiredFeatures` in its ad, which `Origin.DisableDirectClients`
   fills with `CacheAuthz`, from v7.16; `features/` in Pelican), which
   they would route around. `IMAGE_*` can mix releases by hand
-  ([Testing your changes](../../README.md#testing-your-changes)).
+  ([Testing your changes](../../README.md#testing-your-changes)). Nor
+  is a federation upgraded in place: every shape starts from scratch,
+  so no release reads the databases or stores (a V2 cache's, a pstore
+  origin's) that an older one wrote.
+- Origins of mixed kinds behind one namespace, as replicas moving from
+  XRootD to a native backend one at a time would be, the way
+  `-p cache-mixed` mixes the caches. What that would add to replicas
+  of one kind (`-p topo-multi-origin`) is ETags that disagree, as
+  XRootD replicas' already do: XRootD's ETag is a file's device and
+  inode (`StatGen` in XRootD's `XrdXrootdProtocol.cc`), which differ
+  between two origins' stores. Every kind of origin meets every kind
+  of cache in some shape.
 - The XRootD monitoring shoveler (`Shoveler.Enable`), which forwards
   the XRootD servers' UDP monitoring stream to a message bus, or to
   collectors of its own (`Shoveler.OutputDestinations`); the
@@ -104,8 +155,7 @@ Shapes that Pelican offers and this framework does not, and why:
   through a scope grant (`Transfer.EnabledGroups` the `transfer-api`
   suite checks); and the limit on registrations, five from an address,
   then one a minute.
-- Of the registry: the
-  OSDF topology's namespaces, `Registry.InstitutionsUrl`, and the
+- Of the registry: `Registry.InstitutionsUrl`, and the
   cleanup of inactive registrations ([registry](registry.md)); the `keys`
   suite covers the keys a server adds or rotates while it runs, and
   `restart` server IDs across a restart. Also its refusal of an edit

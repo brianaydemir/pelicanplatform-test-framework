@@ -31,8 +31,9 @@ A range is (start, end), inclusive; (None, n) is the last n bytes, and
 (start, None) everything from start. A request asks for one or more.
 
 A cache's store is on disk under framework/var/data/cache/<n>/
-(cache_dir()): store_bytes() is what a V2 cache's objects take there,
-and read_cinfo() what an XRootD cache's .cinfo records.
+(cache_dir()): store_bytes() is what a cache's objects take there,
+read_cinfo() what an XRootD cache's .cinfo records, and xrootd_holds()
+whether it holds all of an object.
 """
 
 import os
@@ -588,22 +589,31 @@ def cache_dir(cache: common.Cache) -> str:
 
 
 def store_bytes(cache: common.Cache) -> Optional[int]:
-    """Return how many bytes a V2 cache's object files take in its store.
+    """Return how many bytes a cache's object files take in its store.
 
-    Its store is the one it mounts at /data (local_cache/storage.go in
-    Pelican).
+    Its store is the one it mounts at /data. A V2 cache's object files
+    are in persistent-cache/objects/ (local_cache/storage.go in
+    Pelican), counted by size. An XRootD cache's are in its data space,
+    data/ (Cache.DataLocations), counted by the disk blocks they take, as
+    XRootD counts them against Cache.FilesMaxSize (ResourceMonitor in
+    XrdPfc). A file that the cache removes meanwhile counts for nothing.
 
     Returns:
         The total, or None if cache has no such store.
     """
-    root = f"{cache_dir(cache)}/persistent-cache/objects"
+    xrootd = cache.kind == "xrootd"
+    root = f"{cache_dir(cache)}/{'data' if xrootd else 'persistent-cache/objects'}"
     if not os.path.isdir(root):
         return None
-    return sum(
-        os.path.getsize(os.path.join(directory, name))
-        for directory, _, files in os.walk(root)
-        for name in files
-    )
+    total = 0
+    for directory, _, files in os.walk(root):
+        for name in files:
+            try:
+                info = os.stat(os.path.join(directory, name))
+            except FileNotFoundError:
+                continue
+            total += info.st_blocks * 512 if xrootd else info.st_size
+    return total
 
 
 def read_cinfo(cache: common.Cache, rel: str) -> tuple[Optional[Cinfo], str]:
@@ -632,3 +642,18 @@ def read_cinfo(cache: common.Cache, rel: str) -> tuple[Optional[Cinfo], str]:
         return None, f"framework/var/{target} is missing"
     except ValueError as e:
         return None, f"framework/var/{target}: {e}"
+
+
+def xrootd_holds(cache: common.Cache, rel: str) -> Optional[bool]:
+    """Return whether an XRootD cache holds all of rel in /protected-a.
+
+    Its .cinfo says (read_cinfo()); the cache removes it with the object
+    when it purges the object.
+
+    Returns:
+        Whether it does, or None if the .cinfo is there but unreadable.
+    """
+    info, why = read_cinfo(cache, rel)
+    if info is not None:
+        return info.complete
+    return False if why.endswith(" is missing") else None

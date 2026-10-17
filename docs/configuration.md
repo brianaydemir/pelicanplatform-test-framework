@@ -104,8 +104,8 @@ EOF
   provider's URL (from `-p auth-oidc`; `Issuer.GroupSource` stays
   `internal`, and the `oidc` suite restarts origin-0 with `oidc`, and
   with `Server.UIAdminUsers`, for a while), the caches'
-  `Cache.MemoryCacheSize` and water marks (from `-p cache-memory` and
-  `-p cache-small`), `Director.DefaultResponse` (from
+  `Cache.MemoryCacheSize` (from `-p cache-memory`),
+  `Director.DefaultResponse` (from
   `-p director-default-origin`), the registry's
   `RequireOriginApproval`, `RequireCacheApproval` (from
   `-p registry-approval`), and `RequireKeyChaining` (off under
@@ -118,7 +118,10 @@ EOF
   and, under `-p director-ha`, each director's `Server.ExternalWebUrl`
   (the shared name), `Director.AdvertiseUrl` (its own), and
   `Xrootd.Sitename` (its own name, which Pelican would otherwise take
-  from the shared name) in its `/fed/generated.instance`, so a file
+  from the shared name) in its `/fed/generated.instance`, as it does
+  each cache's bound on its store (from `-p cache-small`: a V2 cache's
+  water marks, and an XRootD cache's `Cache.Files{Base,Nominal,Max}Size`
+  beside its water marks, which Pelican then requires), so a file
   of yours can override them, e.g. for one service; but the tests
   expect what the presets say. Under `-p origin-export-templates`, the
   generated `Origin.Exports` gives `/protected-b` authorization
@@ -210,8 +213,16 @@ name. It can set any knob in `framework/presets/default.sh`, or call
   `origin-no-direct`, `/protected-a` takes no writes, so the `posc`,
   `metadata`, and `users` suites skip; its pairs with `origin-posc`,
   `origin-atomic-uploads`, `origin-metadata`, `origin-metadata-tx`, and
-  `origin-multiuser` test reads with those features on. A preset of
-  your own is in no shape, so `smoke.sh` never runs it.
+  `origin-multiuser` test reads with those features on. Beyond the
+  pairs, two shapes are baselines, whose failures are none of the
+  presets' doing: `default` makes only the framework's own choices,
+  what `./fed.sh up` runs, and `pelican-defaults` only those that
+  Pelican makes when told nothing. A preset of your own is in no shape,
+  so `smoke.sh` never runs it.
+- **Presets not offered.** The choices Pelican offers that no preset
+  makes, and why, are in
+  [What is not tested](tests/what-is-not-tested.md); those that a suite
+  makes itself, for a while, are [above](#pelican-configuration).
 - **The connection broker** (`origin-broker`) is on, but the origin stays
   reachable, so only the director always goes through it: Pelican's
   brokered path to an unreachable origin does not work end to end.

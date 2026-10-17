@@ -16,8 +16,10 @@
 # but those that framework/matrix.py's SMOKE_LIMITS name, such as rotated
 # keys with servers that drop privileges, whose keys the host may not
 # write (`framework/matrix.py check` checks that they do; see
-# docs/configuration.md). Some shapes also rotate every key, restart, and
-# run every suite again.
+# docs/configuration.md). Two are baselines: default makes only the
+# framework's own choices, and pelican-defaults only those that Pelican
+# makes when told nothing. Some shapes also rotate every key, restart,
+# and run every suite again.
 #
 # DESTRUCTIVE: runs ./reset.sh before each shape, keeping only
 # framework/var/bin/, and leaves the last shape's state and presets
@@ -44,7 +46,7 @@ usage() {
   sed -e '1d' -e '/^$/,$d' -e 's/^# \{0,1\}//' "./${progname}"
 }
 
-all_shapes="default posixv2-xrootd-tx tiny-posixv2-posc ssh-xrootd s3v2-xrootd"
+all_shapes="default pelican-defaults posixv2-xrootd-tx tiny-posixv2-posc ssh-xrootd s3v2-xrootd"
 all_shapes="${all_shapes} tiny-xrootd pstore-xrootd s3v2-v2 tiny-posixv2-tx"
 all_shapes="${all_shapes} posixv2-xrootd-multiuser httpsv2-xrootd tiny-pstore"
 all_shapes="${all_shapes} posixv2-no-direct posixv2-xrootd-posc ssh-v2 httpsv2-v2"
@@ -65,9 +67,15 @@ all_shapes="${all_shapes} public-nocache-broker public-posixv2-mixed standalone-
 # Each shape's presets, one per word.
 shape_presets() {
   case "$1" in
+    # The framework's own defaults, what `./fed.sh up` runs, each named.
     default)
-      echo "topo-basic origin-posixv2 cache-v2 origin-short-tokens" \
-           "origin-export-templates origin-public-writes" ;;
+      echo "topo-basic origin-posixv2 cache-v2" ;;
+    # Pelican's own defaults: an XRootD origin (Origin.StorageType
+    # posix), XRootD caches (Cache.EnableV2 off), no issuer, and the
+    # director as the discovery host, as Pelican's documentation sets up
+    # a federation.
+    pelican-defaults)
+      echo "origin-xrootd cache-xrootd auth-no-issuer director-discovery" ;;
     posixv2-xrootd-tx)
       echo "cache-xrootd topo-multi-origin topo-multi-cache topo-multi-owner" \
            "auth-external-issuer origin-metadata-tx server-unprivileged" \
@@ -125,7 +133,7 @@ shape_presets() {
            "origin-no-direct origin-max-age cache-tiered cache-memory cache-small" ;;
     httpsv2-v2)
       echo "origin-httpsv2 topo-multi-origin topo-multi-cache topo-multi-owner" \
-           "origin-max-age server-unprivileged with-lab cache-tiered cache-memory cache-small" \
+           "origin-max-age server-unprivileged cache-tiered cache-memory cache-small" \
            "origin-short-tokens director-discovery" ;;
     xrootd-xrootd)
       echo "origin-xrootd cache-xrootd topo-multi-origin topo-multi-cache" \
@@ -135,7 +143,7 @@ shape_presets() {
            "origin-public-writes" ;;
     posixv2-xrootd-no-direct)
       echo "cache-xrootd auth-no-issuer origin-no-direct origin-metadata" \
-           "server-unprivileged" ;;
+           "server-unprivileged cache-small" ;;
     s3-xrootd-broker)
       echo "origin-s3 cache-xrootd origin-broker topo-multi-cache" \
            "topo-multi-director topo-site-local-cache auth-external-issuer" \
@@ -191,7 +199,8 @@ shape_presets() {
            "origin-max-age origin-multiuser origin-transfer-api" \
            "director-default-origin director-discovery registry-approval" ;;
     xrootd-mixed-broker)
-      echo "origin-xrootd cache-mixed topo-multi-cache auth-no-issuer origin-broker" ;;
+      echo "origin-xrootd cache-mixed topo-multi-cache auth-no-issuer origin-broker" \
+           "cache-small" ;;
     nocache-posixv2)
       echo "topo-no-cache auth-no-issuer origin-metadata-tx origin-public-writes" ;;
     nocache-posixv2-posc)

@@ -119,10 +119,6 @@ PRESETS: dict[str, tuple[str, str]] = {
     "origin-export-templates": ("templates", "export"),
 }
 
-# Presets that add a service no Pelican server uses, and so make no
-# choice. Some shape must still run each.
-EXTRAS: frozenset[str] = frozenset({"with-lab"})
-
 # Presets smoke.sh does not run, and why.
 NOT_RUN: dict[str, str] = {
     "with-grafana": "Grafana has nothing provisioned to check",
@@ -144,15 +140,9 @@ Pair = tuple[tuple[str, str], tuple[str, str]]
 
 @dataclass(frozen=True)
 class Shape:
-    """Every factor's level, and the EXTRAS that a shape runs.
-
-    Attributes:
-        levels: Every factor's level, by factor.
-        extras: The EXTRAS it runs.
-    """
+    """Every factor's level, by factor."""
 
     levels: Mapping[str, str]
-    extras: frozenset[str]
 
     def __getitem__(self, factor: str) -> str:
         return self.levels[factor]
@@ -184,10 +174,6 @@ REFUSED: list[Rule] = [
     (
         "the 'tiny' topology has no room for another server",
         lambda s: s["topology"] == "tiny" and s.adds_server(),
-    ),
-    (
-        "the 'tiny' topology has no room for another service",
-        lambda s: s["topology"] == "tiny" and bool(s.extras),
     ),
     (
         "the 'tiny' topology has no discovery host to serve the external issuer",
@@ -297,9 +283,13 @@ REFUSED: list[Rule] = [
         lambda s: s["tiering"] == "on" and (s["cache"] != "v2" or s["topology"] != "full"),
     ),
     (
-        "the memory cache and a bounded store are the V2 cache's, which a standalone origin lacks",
+        "the memory cache is the V2 cache's",
+        lambda s: s["memory_cache"] == "on" and s["cache"] != "v2",
+    ),
+    (
+        "a standalone origin has no cache to give a memory cache or to bound",
         lambda s: (s["memory_cache"] == "on" or s["store"] == "bounded")
-        and (s["cache"] != "v2" or s["topology"] == "standalone"),
+        and s["topology"] == "standalone",
     ),
     (
         "short tokens and export templates are the origins' issuer's, which is off",
@@ -402,7 +392,7 @@ def shape_of(
     """Return the shape that presets make, and what is wrong with them.
 
     Args:
-        presets: Names of presets, EXTRAS among them.
+        presets: Names of presets.
         rotated: Whether the shape rotates every key.
 
     Returns:
@@ -413,12 +403,8 @@ def shape_of(
     levels = {f: choices[0] for f, choices in FACTORS.items()}
     levels["keys"] = "rotated" if rotated else "kept"
     chosen_by: dict[str, str] = {}
-    extras: set[str] = set()
     wrong: list[str] = []
     for preset in presets:
-        if preset in EXTRAS:
-            extras.add(preset)
-            continue
         if preset not in PRESETS:
             why = NOT_RUN.get(preset)
             wrong.append(f"{preset}: not run ({why})" if why else f"{preset}: no such preset")
@@ -432,7 +418,7 @@ def shape_of(
         levels[factor] = level
     if wrong:
         return None, wrong
-    return Shape(levels, frozenset(extras)), []
+    return Shape(levels), []
 
 
 def refusals(shape: Shape) -> list[str]:
@@ -456,8 +442,8 @@ def changes(factors: Sequence[str], depth: int) -> Iterator[dict[str, str]]:
 def completion(fixed: Mapping[str, str]) -> Optional[Shape]:
     """Return a shape that smoke.sh could run that makes the fixed choices.
 
-    The shape has no EXTRAS, and as few other factors away from their
-    defaults as can be, and no more than SEARCH_DEPTH.
+    The shape has as few other factors away from their defaults as can
+    be, and no more than SEARCH_DEPTH.
 
     Args:
         fixed: The choices to make, as levels by factor.
@@ -468,7 +454,7 @@ def completion(fixed: Mapping[str, str]) -> Optional[Shape]:
     defaults = {f: choices[0] for f, choices in FACTORS.items()}
     others = [f for f in FACTORS if f not in fixed]
     for change in changes(others, SEARCH_DEPTH):
-        shape = Shape({**defaults, **fixed, **change}, frozenset())
+        shape = Shape({**defaults, **fixed, **change})
         if not refusals(shape):
             return shape
     return None
@@ -507,11 +493,11 @@ def grow(start: Pair, left: set[Pair]) -> Shape:
             continue
         best, gain = levels[factor], -1
         for level in choices:
-            trial = Shape({**levels, factor: level}, frozenset())
+            trial = Shape({**levels, factor: level})
             if not refusals(trial) and len(trial.pairs() & left) > gain:
                 best, gain = level, len(trial.pairs() & left)
         levels[factor] = best
-    return Shape(levels, frozenset())
+    return Shape(levels)
 
 
 def suggest(existing: Iterable[Shape]) -> list[Shape]:
@@ -534,16 +520,14 @@ def presets_of(shape: Shape) -> list[str]:
     """Return the presets that make shape.
 
     Returns:
-        One per factor not at its default, but `keys`, and then the
-        EXTRAS that shape runs.
+        One per factor not at its default, but `keys`.
     """
     by_choice = {choice: preset for preset, choice in PRESETS.items()}
-    chosen = [
+    return [
         by_choice[(f, shape[f])]
         for f, choices in FACTORS.items()
         if f != "keys" and shape[f] != choices[0]
     ]
-    return chosen + sorted(shape.extras)
 
 
 # --------------------------------------------------------------------------
@@ -621,7 +605,7 @@ def check(shapes: Sequence[SmokeShape]) -> list[str]:
     run = {p for s in shapes for p in s.presets}
     for preset in sorted(all_presets() - run - set(NOT_RUN)):
         found.append(f"no shape runs {preset}")
-    for preset in sorted(all_presets() - set(PRESETS) - EXTRAS - set(NOT_RUN)):
+    for preset in sorted(all_presets() - set(PRESETS) - set(NOT_RUN)):
         found.append(f"{preset} is not in framework/matrix.py")
     for (f1, l1), (f2, l2) in sorted(valid_pairs() - covered(shapes_made)):
         found.append(f"no shape has both {f1}={l1} and {f2}={l2}")

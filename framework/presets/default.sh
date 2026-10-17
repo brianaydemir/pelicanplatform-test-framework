@@ -119,8 +119,10 @@ CACHE_TIERING=false
 # (see presets/cache-memory.sh). Empty: no memory cache.
 CACHE_MEMORY_SIZE=
 
-# Cache.HighWaterMark and Cache.LowWaterMark for every V2 cache, in MiB
-# (see presets/cache-small.sh). Empty: Pelican's defaults, a share of the
+# The size, in MiB, at which every cache evicts, and down to which it
+# does: a V2 cache's Cache.HighWaterMark and Cache.LowWaterMark, and an
+# XRootD cache's Cache.FilesMaxSize and Cache.FilesBaseSize (see
+# presets/cache-small.sh). Empty: Pelican's defaults, a share of the
 # whole disk.
 CACHE_HIGH_WATER_MIB=
 CACHE_LOW_WATER_MIB=

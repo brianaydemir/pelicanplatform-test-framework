@@ -210,9 +210,12 @@ knob, and `fed.sh` refuses two of them together, even when one of them
 names the default.
 
 With none, the federation has one director, registry, `posixv2` origin,
-and V2 cache, and the origins run Pelican's embedded issuer, which
-Pelican itself leaves off (`auth-no-issuer`). The origins export three
-namespaces, which hold the same objects:
+and V2 cache, and the origins run Pelican's embedded issuer. Pelican's
+own defaults differ: an XRootD origin (`origin-xrootd`) and cache
+(`cache-xrootd`), no issuer (`auth-no-issuer`), and the director as the
+discovery host (`director-discovery`), which `smoke.sh`'s
+`pelican-defaults` shape runs. The origins export three namespaces,
+which hold the same objects:
 
 - `/public`: anyone may read and list it, and no one may write it, so it
   has no issuer (but see `origin-public-writes`).
@@ -255,7 +258,7 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `cache-v2`     | the default: V2 caches                                                                                                                 |
 | `cache-xrootd` | XRootD caches                                                                                                                          |
-| `cache-mixed`  | cache-1 is an XRootD cache beside the V2 ones (`CACHE_1_VARIANT`); needs `topo-multi-cache`; refuses `cache-xrootd`, `cache-tiered`, `cache-memory`, and `cache-small`; see `client`'s `failover` |
+| `cache-mixed`  | cache-1 is an XRootD cache beside the V2 ones (`CACHE_1_VARIANT`); needs `topo-multi-cache`; refuses `cache-xrootd`, `cache-tiered`, and `cache-memory`; see `client`'s `failover` |
 
 **Cache features**
 
@@ -263,7 +266,7 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | -------------- | ------------------------------------------------------------------------------------------------------ |
 | `cache-tiered` | V2 caches tier objects of 16 MiB or more to the `s3` service; Pelican's main only; see `tiering`       |
 | `cache-memory` | V2 caches keep decrypted blocks in memory (`Cache.MemoryCacheSize`)                                    |
-| `cache-small`  | V2 caches evict once they hold 128 MiB, down to 96 MiB (`Cache.HighWaterMark`); see `blocks`'s `cache-evicted` |
+| `cache-small`  | caches evict once they hold 128 MiB, down to 96 MiB (V2: `Cache.HighWaterMark`; XRootD: `Cache.FilesMaxSize`); see `blocks`'s `cache-evicted` |
 
 **Origin features**
 
@@ -309,10 +312,9 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 
 **Helpers**
 
-| Preset         | Effect                                                   |
-| -------------- | -------------------------------------------------------- |
-| `with-grafana` | adds Grafana                                             |
-| `with-lab`     | adds `lab-server` without making it the origin's storage |
+| Preset         | Effect       |
+| -------------- | ------------ |
+| `with-grafana` | adds Grafana |
 
 Each preset is a short file in `framework/presets/`, so read it for the
 details, including what it refuses. To write your own, see

@@ -126,7 +126,7 @@ SCENARIOS = {
     "overwrite-cached": "each cache: an object it holds, overwritten, comes back as one version",
     "overwrite-range-first": "the same, for an object it first read through a range",
     "write-through": "each V2 cache relays a PUT and a DELETE, and serves the result at once; an XRootD cache refuses",
-    "cache-evicted": "each bounded V2 cache: objects past its bound evict, oldest first, and every one still comes back",
+    "cache-evicted": "each bounded cache: objects past its bound evict, oldest first, and every one still comes back",
 }
 
 # The scenarios that read through each cache, and so have nothing to test
@@ -4288,8 +4288,11 @@ def write_through(test: Test) -> tuple[str, str]:
 # cache's high water mark by half.
 EVICT_OBJECT = 8 << 20
 # How long a cache may take to evict down to its high water mark, in
-# seconds: its eviction runs every 10 seconds.
-EVICT_WAIT = 60
+# seconds, by kind. A V2 cache's eviction runs every 10 seconds. An
+# XRootD cache checks every 60 (heart_beat in XrdPfc's ResourceMonitor),
+# and its purge spares whatever was read since the last one, so it may
+# take two.
+EVICT_WAIT = {"v2": 60, "xrootd": 180}
 # How far above the mark its object files may add up to: the cache charges
 # itself each object's file as it makes it, and counts in the database
 # rather than on disk.
@@ -4309,15 +4312,18 @@ def evict_object(run_id: str, n: int) -> bytes:
 
 
 def cached(test: Test, cache: common.Cache, rel: str) -> Optional[bool]:
-    """Return whether a V2 cache holds all of rel.
+    """Return whether a cache holds all of rel.
 
-    A HEAD with only-if-cached says (504 if not). It is asked with the
-    setup token, as has_age() asks: this is a check of the cache's
-    state, not of the pass's tokens.
+    At a V2 cache, a HEAD with only-if-cached says (504 if not). It is
+    asked with the setup token, as has_age() asks: this is a check of the
+    cache's state, not of the pass's tokens. At an XRootD cache, its
+    .cinfo says (blocks.xrootd_holds()).
 
     Returns:
-        Whether it does, or None if the HEAD says neither.
+        Whether it does, or None if neither says.
     """
+    if cache.kind == "xrootd":
+        return blocks.xrootd_holds(cache, rel)
     answer = web.request(
         "HEAD",
         f"{cache.url}/protected-a/{rel}",
@@ -4327,13 +4333,15 @@ def cached(test: Test, cache: common.Cache, rel: str) -> Optional[bool]:
     return {200: True, 504: False}.get(answer.status or 0)
 
 
-def reread_at(high: int, count: int) -> int:
+def reread_at(cache: common.Cache, high: int, count: int) -> int:
     """Return after how many objects cache_evicted reads object 0 again.
 
-    That is as many as fit under the high water mark high, less one, so
-    that the cache holds object 0 still, and evicts nothing yet.
+    That is as many as fit under cache's high water mark high, less one,
+    so that the cache holds object 0 still, and evicts nothing yet. A V2
+    cache stores an object with its blocks' tags; an XRootD cache, as is.
     """
-    fit = high // blocks.stored(EVICT_OBJECT) - 1
+    size = EVICT_OBJECT if cache.kind == "xrootd" else blocks.stored(EVICT_OBJECT)
+    fit = high // size - 1
     return max(1, min(count - LRU_NEWEST - 1, fit))
 
 
@@ -4344,10 +4352,15 @@ def lru_order(
 
     The LRU_NEWEST objects read last must still be held, and at least two
     of the oldest (1 to again - 1) gone. Object 0, read again after again
-    objects, while held (was_held), may be held or gone: the cache records
-    an access for its LRU at most once in ten minutes (UpdateLRU's
+    objects, while held (was_held), may be held or gone: a V2 cache
+    records an access for its LRU at most once in ten minutes (UpdateLRU's
     debounce in local_cache/database.go), so the read again may move it
     nowhere.
+
+    An XRootD cache need only have evicted several: it purges the oldest
+    by its .cinfo's mtime, in whole seconds (FPurgeState in XrdPfc),
+    which it writes some seconds after a read, and not after every one,
+    so its order does not follow reads a second apart.
 
     Returns:
         What is wrong, or None if nothing is; and a note of what the cache
@@ -4356,7 +4369,15 @@ def lru_order(
     found = {n: cached(test, cache, f"{base}/{n}") for n in range(count)}
     unsure = [n for n, held in found.items() if held is None]
     if unsure:
-        return f"object {unsure[0]}: only-if-cached got neither 200 nor 504", ""
+        how = "only-if-cached got neither 200 nor 504"
+        if cache.kind == "xrootd":
+            how = "its .cinfo is unreadable"
+        return f"object {unsure[0]}: {how}", ""
+    if cache.kind == "xrootd":
+        gone = [n for n in range(count) if not found[n]]
+        if len(gone) < 2:
+            return f"{len(gone)} of the {count} objects are gone, not several", ""
+        return None, f"{len(gone)} of {count} gone, in an order not checked (see lru_order())"
     lost = [n for n in range(count - LRU_NEWEST, count) if not found[n]]
     if lost:
         return f"object {lost[0]}, among the {LRU_NEWEST} read last, is gone", ""
@@ -4383,7 +4404,8 @@ def evicted(
         held (see lru_order()).
     """
     high, low = test.fed.eviction[cache.svc]
-    again = reread_at(high, count)
+    again = reread_at(cache, high, count)
+    wait = EVICT_WAIT[cache.kind]
     was_held: Optional[bool] = None
     for n in range(count):
         if n == again:
@@ -4395,17 +4417,14 @@ def evicted(
         if why:
             return f"object {n}, cold: {why}", ""
     if blocks.store_bytes(cache) is None:
-        return (
-            f"framework/var/{blocks.cache_dir(cache)} has no persistent-cache/objects to measure",
-            "",
-        )
+        return f"framework/var/{blocks.cache_dir(cache)} has no store to measure", ""
 
     def under() -> bool:
         return (blocks.store_bytes(cache) or 0) <= high + EVICT_SLACK
 
-    if not common.wait_for(under, EVICT_WAIT, interval=2):
+    if not common.wait_for(under, wait, interval=2):
         return (
-            f"holds {blocks.store_bytes(cache)} bytes {EVICT_WAIT}s after reading {count * EVICT_OBJECT},"
+            f"holds {blocks.store_bytes(cache)} bytes {wait}s after reading {count * EVICT_OBJECT},"
             f" above its high water mark of {high}"
         ), ""
     held = blocks.store_bytes(cache) or 0
@@ -4446,23 +4465,24 @@ def evicted(
 
 
 def cache_evicted(test: Test) -> tuple[str, str]:
-    """Check that a bounded V2 cache evicts the oldest objects first.
+    """Check that a bounded cache evicts the oldest objects first.
 
-    Each V2 cache whose store is bounded (`-p cache-small`): a cold whole
-    read of each of enough objects of EVICT_OBJECT bytes to exceed its
-    high water mark by half, reading the first again once as many as fit
-    under the mark have been read (reread_at()); then, within EVICT_WAIT
-    seconds, its store must have come back under the mark, and not below
-    its low one by more than an object; it must have evicted the oldest
-    objects and kept the newest (lru_order()); and every object must
-    still come back whole and in a range, as must the first by
-    `pelican object get --cache`. The objects are one set, read cold by
-    each cache. An XRootD cache's usage is its filesystem's, which the
-    framework cannot bound, and is passed over.
+    Each cache whose store is bounded (`-p cache-small`), of either kind:
+    a cold whole read of each of enough objects of EVICT_OBJECT bytes to
+    exceed its high water mark by half, reading the first again once as
+    many as fit under the mark have been read (reread_at()); then, within
+    EVICT_WAIT seconds for its kind, its store must have come back under
+    the mark, and not below its low one by more than an object; it must
+    have evicted the oldest objects and kept the newest, or, an XRootD
+    cache, several objects (lru_order()); and every object must still
+    come back whole and in a range, as must
+    the first by `pelican object get --cache`. The objects are one set,
+    read cold by each cache. An XRootD cache's marks are the bounds on
+    its files (Cache.FilesMaxSize and Cache.FilesBaseSize; see fed.sh).
     """
-    caches = [c for c in test.caches if c.kind == "v2" and c.svc in test.fed.eviction]
+    caches = [c for c in test.caches if c.svc in test.fed.eviction]
     if not caches:
-        return SKIP, "no V2 cache has a bounded store ('-p cache-small')"
+        return SKIP, "no cache has a bounded store ('-p cache-small')"
     high = max(test.fed.eviction[c.svc][0] for c in caches)
     count = -(-3 * high // (2 * EVICT_OBJECT))
     base = f"{test.base}/evicted"
