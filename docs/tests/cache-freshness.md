@@ -122,8 +122,7 @@ need a restart skip, and say why. A case's row is named `<scenario>
   object through, as it should, but a ranged read fills it block by
   block as any object, with no regard to the directive (the range comes
   back with the cache's own `max-age`), and the cache then holds and
-  serves it whole, so both rows fail, on v26.0.0-rc.3 (C26; main not
-  run).
+  serves it whole, so both rows fail, on v26.0.0-rc.3 (main not run).
 - `s-maxage`: under `max-age=120, s-maxage=20`, an object each V2
   cache has read is replaced at the origins by a longer one. RFC 9111
   (section 5.2.2.10) says that a shared cache, as every Pelican cache

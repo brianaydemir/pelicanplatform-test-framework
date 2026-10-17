@@ -27,7 +27,7 @@ that a server that lists another namespace's lists the wrong tree.
   redirect: a V2 cache of v26.0.0-rc.3 hands its proxied PROPFIND the
   request's body as a stream, which Go's client cannot send again after
   the director's redirect, so it answers with the director's 307
-  instead, and the row fails there (C20; main reads the body first). A
+  instead, and the row fails there (main reads the body first). A
   cache may refuse Depth infinity with 403 only if an origin
   does; where no origin may be asked directly, a 403 is accepted, and
   the row's note says so.

@@ -97,7 +97,7 @@ client itself (RFC 7591). The scenarios:
   local issuer does, so `requests` and `code` fail, on v26.0.0-rc.3 and
   main alike; the collections API then refuses the namespace issuer's
   token, and checks the user's standing itself, so nothing is gained
-  by it: I13);
+  by it);
   `collection.read:/` and the standard scopes (`openid`, `wlcg`,
   `profile`, `email`), always; `test-stranger`'s `storage.read:/` as
   `gamma`'s read and `storage.modify:/` as nothing; `test-analyst`'s

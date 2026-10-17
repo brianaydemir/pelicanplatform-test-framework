@@ -40,11 +40,11 @@ percent-encodes every character of a name but letters, digits, and
   URL with `;` in it is cut there (and a character more, for the `>`
   it expects): `semi;colon` is fetched, and put, as `.../sem` with the
   object's path appended, which no server holds, and a `put` lands the
-  object under a collection `sem` (L6: `client-get`, `client-put`).
+  object under a collection `sem` (`client-get`, `client-put`).
   And `pelican object ls` prints a name as it stands in the listing's
   href, decoded once, but with what a URL may not hold encoded again,
   `%` excepted: `a b` as `a%20b`, like the decoy `a%20b`, and `hash#tag`
-  as `hash%23tag` (L7: `client-ls`).
+  as `hash%23tag` (`client-ls`).
 - XRootD mishandles several of these names (XRootD 5.9.7, in the
   v26.0.0-rc.3 images), so where it serves the origins or the caches
   (`-p origin-xrootd`, `-p cache-xrootd`), these rows fail. An XRootD

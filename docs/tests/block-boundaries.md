@@ -180,7 +180,7 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   for once the body came) must hold the same digests, each the
   object's, each told by its value alone, since the statistics number
   the algorithms by a numbering that v26.0.0-rc.3's do not share with
-  the client's code (3 is `md5` there, not `sha`; L9); the client has no
+  the client's code (3 is `md5` there, not `sha`); the client has no
   `--require-checksum` for a download. A V2
   cache asks an origin for every digest in one `Want-Digest`, which an
   XRootD origin answers with one, `md5`, so over XRootD origins
@@ -221,7 +221,7 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   cache keeps nothing, but a ranged read then fills the object block by
   block, unchecked, and the cache serves it whole afterward, `200: OK`;
   `pelican object get` probes with a one-byte range first, so it
-  succeeds, and the row fails, on v26.0.0-rc.3 (C24; main not run).
+  succeeds, and the row fails, on v26.0.0-rc.3 (main not run).
 - Ranges past an object's end: a suffix longer than the object is all
   of it, and a range that runs past the end stops at its last byte; one
   that starts at or past the end (`past-end`) must get 416, or, from a
@@ -258,7 +258,7 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   native origin computes the digests it has not stored over the whole
   object, which for this one takes longer than the cache waits, so
   the HEAD through each director's object route gets 504, and the row
-  fails, on v26.0.0-rc.3 and main alike (C18).
+  fails, on v26.0.0-rc.3 and main alike.
 - `conditional` sends each server conditional GETs of two objects (RFC
   9110): with `If-None-Match` naming the `ETag` the server sent, among
   others, weakened (`W/`), or as `*`, and with `If-Modified-Since` at
@@ -332,7 +332,7 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   range as for the whole object. A V2 cache of v26.0.0-rc.3 keeps the
   block it holds and fetches the rest of the new version beside it, so
   its whole object is the old first block and the new rest, and the
-  row fails there (C19; main not run).
+  row fails there (main not run).
 - `cache-overlap` reads ranges from objects of each cache's own, each
   plan in turn, so that every read after the first covers both blocks
   the cache fetched for an earlier one and blocks it must fetch now, at

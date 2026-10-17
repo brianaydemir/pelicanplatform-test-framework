@@ -51,7 +51,7 @@ suite puts at every origin, in the first protected namespace, at
   one, so a server's advertise token is good at any director, from any
   issuer, and without `exp` for as long as its key is: the
   `other-audience`, `other-issuer`, and `no-exp` rows fail, on
-  v26.0.0-rc.3 and main alike (D8, T8).
+  v26.0.0-rc.3 and main alike.
 - `bad-broker-url`: origin-0's own ad, but with a broker URL that Go's
   `url.Parse` refuses (`http://[::1`), must get 400, with one JSON body,
   and every director must then still list its servers and name origin-0.

@@ -70,7 +70,7 @@ the scenarios. In short:
   `collection.create:/` to any user (`test-outsider`'s token carries
   it), and the API refuses the token anyway, since it checks the user's
   standing itself (403, "you must hold server.collection_admin"), so
-  the row fails, on v26.0.0-rc.3 and main alike (I13).
+  the row fails, on v26.0.0-rc.3 and main alike.
 - `data` presents those tokens, straight to every origin (where the
   namespace takes direct clients) and through the federation with
   `pelican object`: reads and writes within a collection, and nothing
@@ -111,8 +111,8 @@ the scenarios. In short:
   `collection.read:/` or `collection.create:/`, the path form, and the
   v26.0.0-rc.3 origin's web API wants the scope bare (`collection.read`),
   so it refuses the token ("Token does not contain any of the scopes:
-  [web_ui.access collection.read]"), and every command fails there
-  (I14); main's CLI says the path form is the one its server takes.
+  [web_ui.access collection.read]"), and every command fails there;
+  main's CLI says the path form is the one its server takes.
 
 The run's collections, groups, and objects are removed after the suite;
 the users stay.

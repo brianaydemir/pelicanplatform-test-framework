@@ -79,7 +79,7 @@ several cases records a row per case, named `<scenario> <case>`.
   own, whose ETags may differ, and the note says so: a client that
   resumes at a cache filled from another origin then aborts. A
   `posixv2` origin's GET reports an ETag of its own making, and its
-  HEAD the backend's (O2; `blocks`'s `etag-agreement`), so the row
+  HEAD the backend's (`blocks`'s `etag-agreement`), so the row
   fails there, on v26.0.0-rc.3 and main alike.
 - `token-discovery`: which token `pelican object get` presents, of
   those its environment offers (`tokenContentIterator` in
@@ -112,7 +112,7 @@ several cases records a row per case, named `<scenario> <case>`.
   which is refused; and `protected_a+pelican://` never parses, since
   Go's URL parser refuses `_` in a scheme, before the client could read
   the `_` as `.`. So `prefix` and `prefix-underscore` fail, by either
-  client, on v26.0.0-rc.3 and main alike (L8). Pelican's main
+  client, on v26.0.0-rc.3 and main alike. Pelican's main
   has a V2 cache hint at the namespace's issuer when it refuses a
   token, which the client may act on by retrying with another token it
   holds; whether that lets `acceptable-wins` through is for a run on
@@ -139,7 +139,7 @@ several cases records a row per case, named `<scenario> <case>`.
   with a warning), so every `osdf:///` and `stash:///` URL goes to the
   OSDF's director, whatever `-f` or the environment says, and `osdf`,
   `stash`, `osdf-two-slashes`, `put-osdf`, and `plugin-osdf` fail, on
-  v26.0.0-rc.3 and main alike (L10); the bare-path rows pass.
+  v26.0.0-rc.3 and main alike; the bare-path rows pass.
 - `token-create-discovery`: `pelican token create` without `--issuer`
   or `--scope-path` (`cmd/token.go`), for a collection in
   `/protected-a`: with the origins' key, the token's issuer must be the
@@ -178,7 +178,7 @@ several cases records a row per case, named `<scenario> <case>`.
   (`matchesResource` in `client/acquire_token.go`, for a shared
   operation), so `pelican object share` of any collection below the
   namespace's root gets a token it then refuses (error 4000), and both
-  rows fail, on v26.0.0-rc.3 and main alike (L3); the rows below then
+  rows fail, on v26.0.0-rc.3 and main alike; the rows below then
   have no token to try. A GET of the object in
   it at each director's object route, with the token in the query as
   curl sends it, must redirect with `authz` in `Location` and no token
@@ -186,7 +186,7 @@ several cases records a row per case, named `<scenario> <case>`.
   And `pelican object get` of the URL, with no other token, must serve
   it too (`get`): nothing in Pelican's client reads `authz` back from a
   URL, so it finds no token (error 4010), and the row fails, on
-  v26.0.0-rc.3 and main alike (L1). It skips without the origins'
+  v26.0.0-rc.3 and main alike. It skips without the origins'
   embedded issuer, and for a standalone origin. Its tokens are the
   issuer's, of the WLCG profile, so it runs in the WLCG pass alone.
 - `director-decision`: with `Plugin.DirectorDecisionPercentage` at 100,

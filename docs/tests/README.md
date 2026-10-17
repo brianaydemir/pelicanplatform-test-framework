@@ -61,14 +61,19 @@ only as the discovery host (`Director.EnableFederationMetadataHosting`,
 which `framework/config.d/director/default/` turns off, as the OSDF's
 directors need not serve it): so in the default shape every V2 cache
 answers 500 ("Federation metadata discovery failed with HTTP status
-410"), `caches` fails, and the run stops there (C16). Where the
+410"), `caches` fails, and the run stops there. Where the
 director is the discovery host (`-p director-discovery`, `topo-tiny`),
 a v26.0.0-rc.3 V2 cache serves, but advertises itself `critical`, since
 `pelican cache serve` marks its `xrootd` component critical as it
 starts and the V2 cache never clears it, so no director names it, and
 `federation`'s `directors`, `redirects`, and `downtime` fail, as does
-every row that reads through a cache's director route (C17; main's V2
-cache is clean). The framework works around neither. The
+every row that reads through a cache's director route (main's V2
+cache is clean). Where XRootD serves the caches over native origins
+(`-p cache-xrootd`), the cache fetches a protected object from a
+v26.0.0-rc.3 origin with a token the origin cannot parse
+([authorization](authorization.md)), so nearly every protected read
+through the cache fails there (403), though `federation`'s `caches`
+may pass. The framework works around none of these. The
 `expired` credential must be 70 seconds past its expiry before it is
 presented, so `auth` and `transfers` run after every suite but two, by
 which time it usually is. `restart` and `keys` come last of all, since
@@ -145,6 +150,6 @@ a SciToken nothing, though the native origin takes the SciTokens `ANY`
 audience as its own; XRootD maps the scopes of both
 (`XrdSciTokensAccess.cc`). So, on main and v26.0.0-rc.3 alike, the
 SciTokens pass fails wherever a native origin or V2 cache must take a
-token, which in a shape of native servers is nearly every row (T6);
+token, which in a shape of native servers is nearly every row;
 where XRootD serves the origins and caches (`-p origin-xrootd
 -p cache-xrootd`), the passes should fare alike.

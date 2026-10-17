@@ -82,7 +82,7 @@ logs them in again after each change of membership. The scenarios:
   required"): the routes behind `AuthHandler` take web tokens and
   login cookies alone, so an API token of `server.collection_admin` can
   be used nowhere that the scope applies, and the row fails, on
-  v26.0.0-rc.3 and main alike (I15).
+  v26.0.0-rc.3 and main alike.
   Before each grant, and on the first request once `pelican.log_read`
   or `server.collection_admin` is revoked
   (`DELETE /api/v1.0/users/:id/scopes/:scope`), the user is refused

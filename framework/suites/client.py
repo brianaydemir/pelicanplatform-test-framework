@@ -1373,7 +1373,7 @@ def token_discovery(test: Test) -> list[Row]:
     Neither client honors the prefix on v26.0.0-rc.3: each hands the
     transfer engine the URL with its scheme normalized (GetRawUrl), so
     the token generator finds no name and opens scitokens.use first; and
-    `_` in a scheme never parses (docs/tests/client-contracts.md, L8).
+    `_` in a scheme never parses (docs/tests/client-contracts.md).
     """
     name = "discovery"
     data = os.urandom(OBJECT_SIZE)
@@ -1464,7 +1464,7 @@ def url_forms(test: Test) -> list[Row]:
     environment, must get the object (`plugin-osdf`). Pelican's client
     applies the federation it is given only to a schemeless URL
     (handleSchemelessIfNeeded in client/main.go), so the osdf and stash
-    rows go to the OSDF, and fail (docs/tests/client-contracts.md, L10).
+    rows go to the OSDF, and fail (docs/tests/client-contracts.md).
     """
     name = "forms"
     data = os.urandom(OBJECT_SIZE)

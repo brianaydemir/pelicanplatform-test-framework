@@ -391,7 +391,7 @@ def caches(probe: Probe) -> tuple[str, str]:
             answer = web.request("GET", url, token=token)
         if answer.status != 200:
             # What the cache says of its failure, e.g. that its director
-            # serves no federation metadata (C16), tells why.
+            # serves no federation metadata, tells why.
             said = last_line(answer.body.decode(errors="replace"))[:200]
             problems.append(
                 f"{cache.svc}: {answer.describe()}" + (f" ({said})" if said else "")

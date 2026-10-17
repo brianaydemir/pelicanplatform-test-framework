@@ -1049,7 +1049,7 @@ def public_listing(test: Test, listed: str, unlisted: str) -> Row:
 def bad_status(test: Test) -> Row:
     """Check that the admin's ?status=Bogus gets 400, as one JSON document.
 
-    Pelican writes that and goes on, and writes the list too (R2).
+    Pelican writes that and goes on, and writes the list too.
     """
     answer = web.request(
         "GET", f"{test.registry}{REGISTRATIONS}?status=Bogus", token=test.admin().token

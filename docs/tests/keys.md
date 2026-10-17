@@ -42,13 +42,13 @@ instead.
   (`updateNsKeySignChallengeCommit` returns inside its loop over the
   prefixes), so `/protected-a`, which comes after `/public`, never
   learns the key, and `registry-namespace` fails, on v26.0.0-rc.3 and
-  main alike (R8); `registry-server`, pushed in a request of its own,
+  main alike; `registry-server`, pushed in a request of its own,
   passes. A key added while the origins are down (as `smoke.sh`'s
   `keys rotate all` before its `restart`) is never pushed at all: an
   origin pushes only a change it sees while it runs, and registering
   again at startup leaves a registered prefix's keys as they were, so
   the registry's JWKS lack it for good, and the `registry` suite's
-  `jwks` rows fail after such a rotation (R9).
+  `jwks` rows fail after such a rotation.
 - `hot-rotate`: a new signing key on the origins, and another on the
   first federated V2 cache, each written to sort first, and watched for
   3 minutes, every 15 seconds. Every director must go on naming
@@ -58,7 +58,7 @@ instead.
   never refetches for a kid it lacks (`verifyAdvertiseToken` in
   `director/origin_api.go`), so once a server's ads carry its new kid
   the directors refuse them, its last accepted ad expires, and it drops
-  out of routing (D5), and the rows fail, on v26.0.0-rc.3 and main
+  out of routing, and the rows fail, on v26.0.0-rc.3 and main
   alike. Each origin that takes direct clients, and each federated
   cache, must come to take tokens signed with the origins' new key, and
   the note says how soon (`new-key`); they keep a namespace's keys for
@@ -72,21 +72,20 @@ instead.
   token is presented in both profiles, and
   the SciTokens ones have rows of their own, named for the server and
   `scitokens` (e.g. `new-key origin-0 scitokens`), which fail at a
-  native server (T6). Under `-p auth-external-issuer`, the exports
+  native server. Under `-p auth-external-issuer`, the exports
   trust none of the origins' keys, so the token rows skip. The
   issuer's tokens must come to carry the new kid (`issuer-kid`): the
   embedded issuer takes the signing key once, as its provider for the
   namespace is made (`NewOIDCProvider` in `oauth2/issuer/provider.go`),
   and keeps it for the server's life, so it signs with the old key
-  until a restart, and the row fails, on v26.0.0-rc.3 and main alike
-  (I12).
+  until a restart, and the row fails, on v26.0.0-rc.3 and main alike.
   The registry must come to list the origins'
   new key (`registry-origins`), and the cache's (`registry-cache`): a
   cache reconciles its keys with the registry only as it starts
   (`RegisterNamespaceWithRetry` in `launcher_utils/register_namespace.go`),
-  never when they change (R4), so that row fails, on v26.0.0-rc.3 and
+  never when they change, so that row fails, on v26.0.0-rc.3 and
   main alike; and `registry-origins` watches `/protected-a`'s JWKS,
-  which the origins' push never reaches (R8, as `hot-add` says), so it
+  which the origins' push never reaches (as `hot-add` says), so it
   fails too. Afterward both new keys are demoted, and every director
   must name origin-0 again.
 - `master-key`: a V2 cache seals its master key, with which its store
@@ -99,7 +98,7 @@ instead.
   its local cache module, never for the cache server
   (`launchers/launcher.go`, `launchers/cache_serve.go`), and loading the
   file never re-saves it, so both rows fail, on v26.0.0-rc.3 and main
-  alike (C4). Then, destructively, with every key but the newest
+  alike. Then, destructively, with every key but the newest
   removed from the cache's key directory, the cache restarted must
   still open its store, and serve the probe it held, from its store,
   with `Age`, the origins sending nothing (`retired`): a master key it

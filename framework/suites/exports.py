@@ -1452,8 +1452,8 @@ def nested_protected(
     The export takes a token, though it is nested in /public, which
     anyone may read. Pelican's native origin grants a token's reads, and
     a PublicReads export's, by any export that encloses a path (getAcls
-    in origin_serve/authz.go), so it would serve the object to anyone
-    (T4), and the row fail there, were the origin to start; XRootD's
+    in origin_serve/authz.go), so it would serve the object to anyone,
+    and the row fail there, were the origin to start; XRootD's
     authfile denies the inner prefix (xrootd/authorization.go).
     """
     found = nested_refused(test, None, data, "with no token")
@@ -1487,7 +1487,7 @@ def nested_export(test: Test) -> dict[str, Row]:
     registers a route group with a catch-all per export, and its router
     (gin) refuses a catch-all whose prefix holds another route, so an
     origin with an export nested in another panics as it starts, and
-    never serves (O14). An XRootD `posix` origin lays each export out as
+    never serves. An XRootD `posix` origin lays each export out as
     a symbolic link under its export root, at the export's prefix
     (CheckOriginXrootdEnv in xrootd/xrootd_config.go), so a nested
     export's link would go inside the outer export's, where its own

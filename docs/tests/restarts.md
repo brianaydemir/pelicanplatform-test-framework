@@ -72,7 +72,7 @@ every origin is stopped.
   work (`recovered`), and the health component say ok. An `httpsv2`
   origin whose `OPTIONS` probe of its backend fails takes it for a
   plain HTTP server, and so answers a missing backend as missing
-  objects (O12; `probeBackendMode` in `origin_serve/backend_https.go`),
+  objects (`probeBackendMode` in `origin_serve/backend_https.go`),
   so its `direct` and `cache` rows are expected to fail; this comes
   from reading the code, not from a run. An `ssh` origin answers a GET
   with its storage host stopped 404 too, and then, once its five tries

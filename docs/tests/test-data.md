@@ -106,7 +106,7 @@ to which the director sends a client without checking that it holds the
 object, it refuses a missing object with a resolution error (2000, "no
 object server could confirm whether ... is a collection") rather than
 not found, and the `dne`, `direct-dne`, and `cache-dne` rows fail, on
-v26.0.0-rc.3 and main alike (L4). With several origins, the director's
+v26.0.0-rc.3 and main alike. With several origins, the director's
 presence check answers 404 first, which the client reports as not found.
 `stash_plugin` refuses no collection, so its twins pass, and so do the
 HTTP twins, which stat nothing. The plain HTTP client's failures are its

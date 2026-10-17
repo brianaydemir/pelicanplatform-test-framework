@@ -64,15 +64,15 @@ cases records a row per case, named `<scenario> <case>`.
   its username (`GetOrCreateUser`, from `TransferAuthMiddleware` in
   `transfer/auth.go`), and a username must be 2 to 64 characters of a
   narrow set (`ValidateIdentifier` in `database/identifiers.go`), so
-  the first three fail with 500, "Failed to resolve user identity"
-  (I4). The `admin` case shows whether a token for an existing
+  the first three fail with 500, "Failed to resolve user identity".
+  The `admin` case shows whether a token for an existing
   username, from the local issuer, is the existing user's or a
   collision.
 - `cancel-finished`: a copy whose destination credential may only
   read, which fails, cancelled: the cancel is taken (2xx) or refused as
   too late (409), and the job must stay `failed`. Pelican counts every
-  transfer of a failed job as cancelled, and records the job cancelled
-  (I5), so the row fails, on v26.0.0-rc.3 and main alike.
+  transfer of a failed job as cancelled, and records the job cancelled,
+  so the row fails, on v26.0.0-rc.3 and main alike.
 - `events`: a job's event stream (`GET /jobs/<id>/events` with `Accept:
   text/event-stream`) must carry `status` events whose data names the
   job, the last of them its terminal status, `completed`, after which
@@ -113,8 +113,8 @@ cases records a row per case, named `<scenario> <case>`.
     cookie must be taken too, since the API takes a cookie whose groups
     match (`TransferAuthMiddleware`), and the other's refused (403;
     `cookie`): the cookie carries no `pelican.transfer`, which the
-    middleware asks of every token, so the member's is refused too
-    (I6), and the row fails, on v26.0.0-rc.3 and main alike.
+    middleware asks of every token, so the member's is refused too,
+    and the row fails, on v26.0.0-rc.3 and main alike.
   - `oauth-clients`: with the clients off, as by default, the routes
     refuse everyone (403, `DISABLED`; `disabled`). With them on, a
     client of the namespace issuer's, which origin-0's admin creates
@@ -144,6 +144,6 @@ cases records a row per case, named `<scenario> <case>`.
   credential stored before the restart must still work (`credential`).
   And a job that finished before the restart, which the manager no
   longer holds, cancelled, must keep its status (`forgotten`): Pelican
-  records it cancelled instead (I5), so the row fails, on v26.0.0-rc.3
+  records it cancelled instead, so the row fails, on v26.0.0-rc.3
   and main alike. It needs a control helper and a topology other than
   `tiny`, and skips otherwise.

@@ -167,7 +167,7 @@ namespace.
   carries it the same way, so every origin and cache must take a token
   in the `authz` query parameter, with or without the `Bearer ` prefix
   (which v26.0.0-rc.3's native origin does not strip from the query, as
-  main does, so its `authz-bearer-*` rows fail there; T10),
+  main does, so its `authz-bearer-*` rows fail there),
   as it takes one in the header: a GET of the test object in
   `/protected-a` with the `server` token so must pass, and one with the
   `unknown` token be refused. An origin that takes no direct clients
@@ -194,7 +194,7 @@ namespace.
   it serves its data on 8444, so the audience it accepts of its own
   (`https://origin-0:8443`, its log says) is one that no client of its
   data would name, and the `aud-origin-0` row fails there, on
-  v26.0.0-rc.3 and main alike (O23).
+  v26.0.0-rc.3 and main alike.
 - **Out of a token's scope**, the `auth` suite's `narrow-climb` check
   presents a token for one collection in `/protected-a`,
   `data/auth/<run>-narrow`, and climbs out of it to a sibling with `..`,

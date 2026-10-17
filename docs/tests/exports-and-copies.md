@@ -158,7 +158,7 @@ skip.
   namespace delete` mints one. Pelican's native origin registers a
   route group with a catch-all per export, and its router (gin) refuses
   a catch-all whose prefix holds another route, so an origin with an
-  export nested in another panics as it starts, and never serves (O14).
+  export nested in another panics as it starts, and never serves.
   An XRootD `posix` origin lays each export out as a symbolic link under
   its export root, at the export's prefix (`CheckOriginXrootdEnv` in
   `xrootd/xrootd_config.go`), so a nested export's link would go inside
@@ -168,7 +168,7 @@ skip.
   origin to start, `protected` would fail there too: it grants a
   `PublicReads` export's reads to every path it encloses (`getAcls` in
   `origin_serve/authz.go`), the `auth` suite's `nested-protected` at the
-  origin (T4); XRootD's authfile denies the inner prefix outright. It
+  origin; XRootD's authfile denies the inner prefix outright. It
   needs `/public` exported, origins that take direct clients, a control
   helper, and a topology other than `tiny`; elsewhere it skips, and
   says why. Since no origin starts with the export, the restart's

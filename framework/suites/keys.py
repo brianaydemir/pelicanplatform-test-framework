@@ -22,13 +22,13 @@ The scenarios:
                no director drops an origin meanwhile
   hot-rotate   a new signing key on the origins, and another on the first
                V2 cache, for 3 minutes: whether every director goes on
-               naming origin-0 and the cache (they don't: D5, R4), how
+               naming origin-0 and the cache (they don't), how
                soon each origin and cache takes tokens signed with the
                origins' new key, that each takes the old key's
                throughout, how soon the issuer's tokens carry the new
                kid, and whether the registry learns each new key
   master-key   a V2 cache's master key must be sealed with each of its
-               keys, before and after a restart (it is not: C4); and,
+               keys, before and after a restart (it is not); and,
                destructively, with every key but the newest retired,
                the cache must still open its store; afterward the keys
                and the master key file are put back
@@ -476,7 +476,7 @@ def hot_rotate(test: Test) -> list[Row]:
     (15 minutes) before, and never refetches for a kid it lacks
     (verifyAdvertiseToken in director/origin_api.go), so once their ads
     carry the new kid the directors refuse them, and drop origin-0 and the
-    cache (D5); and a cache never pushes a new key to the registry (R4).
+    cache; and a cache never pushes a new key to the registry.
     Origins and caches keep a namespace's keyset for up to 15 minutes too
     (origin_serve/authz.go, local_cache/cache_authz.go), so `new-key` is
     inconclusive if the window is not enough. The tokens of each key are
@@ -702,7 +702,7 @@ def master_key(test: Test) -> list[Row]:
     before a restart (`sealed`) and after one (`sealed-after-restart`):
     Pelican re-seals it only through a key-change callback that the
     launcher registers for its local cache module, not for the cache
-    server, and loading never re-saves it (C4). Then, destructively,
+    server, and loading never re-saves it. Then, destructively,
     with every key but the newest removed from the cache's key
     directory, the cache restarted must still open its store, and serve
     the probe it held, with Age, fetching nothing (`retired`): a master

@@ -3,7 +3,7 @@ Director:
   # The `discovery` service hosts the federation metadata, as the OSDF
   # does, where the directors are interchangeable. A V2 cache of
   # v26.0.0-rc.3 and main looks for the metadata at its director, and
-  # so serves nothing here (C16 in docs/tests/README.md): that is
+  # so serves nothing here (see docs/tests/README.md): that is
   # Pelican's to fix, not this file's.
   EnableFederationMetadataHosting: false
 
