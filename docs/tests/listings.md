@@ -3,35 +3,39 @@
 Part of [What the tests check](README.md).
 
 The `listings` suite sends PROPFIND straight to every origin, director,
-and cache, at depths 0, 1, and infinity, in every namespace, over a
-small tree that it uploads under `/<ns>/data/listings/<run>/`. Each
-namespace's tree also holds an object only it holds, `only-<ns>`, so
-that a server that lists another namespace's lists the wrong tree.
+and federated cache, at depths 0, 1, and infinity, in every namespace,
+over a small tree that it uploads under `/<ns>/data/listings/<run>/`.
+Each namespace's tree also holds an object only it holds, `only-<ns>`,
+so that a server that lists another namespace's lists the wrong tree.
+Of origins that share a store (`-p origin-ssh -p topo-multi-origin`),
+only the first is asked.
 `./fed.sh test -l listings` lists the scenarios.
 
-- An origin must list the tree exactly. It may refuse Depth infinity
-  with 403, as RFC 4918 allows, but must not answer it as Depth 1. An
+- An origin must list the tree exactly (`origin-depth-0`,
+  `origin-depth-1`). It may refuse Depth infinity with 403, as RFC 4918
+  allows, but must not answer it as Depth 1 (`origin-infinity`). An
   object's `getlastmodified` must be when its file was written, within a
   minute: on disk, its modification time, and at a pstore origin, as its
-  catalog records it, which its storage API gives
-  ([pstore](pstore.md)). The origins and the tests keep different time
-  zones (`TZ_STORAGE`), so a time rendered in the wrong one is hours off.
-- A director must redirect a PROPFIND to an origin: Depth 0 (a stat)
-  for any namespace that can be read, and deeper only with `Listings`
-  (Pelican's `director/sort.go`). The origin's listing must then be
-  right; where the namespace takes no direct clients, the origin must
-  refuse it instead.
-- A cache must answer Depth 0 of anything it may read, and relay deeper
-  listings through the director to an origin, listing what the origin
-  does. `cache-body` sends the propfind body that `pelican object ls`
-  sends, which the cache must pass on as it follows the director's
-  redirect: a V2 cache of v26.0.0-rc.3 hands its proxied PROPFIND the
-  request's body as a stream, which Go's client cannot send again after
-  the director's redirect, so it answers with the director's 307
-  instead, and the row fails there (main reads the body first). A
-  cache may refuse Depth infinity with 403 only if an origin
-  does; where no origin may be asked directly, a 403 is accepted, and
-  the row's note says so.
+  catalog records it, which its storage API gives ([pstore](pstore.md)).
+  The origins and the tests keep different time zones (`TZ_STORAGE`), so
+  a time rendered in the wrong one is hours off.
+- A director must redirect a PROPFIND to an origin (`director`): Depth 0
+  (a stat) for any namespace that can be read, and deeper only with
+  `Listings` (Pelican's `director/sort.go`). The origin's listing must
+  then be right; where the namespace takes no direct clients, the origin
+  must refuse it instead.
+- A cache must answer Depth 0 of anything it may read, whether it holds
+  it yet or not (`cache-depth-0`), and relay deeper listings through the
+  director to an origin, listing what the origin does (`cache-depth-1`).
+  `cache-body` sends the propfind body that `pelican object ls` sends,
+  which the cache must pass on as it follows the director's redirect: a
+  V2 cache of v26.0.0-rc.3 hands its proxied PROPFIND the request's body
+  as a stream, which Go's client cannot send again after the director's
+  redirect, so it answers with the director's 307 instead, and the row
+  fails there (main reads the body first). A cache may refuse Depth
+  infinity with 403 only if an origin does (`cache-infinity`); where no
+  origin may be asked directly, a 403 is accepted, and the row's note
+  says so.
 - Deeper than Depth 0, any server, directors included, lists only a
   namespace with `Listings`, and an origin answers only direct clients,
   which a namespace without `DirectReads` has none of. A PROPFIND that may
@@ -40,8 +44,10 @@ that a server that lists another namespace's lists the wrong tree.
   (v26.0.0-rc.3), so there the suite's `setup` fails, and nothing else
   of it runs.
 - Every object in a listing must have a `getcontentlength`, 0 included.
-- Listing `/protected-a` with no token, or one scoped elsewhere, must be
-  refused everywhere; listing `/public` with none must work.
+- Listing `/protected-a` with no token (`protected-a-no-token`), or one
+  scoped elsewhere (`protected-a-scope`), must be refused by every
+  origin and federated cache; listing `/public` with none must work
+  there (`public-no-token`).
 - `new-object` checks that an object shows up at once, by PROPFIND and
   with `pelican object ls`, and is gone once removed.
 - `collection-get` asks every server for a collection by GET, as a naive
@@ -99,6 +105,6 @@ that a server that lists another namespace's lists the wrong tree.
   XRootD cache lists no collection: a PROPFIND of one deeper than Depth
   0 is refused, with 409 (`is a directory`) or 502, whatever the token
   (`cache-depth-1`, `cache-infinity`, `cache-body`, `public-no-token`,
-  and `new-object`'s cache rows); Pelican's own client never asks a
+  and `new-object`, at the caches); Pelican's own client never asks a
   cache for a listing. Depth 0 of an object, and Depth 1 of one
   (`plain-object-listing`), it answers.

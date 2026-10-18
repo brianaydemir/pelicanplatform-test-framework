@@ -1344,13 +1344,14 @@ def ownership(test: Test) -> list[Row]:
     denies, its owner may edit, which resubmits it as Pending. And its
     owner, or the admin, may hand it on with a single-use invite (POST
     /namespaces/:id/ownership-invites; a non-owner gets 403, and an
-    expiry of none, of 0, or beyond 30 days 400), which the user who
-    redeems it (POST /api/v1.0/invites/redeem/registration-ownership)
-    then owns, and no one else may redeem: the former owner may change
-    nothing afterward. The registration is one of the run's own,
-    /registry-test-<run>-own, which `test-registry` claims and hands on
-    to `test-registry-heir`; a user keeps the registrations they own, so
-    the suite's sweep removes it.
+    expiry of 0, beyond 30 days, or that is no duration, 400), which the
+    user who redeems it (POST
+    /api/v1.0/invites/redeem/registration-ownership) then owns, and no
+    one else may redeem: the former owner may change nothing afterward.
+    The registration is one of the run's own, /registry-test-<run>-own,
+    which `test-registry` claims and hands on to `test-registry-heir`; a
+    user keeps the registrations they own, so the suite's sweep removes
+    it.
     """
     key = test.key("own")
     prefix = test.prefix("own")

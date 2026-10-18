@@ -52,7 +52,8 @@ suites (`framework/suites/`): `federation`, `selftest`, `commands`,
 `transfers`, `restart`, and `keys`.
 A suite that doesn't apply to the shape is skipped, and says why. A
 pass of a suite that prints nothing for 20 minutes, or runs for 90, is
-abandoned and recorded as `aborted`, and the next runs.
+abandoned and recorded as `aborted` (or `setup`, if it recorded no
+case), and the next runs.
 [What the tests check](docs/tests/README.md) describes each one. Each
 suite runs twice, presenting WLCG tokens, then SciTokens
 ([token profiles](docs/tests/README.md#token-profiles)).
@@ -173,7 +174,8 @@ which the `collections` suite's `cli` scenario runs. For those, the
 tests use the dev container's own `pelican-server`, if it has one, and
 otherwise `framework/var/bin/linux/pelican-server`, which `init`
 fetches if it is missing. To test your own, put it there; `init` keeps
-it.
+it, but on a Linux host, where it is also the host's, only if it
+reports `PELICAN_TAG`'s version, and otherwise replaces the client too.
 
 ### Pelican configuration
 
@@ -204,8 +206,9 @@ rules, and the [knobs](docs/configuration.md#knobs) that `fed.sh` reads.
 Presets combine, e.g.
 `./fed.sh -p origin-pstore -p topo-multi-cache up`. Each name begins
 with what it changes: the topology (`topo-`), the origins (`origin-`),
-the caches (`cache-`), authorization (`auth-`), every server
-(`server-`), or a helper beside the federation (`with-`). Presets that
+the caches (`cache-`), authorization (`auth-`), the directors
+(`director-`), the registry (`registry-`), every server (`server-`), or
+a helper beside the federation (`with-`). Presets that
 choose among alternatives, such as an origin's storage, set the same
 knob, and `fed.sh` refuses two of them together, even when one of them
 names the default.
@@ -238,7 +241,7 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | `topo-site-local-cache` | adds cache-2, a site-local cache: no director knows of it, so a client must name it, and it reads through a federated cache; see `sitelocal`      |
 | `topo-transfer-server`  | adds `transfer`, a transfer server of its own (`pelican-server serve --module transfer`), whose jobs no export confines, tested in place of origin-0's transfer API; `transfer-api` skips unless `/protected-a` takes writes |
 | `topo-no-cache`         | removes cache-0, so the directors send every read to an origin; see `federation`'s `directors` and `redirects`                                    |
-| `topo-standalone`       | origin-0 alone, as a standalone origin: no discovery host, director, registry, or cache; native origins only                                      |
+| `topo-standalone`       | origin-0 alone, as a standalone origin, its own discovery host: no `discovery` service, director, registry, or cache; native origins only         |
 
 **Origin storage** (one of)
 
@@ -364,10 +367,11 @@ The tests write their configuration of a service in
 `framework/var/control/config/<service>/`, which is the last of its
 [configuration layers](docs/configuration.md#pelican-configuration), and
 remove it once they're done, restarting the service again. Whatever
-tests leave behind, the helper puts back when it stops, and again when
-the next one starts: it removes their configuration, restarting the
-services that had it, and starts or unpauses what they left stopped,
-killed, or paused.
+tests leave behind, the helper puts back when it stops: it removes their
+configuration, restarting the services that had it, and starts or
+unpauses what they left stopped, killed, or paused. The next one to
+start removes any configuration still left, as by a helper that was
+killed, but cannot know what else that one left undone.
 
 
 ## Where things live
@@ -458,8 +462,9 @@ in your hosts file, as any user of `framework/etc/idp-users.json`.
   `pre-commit install` in `/app`, which installs Pelican's Git hook in
   the checkout that `PELICAN_SRC_DIR` names.
 - **`-p topo-tiny`** refuses `cache-xrootd`, `auth-external-issuer`,
-  `director-discovery`, and every preset that adds a service but
-  `origin-metadata`, `origin-metadata-tx`, and `auth-oidc`.
+  `director-discovery`, `origin-broker`, `topo-no-cache`, and every
+  preset that adds a service but `origin-metadata`,
+  `origin-metadata-tx`, and `auth-oidc`.
 - **`-p origin-metadata`** builds the verifier's image from GitHub on the
   first `up`, which needs network access and takes a few minutes.
 

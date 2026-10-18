@@ -13,7 +13,7 @@ Only `tampered` touches the bucket, as corruption or a substitution
 there would; nothing touches the caches' stores. Pelican's main has
 tiering, but no release yet; a cache that neither reports tiering
 metrics nor has claimed its prefix in the bucket is taken not to tier,
-and its scenarios skip.
+and is left out, and where no cache tiers, every scenario skips.
 
   tiered       a cold read of an object over the threshold: it lands in
                the bucket, and the cache counts a successful upload
@@ -433,6 +433,11 @@ def redirect_problem(
     return None
 
 
+def unknown_to_directors(cache: common.Cache) -> str:
+    """Return why a read through a director would not reach cache."""
+    return "which knows nothing of it" if cache.site_local else "which knows other caches"
+
+
 def redirect(test: Test) -> tuple[str, str]:
     """Check that a read of a tiered object is redirected, or proxied.
 
@@ -440,10 +445,9 @@ def redirect(test: Test) -> tuple[str, str]:
     the bucket, without the token, which serves the object to anyone
     holding it; from a proxying cache, the object (see
     redirect_problem()). Then the same through each director's object
-    route, as a plain HTTP client that follows redirects, presenting the
-    token at the cache: where the cache is the only one the directors
-    know of, each must send the client there, and the cache answer as
-    before.
+    route: where the cache is the only one the directors know of, each
+    must redirect a plain HTTP client there (307), and the cache, asked
+    again with the token, answer as before.
     """
     notes: list[str] = []
 
@@ -453,7 +457,7 @@ def redirect(test: Test) -> tuple[str, str]:
         if why:
             return why
         if not test.sole(cache):
-            notes.append(f"{cache.svc}: not through a director, which knows other caches")
+            notes.append(f"{cache.svc}: not through a director, {unknown_to_directors(cache)}")
             return None
         for url in test.fed.directors:
             sent = director.ask(url, "object", f"/protected-a/{test.rel(cache, name)}")
@@ -522,7 +526,7 @@ def client_get(test: Test) -> tuple[str, str]:
         if test.sole(cache):
             ways.append(("director", []))
         else:
-            notes.append(f"{cache.svc}: not through a director, which knows other caches")
+            notes.append(f"{cache.svc}: not through a director, {unknown_to_directors(cache)}")
         for key, flags in ways:
             target = os.path.join(test.tmp, f"{cache.svc}-{name}-{key}")
             code, out, err = test.session.pelican_cmd(
@@ -589,11 +593,18 @@ def proxied_after_tampering(
     if answer.status == 200 and answer.body != data:
         return f"served {len(answer.body)} bytes that are not the object"
 
+    substituted = False
+
     def fetched_again() -> bool:
+        nonlocal substituted
         again = test.fetch(cache, name)
+        substituted = substituted or again.body == other
         return again.status == 200 and again.body == data
 
-    if not common.wait_for(fetched_again, TIER_WAIT, 2):
+    fetched = common.wait_for(fetched_again, TIER_WAIT, 2)
+    if substituted:
+        return "served the bucket's substitute, before the object again"
+    if not fetched:
         return f"did not serve the object again within {TIER_WAIT}s"
     return None
 

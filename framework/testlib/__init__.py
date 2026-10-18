@@ -1,4 +1,6 @@
-"""What test.py, framework/suites/, and framework/init-data.py share.
+"""What test.py, framework/suites/, and other scripts share.
+
+The others are framework/init-data.py, control.py, and report.py.
 
   accounts     a server's web API as one of its users; its users and
                groups; logging in

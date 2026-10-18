@@ -139,7 +139,7 @@ skip.
   its longest prefix (`LongestNSMatch`), and its native origin's
   authorization speaks of exports nested one inside another
   (`origin_serve/authz.go`). Every origin, XRootD's too, is restarted
-  with `/public`'s exports and one more, nested in it,
+  with the shape's exports and one more, nested in `/public`,
   `/public/data/exports/<run>/secret`, with `/protected-a`'s
   capabilities, whose storage is that directory of `/public`'s, and
   which the origins register as they start; before the restart, two

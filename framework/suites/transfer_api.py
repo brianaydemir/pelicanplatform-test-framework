@@ -96,20 +96,21 @@ SCENARIOS = {
     ),
     "enabled-groups": (
         "with Transfer.EnabledGroups, the issuer grants pelican.transfer to a member alone,"
-        " whose token and login cookie the API takes (restarts origin-0)"
+        " whose token and login cookie the API takes (restarts the API's host)"
     ),
     "oauth-clients": (
         "OAuth2 clients are off by default; on, a token exchange bootstraps a credential"
-        " that jobs use, and that the server refreshes (restarts origin-0)"
+        " that jobs use, and that the server refreshes (restarts the API's host)"
     ),
     "restart": (
-        "a job that a restart of origin-0 interrupts fails, saying so; a credential"
+        "a job that a restart of the API's host interrupts fails, saying so; a credential"
         " survives; the restart forgets a finished job, which a cancel must leave as it was"
     ),
 }
 
-# The scenarios that keep no storage credential, whose tokens are the
-# API's own or its issuer's (see suites/__init__.py).
+# The scenarios that keep no storage credential of the session's
+# profile, whose tokens are the API's own, its issuer's, or the setup's
+# (see suites/__init__.py).
 ONE_PROFILE = (
     "ping",
     "auth-none",
@@ -178,7 +179,7 @@ INTERRUPTED = "interrupted by transfer server restart"
 def skip(fed: common.Federation) -> Optional[str]:
     """Return why there is no API, or nowhere to copy to, or None."""
     if fed.transfer_api is None:
-        return "the origins run no transfer API ('-p origin-transfer-api')"
+        return "no transfer API runs ('-p origin-transfer-api' or '-p topo-transfer-server')"
     if "Writes" not in fed.exports.get("protected-a", ()):
         return "/protected-a takes no writes, so no copy can land"
     return None
@@ -762,9 +763,10 @@ def confined(
     be. Origin-0's API confines jobs to its exports, so it must refuse
     the job, or fail it, and landed() find nothing. A transfer server
     confines jobs to nothing: there the job must complete, and landed()
-    find the bytes it named.
+    find the bytes it named. The job's credential is the setup token,
+    since what is checked is the confinement, not the token.
     """
-    writer = test.add_credential(f"{test.session.run}-{transfer['operation']}", test.storage)
+    writer = test.add_credential(f"{test.session.run}-{transfer['operation']}", test.setup)
     body = {
         "transfers": [transfer],
         "source_credential_id": writer,
@@ -1014,9 +1016,9 @@ def ssrf_and_prefixes(test: Test) -> list[Row]:
     range covers, must be refused (403, ENDPOINT_NOT_ALLOWED); one whose
     source and destination are under a prefix that merely begins like an
     export, 403 PATH_NOT_ALLOWED, since a prefix matches whole path
-    segments (transferMatchesPrefixes in transfer/handlers.go). And no
-    credential's token may lie in the API's host's database in plain,
-    which keeps each encrypted (transfer/encryption.go).
+    segments (transferMatchesPrefixes in transfer/handlers.go). Its
+    `secrets` row comes once every other scenario has run (see
+    plain_secrets()).
     """
     rows: list[Row] = []
     problems: list[str] = []
@@ -1051,30 +1053,37 @@ def ssrf_and_prefixes(test: Test) -> list[Row]:
             )
         else:
             rows.append(("prefix", PASS, "/protected-ab: 403"))
+    return rows
+
+
+def plain_secrets(test: Test) -> list[Row]:
+    """Check that the database of the API's host hides what it keeps.
+
+    No credential's token, nor the client secret that `oauth-clients`
+    registers, may lie in it in plain, which keeps each encrypted
+    (transfer/encryption.go). It is `ssrf-and-prefixes`'s `secrets` row,
+    checked once every other scenario has stored what it would, and
+    before finish() removes it.
+    """
     # The tokens that the suite stored, and any client secret it
     # registered, as bytes, since the database holds strings as is.
     secrets_held = [test.storage, test.read_only, *test.secrets]
     files = database_files(test)
     if not files:
-        rows.append(
-            ("secrets", INCONCLUSIVE, f"no database under framework/var/state/{test.svc}")
-        )
-        return rows
+        return [("secrets", INCONCLUSIVE, f"no database under framework/var/state/{test.svc}")]
     leaked: list[str] = []
     for path in files:
         try:
             with open(path, "rb") as f:
                 content = f.read()
         except OSError as e:
-            rows.append(("secrets", INCONCLUSIVE, f"cannot read framework/var/{path}: {e}"))
-            return rows
+            return [("secrets", INCONCLUSIVE, f"cannot read framework/var/{path}: {e}")]
         leaked += [
             f"{os.path.basename(path)} holds a token in plain"
             for secret in secrets_held
             if secret.encode() in content
         ]
-    rows.append(("secrets", *outcome(leaked, f"{len(files)} file(s), no token in plain")[1:]))
-    return rows
+    return [("secrets", *outcome(leaked, f"{len(files)} file(s), no token in plain")[1:])]
 
 
 def cli_json(out: str) -> Any:
@@ -1090,7 +1099,7 @@ def credential_cli(test: Test) -> tuple[str, str]:
 
     They run with the user's token in a file, against the API's host
     (cmd/transfer_credential.go): each must agree with the API, and
-    `list` must show no token.
+    neither `add` nor `list` may print the token.
     """
     token_file = test.token_file("cli-user", test.token)
     name = f"{test.session.run}-cli"
@@ -1208,7 +1217,7 @@ def run_configured(test: Test, names: list[str], results: common.Results) -> Non
             why = settle(test)
             if why:
                 for name in names:
-                    results.add(f"{name} configured", FAIL, f"once origin-0 restarted, {why}")
+                    results.add(f"{name} configured", FAIL, f"once {test.svc} restarted, {why}")
                 return
             for name in names:
                 record(results, name, guarded(CONFIGURED_RUN[name], test))
@@ -1218,7 +1227,7 @@ def run_configured(test: Test, names: list[str], results: common.Results) -> Non
         return
     why = settle(test)
     if why:
-        results.add("restored", FAIL, f"once origin-0 was restored, {why}")
+        results.add("restored", FAIL, f"once {test.svc} was restored, {why}")
 
 
 def log_in(test: Test, username: str, user_id: str) -> str:
@@ -1346,20 +1355,22 @@ def expiry_of(found: dict[str, Any]) -> Optional[datetime]:
 def oauth_clients(test: Test) -> list[Row]:
     """Check OAuth2 clients, with Transfer.EnableOAuth2Clients on.
 
-    A client of the namespace issuer's, which the admin creates for the
-    token exchange and the refresh grant, is registered with the API
-    (POST /oauth-clients, 201), listed without its secret, and deleted
-    (`crud`); through it, a token the admin got from the issuer is
-    exchanged for a credential (POST /credentials/bootstrap/token-exchange,
-    201), which a copy then uses (`bootstrap`; handleTokenExchangeBootstrap
-    in transfer/bootstrap.go); and under short tokens, a copy once the
+    A client of the namespace issuer's, which origin-0's admin creates for
+    the token exchange and the refresh grant, is registered with the API
+    (POST /oauth-clients, 201), listed without its secret, refused a
+    second time (409), and deleted afterward (`crud`); through it, a
+    token the admin got from the issuer is exchanged for a credential
+    (POST /credentials/bootstrap/token-exchange, 201), which a copy then
+    uses (`bootstrap`; handleTokenExchangeBootstrap in
+    transfer/bootstrap.go); and under short tokens, a copy once the
     credential's access token has expired must still complete, since the
     server refreshes it first (`refresh`; getDecryptedAccessToken in
     transfer/credentials.go).
     """
     issuer_url = test.fed.issuer_of("protected-a")
-    # Under the external issuer, the origin's admin can make no client
-    # of it: `crud` registers made-up credentials, and the rest skip.
+    # Under the external issuer, or with the origins' issuer off, the
+    # origin's admin can make no client of it: `crud` registers made-up
+    # credentials, and the rest skip.
     external = test.fed.external_issuer or not test.fed.embedded_issuer
     exchange: Optional[issuer.Client] = None
     device: Optional[issuer.Client] = None
@@ -1400,11 +1411,14 @@ def oauth_clients(test: Test) -> list[Row]:
         ("crud", *outcome(problems, f"{registered}: registered, listed, no secret")[1:])
     )
     if device is None:
-        skipped = "the exports trust the external issuer, whose clients the origin cannot make"
+        skipped = (
+            "the exports trust the external issuer, or the origins run none, so the origin"
+            " can make no client of it"
+        )
         return rows + [("bootstrap", SKIP, skipped), ("refresh", SKIP, skipped)]
 
     try:
-        subject = issuer.token(device, User(token=test.admin_token()), CREDENTIAL_SCOPES)
+        subject = issuer.token(device, User(token=test.origin_admin_token()), CREDENTIAL_SCOPES)
     except issuer.IssuerError as e:
         return rows + [("bootstrap", FAIL, f"the admin's token from the issuer: {e}")]
     body = {
@@ -1503,7 +1517,7 @@ def restart(test: Test) -> list[Row]:
         return [("interrupted", FAIL, str(e))]
     why = settle(test)
     if why:
-        rows.append(("interrupted", FAIL, f"once origin-0 restarted, {why}"))
+        rows.append(("interrupted", FAIL, f"once {test.svc} restarted, {why}"))
         return rows
     if job.get("status") == "completed":
         rows.append(("interrupted", INCONCLUSIVE, "the copy finished before the restart"))
@@ -1609,6 +1623,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 run_configured(test, configured_names, results)
         if RESTARTS in selected:
             record(results, RESTARTS, guarded(restart, test))
+        if "ssrf-and-prefixes" in selected:
+            record(results, "ssrf-and-prefixes", guarded(plain_secrets, test))
     finally:
         finish(test)
         errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/xfer", tokens)

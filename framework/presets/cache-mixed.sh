@@ -3,14 +3,15 @@
 #
 # Mix the kinds of cache, as a federation does while its caches move
 # from XRootD to Pelican's own: cache-1 runs XRootD, beside cache-0 (and
-# cache-2, if any), which stay what CACHE_VARIANT says, V2 by default.
+# cache-2, if any), which stay V2. So it chooses the caches' kind, as
+# `cache-v2` and `cache-xrootd` do, and fed.sh refuses it beside either.
 # A client that fails over from one cache to another partway through a
 # download then crosses kinds, whose ETags must agree (the client suite's
 # `failover`), and the directors route to both.
 #
-# Needs `topo-multi-cache`, for cache-1. Refuses `cache-xrootd`, with
-# which nothing would be mixed, and `cache-tiered` and `cache-memory`,
-# whose settings reach every cache, and which the XRootD cache does not
-# read. `cache-small` bounds each cache its own way.
+# Needs `topo-multi-cache`, for cache-1. Refuses `cache-tiered` and
+# `cache-memory`, whose settings reach every cache, and which the XRootD
+# cache does not read. `cache-small` bounds each cache its own way.
 
+CACHE_VARIANT=v2
 CACHE_1_VARIANT=xrootd

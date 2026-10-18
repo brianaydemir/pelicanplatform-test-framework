@@ -8,11 +8,11 @@ lands; the Pelican client asks for a cache or an origin by name
 (`/api/v1.0/director/object/` or `/origin/`), but curl and browsers ask
 for the bare path, which the director sends to a cache, or under
 `-p director-default-origin` (`Director.DefaultResponse`) to an origin.
-The `federation` suite's `redirects` check follows each director's
-redirects (and, under `-p director-ha`, the load balancer's, which the
-federation names as its director, and so which curl is given) for each
-exported namespace, with the namespace's `server` token (none for a
-read of `/public`):
+The [`federation`](federation.md) suite's `redirects` check follows
+each director's redirects (and, under `-p director-ha`, the load
+balancer's, which the federation names as its director, and so which
+curl is given) for each exported namespace, with the namespace's
+`server` token (none for a read of `/public`):
 
 - A GET and a HEAD of the object's bare path must land at a cache, or
   under `-p director-default-origin` at an origin; one with

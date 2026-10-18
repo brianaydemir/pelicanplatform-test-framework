@@ -369,7 +369,8 @@ def seed_everywhere(
     token: str,
     caps: AbstractSet[str],
 ) -> list[str]:
-    """Run seed() at every origin (see put_everywhere()).
+    """Run seed() at every origin, or at each store once where the
+    namespace takes no writes (see put_everywhere()).
 
     Returns:
         What went wrong; empty if nothing did.

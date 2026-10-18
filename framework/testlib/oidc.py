@@ -28,7 +28,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from . import accounts, common, web
 
-# The provider's users, as fed.sh gives the `idp` service them.
+# The provider's users, as docker-compose.yaml gives the `idp` service
+# them.
 USERS_FILE = os.path.join(common.FRAMEWORK, "etc", "idp-users.json")
 # What the provider logs, under framework/var: a JSON object per request.
 LOG = "data/idp/requests.log"

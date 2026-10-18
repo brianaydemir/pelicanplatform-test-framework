@@ -18,6 +18,7 @@
 # namespaces.
 #
 # fed.sh refuses `origin-ssh` and `origin-pstore`, which have no store for
-# it.
+# it, and, with `origin-public`, `origin-https` and `origin-httpsv2`,
+# which take one export, not its two inside /public.
 
 fed_enable_profile multi-owner

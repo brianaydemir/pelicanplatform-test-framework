@@ -41,12 +41,13 @@ one issuer, the origin itself, and no keys of its own, so the tests skip
 `wrong-path`, and `expired`. Its JWKS holds only its own keys, so they
 skip `jwks` there too: a token that names it, signed with a key listed
 only in `Server.IssuerJwks`, would only repeat `unknown`. A
-shape that exports only `/protected-a` (`origin-httpsv2`,
-`origin-no-direct`) lists `/protected-b`'s key nowhere, so the tests skip
-`ns-other` and `ns-cross`, which would only repeat `unknown`. A shape
-that exports only `/public` (`origin-public`) presents each credential
-there alone, where no token decides, and skips the checks that write
-beside `/protected-a`'s test object. Where a token decides, only
+shape that exports only `/protected-a` (`origin-https`, `origin-httpsv2`,
+`origin-broker`, `origin-no-direct`) lists `/protected-b`'s key nowhere,
+so the tests skip `ns-other` and `ns-cross`, which would only repeat
+`unknown`. A shape that exports only `/public` (`origin-public`)
+presents each credential there alone, where no token decides, and skips
+the checks that ask for `/protected-a`'s test object or write beside
+it. Where a token decides, only
 `server`, `jwks`, and `ns-jwks` should be allowed. A token doesn't always
 decide:
 
@@ -159,8 +160,8 @@ namespace.
   Presenting no token, the check runs in the WLCG pass alone. The
   `federation` suite's `hints` check asks the same of each director's
   redirects, for a cache and for an origin, in every namespace: the
-  issuer must be the namespace's, and `/public`, which has none, must
-  name none.
+  issuer must be the namespace's, and `/public`, which has none but
+  under `-p origin-public-writes`, must then name none.
 - **A token in the query string**, the `auth` suite's `query-token`
   check: an XRootD cache forwards a client's token to an origin as
   `?authz=Bearer%20<token>` (older ones bare), and a director's redirect

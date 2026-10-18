@@ -60,7 +60,8 @@ EOF
   shrinks the V2 caches' scheduler (`Cache.WorkerCount`,
   `Cache.Throttle.*`) itself, for as long as it runs, in the tests' own
   layer ([throttling](tests/throttling.md)).
-- No preset gives an export without `Listings`, or one without
+- No preset gives an export without `Listings` (but
+  `origin-no-direct`'s, which serves only caches), or one without
   `DirectReads` beside others with them, or turns copies off
   (`Origin.DisableCopies`); nor does one give an origin an export
   nested in another. The `exports` suite restarts the origins
@@ -243,10 +244,10 @@ which key is active.
 ```
 
 `TARGET` is a service (e.g. `director-0` or `fed`), `issuer` (the
-external issuer's), `origins`, or `all`. origin-0 and origin-1 share a
-key; naming just one of them breaks that on purpose. origin-2, another
-owner, has a key of its own, which the `owners` suite signs its tokens
-with.
+external issuer's), `origins`, `directors`, or `all`. origin-0 and
+origin-1 share a key, as do director-0 and director-1; naming just one
+of them breaks that on purpose. origin-2, another owner, has a key of
+its own, which the `owners` suite signs its tokens with.
 
 - Services pick up a new key within a minute, but origins and caches may
   keep a keyset they fetched, even their own, for up to 15 minutes.

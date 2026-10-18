@@ -34,8 +34,9 @@ is skipped. Each pass of a suite writes a row per case to
 framework/var/results/<suite>.tsv (or <suite>-scitokens.tsv); a run of
 everything first removes the results of earlier runs with the same
 RESULTS_TAG. A pass that prints nothing for STALL_SECONDS, or runs for
-BUDGET_SECONDS, is abandoned, and recorded as `aborted`, so that a
-scenario stuck on a server that never answers cannot stall the run.
+BUDGET_SECONDS, is abandoned, and recorded as `aborted` (or `setup`,
+if it recorded no case), so that a scenario stuck on a server that
+never answers cannot stall the run.
 """
 
 import contextlib

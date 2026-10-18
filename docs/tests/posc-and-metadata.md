@@ -5,7 +5,8 @@ Part of [What the tests check](README.md).
 POSC and metadata are features of the `posixv2` origin, which is the
 default, and XRootD's POSC of its `posix` origin; `fed.sh` refuses each
 with any other. The `metadata` suite runs only where it applies, and
-skips otherwise; the `posc` suite runs wherever `/protected-a` takes
+otherwise, with publishing off, runs only `queue-admin off` (below),
+and skips the rest; the `posc` suite runs wherever `/protected-a` takes
 writes, since an interrupted upload is every origin's to get right, and
 judges it by the staging that the shape has, or by the store alone.
 `./fed.sh test -l posc metadata` lists their scenarios.
@@ -121,10 +122,12 @@ judges it by the staging that the shape has, or by the store alone.
   It reads `recorder.py` when it starts, so after the framework changes
   it, run `./fed.sh restart metadata`.
   The `metadata` suite uploads with `--metadata-file` and
-  `--metadata-body`, and checks the events, including that
-  `object.updated` carries the new size and custom fields, compared
-  type for type. Beyond the events of uploads, it checks, at the first
-  origin:
+  `--metadata-body` (`fields`, `blob`), and checks the events,
+  including that `object.updated` carries the new size and custom
+  fields, compared type for type (`update`), and that a DELETE sends
+  `object.deleted` (`delete`); and that the origin answers an upload
+  `X-Pelican-Metadata-Status: published` (`status`). Beyond the events
+  of uploads, it checks, at the first origin:
 
   - `status-urls`: an eventual-mode upload whose event outlives it
     hands the uploader two URLs, `X-Pelican-Metadata-Query-Url` and
@@ -194,7 +197,8 @@ judges it by the staging that the shape has, or by the store alone.
     route it asks answers the admin, but for access times. It needs a
     `pelican-server`, as `collections`'s `cli` does
     ([client binary](../../README.md#client-binary)), and skips without
-    one.
+    one. The upload is the setup token's, so the scenario, presenting
+    only the origin's web API tokens, runs in the WLCG pass alone.
   - `queue-admin`: the publish queue's admin routes,
     `/api/v1.0/origin_ui/metadata_queue` (its list and `/_health`, and an
     event's GET, DELETE, and `/retry`), with an event held queued: the
@@ -212,7 +216,8 @@ judges it by the staging that the shape has, or by the store alone.
     is expected to fail. `delete`: the admin's DELETE must remove the
     event (204). With publishing off, `queue-admin` runs alone, as one
     row, `off`: the list must refuse no credentials (401), and answer
-    the admin, as `/_health` must, 503.
+    the admin, as `/_health` must, 503. Like `object-metadata-cli`, it
+    deletes with the setup token, and runs in the WLCG pass alone.
   - `backpressure` (eventual mode): the namespace's queue capped, at two
     rows more than it has pending when the suite asks
     (`Origin.Metadata.MaxQueuedPerNamespace`), and at 4096 bytes of

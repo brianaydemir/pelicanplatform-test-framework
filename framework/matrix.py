@@ -25,9 +25,9 @@ uncovered if any one of its choices were the default instead.
 SHAPES_FILE lists them, as `generate` writes it.
 
 `check` reads the shapes from `smoke.sh --table`, and reports any shape
-that makes no sense, that fed.sh would refuse, or that breaks the rules
-above; any preset no shape runs; and any pair no shape covers. It exits
-1 if it found any. `generate` keeps the shapes in SHAPES_FILE that still
+that makes no sense, that fed.sh would refuse, that breaks the rules
+above, or that is misnamed (see name_of()); any preset no shape runs;
+and any pair no shape covers. It exits 1 if it found any. `generate` keeps the shapes in SHAPES_FILE that still
 pass (or none, with --fresh), picks shapes greedily until they cover
 every pair, then simplifies them, and drops any that adds nothing.
 """
@@ -355,6 +355,12 @@ REFUSED: list[Rule] = [
     (
         "a pstore origin's /public reads /protected-a's storage, which the shape does not export",
         lambda s: s["namespaces"] == "public" and s["origin"] == "pstore",
+    ),
+    (
+        "another owner's two exports inside /public are one too many for an HTTPS backend",
+        lambda s: s["namespaces"] == "public"
+        and s["multi_owner"] == "on"
+        and s["origin"] in ("https", "httpsv2"),
     ),
     (
         "another owner's /public/secret takes a token beside its public exports, which Pelican"

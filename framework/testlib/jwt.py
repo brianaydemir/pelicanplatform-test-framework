@@ -187,7 +187,7 @@ def encode(
 
       ES256, RS256  with key, a PEM private key file's path (under
                     framework/var), whose kind must suit
-      HS256         with secret, any bytes, e.g. a public key's JWKS, as
+      HS256         with secret, any bytes, e.g. a public key's JWK, as
                     in the classic key-confusion attack
       none          no signature: the token ends in "."
     """

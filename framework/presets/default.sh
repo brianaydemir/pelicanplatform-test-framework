@@ -4,11 +4,13 @@
 # The baseline: one director, registry, origin, and cache; no XRootD; no
 # external identity provider or token issuer. fed.sh always sources this
 # first, then any -p presets, then re-applies the caller's environment,
-# but only for the knobs at the end, which don't shape the federation.
+# but only for the knobs that don't shape the federation: those at the
+# end, and framework/environment.cfg's.
 #
 # This and framework/environment.cfg are the only places a default is
-# set. The Compose files have no fallbacks, so running `docker compose`
-# directly fails loudly.
+# set, but for the IMAGE_* that fed.sh derives from them. The Compose
+# files have no fallbacks, so running `docker compose` directly fails
+# loudly.
 
 #---------------------------------------------------------------------------
 # The knobs that shape the federation, which only presets set.
@@ -57,7 +59,8 @@ ORIGIN_EXPORT_TEMPLATES=false
 # presets/origin-no-direct.sh). /public is read without a token, and
 # takes no writes, so it has no issuer (but see ORIGIN_PUBLIC_WRITES
 # below). The others take a token for either, and each has an issuer
-# and keys of its own; the tests need at least one of them.
+# and keys of its own; the suites that need /protected-a skip without it
+# (see presets/origin-public.sh).
 ORIGIN_NAMESPACES="public protected-a protected-b"
 
 # Whether the origins export only /public, whatever ORIGIN_NAMESPACES

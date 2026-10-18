@@ -47,7 +47,8 @@ Writes (/public, unless `-p origin-public-writes` gives it writes) is
 refused whatever the token, and so is every request straight to an origin in
 a namespace without DirectReads (`-p origin-no-direct`). The test objects
 are put in place with stores.seed(), so the last needs no writes. Responses
-go to framework/var/data/auth-test/, and a row per request to the results.
+go to framework/var/data/auth-test/, and a row per request to the results
+(per server, for `expired-in-use` and each kind of climb).
 
 Every token the checks present is of the session's profile, and must get
 what its twin of the other profile gets: SciTokens' read: and write:
@@ -431,7 +432,8 @@ class Test:
 
 # --------------------------------------------------------------------------
 # The keys check: what each JWKS should hold is in credentials.py
-# (server_jwks_problems and namespace_jwks_problems).
+# (server_jwks_problems, namespace_jwks_problems, and
+# public_jwks_problems).
 
 
 def file_key_ids(path: str) -> frozenset[str]:
@@ -884,9 +886,19 @@ def check_hints(test: Test, fed: common.Federation) -> None:
     local_cache/persistent_cache_api.go, on its main). An XRootD cache
     sends none, and is passed over.
     """
+    namespaces = [ns for ns in PROTECTED if ns in fed.exports]
+    why = ""
+    if not fed.caches:
+        why = "this shape has no cache"
+    elif not namespaces:
+        why = "this shape exports no protected namespace"
+    if why:
+        warn(f"skipping {HINTS}: {why}")
+        test.report.add(HINTS, SKIP, why, seconds=None)
+        return
     for cache in fed.caches:
         target = label(cache.svc, "cache")
-        for namespace in (ns for ns in PROTECTED if ns in fed.exports):
+        for namespace in namespaces:
             heading = f"{target:<10} {namespace:<11} {'get':<8} {HINTS:<11}"
             case = f"{target} {namespace} get {HINTS}"
             if cache.kind != "v2":
@@ -1872,8 +1884,9 @@ def nested_token(
 def skip(_fed: common.Federation) -> Optional[str]:
     """Return why there is nothing to test, or None if there is something.
 
-    There is always something: every shape exports a namespace that a
-    token protects.
+    There is always something: every shape exports a namespace, where
+    the credentials are presented, even where no token decides there
+    (`-p origin-public`).
     """
     return None
 

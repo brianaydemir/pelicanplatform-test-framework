@@ -37,7 +37,8 @@ OBJECTS = transfers.LOAD.objects
 # mirror /protected-a and /public; and /public/secret, a protected prefix
 # inside /public (fed_owner_exports in fed.sh).
 OWNER_NAMESPACES = ("other", "public/other", "public/secret")
-# The collections that the suites write in, under each store's data/.
+# The collections that init makes, under each store's data/, for the
+# suites that write in them; the others make their own.
 SUITE_DIRS = (
     "put",
     "auth",
@@ -52,7 +53,6 @@ SUITE_DIRS = (
     "throttling",
     "exports",
     "collections",
-    "oidc",
     "federation",
     "listings",
     "names",
@@ -109,8 +109,8 @@ def shape(exports: transfers.Exports) -> str:
 # the store (see common.storage_dir()), of which only the data/
 # subdirectory is replaced, so that a pstore store beside them survives,
 # and the s3 service's mount of each as a bucket. An object's bytes are
-# its path in the federation, so a store or cache left over from an
-# earlier `init` still agrees, and no two objects are alike.
+# its path in the federation and a newline, so a store or cache left
+# over from an earlier `init` still agrees, and no two objects are alike.
 
 
 def make_dir(path: str) -> None:

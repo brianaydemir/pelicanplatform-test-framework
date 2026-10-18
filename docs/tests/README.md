@@ -15,7 +15,7 @@ The suites run in this order:
 
 | Suite        | Tests                                                                 |
 | ------------ | --------------------------------------------------------------------- |
-| `federation` | that the federation serves at all, and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients, and with no cache (`-p topo-no-cache`) an origin in a cache's place; what its redirects tell a client of a namespace, and where they lead a plain HTTP client, bare paths included ([redirects](redirects.md)); a Pelican server's discovery document; under `-p origin-broker`, the connection broker; with several origins, that an object one of them alone holds is routed there, and comes back; under `-p registry-approval`, that nothing is routed to before its registration is approved; and that a server its admin declares down is routed to by no director until the downtime ends ([downtime](downtime.md)) |
+| `federation` | that the federation serves at all ([federation](federation.md)), and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients, and with no cache (`-p topo-no-cache`) an origin in a cache's place; what its redirects tell a client of a namespace, and where they lead a plain HTTP client, bare paths included ([redirects](redirects.md)); a Pelican server's discovery document; under `-p origin-broker`, the connection broker; with several origins, that an object one of them alone holds is routed there, and comes back; under `-p registry-approval`, that nothing is routed to before its registration is approved; and that a server its admin declares down is routed to by no director until the downtime ends ([downtime](downtime.md)) |
 | `selftest`   | the tests' own helpers ([self-tests](self-tests.md)): reading a V2 cache's `X-Transfer-Status` trailer, signing tokens of any claims and checking signatures, reading `/metrics`, and restarting a service mid-run |
 | `commands`   | `ls`, `stat`, `delete`, `copy`, `sync`, and `du`, and what `get` and `put` do with what already exists ([client commands](client-commands.md)) |
 | `client`     | the contracts that only show through the clients: stash_plugin's result ads, of downloads and uploads, failing over between caches partway through a download, the ETags the servers agree on, which token the client and the plugin present, the forms of URL they take (a bare path, `osdf:///`, and `-f`), how `pelican token create` finds an issuer, share URLs, the director's recorded decision, direct reads with `?skipstat`, several sources at once and `?recursive` by either client, a preferred cache that is down, and transfers handed to the client agent (`--async`) ([client contracts](client-contracts.md)) |
@@ -31,12 +31,12 @@ The suites run in this order:
 | `routing`    | how the directors choose where to send a client, and what they tell it: the order of the caches and of the origins by declared location, at random, by adaptive weights, and with a server filtered out; an object no origin holds; what `Location` and `Link` carry; tokens about to expire; their refusals and their status codes; and response hostnames; under `-p topo-multi-cache`, it restarts the directors to vary how they sort, and a cache restricted to a namespace (`Cache.PermittedNamespaces`) ([routing](routing.md)) |
 | `director-api` | what the directors publish of the federation, against the shape: their lists of servers and of namespaces, and the namespace a path falls in; their health tests of each origin and cache, as they and the servers report them, and the test file they serve the caches; which origins hold an object, for their admin alone; their metrics; their comparison of the federation's metadata; and under `-p topo-multi-director`, the ads one forwards to another ([director APIs](director-apis.md)) |
 | `registry`   | the registry, the federation's root of trust: registering and deleting prefixes, the prefixes it refuses, key chaining, a prefix with a LIKE wildcard, and `pelican namespace`; the keys it serves for each prefix, and no private key in any JWKS the federation serves; its web API for listing, approving, and denying registrations, and its servers; completing a server's registration with the server's key; who owns a registration: claiming one, an owner's edits of an approved one, a denied one resubmitted, and handing one on with an invite; each server's ID; and downtimes recorded at the registry, whose they are, and what the directors do with them ([registry](registry.md)) |
-| `tiering`    | V2 caches' tiering of large objects to object storage, under `-p cache-tiered`: what a plain HTTP client gets from the cache, and through a director, and what both clients get, from the cache named and through the director; including a copy replaced in the bucket |
+| `tiering`    | V2 caches' tiering of large objects to object storage, under `-p cache-tiered`: that an object of at least the threshold is tiered, and one a byte under it is not; what a plain HTTP client gets of a tiered object from the cache, whole and in ranges, and through a director; what `pelican object get` gets from the cache named and through the director, and stash_plugin with the cache preferred; a copy replaced in the bucket; and an object overwritten at the origins ([tiering](tiering.md)) |
 | `posc`       | interrupted and racing uploads at every origin: judged by the staging under `-p origin-posc`, `-p origin-atomic-uploads`, or `-p origin-pstore`, and elsewhere by the store alone, where an origin that writes an upload into place as it comes is caught; and the native POSC's reaping of abandoned staging files, which it restarts the first origin to hasten ([POSC and metadata](posc-and-metadata.md)) |
 | `metadata`   | metadata events, under `-p origin-metadata`: the URLs by which an uploader follows or cancels its event; the events that a MOVE, a COPY, and a collection's DELETE send, and those the reconcile sweep must not; the first origin's admin APIs over its record of objects and its publish queue, and the CLI over the record; and refusing uploads while a namespace's queue is full; which it restarts the first origin to check; with publishing off, that the queue's admin API says so ([POSC and metadata](posc-and-metadata.md)) |
 | `users`      | which Unix user the origins act as, under `-p origin-multiuser` or `-p server-unprivileged`: who owns what they write, and in which group; under multiuser, reads with no token, what a user learns of another's files, POSC's staging, users below `Origin.MultiuserMinID`, and the mapfile's rules, a username claim, and a mapfile edited while the origins run ([Unix users](unix-users.md)) |
 | `owners`     | origin-2, another owner, under `-p topo-multi-owner` ([another owner](another-owner.md)) |
-| `sitelocal`  | cache-2, a site-local cache, under `-p topo-site-local-cache` |
+| `sitelocal`  | cache-2, a site-local cache, under `-p topo-site-local-cache`: that it alone serves clients that name it, by `--cache`, with `,+`, and as stash_plugin's preferred cache; that it passes a refusal on; that it reads through a federated cache, which then holds the object; and its listings ([site-local cache](site-local-cache.md)) |
 | `collections` | collections: prefixes with access control of their own, granted through the origins' embedded issuer ([collections](collections.md)) |
 | `issuer`     | the origins' embedded issuer: what it grants of what a client asks for, through each flow, and its refresh tokens; and its boundaries: each namespace's issuer apart from another's, clients that register themselves, its verification page's CSRF tokens, its admin API for clients, cross-origin requests, PKCE, and codes' expiry ([issuer](issuer.md)) |
 | `accounts`   | the life cycle of a server's users and groups, and who may act as whom because of it: deactivated and deleted users, at the web API and the embedded issuer; scopes granted to a user, and authority from configured groups; grants that go with a deleted user or group, and stay with a renamed one; group invites; and a new acceptable use policy ([accounts](accounts.md)) |
@@ -66,8 +66,9 @@ director is the discovery host (`-p director-discovery`, `topo-tiny`),
 a v26.0.0-rc.3 V2 cache serves, but advertises itself `critical`, since
 `pelican cache serve` marks its `xrootd` component critical as it
 starts and the V2 cache never clears it, so no director names it, and
-`federation`'s `directors`, `redirects`, and `downtime` fail, as does
-every row that reads through a cache's director route (main's V2
+`federation`'s `redirects` fails, as do its `directors` and `downtime`
+but in `topo-tiny`, where they skip, and every row that reads through
+a cache's director route (main's V2
 cache is clean). Where XRootD serves the caches over native origins
 (`-p cache-xrootd`), the cache fetches a protected object from a
 v26.0.0-rc.3 origin with a token the origin cannot parse
@@ -85,8 +86,9 @@ approves its registration, so before each of its tries `ready` approves
 every pending registration through the registry's admin API: each
 Incomplete one, as a server's own registration starts (since
 v26.0.0-rc.1), and each Pending one, whose form someone has filled in.
-It approves them as the registry's built-in `admin`, with a token like the one `pelican registry` mints
-(`credentials.mint_user()`). Before approving, it asks each director
+It approves them as the registry's built-in `admin`, with a token like
+the one `pelican cache introspect` mints (`credentials.mint_admin()`).
+Before approving, it asks each director
 where it would send the object: `approval` fails if any named a server
 whose registration was still pending, since the directors refuse the
 advertisements of such a server. On a rerun, nothing is pending, so
@@ -101,8 +103,9 @@ raises an unexpected error fails, with the error as its note, and the
 suite goes on to the next. A client command still running after 600
 seconds is killed, and fails; and a pass of a suite that prints nothing
 for 20 minutes, or runs for 90, is abandoned by `test.py`'s watchdog,
-recorded as `aborted`, and the next suite runs. Each suite removes what it wrote from
-every origin's store afterward, a `pstore` origin's included.
+recorded as `aborted` (or `setup`, if it recorded no case), and the
+next pass runs. Each suite removes what it wrote from every origin's
+store afterward, a `pstore` origin's included.
 
 [What is not tested](what-is-not-tested.md) lists the features of
 Pelican that no preset offers, and what the presets imply about the

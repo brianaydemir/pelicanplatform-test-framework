@@ -29,7 +29,7 @@ in chunks with no length, as the client uploads; first read in ranges),
 and `plugin` (likewise, first read by stash_plugin). Both clients also
 upload every size. On a pstore origin, /metrics must show each upload in
 the tier its size predicts. The overlap, assemble, abandon, overwrite,
-and write-through scenarios upload objects of their own, one per cache,
+and write-through scenarios upload objects of their own, a set per cache,
 so that each is cold where it is read. Where /protected-a takes no
 writes, every object is put straight in each origin's store instead
 (see stores.seed()), and the uploads themselves are skipped; where it
@@ -186,7 +186,8 @@ class Test:
         uploads: How each kind of upload went, by "declared" or "chunked".
         digests: The digests the origins' storage reports.
         no_digests: Why the storage does not report the rest, or None.
-        admins: Each V2 cache's admin token, by service (see summary()).
+        admins: Each V2 cache's admin token, by service (see
+            cache_admin()).
     """
 
     def __init__(self, session: Session):
@@ -2920,9 +2921,9 @@ def past_end(test: Test) -> tuple[str, str]:
     Each server, asked for ranges that start at or past the end of objects
     of PAST_END_SIZES in the `whole` and `ranged` sets
     (blocks.past_end()): 416, with Content-Range `bytes */<size>` if it
-    says, and none of the object's bytes; or, if it ignores Range, as
-    RFC 9110 lets it, 200 with the whole object. The origins are asked
-    only if they take direct clients.
+    says; or, if it ignores Range, as RFC 9110 lets it, 200 with the
+    whole object. The origins are asked only if they take direct
+    clients.
     """
     if why := test.not_uploaded(True, False):
         return FAIL, why

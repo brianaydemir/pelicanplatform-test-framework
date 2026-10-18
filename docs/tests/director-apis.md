@@ -36,7 +36,8 @@ standalone origin, which has no director. Each case is a row, named
   - `ui-namespaces`: `/api/v1.0/director_ui/namespaces` must list
     each export, with the names of the origins that export it.
   - `contact`: `/api/v1.0/director_ui/contact` must give the support
-    contact that `framework/config.d/director/default/` configures
+    contact that `framework/config.d/director/default/` (and
+    `instance/fed/`, in `tiny`) configures
     (`Director.SupportContactEmail` and `SupportContactUrl`).
   - `directors`: `/api/v1.0/director/directors` must list every
     director, by the URL it takes ads at.

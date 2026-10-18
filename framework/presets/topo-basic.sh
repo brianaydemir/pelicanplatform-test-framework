@@ -3,6 +3,7 @@
 #
 # The default topology: each server in a container of its own
 # (docker-compose.yaml). For naming the choice explicitly; the
-# `topo-multi-*` presets add servers to it, and `topo-tiny` replaces it.
+# `topo-multi-*` presets add servers to it, and `topo-tiny` and
+# `topo-standalone` replace it.
 
 TOPOLOGY=full

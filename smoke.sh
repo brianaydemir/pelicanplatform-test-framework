@@ -22,7 +22,7 @@
 # docs/development.md). Some shapes also rotate every key, restart, and
 # run every suite again.
 #
-# DESTRUCTIVE: runs ./reset.sh before each shape, keeping only
+# DESTRUCTIVE: runs ./reset.sh before each shape, but keeps
 # framework/var/bin/, and leaves the last shape's state and presets
 # behind. local/ and your environment apply as usual, so your images and
 # client are what get tested. Only the shapes pick the topology,

@@ -198,8 +198,8 @@ the registry with them, or with a server's own key, through
     `createRegistrationOwnershipInvite`) is the owner's or the admin's
     to mint: `test-registry-heir`'s must get 403; the owner's with an
     `expiresIn` of `0s`, longer than 30 days
-    (`maxOwnershipInviteExpiry`), or no duration, 400; and the admin's,
-    201, with a token.
+    (`maxOwnershipInviteExpiry`), or `soon`, which is no duration, 400;
+    and the admin's, 201, with a token.
   - `invite-transfer`: the owner's invite, 201, must say that it is
     single-use; `test-registry-heir` redeems it (`POST
     /api/v1.0/invites/redeem/registration-ownership`, with the token;

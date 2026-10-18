@@ -10,7 +10,8 @@ own monitoring rely on these. The `observability` suite checks them at
 every server of the shape, each once by its web URL, as the `webapi`
 suite does, and acts as each server's admin and as `test-webapi`, as
 that suite does ([web API](web-api.md)). Each case is a row, named
-`<scenario> <server> <case>`.
+`<scenario> <server> <case>`; but `health-metrics`'s are
+`<scenario> <server>`, and `http-metrics`'s `<scenario> <case>`.
 
 Pelican guards each server's `/metrics` (`Monitoring.MetricAuthorization`)
 and its Prometheus query API (`Monitoring.PromQLAuthorization`) by
@@ -31,10 +32,10 @@ scrapes itself (`framework/testlib/metrics.py`).
     no director or registry (`standalone_origin_cli_e2e_test.go`). A
     server says `warning` of its advertisements and of the directors'
     tests until the first of each, so the suite asks every 5 seconds,
-    for up to 150, until every report is all `ok`, or none has changed
-    for 35 seconds and none says a status that may yet change by
-    itself. The `storage` component warns once the host's disks are
-    80% full (`Monitoring.StorageWarningThreshold`), so a report that
+    for up to 150, until every report is all `ok`, or, after 35
+    seconds, none says a status that may yet change by itself. The
+    `storage` component warns once the host's disks are 80% full
+    (`Monitoring.StorageWarningThreshold`), so a report that
     fails by it alone is inconclusive. A native origin serves no
     `/pelican/monitoring`, so the directors' tests of a `posixv2` or
     `pstore` origin fail, and it says `director` is critical, and its
@@ -181,5 +182,6 @@ scrapes itself (`framework/testlib/metrics.py`).
   - `restored`: deleting the change must get 200, and restart XRootD
     again, after which the same must hold.
 
-The suite raises each server's log level for a minute at most, and
-deletes every change it made when it ends.
+The suite raises each server's log level for a minute at most, but for
+`delete`'s change, which it deletes at once, and deletes every change
+it made when it ends.

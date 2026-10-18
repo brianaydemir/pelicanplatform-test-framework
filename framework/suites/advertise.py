@@ -37,7 +37,7 @@ Server.AdvertisementInterval (30 seconds here), replaces: each is built
 from what the director says of the server (/api/v1.0/director_ui/
 servers/<name>), and lasts 90 seconds. After each scenario that does,
 every director must name each server it touched again, within 150
-seconds, or the scenario's `restored` row fails.
+seconds, or a row of the scenario fails.
 
 It puts an object of its own at every origin, in the first protected
 namespace, or in /public where the origins export only that

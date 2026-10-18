@@ -22,8 +22,8 @@ framework/testlib/owners.py).
               sides of each pair: GET, HEAD, PUT, and DELETE straight to
               the side's origins, and GET and HEAD to each cache
   get, direct-get, put, cross-get, cross-put
-              the client: each owner's objects through a cache and from
-              its origin, an upload with origin-2's token, and each
+              the client: origin-2's objects through a cache and from
+              origin-2, an upload with origin-2's token, and each
               owner's token in the other's namespace
 
 `ready` runs first, whatever else is asked for, since nothing else can

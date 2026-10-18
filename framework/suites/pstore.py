@@ -1540,7 +1540,7 @@ class Backups:
         """Check that backups keep to schedule, and only the newest stay.
 
         Once BACKUPS_KEPT + 1 backup passes have begun: `schedule`, the
-        backups must be an interval apart, give or take INTERVAL_SLACK,
+        backups must be an interval apart, or up to INTERVAL_SLACK more,
         and none of their passes failed; `files`, the directory must hold
         BACKUPS_KEPT backups, the startup one pruned, each named for when
         it was written and beginning with the format's magic, no

@@ -71,9 +71,11 @@ watchdog, which abandons a pass that has printed nothing for 20 minutes,
 or has run for 90, so that a scenario stuck on a server that never
 answers cannot stall a run (`STALL_SECONDS` and `BUDGET_SECONDS` in
 `test.py`). A run of everything first removes earlier runs' results with
-the same tag. `transfers` has a row per
-scenario, and one per `served-by-*` check; `auth` and `owners` have one
-per request, and per document their `keys` check fetches. To read one:
+the same tag. `transfers` has a row per scenario, one per
+`served-by-*` check, and `read-back`, should a pstore origin fail to say
+what it holds; `auth` and `owners` have one per request (but per server
+for `auth`'s climbs and `expired-in-use`), and `auth` one per document
+its `keys` check fetches. To read one:
 
 ```sh
 column -t -s "$(printf '\t')" framework/var/results/transfers.tsv

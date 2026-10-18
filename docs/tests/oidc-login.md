@@ -17,10 +17,11 @@ starts), and logs every request in `framework/var/data/idp/requests.log`,
 one JSON object per line, never a secret. `framework/testlib/oidc.py`
 plays the browser.
 
-A server begins a login by sending the user to the provider's
-authorization endpoint (`/api/v1.0/auth/oauth/login`; `handleOAuthLogin`
-in `web_ui/oauth2_client.go`), naming its client, its callback, and a
-state, which it keeps in a session cookie too. The user logs in at the
+A server begins a login at its login route
+(`/api/v1.0/auth/oauth/login`; `handleOAuthLogin` in
+`web_ui/oauth2_client.go`) by sending the user to the provider's
+authorization endpoint, naming its client, its callback, and a state,
+which it keeps in a session cookie too. The user logs in at the
 provider, which sends them back to the callback with a code; the server
 checks the state against its cookie, trades the code for tokens at the
 provider, asks its userinfo endpoint who the user is, finds or makes its
@@ -29,7 +30,7 @@ callback is on `OIDC.ClientRedirectHostname`, `localhost` and the
 server's published port, for a browser on the host; the suite follows it
 to the server's own host instead. The suite skips without the provider.
 A scenario with several cases records a row per case, named `<scenario>
-<case>`; the first four ask every server of the shape, by web URL.
+<case>`; the first two ask every server of the shape, by web URL.
 
 - `enabled`: each server's `/api/v1.0/auth/oauth` must list each module
   it runs (`listOIDCEnabledServersHandler`), and its login route answer
@@ -54,7 +55,7 @@ A scenario with several cases records a row per case, named `<scenario>
   must walk to the next claim of `Server.AutoEnrollUsernameClaims`, the
   email, for the username (`LookupOrBootstrapUser` in
   `database/collection.go`), and give them no admin role, nor the
-  admin's routes (403 for `GET /api/v1.0/users`).
+  admin's routes (401 or 403 for `GET /api/v1.0/users`).
 - `registry-identity`: `pelican namespace register --with-identity` of
   a prefix of the run's. The registry starts the provider's device flow
   (`cliRegisterNamespace` in `registry/registry.go`) and hands the

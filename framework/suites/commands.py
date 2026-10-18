@@ -22,9 +22,11 @@ NEEDS), e.g. every write under `-p origin-no-direct`, must be refused,
 and change nothing.
 
 The *-no-token scenarios check that the client itself refuses, for want
-of a token (Error code 4010), before it asks any server. Each command's
-token is of the session's profile; the tree is put in place, and the
-stores checked, with WLCG tokens either way.
+of a token (Error code 4010), before it asks any server; or, at a
+standalone origin, which has no director to say that a token is needed,
+that the origin refuses. Each command's token is of the session's
+profile; the tree is put in place, and the stores checked, with WLCG
+tokens either way.
 
 These commands' exit status says little about what went wrong (mostly
 1 or 11), so failures are judged by what they print (see

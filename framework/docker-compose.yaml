@@ -1,7 +1,8 @@
 ---
-# The full topology. Run it through ./fed.sh: every variable below comes
-# from fed.sh (framework/environment.cfg, presets/default.sh, and the
-# presets) and has no fallback here on purpose.
+# The full and `standalone` topologies (`standalone` without the
+# `federation` profile). Run it through ./fed.sh: every variable below
+# comes from fed.sh (framework/environment.cfg, presets/default.sh, and
+# the presets) and has no fallback here on purpose.
 
 name: pelican
 

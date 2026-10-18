@@ -16,10 +16,11 @@ per cache, so that each is cold where it is first read. Whether a cache
 holds an object it asks with a HEAD with `Cache-Control:
 only-if-cached`, which gets 200 if it holds all of it, and 504 if not
 ([cache freshness](cache-freshness.md)). A site-local cache serves the
-same APIs, and is left to `sitelocal`. XRootD caches serve none of them
-but prestage, through the xrdhttp-pelican plugin, so only `prestage
-client` asks them. A scenario records a row per case, named `<scenario>
-<case>`.
+same APIs, but no suite asks it
+([what is not tested](what-is-not-tested.md)). XRootD caches serve none
+of them but prestage, through the xrdhttp-pelican plugin, so only
+`prestage client` asks them. A scenario records a row per case, named
+`<scenario> <case>`.
 
 - `prestage`: `GET /pelican/api/v1.0/prestage?path=<path>` fetches an
   object whole, and streams its progress in chunked `text/plain` lines,
@@ -155,7 +156,7 @@ client` asks them. A scenario records a row per case, named `<scenario>
   rows fail, on main and v26.0.0-rc.3 alike. A cache whose verify finds
   the object valid has not seen the corruption, as where it holds the
   block in memory (`-p cache-memory`), and leaves all three rows
-  inconclusive.
+  inconclusive; a cache with no chaos API leaves them skipped.
   `orphan`: a stray file, named as an object's would be and made an
   hour old, since a metadata scan passes over younger files, planted in
   the cache's store; its metadata scan (`data=false`) must remove it,

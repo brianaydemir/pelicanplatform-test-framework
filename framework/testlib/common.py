@@ -580,8 +580,9 @@ class Federation:
     def issuers(self) -> dict[str, str]:
         """The issuer URL that the origins give each namespace, by name.
 
-        Or that they would give it: /public has no issuer, and the shape
-        may not export every namespace. `<namespace> <URL>` per line.
+        Or that they would give it: /public has no issuer unless it takes
+        writes (`-p origin-public-writes`), and the shape may not export
+        every namespace. `<namespace> <URL>` per line.
         """
         found: dict[str, str] = {}
         for line in self._read("issuer-urls").splitlines():

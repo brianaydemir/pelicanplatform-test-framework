@@ -2,9 +2,9 @@
 
 test.py runs `ready` and `caches` before any other suite, whatever it is
 asked for, since nothing else can pass without them; and it stops if
-`ready` can't pass.
+`ready` can't pass, or `caches` finds no cache that serves.
 
-The suite uploads an object straight to every origin, under
+The suite puts an object in place at every origin's store, under
 /<namespace>/data/federation/<run>/, and reads it back:
 
   ready      through the federation (the director and a cache), with
@@ -17,19 +17,20 @@ The suite uploads an object straight to every origin, under
   approval   under `-p registry-approval`, where nothing serves until
              an administrator approves its registration, `ready`
              approves every pending one through the registry's admin
-             API before it waits, and first asks the directors where
-             they would send the object: none may name a server whose
-             registration was still pending; inconclusive where none
-             was, as on a rerun
+             API before each of its tries, and first asks the directors
+             where they would send the object: none may name a server
+             whose registration was still pending; inconclusive where
+             none was, as on a rerun
   directors  each director must name every federated cache for it, and
              no site-local one, and every origin; and, for a client's
              direct read (?directread), every origin, or where the
              namespace takes no direct clients, no origin, answering 405;
              within 60 seconds (not in the tiny topology)
   discovery  where a Pelican server serves the federation's discovery
-             document (the tiny topology's director, or a standalone
-             origin), it names the federation's servers as fed.sh does,
-             and its jwks_uri the server's own keys
+             document (a director under `-p director-discovery`, the
+             tiny topology's director, or a standalone origin), it names
+             the federation's servers as fed.sh does, and its jwks_uri
+             the server's own keys
   broker     under `-p origin-broker`, each director names origin-0's
              connection broker, for an origin, and so does its list of
              servers, which names none for a cache; within 60 seconds
@@ -52,13 +53,15 @@ The suite uploads an object straight to every origin, under
              takes writes, and otherwise nowhere that takes it. What
              lands at a cache must be served, and what lands at an
              origin only where the namespace takes direct clients
-  presence   with several origins, an object that one of them alone
-             holds: each director must send an origin's read of it,
-             plain and for a client's direct read, to that origin alone,
-             by asking the origins which has it
-             (Director.CheckOriginPresence, on by default); and it must
-             come back through each cache, and by `pelican object get`,
-             through a cache and direct
+  presence   with several origins of stores of their own, an object
+             that one of them alone holds: each director must send an
+             origin's read of it, plain and for a client's direct read,
+             to that origin alone, by asking the origins which has it
+             (Director.CheckOriginPresence, on by default), or where the
+             namespace takes no direct clients, find none (405) for the
+             direct read; and it must come back through each cache, and
+             by `pelican object get`, through a cache, and direct where
+             the namespace takes direct clients
   downtime   a server's admin declares it down through its web API, as
              before maintenance: within 150 seconds no director may
              name it, and once the downtime is ended, every director
@@ -77,6 +80,7 @@ the federation is no longer starting.
 import json
 import os
 import time
+import traceback
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -114,7 +118,8 @@ SCENARIOS = {
 
 # The scenarios that run whatever test.py is asked for.
 REQUIRED = ("ready", "caches")
-# The scenarios that present no token (see suites/__init__.py).
+# The scenarios that present no storage token of the tests' own minting:
+# none at all, or a server admin's (see suites/__init__.py).
 ONE_PROFILE = ("approval", "directors", "discovery", "broker", "hints", "downtime")
 
 # How long `ready` and `caches` wait: tries, and seconds between them.
@@ -746,9 +751,10 @@ def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[s
         # What lands at an origin is served only to direct clients.
         allowed = credentials.decide(ALLOW, caps, "get", direct=where is at_origins) == ALLOW
         if asks_direct and not allowed:
-            if answer.status == 307:
+            if answer.status != 405:
                 problems.append(
-                    f"{what}: redirected, though /{namespace} takes no direct clients"
+                    f"{what} should find no origin (405), since /{namespace} takes no"
+                    + f" direct clients: {answer.describe()}"
                 )
             continue
         if cacheless and meant_for_cache and not allowed:
@@ -1073,7 +1079,18 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     print(f"Probing {fed.url} with /<namespace>/{probe.rel}\n")
     try:
         for name in selected:
-            results.add(name, *RUN[name](probe))
+            if name in REQUIRED:
+                # Nothing else can pass if one of these cannot finish.
+                results.add(name, *RUN[name](probe))
+                continue
+            try:
+                status, note = RUN[name](probe)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                # A bug, or a server answering what the suite can't read:
+                # the scenario fails, and the rest still run.
+                traceback.print_exc()
+                status, note = FAIL, f"{type(e).__name__}: {e}"
+            results.add(name, status, note)
     finally:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach; a

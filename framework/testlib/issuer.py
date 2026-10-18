@@ -61,17 +61,18 @@ ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"  # nosec B10
 # The audience the issuer gives every token: the WLCG profile's "any".
 ANY_AUDIENCE = "https://wlcg.cern.ch/jwt/v1/any"
 
-# The scopes the issuer grants whoever asks, if the client may carry them
-# (isStandardScope in oauth2/issuer/handlers.go).
-STANDARD_SCOPES = frozenset({"openid", "offline_access", "wlcg", "profile", "email"})
-
 # What a client the tests create may carry: what Pelican gives a client
-# that registers itself (handleDynamicClientRegistration), and the scope
-# a share's token carries.
+# that registers itself (handleDynamicClientRegistration), but
+# pelican.transfer; the scope a share's token carries; and the standard
+# scopes that such a client lacks, which the issuer grants whoever asks,
+# if the client may carry them (isStandardScope in
+# oauth2/issuer/handlers.go).
 CLIENT_SCOPES = (
     "openid",
     "offline_access",
     "wlcg",
+    "profile",
+    "email",
     "storage.read:/",
     "storage.modify:/",
     "storage.create:/",

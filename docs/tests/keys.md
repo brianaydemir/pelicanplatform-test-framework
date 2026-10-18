@@ -44,12 +44,12 @@ instead.
   prefixes), so `/protected-a`, which comes after `/public`, never
   learns the key, and `registry-namespace` fails, on v26.0.0-rc.3 and
   main alike; `registry-server`, pushed in a request of its own,
-  passes. A key added while the origins are down (as `smoke.sh`'s
-  `keys rotate all` before its `restart`) is never pushed at all: an
-  origin pushes only a change it sees while it runs, and registering
-  again at startup leaves a registered prefix's keys as they were, so
-  the registry's JWKS lack it for good, and the `registry` suite's
-  `jwks` rows fail after such a rotation.
+  passes. A key added while the origins are down, or just before they
+  restart (as `smoke.sh`'s `keys rotate all` is, before its `restart`),
+  is never pushed at all: an origin pushes only a change it sees while
+  it runs, and registering again at startup leaves a registered
+  prefix's keys as they were, so the registry's JWKS lack it for good,
+  and the `registry` suite's `jwks` rows fail after such a rotation.
 - `hot-rotate`: a new signing key on the origins, and another on the
   first federated V2 cache, each written to sort first, and watched for
   3 minutes, every 15 seconds. Every director must go on naming

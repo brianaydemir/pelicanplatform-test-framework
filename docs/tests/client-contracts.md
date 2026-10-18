@@ -217,14 +217,17 @@ several cases records a row per case, named `<scenario> <case>`.
   left as it was (P10, with overwrites off; `put-object`). `put` of a
   directory to a URL with `?recursive` lays the tree out flat, as `-r`
   would (P6; `put-recursive-query`), and `get` of a collection's URL
-  with `?recursive` brings it back, where the namespace has `Listings`
-  (`get-recursive-query`). stash_plugin, which HTCondor hands a URL
-  with `?recursive` for a tree, must upload the directory to a
-  collection of its own (`plugin-put-recursive-query`), and bring the
-  collection back (`plugin-get-recursive-query`): the plugin lands a
-  download whose destination is a directory under the object's name in
-  it (`parseDestination` in `cmd/plugin.go`), so the tree may come
-  back there, or in the directory itself, and the note says which.
+  with `?recursive` brings it back (`get-recursive-query`).
+  stash_plugin, which HTCondor hands a URL with `?recursive` for a
+  tree, must upload the directory to a collection of its own
+  (`plugin-put-recursive-query`), and bring the collection back
+  (`plugin-get-recursive-query`): the plugin lands a download whose
+  destination is a directory under the object's name in it
+  (`parseDestination` in `cmd/plugin.go`), so the tree may come back
+  there, or in the directory itself, and the note says which. The two
+  `?recursive` gets need `Listings`, and every row from
+  `put-collection` on needs writes: where `/protected-a` takes none,
+  one row, `put`, skips in their place.
 - `preferred-cache-down`: `pelican object get --cache
   https://<cache>:1,+`, a preferred cache that answers nothing (no
   server listens on port 1) and then, with `+`, the director's caches:

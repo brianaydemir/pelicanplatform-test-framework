@@ -53,6 +53,10 @@ exercise, or not in a way that would catch a fault:
   the cache, since the `transfers` suite's `served-by` checks skip.
 - `topo-multi-origin`: no read with one replica down; `restart` fails
   over only between caches.
+- `topo-site-local-cache`: of cache-2, only its reads, a refusal, a
+  listing, and what it leaves in a federated cache (`sitelocal`); the
+  suites that check a cache's own APIs, the freshness of its copies, or
+  its block boundaries ask only the federated caches.
 - `origin-pstore`: of `pelican-server origin pstore`, which runs with
   the origin stopped, `fsck --repair`, and a restore opened with an
   escrowed key (`metadata-backup-key`) rather than the origin's issuer
@@ -71,9 +75,6 @@ exercise, or not in a way that would catch a fault:
 - `origin-metadata-tx`: the rollback of an upload whose event fails is
   checked only for a new object, not for an overwrite, which, by
   Pelican's design, may leave no version at all.
-- `origin-no-direct`: at an XRootD origin, the origin's own refusal of
-  a direct request; only the directors' refusal of a direct read is
-  checked there.
 - `origin-multiuser`: a read through a cache, as the token's user: the
   `users` suite asks the origins directly, and the other suites'
   objects are readable by every user.

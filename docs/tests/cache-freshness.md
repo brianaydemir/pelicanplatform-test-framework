@@ -12,9 +12,10 @@ copy is, with `Cache-Control` and `Age`. The `freshness` suite checks
 both, at each federated cache, with objects of its own under
 `/protected-a/data/freshness/<run>/`, put at every origin. A site-local
 cache's upstream is another cache, whose `Cache-Control` is its own, so
-the suite leaves it to `sitelocal`. XRootD caches do not read
-`Cache-Control` as a V2 cache does, so only `no-negative-cache` asks
-them.
+the suite leaves it out, as `sitelocal` does
+([what is not tested](what-is-not-tested.md)). XRootD caches do not
+read `Cache-Control` as a V2 cache does, so only `no-negative-cache`
+asks them.
 
 Each case needs the origins to send a `Cache-Control` of its own, or
 any. The suite runs the cases in phases, one per value: first those that
@@ -23,11 +24,11 @@ take what the origins send as the shape is, which is nothing, or
 restarts every origin with `Origin.CacheControl` set to it, as the last
 of its configuration layers ([service control](../../README.md#service-control)),
 runs the cases that need it, and restarts the origins again without it.
-Before a phase's cases, and after it, every director must name every
-origin, and every cache answer a HEAD of a probe object, within 150
-seconds; and where the origins take direct clients, each must send the
-value. `ORIGIN_CACHE_CONTROL` reaches Pelican by environment, which no
-file overrides, so the restarts need a shape without it, of native
+Before each such phase's cases, and after it, every director must name
+every origin, and every cache answer a HEAD of a probe object, within
+150 seconds; and where the origins take direct clients, each must send
+the value. `ORIGIN_CACHE_CONTROL` reaches Pelican by environment, which
+no file overrides, so the restarts need a shape without it, of native
 origins, with a control helper, and not the `tiny` topology, whose
 origin is the whole federation's process. Elsewhere, the cases that
 need a restart skip, and say why. A case's row is named `<scenario>
@@ -48,8 +49,10 @@ need a restart skip, and say why. A case's row is named `<scenario>
 - `no-negative-cache`: a GET of an object that no origin holds yet,
   at each cache, must get 404, a V2 cache's a JSON body naming
   `not_found` (or `Not Found`, as v26.0.0-rc.3 spells its `error`); as
-  must one at each director's bare path, followed to
-  wherever it leads. Once every origin holds the object, each must
+  must one at each director's bare path, followed to wherever it leads,
+  unless the directors send it to an origin that takes no direct
+  clients (`-p director-default-origin -p origin-no-direct`), which
+  would only refuse it. Once every origin holds the object, each must
   serve it at the first try. Where there are several origins, a
   director asks them which holds an object, and keeps an answer that
   none does for a minute (`Director.CachePresenceTTL`), so there each

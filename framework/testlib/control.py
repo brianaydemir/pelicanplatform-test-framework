@@ -18,12 +18,13 @@ They talk through files under framework/var/control/:
                       and empty but while restart_with() runs
 
 The helper takes the actions in ACTIONS, one at a time, on the shape's
-services but `dev`, and refuses anything else; `state` only looks. Each call here returns
-once its action is done, and raises ControlError if it failed. A Pelican
-server that is restarted, started, or unpaused must also answer on its
-web port again within SERVE_WAIT seconds. A scenario should put back
-whatever it stops, pauses, kills, or configures, even if it fails; the
-helper puts back what is left only when it stops serving.
+services but `dev`, and refuses anything else; `state` only looks.
+Each call here returns once its action is done, and raises ControlError
+if it failed. A Pelican server that is restarted, started, or unpaused
+must also answer on its web port again within SERVE_WAIT seconds. A
+scenario should put back whatever it stops, pauses, kills, or
+configures, even if it fails; the helper puts back what is left only
+when it stops serving, and the next one to start only the configuration.
 """
 
 import contextlib

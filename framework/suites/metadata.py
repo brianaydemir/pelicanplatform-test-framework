@@ -14,9 +14,11 @@ Objects go under /protected-a/data/metadata/. `fields` and `blob` use
 `pelican object put` through the director; the rest go straight to the
 first origin in framework/var/generated/origins, since the client
 doesn't show the origin's X-Pelican-Metadata-Status. Each upload, MOVE,
-COPY, and DELETE presents a token of the session's profile; the suite
-cleans up, and sees whether the federation serves again, with a WLCG
-token either way.
+COPY, and DELETE presents a token of the session's profile, but those
+that only put in place what a scenario then asks the admin APIs about,
+or what the reconcile sweep must pass over, which present the setup
+token; the suite cleans up, and sees whether the federation serves
+again, with a WLCG token either way.
 
 `queue-admin` and `backpressure` restart the first origin with its
 retries backed off for ten minutes, so that an event the recorder always
@@ -76,6 +78,10 @@ SCENARIOS = {
     "queue-admin": "the publish queue's admin API, for the admin alone: show, retry, delete",
     "backpressure": "a namespace's full queue refuses uploads until it drains (eventual)",
 }
+
+# The scenarios that present no storage token but the setup's, only the
+# first origin's web API tokens (see suites/__init__.py).
+ONE_PROFILE = ("object-metadata-cli", "queue-admin")
 
 # A row: its status and note.
 Row = tuple[str, str]
@@ -383,15 +389,18 @@ class Test:
         common.wait_for(lambda: not missing(), seconds, 1)
         return missing()
 
-    def direct_put(self, data: bytes, name: str, metadata: str) -> web.Response:
+    def direct_put(
+        self, data: bytes, name: str, metadata: str, token: Optional[str] = None
+    ) -> web.Response:
         """Upload data as object name straight to the first origin.
 
-        Its X-Pelican-Object-Metadata is metadata.
+        Its X-Pelican-Object-Metadata is metadata. It presents token, by
+        default the session's.
         """
         return web.request(
             "PUT",
             f"{self.origin.url}{PREFIX}/{name}",
-            token=self.token,
+            token=self.token if token is None else token,
             upload=data,
             headers={"X-Pelican-Object-Metadata": metadata},
         )
@@ -996,7 +1005,7 @@ def cancelled_object(test: Test) -> str:
     name = f"fail-always-{test.run}-reconcile"
     test.made.add(name)
     test.held.add(name)
-    answer = test.direct_put(os.urandom(4096), name, 'step="reconcile"')
+    answer = test.direct_put(os.urandom(4096), name, 'step="reconcile"', test.setup)
     manage = issued(answer, name, "queued")[1]
     cancelled = fetch("DELETE", manage)
     if cancelled.status != 200:
@@ -1014,7 +1023,11 @@ def rejected_object(test: Test) -> str:
     """
     name = f"reject-{test.run}-reconcile"
     test.made.add(name)
-    issued(test.direct_put(os.urandom(4096), name, 'step="reconcile"'), name, "rejected")
+    issued(
+        test.direct_put(os.urandom(4096), name, 'step="reconcile"', test.setup),
+        name,
+        "rejected",
+    )
     return f"{PREFIX}/{name}"
 
 
@@ -1034,7 +1047,7 @@ def observed_object(test: Test) -> str:
     )
     if error:
         raise Problem(error)
-    answer = web.request("HEAD", test.url(name), token=test.token)
+    answer = web.request("HEAD", test.url(name), token=test.setup)
     if answer.status != 200:
         raise Problem(f"HEAD of {name}, written to the store, got {answer.describe()}")
     return f"{PREFIX}/{name}"
@@ -1199,7 +1212,7 @@ def tracked_object(test: Test) -> tuple[str, int]:
     name = f"{test.run}-tracked"
     test.made.add(name)
     data = os.urandom(3000)
-    answer = test.direct_put(data, name, 'step="tracked"')
+    answer = test.direct_put(data, name, 'step="tracked"', test.setup)
     if not answer.ok:
         raise Problem(f"uploading {name} got {answer.describe()}")
     path = f"{PREFIX}/{name}"

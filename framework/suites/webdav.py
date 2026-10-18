@@ -274,7 +274,7 @@ class Test:
     def collection(self, origin: common.Origin, rel: str) -> Optional[bool]:
         """Return whether rel in /protected-a at origin is a collection.
 
-        Ask by a PROPFIND of Depth 0.
+        Ask by a PROPFIND of Depth 0, with the setup token.
 
         Returns:
             True for a collection, False for an object, or None if nothing
@@ -284,7 +284,7 @@ class Test:
             stores.Unreadable: The origin does not say.
         """
         url = at(origin, rel)
-        answer = webdav.propfind(url, "0", self.token)
+        answer = webdav.propfind(url, "0", self.setup)
         if answer.status == 404:
             return None
         try:

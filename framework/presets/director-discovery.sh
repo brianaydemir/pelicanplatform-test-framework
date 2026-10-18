@@ -15,7 +15,9 @@
 # tokens. Pelican's director offers its connection broker by default
 # (Director.EnableBroker), so the document names one at director-0,
 # which the caches then use to reach it, as they would in such a
-# federation.
+# federation. Under `director-ha`, every director serves the metadata,
+# and the federation and its broker are the load balancer's:
+# pelican://director:8444.
 #
 # fed.sh refuses `topo-tiny`, whose director is its discovery host
 # already, and `topo-standalone`, which has no director. Under

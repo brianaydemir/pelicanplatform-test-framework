@@ -7,8 +7,8 @@
 # replaces the other one's containers.
 #
 # YAML anchors cannot cross files: the health check, mounts, secrets,
-# and metadata services below duplicate docker-compose.yaml's. Keep them
-# in sync.
+# and idp and metadata services below duplicate docker-compose.yaml's.
+# Keep them in sync.
 
 name: pelican
 

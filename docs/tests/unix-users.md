@@ -88,13 +88,13 @@ inconclusive.
   `origin_serve/posc.go`), and no other user can make its own there. In
   a full run, the `posc` suite's uploads, with the tests' token, come
   first, so `first` passes, and `second` fails, as does `default-user`.
-  Run alone, into a store with no `.pelican-posc` yet, `default-user`
-  comes first, and `first` fails instead. A failing row's note says who
-  owns `.pelican-posc`. The rename into place runs as the origin's own
-  process (`poscFile.Close`), so `read-only-dir` fails too. It uploads
-  as the `pelican` user, who can stage, since an upload of the `xrootd`
-  user's would be refused for the wrong reason. Both fail on main and
-  v26.0.0-rc.3 alike.
+  Run without `owner`, into a store with no `.pelican-posc` yet,
+  `default-user` comes first, and `first` fails instead. A failing
+  row's note says who owns `.pelican-posc`. The rename into place runs
+  as the origin's own process (`poscFile.Close`), so `read-only-dir`
+  fails too. It uploads as the `pelican` user, who can stage, since an
+  upload of the `xrootd` user's would be refused for the wrong reason.
+  Both fail on main and v26.0.0-rc.3 alike.
 - `min-id`: under multiuser, at each origin, an upload with a token
   that the mapfile maps to `root` (`root`), and one to `daemon`
   (`daemon`), whose uids are below `Origin.MultiuserMinID` (1000 by

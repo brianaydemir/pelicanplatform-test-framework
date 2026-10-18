@@ -14,7 +14,7 @@
 #   ./fed.sh dev [CMD]...         run a shell (or CMD) in the dev container
 #   ./fed.sh test [ARG]...        run ./test.py in the dev container, then
 #                                 keep its output and the services' logs
-#                                 in var/logs/
+#                                 in framework/var/logs/
 #   ./fed.sh control              let a test.py run by hand control services
 #   ./fed.sh status               show containers, presets, and images
 #   ./fed.sh check                exit 0 if fed.sh accepts the presets
@@ -74,8 +74,8 @@ fed_key_others="issuer"
 fed_certs="framework/var/certs/ca.crt framework/var/certs/tls.crt framework/var/certs/tls.key"
 
 #---------------------------------------------------------------------------
-# Compose profiles. Presets call fed_enable_profile. Every profile either
-# Compose file defines:
+# Compose profiles. Presets call fed_enable_profile with one of these,
+# each of which a Compose file defines:
 #
 #   multi-origin      origin-1, a replica of origin-0
 #   multi-cache       cache-1
@@ -92,11 +92,11 @@ fed_certs="framework/var/certs/ca.crt framework/var/certs/tls.crt framework/var/
 #   s3                s3, the backend of s3 and s3v2 origins
 #
 # fed.sh enables four more itself: `federation` (director-0 and the
-# registry) outside the `standalone` topology; `cache` (cache-0) with it,
-# unless the shape runs no cache (`topo-no-cache`); `discovery` (the
-# discovery host) there too, unless director-0 serves the federation's
-# metadata (`director-discovery`); and `external-issuer` (the discovery
-# host) for `auth-external-issuer`.
+# registry) in the `full` topology; `cache` (cache-0) with it, unless
+# the shape runs no cache (`topo-no-cache`); `discovery` (the discovery
+# host) there too, unless director-0 serves the federation's metadata
+# (`director-discovery`); and `external-issuer` (the discovery host) for
+# `auth-external-issuer`.
 
 fed_profiles="multi-origin multi-cache multi-owner multi-director site-local-cache transfer"
 fed_profiles="${fed_profiles} director-ha lab idp metadata monitoring webdav s3"
@@ -457,8 +457,8 @@ if [ "${fed_topology}" = standalone ]; then
     fi
   done
   ! fed_xrootd_origin \
-      || die "Pelican runs a standalone origin only on a native backend, not" \
-             "'${ORIGIN_VARIANT}'"
+      || die "Pelican runs a standalone origin ('topo-standalone') only on a native" \
+             "backend, not '${ORIGIN_VARIANT}'"
   [ "${CACHE_VARIANT}" = v2 ] \
       || die "the 'standalone' topology has no cache, so CACHE_VARIANT" \
              "('cache-xrootd') must be 'v2', not '${CACHE_VARIANT}'"
@@ -582,8 +582,8 @@ fi
 # Only the posixv2 origin has POSC and publishes metadata.
 if [ "${ORIGIN_POSC}" = true ] || [ "${ORIGIN_METADATA}" = true ]; then
   [ "${ORIGIN_VARIANT}" = posixv2 ] \
-      || die "POSC and metadata publishing need the 'posixv2' origin," \
-             "not '${ORIGIN_VARIANT}'"
+      || die "POSC ('origin-posc') and metadata publishing ('origin-metadata') need" \
+             "the 'posixv2' origin, not '${ORIGIN_VARIANT}'"
 fi
 
 # XRootD's POSC plugin (libXrdOssPosc) serves only its posix origin.
@@ -667,6 +667,15 @@ if fed_has_profile multi-owner; then
   fed_exports_namespace public || fed_exports_namespace protected-a \
       || die "a second owner ('topo-multi-owner') mirrors /public and" \
              "/protected-a, but ORIGIN_NAMESPACES ('${fed_namespaces}') has neither"
+  # With /public exported, it exports two prefixes inside it, which
+  # Pelican's HTTPS backends refuse (see above); without, only /other.
+  case "${ORIGIN_VARIANT}" in
+    https|httpsv2)
+        ! fed_exports_namespace public \
+            || die "a second owner ('topo-multi-owner') exports /public/other and" \
+                   "/public/secret, but an '${ORIGIN_VARIANT}' origin takes one export;" \
+                   "drop 'origin-public'" ;;
+  esac
   # Its /public/secret takes a token beside its public exports, which
   # Pelican refuses once the origins serve only caches; with /protected-a
   # exported too, it exports only /other, and no mix.
@@ -746,8 +755,9 @@ fi
 # release yet, and an older cache ignores the setting.
 if [ "${CACHE_TIERING}" = true ]; then
   fed_all_caches_v2 \
-      || die "CACHE_TIERING ('cache-tiered') needs every cache V2, not" \
-             "'${CACHE_VARIANT}' ('cache-xrootd') or '${CACHE_1_VARIANT}' ('cache-mixed')"
+      || die "CACHE_TIERING ('cache-tiered') needs every cache V2, but CACHE_VARIANT" \
+             "('cache-xrootd') is '${CACHE_VARIANT}', and CACHE_1_VARIANT ('cache-mixed')" \
+             "'${CACHE_1_VARIANT}'"
   [ "${fed_topology}" = full ] \
       || die "CACHE_TIERING ('cache-tiered') needs the 'full' topology, not '${fed_topology}'"
   fed_has_profile s3 \
@@ -763,8 +773,9 @@ fi
 # no cache.
 if [ -n "${CACHE_MEMORY_SIZE}" ]; then
   fed_all_caches_v2 \
-      || die "CACHE_MEMORY_SIZE ('cache-memory') needs every cache V2, not" \
-             "'${CACHE_VARIANT}' ('cache-xrootd') or '${CACHE_1_VARIANT}' ('cache-mixed')"
+      || die "CACHE_MEMORY_SIZE ('cache-memory') needs every cache V2, but CACHE_VARIANT" \
+             "('cache-xrootd') is '${CACHE_VARIANT}', and CACHE_1_VARIANT ('cache-mixed')" \
+             "'${CACHE_1_VARIANT}'"
 fi
 if [ -n "${CACHE_MEMORY_SIZE}${CACHE_HIGH_WATER_MIB}${CACHE_LOW_WATER_MIB}" ]; then
   [ "${fed_topology}" != standalone ] \
@@ -2206,7 +2217,7 @@ fed_key_new() {
   target=${2:-}
   [ -n "${target}" ] \
       || die_usage "keys ${verb} needs a target" \
-                   "(try: origins, directors, all, or a service name)"
+                   "(try: origins, directors, issuer, all, or a service name)"
   fed_key_check_target "${target}"
 
   stamp=$(date +%Y%m%d-%H%M%S)
@@ -2543,16 +2554,16 @@ fed_init() {
 #---------------------------------------------------------------------------
 # up and down.
 #
-# Both topologies are one Compose project. Compose leaves behind services
-# whose profile was turned off, so `down` enables every profile, and `up`
-# removes unselected containers itself.
+# Both Compose files are one Compose project. Compose leaves behind
+# services whose profile was turned off, so `down` enables every profile,
+# and `up` removes unselected containers itself.
 
 fed_down() {
   COMPOSE_PROFILES='*' docker compose down --remove-orphans "$@"
 }
 
 # Stop and remove this project's containers that the selection does not
-# start, except dev (which `./fed.sh dev` runs under either topology).
+# start, except dev (which `./fed.sh dev` runs under any topology).
 fed_remove_unselected() {
   keep=" $(docker compose config --services | tr '\n' ' ') dev "
   ids=$(docker compose ps --all --quiet)
@@ -2601,8 +2612,8 @@ fed_up() {
     fi
   fi
 
-  # No --remove-orphans: it would kill a dev container started under the
-  # other topology.
+  # No --remove-orphans: it would kill a dev container started under
+  # another topology.
   COMPOSE_IGNORE_ORPHANS=true docker compose up --detach "$@"
 
   stale=""

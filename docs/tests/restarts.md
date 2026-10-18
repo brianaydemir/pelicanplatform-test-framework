@@ -11,7 +11,7 @@ each back, even after a failure, and comes after every other suite but
 servers are one process. Its objects go under
 `/protected-a/data/restart/<run>/`, put at every origin, and are
 removed afterward. A scenario with several cases records a row per
-case, named `<scenario> <case>`, or `<scenario> <service> <case>`. The
+case, named `<scenario> <case>`, or `<scenario> <service>`. The
 `transfer-api` suite's `restart` covers a transfer job interrupted by a
 restart, and `freshness`'s `stale-if-error` a stale copy served while
 every origin is stopped.
@@ -22,30 +22,30 @@ every origin is stopped.
   `state-survives` restarts director-0, in the pass before). Restarted,
   and once every director names it again (within 150 seconds, timed in
   the note), it must serve each from its store, intact, with `Age` for
-  a V2 cache, and the native origins must have sent less than an
-  object's worth of bytes for GETs meanwhile (`pelican_http_bytes_total`;
-  `selftest`'s `restart-cache` does the same for cache-0 and one
-  object). An XRootD cache sends no `Age`, so there the origins'
-  counters alone tell; over XRootD origins, which keep none, the bytes
-  alone must be right.
+  a V2 cache (`selftest`'s `restart-cache` does the same for cache-0
+  and one object), and the native origins must have sent less than an
+  object's worth of bytes for GETs meanwhile
+  (`pelican_http_bytes_total`). An XRootD cache sends no `Age`, so
+  there the origins' counters alone tell; over XRootD origins, which
+  keep none, the bytes alone must be right.
 - `state-survives`: before origin-0, director-0, and the registry
   restart, the suite records each origin's and cache's ID and name, as
   it records them itself (`/api/v1.0/server/localMetadata`), and the
   servers the registry lists; and at the issuer origin, with the
-  origins' own issuer (the `issuer` row and the rest below skip with
-  the external one), it makes a user, a group, an API token of the
-  `monitoring.scrape` scope, a downtime declared for tomorrow, a client
-  of the namespace issuer's, and a refresh token through it. Each
-  restart must end with every director naming origin-0, or for
-  director-0 every server, again within 150 seconds (`restarts`).
-  Afterward each server's ID and name must be as
-  recorded (`ids`); the registry must list the same servers, none twice
-  (`registrations`); the user and the group must be there, with their
-  IDs (`accounts`); the API token must still read `/metrics` and be
-  listed (`api-token`); the downtime must still be declared
-  (`downtime`); and the refresh token must refresh, with the client's
-  secret (`issuer`): the issuer signs its tokens with a key it derives
-  from a master key in its database (`oauth2/issuer/provider.go`).
+  origins' own issuer (with the external one, or none, the `issuer` row
+  skips, and the rest below are left out), it makes a user, a group, an
+  API token of the `monitoring.scrape` scope, a downtime declared for
+  tomorrow, a client of the namespace issuer's, and a refresh token
+  through it. Each restart but the registry's must end with every
+  director naming origin-0 again within 150 seconds (`restarts`).
+  Afterward each server's ID and name must be as recorded (`ids`); the
+  registry must list the same servers, none twice (`registrations`);
+  the user and the group must be there, with their IDs (`accounts`);
+  the API token must still read `/metrics` and be listed (`api-token`);
+  the downtime must still be declared (`downtime`); and the refresh
+  token must refresh, with the client's secret (`issuer`): the issuer
+  signs its tokens with a key it derives from a master key in its
+  database (`oauth2/issuer/provider.go`).
   What the suite made is removed afterward.
 - `ad-expiry`: the first federated cache, and with several origins the
   last origin, once every director names it (within 150 seconds, since
@@ -101,7 +101,8 @@ every origin is stopped.
   endpoint for a second before it downloads, so a cache that answers
   nothing may be tried last rather than fail. Afterward the cache is
   unpaused, or started, and every director must name it again within
-  150 seconds (`back`).
+  150 seconds (`back`). Each row's case begins with `paused` or
+  `killed`, as in `paused early`.
 - `peer-director`, with several directors: the second killed, the first
   must list only itself at `/api/v1.0/director/directors` within
   `Server.AdLifetime` and 30 more, since its peer's ad has expired

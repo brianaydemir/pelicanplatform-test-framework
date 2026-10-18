@@ -31,10 +31,11 @@ The suite acts as each server's admin, and as an ordinary user
 own making (credentials.web_token()), since every
 server guards it (Monitoring.MetricAuthorization, on by default).
 `log-level` and `log-redaction` raise each server's log level, each
-change for at most a minute, and delete their changes when they are
-done. `log-level-xrootd` restarts XRootD at the first XRootD origin and
-cache twice, and waits until it serves again. `http-metrics` writes
-under data/observability/<run>/, which the suite removes afterward.
+change for at most a minute but the one `log-level` deletes at once,
+and delete their changes when they are done. `log-level-xrootd`
+restarts XRootD at the first XRootD origin and cache twice, and waits
+until it serves again. `http-metrics` writes under
+data/observability/<run>/, which the suite removes afterward.
 
 Only `http-metrics` and `log-redaction` present storage tokens, of the
 session's profile; the rest present tokens of the servers' web APIs,

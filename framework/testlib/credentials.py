@@ -570,7 +570,7 @@ def mint_credential(
     `token create` logs an error, but writes the token anyway, when the
     key does not match the issuer, which is the point of `unknown` and
     `jwks`, and when the issuer has no keys to fetch, as for /public,
-    which has no issuer.
+    which has no issuer unless it takes writes.
 
     Returns:
         When the token expires, in seconds since the epoch; None for

@@ -640,6 +640,8 @@ def read_cinfo(cache: common.Cache, rel: str) -> tuple[Optional[Cinfo], str]:
             return parse_cinfo(f.read()), ""
     except FileNotFoundError:
         return None, f"framework/var/{target} is missing"
+    except OSError as e:
+        return None, f"framework/var/{target}: {e.strerror}"
     except ValueError as e:
         return None, f"framework/var/{target}: {e}"
 

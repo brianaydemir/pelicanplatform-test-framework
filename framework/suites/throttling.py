@@ -531,10 +531,11 @@ def timeout_header(test: Test) -> dict[str, Row]:
     The header says how long a client will wait (serveObject in
     local_cache/persistent_cache_api.go):
 
-      short      a cold read with 20ms must get 504 at once
+      short      a cold read with 20ms must get 504 within SHORT_ANSWER
+                 seconds
       queued     a cold read with 2s, sent while another's fetch holds
                  the origin's one slot, so that its own waits, must get
-                 504 within about a second
+                 504 within QUEUED_ANSWER seconds
       held       what the cache holds, with 5s, must come back
       malformed  a cold read with a value that is no duration must come
                  back, the value ignored
@@ -912,10 +913,10 @@ def slow_transfer(test: Test) -> dict[str, Row]:
     The transfers are of objects of SLOW_TRANSFER_SIZE:
 
     direct         `pelican object get --direct`, with SLOW_ENV, must
-                   fail with Transfer.SlowTransfer (6002), and leave
-                   nothing (handle_http.go's downloadHTTP)
-    plugin-direct  stash_plugin, with ?directread, likewise, and exit
-                   11, its ad saying TransferRetryable = true
+                   fail with Transfer.SlowTransfer (6002), exit 11, and
+                   leave nothing (handle_http.go's downloadHTTP)
+    plugin-direct  stash_plugin, with ?directread, likewise, its ad
+                   saying TransferRetryable = true
     default        each client, with the default thresholds, must get
                    the object: direct, or where the origins take no
                    direct clients, through the first V2 cache

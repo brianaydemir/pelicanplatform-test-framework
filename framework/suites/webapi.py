@@ -29,8 +29,9 @@ server once, and later runs reuse. Each agrees to the server's AUP first
 (accounts.agree_to_aup()), which every server has by default, and
 without which it refuses them its user routes, as an admin's first login
 would. As the admin, it sends no admin route
-that would change anything, but the registry's on a registration and a
-server that do not exist; and, with no credentials or the user's, the
+that would change anything, but those that make `test-webapi` and API
+tokens, and the registry's on a registration and a server that do not
+exist; and, with no credentials or the user's, the
 routes that restart a server and change its configuration and AUP, which
 must refuse them. It spaces its logins at each server a second apart,
 since a server allows an address a login a second

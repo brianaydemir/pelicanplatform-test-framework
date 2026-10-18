@@ -50,9 +50,10 @@ either pass, for putting objects in place and reading the stores. A
 token a suite mints itself takes the session's profile too
 (`credentials.mint()` and its kin require one). A suite names its
 `ONE_PROFILE` scenarios, which present no storage token of the tests'
-own minting, and so run in the WLCG pass alone. A suite that keeps
-files under `framework/var/data/` for people to read keeps each pass's
-apart, with `session.var_dir()`.
+own minting, or make a check that no other profile can, and so run in
+the WLCG pass alone. A suite that keeps files under
+`framework/var/data/` for people to read keeps each pass's apart, with
+`session.var_dir()`.
 
 A suite records a row per case ([Results](ci.md#results)), named
 `<scenario>` or `<scenario> <case>`, through `testlib.report`. A row the
@@ -68,16 +69,16 @@ is a change to its page.
 `framework/testlib/control.py` has a function for each action the
 helper takes (`restart`, `stop`, `start`, `pause`, `unpause`, and
 `kill`), each of which returns once the action is done, and for a
-restart, once the server answers again; `state()`, which asks what
-state a service's container is in, for a test to notice a server that
-exited on its own, and start it again; `restart_with()`, which
-configures a service for the length of a `with` block; and
-`unavailable()`, which says why the tests can't control services here,
-if they can't. Its docstring describes the files under
-`framework/var/control/` by which the tests and the helper talk. A
-scenario should put back whatever it stops, pauses, kills, or
+restart, a start, or an unpause, once the server answers again;
+`state()`, which asks what state a service's container is in, for a
+test to notice a server that exited on its own, and start it again;
+`restart_with()`, which configures a service for the length of a
+`with` block; and `unavailable()`, which says why the tests can't
+control services here, if they can't. Its docstring describes the files
+under `framework/var/control/` by which the tests and the helper talk.
+A scenario should put back whatever it stops, pauses, kills, or
 configures, even if it fails; the helper puts back what is left only
-when it stops serving.
+when it stops serving, and the next one to start only the configuration.
 
 
 ## The smoke matrix

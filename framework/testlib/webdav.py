@@ -35,6 +35,7 @@ class Entry:
 
     Attributes:
         path: The href's path, decoded, without a trailing /.
+        collection: Whether its resourcetype is a collection.
         size: Its getcontentlength; None if none came.
         modified: Its getlastmodified; None if none came.
         etag: Its getetag, as sent; None if none came.

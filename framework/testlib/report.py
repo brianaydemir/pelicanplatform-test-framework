@@ -11,8 +11,9 @@ backslashes, tabs, carriage returns, and newlines are written as \\\\,
 \\t, \\r, and \\n, so each row is one line, and
 `column -t -s "$(printf '\\t')"` lines the columns up.
 
-The suite is the suite's name, with `-<tag>` after it if RESULTS_TAG
-names a tag (as smoke.sh does, to tell apart two runs of one suite).
+The suite is the suite's name (with `-scitokens` after it for its
+SciTokens pass), with `-<tag>` after that if RESULTS_TAG names a tag
+(as smoke.sh does, to tell apart two runs of one suite).
 framework/report.py merges these files and converts them to JUnit XML
 and Markdown.
 

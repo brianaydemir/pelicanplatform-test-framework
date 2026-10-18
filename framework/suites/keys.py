@@ -14,12 +14,13 @@ and a pstore origin must keep the keys that sealed their stores. It
 runs last: a rotation takes a server out of every director's routing
 until each is put back, and what it leaves in the servers' key caches
 lasts up to 15 minutes. It skips under `-p server-unprivileged`, whose
-servers' keys the host may not write. The scenarios:
+servers' keys the host may not write, and the tiny topology, whose one
+process holds every key. The scenarios:
 
-  hot-add      a verify-only key added to the origins shows in their
-               JWKS, and the registry's for the namespace and for
-               origin-0, within 2 minutes, and goes when it is removed;
-               no director drops an origin meanwhile
+  hot-add      a verify-only key added to the origins shows in
+               origin-0's JWKS, and the registry's for the namespace and
+               for origin-0, within 2 minutes, and goes when it is
+               removed; no director drops origin-0 meanwhile
   hot-rotate   a new signing key on the origins, and another on the first
                V2 cache, for 3 minutes: whether every director goes on
                naming origin-0 and the cache (they don't), how
@@ -79,8 +80,8 @@ from testlib.session import Session, last_line
 
 SCENARIOS = {
     "hot-add": (
-        "a verify-only key added to the origins reaches their JWKS and the registry's within"
-        " 2 minutes, and goes when removed; the directors keep naming them"
+        "a verify-only key added to the origins reaches origin-0's JWKS and the registry's"
+        " within 2 minutes, and goes when removed; the directors keep naming origin-0"
     ),
     "hot-rotate": (
         "a new signing key on the origins and the first V2 cache: the directors' routing,"

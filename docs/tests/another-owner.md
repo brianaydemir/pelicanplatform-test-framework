@@ -16,9 +16,10 @@ suites test only the origins' namespaces. The `owners` suite checks:
 - `ready`: origin-2's objects come back through the federation and from
   each cache, with 20 tries, 15 seconds apart. It runs first, whatever
   else is asked for; if origin-2 never serves, the suite stops.
-- `keys`: origin-2's server-wide JWKS, and its issuer's for `/other`,
-  hold its keys, and none of the origins' or the test keys; the origins'
-  hold none of its.
+- `keys`: origin-2's server-wide JWKS, and its issuer's for each export
+  that has one (`/other`, `/public/secret`, and `/public/other` where
+  `/public` takes writes), hold its keys, and none of the origins' or
+  the test keys; the origins' hold none of its.
 - `routing`: each director sends a client's direct read (`?directread`)
   of origin-2's prefixes to it alone, and of the origins' to them alone;
   where an export takes no direct clients, the director must find no

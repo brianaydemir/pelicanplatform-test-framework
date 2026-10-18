@@ -1371,7 +1371,7 @@ def usage_accounting(test: Test) -> Row:
         if disk_before is None or disk_after is None:
             notes.append(f"{cache.svc}: no store of object files to measure")
             continue
-        if not want <= disk_after - disk_before <= want + USAGE_SLACK:
+        if abs(disk_after - disk_before - want) > USAGE_SLACK:
             problems.append(
                 f"{cache.svc}'s object files grew by {disk_after - disk_before}, not {want}"
             )

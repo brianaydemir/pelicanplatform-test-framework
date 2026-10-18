@@ -9,7 +9,7 @@ whose servers are one process. It comes after every other suite but
 `keys`, since it takes servers away for a while. Its objects go under
 /protected-a/data/restart/<run>/, put at every origin, and are removed
 afterward. A scenario with several cases records a row per case, named
-`<scenario> <case>`, or `<scenario> <service> <case>`. The scenarios:
+`<scenario> <case>`, or `<scenario> <service>`. The scenarios:
 
   cache-restart    each cache, restarted, serves the objects it held
                    from its store, with Age for a V2 cache, and the
@@ -903,11 +903,11 @@ def backend_outage(test: Test) -> list[Row]:
     takes direct clients, a GET and a HEAD of an object, and a PUT of a
     new one, must each get a server error (5xx), never 404 or 405, nor
     the object's bytes (`direct`); through the first federated cache, a
-    GET of an object it does not hold must get no 404 either (`cache`);
-    and for an `ssh` origin, its health must say its backend is not ok
-    within HEALTH_WAIT seconds (`health`). Once the service is back, the
-    origin must serve the object again within BACKEND_WAIT seconds,
-    without a restart, as must the cache (`recovered`).
+    GET of an object it does not hold must get a server error too
+    (`cache`); and for an `ssh` origin, its health must say its backend
+    is not ok within HEALTH_WAIT seconds (`health`). Once the service is
+    back, the origin must serve the object again within BACKEND_WAIT
+    seconds, without a restart, as must the cache (`recovered`).
     """
     fed = test.fed
     backend = BACKENDS.get(fed.origin_variant)
@@ -964,7 +964,7 @@ def backend_outage(test: Test) -> list[Row]:
             )
             if answer.status is None:
                 rows.append(("cache", FAIL, f"through {cache.svc}: no answer"))
-            elif answer.status in (404, 405) or answer.ok:
+            elif not 500 <= answer.status < 600:
                 rows.append(
                     (
                         "cache",
@@ -1050,12 +1050,11 @@ def backend_outage(test: Test) -> list[Row]:
         )
         if answer.status != 200 or answer.body != test.objects[test.rel("outage-cold")]:
             problems.append(f"through {cache.svc} once {backend} was back: {answer.describe()}")
-    if component:
+    if component and not common.wait_for(
+        lambda: health_component(test, origin, component) == "ok", HEALTH_WAIT, 5
+    ):
         seen = health_component(test, origin, component)
-        if not common.wait_for(
-            lambda: health_component(test, origin, component) == "ok", HEALTH_WAIT, 5
-        ):
-            problems.append(f"{component} is {seen!r} {HEALTH_WAIT}s after {backend} came back")
+        problems.append(f"{component} is {seen!r} {HEALTH_WAIT}s after {backend} came back")
     rows.append(
         (
             "recovered",

@@ -4,13 +4,13 @@ Part of [What the tests check](README.md).
 
 The credentials are each wrong in one way that `pelican token create`
 can make. The `auth` suite also presents tokens that it cannot,
-which `framework/testlib/jwt.py` signs: each like `server`'s, of the
-pass's [token profile](README.md#token-profiles), with the same header
-and the origins' key, but for one thing. Each check asks
-for the test object in `/protected-a` at every origin and cache, where
-the origins' XRootD servers (`-p origin-xrootd`) and XRootD caches
-(`-p cache-xrootd`) are controls; where the origins take no direct
-clients, every request straight to one must be refused anyway.
+which `framework/testlib/jwt.py` signs: each but `web-token-strict`'s
+like `server`'s, of the pass's [token profile](README.md#token-profiles),
+with the same header and the origins' key, but for one thing. Each such
+check asks for the test object in `/protected-a` at every origin and
+cache, where the origins' XRootD servers (`-p origin-xrootd`) and XRootD
+caches (`-p cache-xrootd`) are controls; where the origins take no
+direct clients, every request straight to one must be refused anyway.
 
 - `time-claims`: native servers allow 60 seconds of clock skew on each
   of a token's times, as the WLCG token profile recommends, and no more
@@ -22,11 +22,12 @@ clients, every request straight to one must be refused anyway.
 - `expired-in-use`: a token that lasts 30 seconds, presented at once and
   then every 30 seconds for three minutes, must be taken before it
   expires, and refused from 70 seconds past its expiry on; in between,
-  either. The row's note lists what each server answered, and when.
-  Pelican's native origin and V2 cache keep what a token authorizes for
-  5 minutes from its last use, and check its expiry only when they first
-  see it (`origin_serve/authz.go` and `local_cache/cache_authz.go`), so a
-  token in use never expires there, and the rows fail, on main and
+  either. The row's note lists what each server answered, and when. An
+  origin that takes no direct clients is not asked. Pelican's native
+  origin and V2 cache keep what a token authorizes for 5 minutes from
+  its last use, and check its expiry only when they first see it
+  (`origin_serve/authz.go` and `local_cache/cache_authz.go`), so a token
+  in use never expires there, and the rows fail, on main and
   v26.0.0-rc.3 alike. The check runs beside the suite's others, in a
   thread of its own, and its rows come last. Unlike the `expired`
   credential, whose wait sidesteps that memory, it tests it.

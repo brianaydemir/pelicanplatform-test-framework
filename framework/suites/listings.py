@@ -55,9 +55,11 @@ SCENARIOS = {
     "cache-depth-1": "each cache: Depth 0 and 1 of a collection, as the origins list it",
     "cache-infinity": "each cache: Depth infinity, as at the origins",
     "cache-body": "each cache: Depth 1 with a propfind body, as the client sends",
-    "protected-a-no-token": "listing /protected-a with no token is refused everywhere",
-    "protected-a-scope": "listing /protected-a with a token for elsewhere is refused everywhere",
-    "public-no-token": "listing /public with no token is allowed everywhere",
+    "protected-a-no-token": "listing /protected-a with no token is refused by every origin and cache",
+    "protected-a-scope": (
+        "listing /protected-a with a token for elsewhere is refused by every origin and cache"
+    ),
+    "public-no-token": "listing /public with no token is allowed by every origin and cache",
     "new-object": "an object is listed as soon as it is uploaded, and not once removed",
     "collection-get": "a GET of a collection is no object's bytes, and no cache keeps it as one",
     "html-links": "each origin's HTML listing links to each object by its name, and no decoy",
@@ -925,9 +927,10 @@ def html_links(test: Test) -> tuple[str, str]:
     there is one, its listing. Every entry must have a link. A native
     origin's listing must carry Cache-Control: no-store, as Pelican sends
     it, so that no cache keeps it. An origin that answers no HTML
-    listing, as only a native origin over storage on its own host does,
-    is passed over, and named in the note; collection-get fails it. The
-    origins are asked only if they take direct clients.
+    listing (of the native origins, only one over storage on its own
+    host answers one) is passed over, and named in the note;
+    collection-get fails it. The origins are asked only if they take
+    direct clients.
     """
     caps = test.caps("protected-a")
     if not may_list(caps, "0", "origin"):

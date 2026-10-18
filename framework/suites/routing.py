@@ -703,6 +703,7 @@ class Redirects:
         # without), goes in Location, and Location alone serves.
         answer = ask(self.target, token)
         found = self.redirect("header-token", answer)
+        namespace = answer.header("X-Pelican-Namespace")
         listed: list[str] = []
         if found is not None:
             if found.get("authz") != [token]:
@@ -758,6 +759,12 @@ class Redirects:
             self.note("no-redirect", f"{answer.describe()}, Location {location!r}: not 200")
         elif not answer.header("X-Pelican-Namespace"):
             self.note("no-redirect", "no X-Pelican-Namespace")
+        elif answer.header("X-Pelican-Namespace") != namespace:
+            self.note(
+                "no-redirect",
+                f"X-Pelican-Namespace {answer.header('X-Pelican-Namespace')!r},"
+                + f" not the redirect's {namespace!r}",
+            )
         elif set(self.link("no-redirect", answer)) != set(listed):
             self.note("no-redirect", "Link lists other servers than the redirect's")
 
@@ -1278,7 +1285,8 @@ def filtered_routing(test: Test, name: Optional[str]) -> tuple[str, str]:
 
     With FilteredServers naming the last cache (name), no director may
     name it, by the object route or the bare path, asked FILTERED_ASKS
-    times each; and each must still name the other caches.
+    times each; and, by the object route, each must still name the
+    other caches.
     """
     why = unlisted(test, name)
     if why:

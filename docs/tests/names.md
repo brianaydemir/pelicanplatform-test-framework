@@ -12,7 +12,9 @@ mishandles the encoding would take for its own: `x%41y` beside `xAy`,
 `a+b` and `a%20b` beside `a b`, `hash#tag` beside `hash`, and
 `what?q=1` beside `what`. Every object is a different size. A URL
 percent-encodes every character of a name but letters, digits, and
-`-._~`, and so does what the client is given.
+`-._~`, and so does what the client is given. Of origins that share a
+store (`-p origin-ssh -p topo-multi-origin`), only the first is asked,
+here and below.
 
 - A PUT of each name must land in each store under exactly that name,
   and nothing else may: in a store on disk as a file, with its bytes;

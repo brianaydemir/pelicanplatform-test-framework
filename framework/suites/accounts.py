@@ -31,8 +31,9 @@ reuse. The scenarios:
   scope-grants      the scopes the admin grants a user: server.user_admin
                     (no power over the admin, nor to grant), and
                     pelican.log_read and server.collection_admin, each
-                    obeyed at once, and revoked at once, an API token of
-                    the scope with it; a data scope is refused
+                    obeyed at once, and revoked at once; an API token of
+                    the latter, the admin's alone; a data scope is
+                    refused
   authority-groups  the configured groups' names are reserved; their
                     members are collection administrators and server
                     administrators, from their next login; the
@@ -529,9 +530,9 @@ def scope_grants(test: Test) -> list[Row]:
 
     The admin grants a user scopes (POST /users/:id/scopes), which the
     server consults on each request: server.user_admin, pelican.log_read,
-    and server.collection_admin. An API token of server.collection_admin,
-    which the user makes while granted it, goes with the grant. A data
-    scope is refused (400).
+    and server.collection_admin. Only the admin may make an API token of
+    server.collection_admin, which is refused once deleted. A data scope
+    is refused (400).
     """
     admin = test.api("admin")
     rows: list[Row] = []

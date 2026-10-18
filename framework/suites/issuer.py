@@ -71,8 +71,8 @@ browsers, which has no secret. The scenarios:
               grant, a wrong secret, an unknown client
   device      the device flow's own rules: the consent page, polling
               before approval and too fast, a code redeemed by another
-              client, twice, or approved twice, a denied flow, an
-              approval by nobody, an unknown code
+              client, twice, or approved twice, a denied flow, the
+              page shown to nobody, an unknown code
   data        what the tokens allow: reads and writes straight at every
               origin, and reads through the federation and at each cache
   refresh     a refresh token works, once, and the tokens it gives work
@@ -765,9 +765,10 @@ class Request:
 def carried(wanted: str) -> bool:
     """Return whether a client may carry wanted.
 
-    The client is allowed issuer.CLIENT_SCOPES.
+    The client is allowed issuer.CLIENT_SCOPES, which bound the standard
+    scopes too.
     """
-    if wanted in issuer.STANDARD_SCOPES or wanted in issuer.CLIENT_SCOPES:
+    if wanted in issuer.CLIENT_SCOPES:
         return True
     action = wanted.split(":", 1)[0]
     return f"{action}:/" in issuer.CLIENT_SCOPES

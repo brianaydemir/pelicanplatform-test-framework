@@ -579,9 +579,9 @@ HTTP_RULES: dict[tuple[str, int], str] = {
     ("server", 403): "server",
     ("server", 404): "not found",
 }
-# How many redirects a plain HTTP client follows, as curl -L does by
-# default (curl's --max-redirs is 50; a director's redirect is one, and
-# a tiering cache's one more).
+# How many redirects a plain HTTP client follows, as curl -L does, if
+# fewer than curl's default of 50 (--max-redirs): a director's redirect
+# is one, and a tiering cache's one more.
 HTTP_HOPS = 5
 
 

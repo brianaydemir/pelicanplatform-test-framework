@@ -10,7 +10,9 @@
 # The cache is always V2 here, so fed.sh refuses `cache-xrootd`. It also
 # refuses `auth-external-issuer`, since no discovery host serves the
 # issuer; `director-discovery`, since its director is the discovery host
-# already; and every preset that adds a service but `origin-metadata`,
-# `origin-metadata-tx`, and `auth-oidc`.
+# already; `origin-broker`, which brokers origin-0 in a container of its
+# own; `topo-no-cache`, which is the full topology's; and every preset
+# that adds a service but `origin-metadata`, `origin-metadata-tx`, and
+# `auth-oidc`.
 
 TOPOLOGY=tiny

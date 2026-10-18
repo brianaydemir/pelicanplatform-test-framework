@@ -3,9 +3,10 @@
 # Return the checkout to a fresh state. Needs a running Docker daemon.
 #
 #   ./reset.sh          stop everything; discard state, data, keys,
-#                       binaries, certificates, and remembered presets
+#                       binaries, certificates, remembered presets, and
+#                       the dev container's volumes
 #
-# Everything discarded is in framework/var/. local/ and
+# Everything else discarded is in framework/var/. local/ and
 # framework/var/grafana/ are left alone. Afterward, set up again with
 # `./fed.sh init`.
 

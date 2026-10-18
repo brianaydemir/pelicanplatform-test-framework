@@ -24,7 +24,8 @@ replaced by the server's next ad, within `Server.AdvertisementInterval`
 (30 seconds here). After each scenario that changes where the directors
 send clients, every director must name each server it touched again
 within 150 seconds. The directors are asked about an object that the
-suite puts at every origin, in the first protected namespace, at
+suite puts at every origin, in the first protected namespace (or
+`/public`, where the origins export only that), at
 `data/advertise/<run>-probe`, and removes afterward.
 
 - `forged-ads`: origin-0's and the first cache's own ads, posted as
@@ -42,8 +43,10 @@ suite puts at every origin, in the first protected namespace, at
   its own key; origin-0's ad with a namespace that no one registered,
   after which no director may name origin-0 for it; and under
   `-p topo-multi-owner`, origin-2's ad claiming `/protected-a`, after
-  which no director may name origin-2 for it. A director counts no ad
-  that comes without a token (`registerServerAd` returns first), so the
+  which no director may name origin-2 for it. The first seven are tried
+  with each server's ad, in rows named for its kind too, e.g.
+  `origin-no-token` and `cache-no-token`. A director counts no ad that
+  comes without a token (`registerServerAd` returns first), so the
   `no-token` rows fail. It checks an advertise token's signature,
   against the registry's keys for the server's prefix, and its scope,
   and nothing else of it (`verifyAdvertiseToken` in

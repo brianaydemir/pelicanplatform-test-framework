@@ -55,9 +55,10 @@ suite.
   (404), each with a CSRF token that it takes, so that only the
   credentials decide: no credentials must get 401, the user 403, and the
   admin 404; but the registry deletes a server without asking whether it
-  exists (`deleteServerHandler`), so there 200 is accepted too. These
-  are the only admin routes the suite sends as the admin that would
-  change anything, were the IDs real.
+  exists (`deleteServerHandler`), so there 200 and 204 are accepted too.
+  These are the only admin routes the suite sends as the admin that
+  would change anything, were the IDs real, but those that make
+  `test-webapi` and `api-tokens`'s tokens.
 - `api-tokens`, at the first director, logged in as its admin: a POST
   to `/api/v1.0/tokens` for a token of
   `pelican.director_service_discovery` must get 200 or 201 and the

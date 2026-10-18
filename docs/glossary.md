@@ -100,7 +100,9 @@ touches it.
 The host that serves the federation's metadata
 (`/.well-known/pelican-configuration`), which a client looks up from a
 `pelican://` URL: an nginx service, as the OSDF does, or, under
-`-p director-discovery`, director-0.
+`-p director-discovery`, director-0 (with `-p director-ha`, the
+directors' load balancer); under `-p topo-tiny`, `fed`, and under
+`-p topo-standalone`, the origin itself.
 
 ### Namespace
 
@@ -138,8 +140,9 @@ runs, each a set of presets, such as `default` and `pelican-defaults`.
 A named change to the shape, given with `-p`: a short file in
 `framework/presets/`, or `local/presets/`, that sets
 [knobs](#knob). Its name's prefix says what it changes (`topo-`,
-`origin-`, `cache-`, `auth-`, `server-`, or `with-`). Presets combine,
-but those that choose among alternatives set the same knob, and
+`origin-`, `cache-`, `auth-`, `director-`, `registry-`, `server-`, or
+`with-`). Presets combine, but those that choose among alternatives set
+the same knob, and
 `fed.sh` refuses two of them together
 ([README](../README.md#presets)).
 
@@ -233,8 +236,8 @@ it are skipped ([README](../README.md#service-control)).
 ### Watchdog
 
 `test.py`'s guard against a stalled run: it abandons a pass that prints
-nothing for 20 minutes, or runs for 90, records it as `aborted`, and
-goes on to the next.
+nothing for 20 minutes, or runs for 90, records it as `aborted` (or
+`setup`, if it recorded no case), and goes on to the next.
 
 ### Smoke tests
 

@@ -38,9 +38,11 @@ each):
                  the clients; under `-p topo-multi-cache`, client spoils
                  a cache's copy of an object of its own, which the cache
                  then drops
-  transfer-api   restarts the first origin, with the transfer API
-                 configured otherwise, and while a job runs, and waits
-                 until every director names it again
+  transfer-api   restarts the transfer API's host (the first origin, or
+                 `transfer`), with the API configured otherwise, and
+                 while a job runs, a posixv2 first origin slowed
+                 meanwhile, and waits until every director names the
+                 first origin again
   listings, names, blocks
                  restart nothing
   freshness      restarts the origins, to change the Cache-Control they
@@ -50,12 +52,15 @@ each):
   throttling     restarts the origins slowed, and the V2 caches with a
                  small scheduler, and restores them
   exports        restarts the origins with exports of other
-                 capabilities, and copies off, and restores them
+                 capabilities, with copies off, with an export nested in
+                 /public, and reaching their backend through
+                 webdav-gate, and restores them
   pstore         restarts the first origin with its store bounded and
                  its catalog backed up, stops it to restore a backup
                  into its store, and restores it
   routing        under `-p topo-multi-cache`, restarts the directors
-                 with other ways to sort and filter the servers, and
+                 with other ways to sort and filter the servers, and then
+                 the last cache, restricted to one namespace, and
                  restores them
   director-api   waits for the directors' health tests to settle, and
                  under `-p topo-multi-director` posts a cache's own ads
@@ -69,10 +74,12 @@ each):
   issuer, accounts
                  features that not every shape has; each skips where a
                  shape lacks them, but posc, which runs wherever
-                 /protected-a takes writes. posc restarts the first
-                 origin with a short staging timeout; metadata restarts it with
-                 retries put off and its publish queue capped, and again
-                 with a frequent reconcile sweep; users restarts the
+                 /protected-a takes writes, and metadata, which with
+                 publishing off checks only that its queue's admin API
+                 says so. posc restarts the first origin with a short
+                 staging timeout; metadata restarts it with retries put
+                 off and its publish queue capped, and again with a
+                 frequent reconcile sweep; users restarts the
                  origins with a username claim; each restores what it
                  restarted. accounts ends by putting up a new AUP at the
                  issuer origin, which for a moment gates its every user,

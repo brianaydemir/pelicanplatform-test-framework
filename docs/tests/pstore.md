@@ -11,9 +11,10 @@ schedule, a size bound past which it refuses writes, and backups of its
 catalog. The `pstore` suite checks them. Its objects go under
 `/<namespace>/data/pstore/<run>/`, in the first of `/protected-a` and
 `/protected-b` that takes writes, at every pstore origin, and it
-removes them afterward. At another native origin, only `storage-api`'s
-`absent` row runs, and the suite skips XRootD origins. A scenario with
-several cases records a row per case, named `<scenario> <case>`, or
+removes them afterward; where neither takes writes, every row skips.
+At another native origin, only `storage-api`'s `absent` row runs, and
+the suite skips XRootD origins. A scenario with several cases records
+a row per case, named `<scenario> <case>`, or
 `<scenario> <origin> <case>` where it asks each origin. Where other
 suites would read a store on disk, they ask a pstore origin's storage
 API what its catalog holds instead: [names](names.md) its names and
@@ -173,8 +174,8 @@ otherwise the three scenarios skip, and say why. `scheduled-passes` and
     (`process_start_time_seconds`), with its pass counted
     (`pelican_pstore_scheduled_passes_total{pass="metadata_backup"}`).
   - `schedule`: once four backup passes have begun, the backups must be
-    20 seconds apart, give or take 10 (the interval runs from the end of
-    one to the start of the next), and none of the passes may have
+    20 seconds apart, or up to 10 more (the interval runs from the end
+    of one to the start of the next), and none of the passes may have
     failed.
   - `files`: the directory must then hold three backups, the startup
     one pruned, each named for when it was written and beginning with

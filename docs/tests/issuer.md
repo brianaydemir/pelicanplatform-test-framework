@@ -62,12 +62,14 @@ prefix above, with `decoy/obj` in none. So, within the namespace:
 
 The admin creates the suite's clients through the issuer's admin API:
 one for the device flow and one for the authorization code flow, each
-allowed every scope a self-registered client gets and the refresh
-grant; one allowed only `openid` and `storage.read:/` and no refresh
-grant; and one for token exchange. The suite also uses the client every
-issuer seeds for browsers (`Issuer.PublicClientID`), which has no
-secret and proves itself with PKCE. Only `registration` registers a
-client itself (RFC 7591). The scenarios:
+allowed the refresh grant and every scope a self-registered client
+gets but `pelican.transfer`, and `share.access:/`, `profile`, and
+`email`, so that it may carry every standard scope; one allowed only
+`openid` and `storage.read:/` and no refresh grant; and one for token
+exchange. The suite also uses the client every issuer seeds for
+browsers (`Issuer.PublicClientID`), which has no secret and proves
+itself with PKCE. Only `registration`, and the Pelican client in
+`client`, register a client themselves (RFC 7591). The scenarios:
 
 - `discovery`: each namespace issuer's discovery document names itself
   and endpoints under it, offers the four grants, and its JWKS holds
@@ -154,14 +156,14 @@ client itself (RFC 7591). The scenarios:
   past its grace period is `invalid_grant`, and so is the newer one it
   had been traded for: the reuse ends the chain.
 - `exchange` (RFC 8693): the exchange client, allowed `storage.read:/`
-  and `offline_access`, trades `test-member`'s token of everything for
-  one of `archive`'s read alone, which reads `archive/obj`; for a
-  scope it may not carry (`storage.modify`), it gets a token with
-  none; for no scope in particular, it gets the token's reads and
-  `offline_access`, and a refresh token; and it is refused another
-  audience (`invalid_target`), as the device client is refused the
-  grant (`unauthorized_client`) and a subject token that never was
-  (`invalid_grant`).
+  and `offline_access`, trades a token of all `test-member` may read
+  and modify for one of `archive`'s read alone, which reads
+  `archive/obj`; for a scope it may not carry (`storage.modify`), it
+  gets a token with none; for no scope in particular, it gets the
+  token's reads and `offline_access`, and a refresh token; and it is
+  refused another audience (`invalid_target`), as the device client is
+  refused the grant (`unauthorized_client`) and a subject token that
+  never was (`invalid_grant`).
 - `expiry`, under `-p origin-short-tokens` (access tokens last a
   minute, refresh tokens four, and a used refresh token twenty seconds
   more; it skips otherwise): a token's `expires_in` and `exp - iat`
@@ -209,18 +211,19 @@ client itself (RFC 7591). The scenarios:
   `authorization_pending`, and an approval with the token in both
   still works.
 - `admin-clients`: the issuer's admin API for its clients
-  (`/api/v1.0/issuer/admin/ns/<namespace>/clients`) refuses no token
-  (401) and `test-member`'s (403), to list them or to delete one. As
-  the admin, the list holds a client the scenario creates, and neither
-  the list nor a GET of it shows a secret; a client asking for
-  `client_credentials`, which the API does not know, is refused (400).
-  Once the admin drops the refresh grant from the scenario's client,
-  its refresh token is refused (`unauthorized_client`); once it
-  narrows its scopes to `openid` and `archive`'s read, a token through
-  it carries those alone, however much is asked. Changing a client
-  that never was is 404. Once the admin deletes the client (204), its
-  refresh is `invalid_client`, and a second delete is 404. The
-  scenario changes only the client it creates.
+  (`/api/v1.0/issuer/admin/ns/<namespace>/clients`) refuses to list
+  them with no token (401) or `test-member`'s (403), and refuses
+  `test-member` a delete (403). As the admin, the list holds a client
+  the scenario creates, and neither the list nor a GET of it shows a
+  secret; a client asking for `client_credentials`, which the API does
+  not know, is refused (400). Once the admin drops the refresh grant
+  from the scenario's client, its refresh token is refused
+  (`unauthorized_client`); once it narrows its scopes to `openid` and
+  `archive`'s read, a token through it carries those alone, however
+  much is asked. Changing a client that never was is 404. Once the
+  admin deletes the client (204), its refresh is `invalid_client`, and
+  a second delete is 404. The scenario changes only the client it
+  creates.
 - `cors-and-pkce`: from another site (`Origin: https://evil.invalid`),
   the discovery document may be read by anyone
   (`Access-Control-Allow-Origin: *`, as Pelican sends for public

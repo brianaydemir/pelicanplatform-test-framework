@@ -59,13 +59,15 @@ logs what each request carried (see GATE_LOG).
 
 Each scenario asks only the native origins (origin_serve/ in Pelican)
 but `multipart-put` and disable-copies's `public` row, which ask an
-XRootD origin too, as a control. Everything goes under
-/<namespace>/data/exports/<run>/, which the suite removes afterward. A
-third-party COPY's failing sources are a stub HTTP server in the dev
-container (testlib/stub.py). The requests that the scenarios check
-present tokens of the session's profile, the client's token that
-`backend-passthrough` forwards among them; their objects are put in
-place, and the stores read, with WLCG tokens either way.
+XRootD origin too, as a control; `nested-export`, which asks every
+origin; and `backend-token`, which asks XRootD's `https` origins too.
+Everything goes under /<namespace>/data/exports/<run>/, which the
+suite removes afterward. A third-party COPY's failing sources are a
+stub HTTP server in the dev container (testlib/stub.py). The requests
+that the scenarios check present tokens of the session's profile, the
+client's token that `backend-passthrough` forwards among them; their
+objects are put in place, and the stores read, with WLCG tokens either
+way.
 """
 
 import contextlib
@@ -1478,8 +1480,8 @@ def nested_export(test: Test) -> dict[str, Row]:
     picks the export of a path by its longest prefix (LongestNSMatch),
     and its native origin's authorization speaks of exports nested one
     inside another (origin_serve/authz.go). So every origin, XRootD's
-    too, is restarted with /public's exports and one more, nested in it,
-    /public/<the run's collection>/secret, with /protected-a's
+    too, is restarted with the shape's exports and one more, nested in
+    /public, /public/<the run's collection>/secret, with /protected-a's
     capabilities (nested_files()), after the objects it serves are put
     in /public's storage (seed_nested()); afterward the origins are
     restored, and the export's registration, which they made as they

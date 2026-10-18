@@ -15,7 +15,10 @@
 # scenario checks what the director and the origin advertise.
 #
 # Pelican brokers only for an XRootD origin with one export, so fed.sh
-# refuses native origins, and the origins export only /protected-a.
+# refuses native origins, and the origins export only /protected-a. It
+# brokers origin-0 alone, in a container of its own, so fed.sh refuses
+# `topo-multi-origin`, `topo-multi-owner`, and any topology but the full
+# one.
 
 ORIGIN_BROKER=true
 ORIGIN_NAMESPACES=protected-a

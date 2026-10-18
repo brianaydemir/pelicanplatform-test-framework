@@ -7,10 +7,10 @@ store, `framework/var/data/origin/<N>/<namespace>/`, which its export's
 `StoragePrefix` leads to (`/data/<namespace>` in the origin, or a path
 or a bucket of the `webdav` or `s3` backend). `init` writes 16 objects
 named `<origin>.<n>` to each namespace's `data/`. An object's bytes are
-its path in the federation, e.g. `/protected-a/data/0.3`, so no two are
-alike, and a server that answers from another namespace's storage is
-caught. The suites likewise give each namespace's objects bytes of their
-own.
+its path in the federation and a newline, e.g. `/protected-a/data/0.3`,
+so no two are alike, and a server that answers from another namespace's
+storage is caught. The suites likewise give each namespace's objects
+bytes of their own.
 
 The `transfers` suite makes its batches each time it runs, in
 `framework/var/data/transfers/input/<scenario>/<index>`. A batch is one
@@ -57,13 +57,13 @@ What each scenario should do follows the
 pass, and every put to it should be refused, unless
 `-p origin-public-writes` gives it writes, when the puts with the
 `server` and `jwks` tokens should pass, as in the protected namespaces,
-and the rest be refused. A shape that exports one
-namespace (`origin-httpsv2`, `origin-no-direct`, `origin-public`) has
-only that namespace's scenarios, and `dne`, which gets from that
-namespace instead. Without `DirectReads` (`origin-no-direct`),
-`direct-dne` must be refused. `./fed.sh test -l transfers` lists the
-scenarios, and the summary after a run shows what each was expected to
-do.
+and the rest be refused. A shape that exports one namespace
+(`origin-https`, `origin-httpsv2`, `origin-broker`, `origin-no-direct`,
+`origin-public`) has only that namespace's scenarios, and `dne`, which
+gets from that namespace instead. Without `DirectReads`
+(`origin-no-direct`), `direct-dne` must be refused.
+`./fed.sh test -l transfers` lists the scenarios, and the summary after
+a run shows what each was expected to do.
 
 The Pelican clients send no token for a read of `/public`, so a bad one
 cannot break it, and every `get-public-<cred>` should pass. A plain

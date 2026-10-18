@@ -90,7 +90,8 @@ cases records a row per case, named `<scenario> <case>`.
   no credential's token, nor the client secret that `oauth-clients`
   registers, may lie in the API's host's database
   (`framework/var/state/`) in plain, which keeps each encrypted
-  (`transfer/encryption.go`).
+  (`transfer/encryption.go`): its `secrets` row, which is checked once
+  every other scenario has run.
 - `credential-cli`: `pelican transfer credential add`, `list`, and
   `delete`, with the user's token in a file, against the API: each
   must agree with it, and neither `add` nor `list` may print the
