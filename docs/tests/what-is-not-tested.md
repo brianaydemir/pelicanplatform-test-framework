@@ -13,8 +13,9 @@ exports or the suites that skip under it, is in its row of the
 
 Features that would seem natural presets, and why none is offered:
 
-- **Globus origins** (`globus` and `globusv2`), and **`s3v2` in front
-  of GCS or Azure** (`Origin.ObjectProviderURL`): each needs the
+- **Globus origins** (`globus` and `globusv2`), **`s3v2` in front of
+  GCS or Azure** (`Origin.ObjectProviderURL`), and **the caches'
+  tiering to either** (`Cache.TieringTargets`): each needs the
   provider's own service and credentials, which nothing in Docker
   stands in for.
 - **The `xroot` origin**, which relays to another XRootD server through
@@ -25,6 +26,26 @@ Features that would seem natural presets, and why none is offered:
   which differ from Pelican's by their defaults (`osdf_default` in
   `docs/parameters.yaml`): those point at the OSDF's discovery host,
   legacy services, and OSG Topology, which only the OSDF serves.
+- **A local cache on the clients' host** (`pelican-server serve
+  --module localcache`): the V2 cache's own code in its client-side
+  mode (`LocalCache.*`), which joins no federation and listens on a
+  Unix socket, which a client names (`--cache unix:///...`). It would
+  need a service beside `dev` that shares the socket, and a suite of
+  its own, as cache-2 has (`topo-site-local-cache`); the shapes run
+  the same code as a federated or a site-local cache, over HTTPS.
+- **A cache serving a second federation** (`Cache.AllowedFederations`),
+  which would need one, with a director, registry, and discovery host
+  of its own; the `cache-api` suite checks that a cache refuses a
+  federation not its own.
+- **Modules sharing a process**, as a site might run a director with
+  its registry, or an origin with a cache (`pelican-server serve
+  --module ...`): `topo-tiny` runs every module in one process, and
+  the other shapes each in a process of its own.
+- **A broker in a server of its own** (`--module broker`): the
+  directors here run one, as Pelican's do by default
+  (`Director.EnableBroker`), and `origin-broker` uses director-0's; one
+  apart from the directors would change only the host that the
+  federation's metadata names.
 - **Mixed releases.** Every shape runs one release (`PELICAN_TAG`) from
   scratch, so none is a federation mid-upgrade, and no release reads
   the databases or stores that an older one wrote. `IMAGE_*` can mix
@@ -38,6 +59,25 @@ Features that would seem natural presets, and why none is offered:
   `LocalCache.StorageDirs`, an XRootD cache's `Cache.DataLocations`),
   across which it stripes objects and evicts by each directory's bound:
   every cache here stores under `/data` alone.
+- **Lotman** (`Cache.EnableLotman`): the XRootD cache's lots,
+  allocations of its space by namespace, each with an expiry and a
+  place in the purge order, and an API of their own
+  (`Lotman.EnableAPI`). It would need a suite of its own; the V2 cache
+  has no lots, and the caches here are bounded as a whole
+  (`cache-small`), and evict as Pelican does by default.
+- **The XRootD monitoring shoveler** (`Shoveler.Enable`), which forwards
+  the XRootD servers' UDP monitoring stream to a message bus that a
+  federation's operators run: the stream is XRootD's, and the
+  `observability` suite reads each server's own metrics instead.
+- **X.509 and VOMS at XRootD servers** (`Origin.EnableTLSClientAuth`,
+  `Origin.EnableVoms`, and the caches' own), **and macaroons**
+  (`Origin.EnableMacaroons`): no Pelican client presents either, and
+  what a certificate may do is XRootD's authorization, which Pelican
+  leaves to the administrator.
+- **Sorting by GeoIP** (`Director.GeoIPLocation`), which needs MaxMind's
+  database, and clients at public addresses, which Docker's are not:
+  the servers declare their locations (`GeoLocation`), and the
+  `routing` suite sorts by those.
 - **A server behind a reverse proxy** (`Server.TrustedProxies`), **or
   on port 443**, which Pelican leaves out of the URLs it derives: every
   server here listens on 8444, and `director-ha`'s load balancer passes
@@ -61,6 +101,11 @@ exercise, or not in a way that would catch a fault:
   the origin stopped, `fsck --repair`, and a restore opened with an
   escrowed key (`metadata-backup-key`) rather than the origin's issuer
   keys ([pstore](pstore.md)).
+- `origin-https` and `origin-httpsv2`: a token for the backend from an
+  OAuth2 issuer by client credentials (`Origin.HttpAuthOAuth2Issuer`,
+  `ClientID`, and `ClientSecretFile`); the `exports` suite has the
+  origins present a static token, and the client's own
+  ([exports and copies](exports-and-copies.md)).
 - `cache-mixed`: the `transfers` suite's named-cache scenarios name
   cache-0, a V2 cache, so the XRootD cache-1 serves them only when a
   director picks it; and `client`'s `failover` crosses from V2 to
