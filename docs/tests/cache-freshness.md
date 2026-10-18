@@ -95,8 +95,16 @@ need a restart skip, and say why. A case's row is named `<scenario>
   must fail, and never come back with other bytes. Then the origins
   start again, and the federation must serve as before. It skips
   without a control helper, and in the `tiny` topology.
-- `cc-immediate`: under `max-age=0`, `no-cache`, and
-  `must-revalidate, max-age=0`, `blocks`'s `overwrite-cached` and
+- `must-revalidate`, under `max-age=30, must-revalidate`: the same,
+  but the stale copy must not come back, as a cache that cannot
+  revalidate a copy with `must-revalidate` must answer 504 instead
+  (RFC 9111, section 5.2.2.2); the row's note says what each cache
+  answered. Pelican records `must-revalidate` but acts on it nowhere
+  (only its introspection calls `MustRevalidate()`), and serves its
+  copy when it cannot revalidate it, so the row fails, on main and
+  v26.0.0-rc.3 alike.
+- `cc-immediate`: under `max-age=0` and `no-cache`, `blocks`'s
+  `overwrite-cached` and
   `overwrite-range-first` ([block boundaries](block-boundaries.md)): of
   three objects read whole and three read through a range first, each
   replaced at the origins by one as long, longer, or shorter. A V2
@@ -107,9 +115,8 @@ need a restart skip, and say why. A case's row is named `<scenario>
   the new version alone, with that version's digest, if one comes.
   Pelican keeps `max-age` only if it is above 0, and so takes
   `max-age=0` for no `max-age` at all, and keeps the object a day
-  (`GetCacheDirectives` in `local_cache/schema.go`); and it never reads
-  `must-revalidate`. So the `max-age=0` and `must-revalidate` rows
-  fail, on main and v26.0.0-rc.3 alike.
+  (`GetCacheDirectives` in `local_cache/schema.go`), so the `max-age=0`
+  row fails, on main and v26.0.0-rc.3 alike.
 - `cc-not-stored`: under `no-store`, and again `private`, which a shared
   cache must not store (RFC 9111, sections 5.2.2.5 and 5.2.2.7), a V2
   cache passes an object through. At each, two GETs of an object must

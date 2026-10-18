@@ -36,13 +36,19 @@ here and below.
   `curl -L` does, and must get the object's bytes.
 - Every origin and federated cache must list each name once, decoded,
   with its size, as must `pelican object ls`.
-- `pelican object get` of every object must write a file of each one's
-  name, with its bytes, and nothing else: through the cache the director
-  picks, direct from an origin (`--direct`) where `/protected-a` takes
-  direct clients, and from each federated cache in turn, named
-  (`--cache`), which alone may serve it, since the client builds that
-  cache's URL of each name itself; `pelican object put` of a file of
-  each name must land as the object of that name.
+- `pelican object get` of each object, into a directory, must write a
+  file of its name, with its bytes, and the directory nothing else:
+  through the cache the director picks, direct from an origin
+  (`--direct`) where `/protected-a` takes direct clients, and from each
+  federated cache in turn, named (`--cache`), which alone may serve it,
+  since the client builds that cache's URL of each name itself;
+  `pelican object put` of a file of each name, to its object's URL,
+  must land as the object of that name. Each command moves one object:
+  main's client asks the director once for each namespace in a
+  command, and reuses its answer for the rest of the namespace's
+  objects (`cachedDirectorInfo` in `client/director.go`), so a command
+  of several would hide a name that the client mishandles in the
+  director's answer.
 - Pelican's client fails two of these, on v26.0.0-rc.3 and main alike.
   It reads the director's `Link` header by splitting it at `;`, so a
   URL with `;` in it is cut there (and a character more, for the `>`

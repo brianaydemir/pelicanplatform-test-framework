@@ -1318,7 +1318,7 @@ def filtered_listing(test: Test, name: Optional[str]) -> tuple[str, str]:
 
     Each director's list of servers must show the last cache, by name,
     as filtered by its configuration: `filtered` true, `filteredType`
-    `permFiltered`.
+    permFiltered's text (director.PERM_FILTERED).
     """
     why = unlisted(test, name)
     if why:
@@ -1335,7 +1335,8 @@ def filtered_listing(test: Test, name: Optional[str]) -> tuple[str, str]:
         if not mine:
             problems.append(f"{what}: {SERVERS} ({answer.describe()}) does not list {name!r}")
         elif (
-            mine[0].get("filtered") is not True or mine[0].get("filteredType") != "permFiltered"
+            mine[0].get("filtered") is not True
+            or mine[0].get("filteredType") != director.PERM_FILTERED
         ):
             shown = {k: mine[0].get(k) for k in ("filtered", "filteredType")}
             problems.append(f"{what}: lists {name!r} with {shown}")

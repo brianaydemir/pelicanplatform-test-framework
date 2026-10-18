@@ -23,6 +23,12 @@ from urllib.parse import urlsplit
 
 from . import common, web
 
+# How a director's web API (/api/v1.0/director_ui/servers) names why it
+# filters a server, in `filteredType`: by the filter type's text
+# (filterType.String() in director/cache_ads.go), not its name.
+PERM_FILTERED = "Permanently Disabled via the director configuration"
+SHUTDOWN_FILTERED = "Disabled due to the server shutdown in progress"
+
 
 def parse_link(value: str) -> list[str]:
     """Return the rel="duplicate" URLs of a Link header, by priority.

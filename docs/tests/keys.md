@@ -46,10 +46,13 @@ instead.
   main alike; `registry-server`, pushed in a request of its own,
   passes. A key added while the origins are down, or just before they
   restart (as `smoke.sh`'s `keys rotate all` is, before its `restart`),
-  is never pushed at all: an origin pushes only a change it sees while
-  it runs, and registering again at startup leaves a registered
-  prefix's keys as they were, so the registry's JWKS lack it for good,
-  and the `registry` suite's `jwks` rows fail after such a rotation.
+  is pushed as they start: an origin that finds a prefix registered
+  pushes its keys for that prefix alone (`RegisterNamespaceWithRetry`
+  in `launcher_utils/register_namespace.go`), so each prefix learns
+  it. That push sends only the key directory's keys, though, not those
+  of `Server.IssuerJwks`, which the registry then drops, so the
+  `registry` suite's `jwks` rows fail after any origin restarts, on
+  v26.0.0-rc.3 and main alike.
 - `hot-rotate`: a new signing key on the origins, and another on the
   first federated V2 cache, each written to sort first, and watched for
   3 minutes, every 15 seconds. Every director must go on naming
@@ -66,11 +69,16 @@ instead.
   up to 15 minutes (`origin_serve/authz.go`,
   `local_cache/cache_authz.go`), which the window may not outlast, and
   the row is then inconclusive; each must take the old key's tokens
-  throughout (`old-key`). On v26.0.0-rc.3 the first V2 cache came to
-  refuse the old key's tokens about two minutes into the window, and
-  never took the new key's (`old-key cache-0`, `new-key cache-0`), which
-  reading the code has not explained; the rows' notes time it. Each
-  token is presented in both profiles, and
+  throughout (`old-key`): a refusal (401 or 403) fails the row, and
+  any other answer but the probe leaves it inconclusive, since the
+  server neither took nor refused the token. A V2 cache trusts the
+  issuers of the namespaces that the director lists, which it asks for
+  every minute (`updateConfig` in `local_cache/persistent_cache.go`),
+  so within a minute of the directors dropping origin-0, the first V2
+  cache refuses every token for its namespaces ("token validation
+  failed"), and `old-key cache-0` fails, on v26.0.0-rc.3 and main
+  alike; the row's note times it. Each token is presented in both
+  profiles, and
   the SciTokens ones have rows of their own, named for the server and
   `scitokens` (e.g. `new-key origin-0 scitokens`), which fail at a
   native server. Under `-p auth-external-issuer`, the exports
@@ -99,8 +107,12 @@ instead.
   its local cache module, never for the cache server
   (`launchers/launcher.go`, `launchers/cache_serve.go`), and loading the
   file never re-saves it, so both rows fail, on v26.0.0-rc.3 and main
-  alike. Then, destructively, with every key but the newest
-  removed from the cache's key directory, the cache restarted must
+  alike. Then the cache must come to hold the probe, which it may
+  refuse for a while after `hot-rotate`, whose disruption can leave it
+  without the namespace's issuer; if it does not serve the probe within
+  150 seconds, `retired` is inconclusive. Then, destructively, with
+  every key but the newest removed from the cache's key directory, the
+  cache restarted must
   still open its store, and serve the probe it held, from its store,
   with `Age`, the origins sending nothing (`retired`): a master key it
   cannot unseal is replaced with a new one, with which its store cannot

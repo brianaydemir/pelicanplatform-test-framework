@@ -574,7 +574,7 @@ def copy(test: Test) -> list[Row]:
     is, the command must fail, saying that the service is not available
     there, and land nothing.
     """
-    writer = test.add_credential(f"{test.session.run}-cli", test.storage)
+    writer = test.add_credential(f"{test.session.run}-cli-copy", test.storage)
     token_file = test.session.path("tokens/transfer-api.user.file")
     with open(token_file, "w", encoding="utf-8") as f:
         f.write(test.token)

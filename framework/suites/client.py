@@ -649,6 +649,16 @@ def endpoint_host(attempt: Mapping[str, Any]) -> str:
     return str(attempt.get("endpoint") or "").partition(":")[0]
 
 
+def attempt_failed(attempt: Mapping[str, Any]) -> bool:
+    """Return whether the stats say an attempt failed.
+
+    A success's `error` is null; a failure's, the error, which the client
+    writes as `{}`, since none of its fields is exported
+    (TransferAttemptError in client/handle_http.go).
+    """
+    return attempt.get("error") is not None
+
+
 # --------------------------------------------------------------------------
 # plugin-ads
 
@@ -1072,7 +1082,10 @@ def failover(test: Test) -> list[Row]:
     the client resumes with a Range from where it stopped, and refuses
     to if the ETag changed (downloadObject in client/handle_http.go).
     stash_plugin, with the same preferred caches, must record both
-    attempts.
+    attempts. With several origins, the director asks them which holds
+    the object (Director.AssumePresenceAtSingleOrigin spares a lone
+    origin the question), and none does once it is removed, so it
+    answers 404, and the scenario skips.
     """
     feds = test.fed.federated_caches
     v2 = [c for c in feds if c.kind == "v2"]
@@ -1087,6 +1100,15 @@ def failover(test: Test) -> list[Row]:
                 SKIP,
                 f"the origins send Cache-Control {test.fed.sent_cache_control!r}, so a cache"
                 + " would revalidate against origins that no longer hold the object",
+            )
+        ]
+    if len(test.fed.origins) > 1:
+        return [
+            (
+                "",
+                SKIP,
+                "several origins, which the director asks for the object, and which no longer"
+                + " hold it",
             )
         ]
     first_cache = v2[0]
@@ -1130,7 +1152,9 @@ def failover(test: Test) -> list[Row]:
                 test.server_creds(name), PELICAN_CLIENT_PREFERREDCACHES=preferred
             )
             fetch = test.plugin(name, [test.url(name)], env)
-            problems = plugin_failover_problems(fetch, data, first_cache, second)
+            problems = plugin_failover_problems(
+                fetch, test.url(name), data, first_cache, second
+            )
         rows.append(
             (
                 case,
@@ -1156,13 +1180,13 @@ def get_failover_problems(
             f"{len(attempts)} attempt(s) in the stats, not a failure and a resume"
         ]
     hosts = [endpoint_host(a) for a in attempts]
-    failed = [a for a in attempts if a.get("error")]
+    failed = [a for a in attempts if attempt_failed(a)]
     if not failed or endpoint_host(failed[0]) != first_cache.svc:
         problems.append(f"no failed attempt at {first_cache.svc}: tried {hosts}")
     elif int(failed[0].get("transferFileBytes") or 0) <= 0:
         problems.append(f"the failed attempt at {first_cache.svc} brought no bytes")
     last = attempts[-1]
-    if last.get("error") or endpoint_host(last) != second.svc:
+    if attempt_failed(last) or endpoint_host(last) != second.svc:
         problems.append(f"the last attempt is not a success at {second.svc}: {hosts}")
     moved = sum(int(a.get("transferFileBytes") or 0) for a in attempts)
     if not problems and moved != len(data):
@@ -1174,9 +1198,13 @@ def get_failover_problems(
 
 
 def plugin_failover_problems(
-    fetch: Fetched, data: bytes, first_cache: common.Cache, second: common.Cache
+    fetch: Fetched, url: str, data: bytes, first_cache: common.Cache, second: common.Cache
 ) -> list[str]:
-    """Return what is wrong with how stash_plugin failed over."""
+    """Return what is wrong with how stash_plugin failed over.
+
+    It fetched url, which holds data, into the file of its last
+    component (Test.plugin()).
+    """
     try:
         ads = parse_ads(fetch.said)
     except ValueError as e:
@@ -1185,7 +1213,8 @@ def plugin_failover_problems(
         return [f"no ad of a success: {last_line(fetch.said)}"]
     ad = ads[0]
     problems: list[str] = []
-    if common.sha256(os.path.join(fetch.directory, "object")) != common.digest(data):
+    local = os.path.join(fetch.directory, transfers.local_name(url))
+    if common.sha256(local) != common.digest(data):
         problems.append("the file is not the object")
     found = developer_data(ad)
     endpoints = {
@@ -1896,7 +1925,11 @@ def skipstat_failover(test: Test) -> tuple[str, str]:
             return FAIL, why
         results = stats_of(os.path.join(fetch.directory, "stats.json"))
         attempts = attempts_of(results[0]) if results else []
-        if attempts and endpoint_host(attempts[0]) != holder.svc and attempts[0].get("error"):
+        if (
+            attempts
+            and endpoint_host(attempts[0]) != holder.svc
+            and attempt_failed(attempts[0])
+        ):
             tried_first = True
             break
     if tried_first:

@@ -62,12 +62,19 @@ several cases records a row per case, named `<scenario> <case>`.
   resumes with a `Range` from where it stopped, and refuses to if the
   `ETag` changed between attempts (`downloadObject` in
   `client/handle_http.go`); so the two caches' ETags must agree
-  (`get`). stash_plugin, with the same preferred caches
-  (`Client.PreferredCaches`), must record a failed `Endpoint0` at the
-  first cache, with `TransferError0`, and succeed at the second
-  (`plugin`). It skips where the origins send a `Cache-Control`
-  (`-p origin-max-age`), under which the second cache would revalidate
-  its copy against origins that no longer hold the object.
+  (`get`). The stats write a failed attempt's `error` as `{}`, since
+  `TransferAttemptError` exports no field, and a success's as `null`,
+  so any `error` but `null` is a failure. stash_plugin, with the same
+  preferred caches (`Client.PreferredCaches`), must bring the object
+  into the file of its URL's last component, record a failed
+  `Endpoint0` at the first cache, with `TransferError0`, and succeed
+  at the second (`plugin`). It skips where the origins send a
+  `Cache-Control` (`-p origin-max-age`), under which the second cache
+  would revalidate its copy against origins that no longer hold the
+  object; and with several origins (`-p topo-multi-origin`), which the
+  director asks which holds the object
+  (`Director.AssumePresenceAtSingleOrigin` spares a lone origin the
+  question), and none does, so it answers 404.
 - `etag-agreement`: an object put at every origin: each origin that
   takes direct clients, and each federated cache once it holds the
   object, must report one `ETag` by HEAD and by GET, or none by either,

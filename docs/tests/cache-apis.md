@@ -98,10 +98,21 @@ of them but prestage, through the xrdhttp-pelican plugin, so only
   `purge` itself is sent with that scope only by the `purge` scenario.
   The `chaos` row skips where the admin finds no such route.
 - `purge`, with the admin token that has `localcache.purge`.
-  `to-target`: of a cache holding objects of the run's,
-  `purge_to_target` with `target_bytes` 0 must get 400; with a byte
-  below what the cache holds, 200, with `freed_bytes` above 0, after
-  which it must hold no more than that. What a cache holds, here, is
+  `to-target`: of a cache holding three objects of the run's, read in
+  turn, `purge_to_target` with `target_bytes` 0 must get 400; with a
+  byte below what the cache holds, 200, with `freed_bytes` above 0,
+  after which it must hold no more than that, and still hold the
+  object it read last, since a purge evicts the least recently used
+  objects first, and stops once it has freed what it must
+  (`EvictByLRU`), which one object's eviction does: so where the cache
+  has one storage directory, `evicted_objects` must be 1, since every
+  object there frees a byte (one smaller than `InlineThreshold`, 4096
+  bytes, is kept in its database instead). v26.0.0-rc.3 computes each
+  storage directory's share of the target in 64 bits, which overflow
+  once the target times the directory's size passes 2^64, and then
+  purges far past the target, so there the row fails if the cache
+  holds enough, as it did holding 69 MB, though not 1.6 MB. What a
+  cache holds, here, is
   what its stats' `NamespaceUsage` charges the storage that `DirStats`
   names, the counters in its database by which it purges. `first`: of
   three objects it holds, read in turn, `purge_first` of the last read

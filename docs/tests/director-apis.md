@@ -167,14 +167,16 @@ standalone origin, which has no director. Each case is a row, named
     second within 10 seconds.
   - `shutdown-lifted`: the ad, posted to the second director, saying
     the cache is shutting down, after which it must filter the cache
-    (`shutdownFiltered`); then its ad saying its own status, posted to
-    the first, must lift that at the second within 10 seconds, as an
-    ad posted to the second would. Only an ad posted to a director
-    lifts it (`registerServerAd` in `director/director.go`), and not
-    one forwarded (`finishRegisterServeAd`), so the row fails, on
-    v26.0.0-rc.3 and main alike: a director that hears a server only
-    by another's forwarding keeps it out of routing from its restart
-    on.
+    (`shutdownFiltered`, which its web API lists by its text, "Disabled
+    due to the server shutdown in progress", in `filteredType`;
+    `filterType.String()` in `director/cache_ads.go`); then its ad
+    saying its own status, posted to the first, must lift that at the
+    second within 10 seconds, as an ad posted to the second would.
+    Only an ad posted to a director lifts it (`registerServerAd` in
+    `director/director.go`), and not one forwarded
+    (`finishRegisterServeAd`), so the row fails, on v26.0.0-rc.3 and
+    main alike: a director that hears a server only by another's
+    forwarding keeps it out of routing from its restart on.
   - `restored`: within 150 seconds, the cache's own ads must have
     restored it at both directors.
 

@@ -5,7 +5,10 @@ Pelican's client/handle_http.go): md5 and sha (SHA-1) in base64; crc32
 and crc32c in hex. XRootD writes crc32c in base64, which the client
 accepts too (xrootd/xrootd#2456), and so does this. The client knows no
 other algorithm; adler32 (hex) and sha-256 (base64), which a server may
-report, are read as RFC 3230 has them.
+report, are read as RFC 3230 has them. XRootD's crc32 is the POSIX
+`cksum` (XrdCksCalccrc32), not the CRC-32 that the client and native
+origins mean by it, and check() says so of a crc32 that is the one but
+not the other.
 """
 
 import base64
@@ -21,6 +24,8 @@ from .blocks import crc32c
 ALGORITHMS = ("crc32c", "crc32", "adler32", "md5", "sha", "sha-256")
 # Those in base64; the rest are 32-bit sums in hex.
 BASE64 = ("md5", "sha", "sha-256")
+# Each byte with its bits reversed, for cksum().
+REVERSED_BITS = bytes(int(f"{b:08b}"[::-1], 2) for b in range(256))
 
 
 def compute(algorithm: str, data: bytes) -> bytes:
@@ -36,6 +41,23 @@ def compute(algorithm: str, data: bytes) -> bytes:
     if algorithm == "sha":
         return hashlib.sha1(data, usedforsecurity=False).digest()
     return hashlib.sha256(data).digest()
+
+
+def cksum(data: bytes) -> bytes:
+    """Return data's POSIX `cksum`, as XRootD's crc32 is.
+
+    It is a CRC-32 that feeds each byte's bits most significant first,
+    from 0, then the data's length in as few bytes as hold it, least
+    significant first, and complements what it ends with. zlib's CRC-32
+    feeds each byte least significant bit first, so it computes the same
+    of the bytes with their bits reversed, reversed.
+    """
+    length, tail = len(data), bytearray()
+    while length:
+        tail.append(length & 0xFF)
+        length >>= 8
+    raw = zlib.crc32((data + bytes(tail)).translate(REVERSED_BITS), 0xFFFFFFFF) ^ 0xFFFFFFFF
+    return (~int(f"{raw:032b}"[::-1], 2) & 0xFFFFFFFF).to_bytes(4, "big")
 
 
 def parse(header: str) -> dict[str, str]:
@@ -84,7 +106,10 @@ def check(header: str, data: bytes) -> tuple[list[str], list[str]]:
         if got is None:
             wrong.append(f"{algorithm} '{value}' is not a digest")
         elif got != compute(algorithm, data):
-            wrong.append(f"{algorithm} '{value}' is not the object's")
+            if algorithm == "crc32" and got == cksum(data):
+                wrong.append(f"crc32 '{value}' is the object's POSIX cksum, not its CRC-32")
+            else:
+                wrong.append(f"{algorithm} '{value}' is not the object's")
         else:
             right.append(algorithm)
     return wrong, right

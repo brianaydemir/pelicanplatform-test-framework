@@ -109,11 +109,14 @@ itself with PKCE. Only `registration`, and the Pelican client in
   PKCE: the user is sent back (303) with a code and the state, which
   the client trades for tokens. A request for a scope the client may
   not carry (`storage.delete:/`, `pelican.transfer`) is sent back with
-  `invalid_scope` instead of granted less; a wrong verifier and a
-  replayed code are refused (`invalid_grant`); a redirect URI the
-  client did not register gets no redirect (400); and the public
-  client's flow works, with no refresh token even for
-  `offline_access`.
+  `invalid_scope` instead of granted less; a wrong verifier, with a
+  code of its own, since a failed exchange may spend the code, as on
+  main, and a replayed code are refused (`invalid_grant`); a
+  redirect URI the client did not register gets no redirect (400); and
+  the public client's flow works, with no refresh token even for
+  `offline_access`, which the issuer may drop from the request, or
+  refuse (`invalid_scope`), as main does, RFC 6749 allowing either; if
+  it refuses it, the flow asks again without it.
 - `clients`: the read-only client's token has only `openid` and the
   user's reads, and no refresh token; the code flow's client may not
   start a device flow (`unauthorized_client`); a wrong secret and an

@@ -1036,6 +1036,16 @@ def charged(cache: common.Cache) -> Optional[int]:
     )
 
 
+def storage_dirs(cache: common.Cache) -> Optional[int]:
+    """Return how many storage directories cache's stats name (DirStats).
+
+    Returns:
+        How many, or None if its stats do not say.
+    """
+    dirs = common.as_object((cacheapi.stats(cache) or {}).get("DirStats"))
+    return None if dirs is None else len(dirs)
+
+
 def purge_request(test: Test, cache: common.Cache, path: str, body: Any) -> web.Response:
     """POST body, as JSON (none for None), to purge route path at cache.
 
@@ -1064,10 +1074,16 @@ def purge_request(test: Test, cache: common.Cache, path: str, body: Any) -> web.
 def purge_to_target(test: Test) -> Row:
     """Check that each V2 cache purges to a target.
 
-    At each V2 cache, holding objects of the run's: purge_to_target with
-    a target of 0 must get 400; with a target a byte below what it holds
-    (charged()), 200 with `freed_bytes` above 0, after which it must hold
-    no more than the target.
+    At each V2 cache, holding three objects of the run's, read in turn:
+    purge_to_target with a target of 0 must get 400; with a target a
+    byte below what it holds (charged()), 200 with `freed_bytes` above 0,
+    after which it must hold no more than the target, and still hold the
+    object it read last: a purge evicts the least recently used objects
+    first, and stops once it has freed what it must (EvictByLRU in
+    local_cache/database.go), which one object's eviction does. So where
+    the cache has one storage directory, `evicted_objects` must be 1:
+    each object there frees a byte, as one smaller than InlineThreshold
+    (4096 bytes) is stored inline, in its database, instead.
     """
     problems: list[str] = []
     notes: list[str] = []
@@ -1094,9 +1110,22 @@ def purge_to_target(test: Test) -> Row:
                 f"{cache.svc}, a target of {target}: {answer.describe()} {text(answer)}"
             )
             continue
+        evicted = said.get("evicted_objects")
+        if storage_dirs(cache) == 1 and evicted != 1:
+            problems.append(
+                f"{cache.svc} evicted {evicted} objects ({freed} bytes) for a purge to a byte"
+                + f" below its {usage}, which one object's eviction meets"
+            )
         after = charged(cache)
         if after is None or after > target:
             problems.append(f"{cache.svc} holds {after} bytes after a purge to {target}")
+        last = list(objects)[-1]
+        found = test.held(cache, last)
+        if found is not True:
+            problems.append(
+                f"{cache.svc}: {leaf(last)}, read last, is {held_word(found)} after a purge"
+                + f" to a byte below its usage (freed {freed} of {usage} bytes)"
+            )
         notes.append(f"{cache.svc} freed {freed} of {usage} bytes")
     if problems:
         return FAIL, first(problems)

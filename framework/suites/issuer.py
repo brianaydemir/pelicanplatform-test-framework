@@ -875,7 +875,11 @@ def code(test: Test) -> tuple[str, str]:
     The same requests as `requests`, with PKCE; the flow refuses a scope
     the client may not carry. Also a wrong verifier, a replayed code,
     and a wrong redirect URI; and the browsers' public client, which
-    gets no refresh token.
+    gets no refresh token. A code redeemed with a wrong verifier may be
+    spent, so the right verifier redeems a code of its own; and the
+    public client's request for offline_access may be refused
+    (invalid_scope), rather than granted without it, as RFC 6749
+    allows either, so its flow then asks without it.
     """
     problems: list[str] = []
     client = test.client("code")
@@ -902,22 +906,31 @@ def code(test: Test) -> tuple[str, str]:
                 f"asking {' '.join(row.asks)}, which the client may not: {sent.describe()},"
                 + f" sent back with {back or 'nothing'}, not invalid_scope"
             )
-    verifier, challenge = issuer.pkce()
-    sent = issuer.authorize(
-        client, test.user("member"), (f"{R}:/{ARCHIVE}",), challenge, "x" * 16
-    )
-    back = issuer.redirected(sent)
-    if not back.get("code"):
-        problems.append(f"the authorization for a code: {sent.describe()}, with {back}")
-    else:
-        wrong = issuer.code_tokens(client, back["code"], issuer.pkce()[0])
+
+    def a_code(challenge: str) -> Optional[str]:
+        """Return a code for the member's read of the archive, or None."""
+        sent = issuer.authorize(
+            client, test.user("member"), (f"{R}:/{ARCHIVE}",), challenge, "x" * 16
+        )
+        back = issuer.redirected(sent)
+        if not back.get("code"):
+            problems.append(f"the authorization for a code: {sent.describe()}, with {back}")
+            return None
+        return back["code"]
+
+    wrong_code = a_code(issuer.pkce()[1])
+    if wrong_code:
+        wrong = issuer.code_tokens(client, wrong_code, issuer.pkce()[0])
         if wrong.status != 400 or issuer.error_of(wrong) != "invalid_grant":
             problems.append(
                 f"the code with a wrong verifier: {wrong.describe()}, not invalid_grant"
             )
-        right = issuer.code_tokens(client, back["code"], verifier)
+    verifier, challenge = issuer.pkce()
+    right_code = a_code(challenge)
+    if right_code:
+        right = issuer.code_tokens(client, right_code, verifier)
         if right.status == 200:
-            again = issuer.code_tokens(client, back["code"], verifier)
+            again = issuer.code_tokens(client, right_code, verifier)
             if again.status != 400 or issuer.error_of(again) != "invalid_grant":
                 problems.append(f"the code replayed: {again.describe()}, not invalid_grant")
         else:
@@ -933,10 +946,15 @@ def code(test: Test) -> tuple[str, str]:
     if sent.status != 400 or issuer.redirected(sent):
         problems.append(f"a redirect URI the client did not register: {sent.describe()}")
     public = test.client("public")
+    asks: tuple[str, ...] = ("offline_access", f"{R}:/{ARCHIVE}")
+    state = secrets.token_urlsafe(12)
+    back = issuer.redirected(
+        issuer.authorize(public, test.user("member"), asks, issuer.pkce()[1], state)
+    )
+    if back.get("error") == "invalid_scope" and back.get("state") == state:
+        asks = (f"{R}:/{ARCHIVE}",)
     try:
-        toks = issuer.code_flow(
-            public, test.user("member"), ("offline_access", f"{R}:/{ARCHIVE}")
-        )
+        toks = issuer.code_flow(public, test.user("member"), asks)
         if issuer.scopes(toks.access) != frozenset({f"{R}:/{ARCHIVE}"}):
             problems.append(
                 f"the public client's token has {sorted(issuer.scopes(toks.access))}"

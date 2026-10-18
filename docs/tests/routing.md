@@ -151,7 +151,9 @@ skip, and say why, so that other shapes are not slowed.
     route or the bare path, asked five times each, and each must still
     name the other caches at the object route. `listing`: each
     director's `/api/v1.0/director_ui/servers` must list cache-1 with
-    `filtered` true and `filteredType` `permFiltered`.
+    `filtered` true and `filteredType` "Permanently Disabled via the
+    director configuration", the text of `permFiltered`
+    (`filterType.String()` in `director/cache_ads.go`).
   - `response-hostnames`: with `Director.OriginResponseHostnames` and
     `CacheResponseHostnames` each naming a host, a bare-path GET asked
     of the first must go to an origin, and of the second to a cache,

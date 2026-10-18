@@ -1434,7 +1434,8 @@ def shutdown_lifted(f: Forwarding) -> Row:
     """Check that a forwarded ad lifts the cache's shutdown at a director.
 
     The cache's own ad saying it is shutting down is posted to the
-    second director, which must then filter it (shutdownFiltered); then
+    second director, which must then filter it (shutdownFiltered, which
+    its API lists as director.SHUTDOWN_FILTERED); then
     its ad saying its status, posted to the first alone, which forwards
     it, must lift that within FORWARD_WAIT seconds, as it would have,
     had the cache posted it to the second. Only an ad posted to a
@@ -1451,7 +1452,9 @@ def shutdown_lifted(f: Forwarding) -> Row:
     if answer.status != 200:
         return "", FAIL, f"posting to {second}: {answer.describe()}, not 200"
     if not common.wait_for(
-        lambda: f.listed(f.second).get("filteredType") == "shutdownFiltered", FORWARD_WAIT, 0.5
+        lambda: f.listed(f.second).get("filteredType") == director.SHUTDOWN_FILTERED,
+        FORWARD_WAIT,
+        0.5,
     ):
         got = f.listed(f.second).get("filteredType")
         return "", INCONCLUSIVE, f"{second} did not filter it as shutting down: {got!r}"

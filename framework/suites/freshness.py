@@ -19,9 +19,11 @@ HEAD touched.
                       stale
   stale-if-error      each V2 cache serves its stale copy while every
                       origin is down, and fails a read of what it lacks
-  cc-immediate        under max-age=0, no-cache, and must-revalidate,
-                      each V2 cache serves an overwrite at once (no-cache:
-                      within its 5-second grace)
+  must-revalidate     under max-age=30, must-revalidate, each V2 cache
+                      serves no stale copy while every origin is down
+  cc-immediate        under max-age=0 and no-cache, each V2 cache serves
+                      an overwrite at once (no-cache: within its 5-second
+                      grace)
   cc-not-stored       under no-store and private, each V2 cache passes
                       the object through, and keeps none of it
   s-maxage            under max-age=120, s-maxage=20, each V2 cache
@@ -84,7 +86,8 @@ SCENARIOS = {
     "cc-downstream": "each V2 cache's Cache-Control and Age on a fill, a hit, and a 304",
     "propfind-freshness": "each V2 cache's Depth 0: 0 bytes for an empty object, the new size once stale",
     "stale-if-error": "each V2 cache serves its stale copy while the origins are down",
-    "cc-immediate": "max-age=0, no-cache, must-revalidate: each V2 cache serves an overwrite at once",
+    "must-revalidate": "max-age=30, must-revalidate: each V2 cache serves no stale copy then",
+    "cc-immediate": "max-age=0, no-cache: each V2 cache serves an overwrite at once",
     "cc-not-stored": "no-store, private: each V2 cache passes the object through, and keeps none",
     "s-maxage": "max-age=120, s-maxage=20: each V2 cache serves an overwrite after about 20s",
 }
@@ -114,9 +117,8 @@ HELD_WAIT = 30
 # them, and every cache to reach them.
 SETTLE_WAIT = 150
 # How long past an object's freshness a cache may take to serve a new
-# version, which it fetches on a request: no-cache's grace, and max-age=0
-# and must-revalidate's none, are counted from when it last read the old
-# one.
+# version, which it fetches on a request: no-cache's grace, and
+# max-age=0's none, are counted from when it last read the old one.
 IMMEDIATE_SLACK = 3
 STALE_SLACK = 15
 # How long a director keeps an origin's answer that it lacks an object
@@ -964,12 +966,37 @@ def propfind_overwrite(test: Test, value: str) -> Row:
 def stale_if_error(test: Test, value: str) -> Row:
     """Check that each V2 cache serves a stale copy with every origin down.
 
+    That is origins_down(), whose stale copy must come back.
+    """
+    return origins_down(test, value, "stale-if-error", True)
+
+
+def must_revalidate(test: Test, value: str) -> Row:
+    """Check that each V2 cache serves no stale copy that must revalidate.
+
+    That is origins_down(), under must-revalidate, whose stale copy must
+    not come back: a cache that cannot reach the origin to revalidate it
+    must answer 504 instead (RFC 9111, section 5.2.2.2), or at least not
+    with the copy.
+    """
+    return origins_down(test, value, "must-revalidate", False)
+
+
+def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> Row:
+    """Check what each V2 cache serves of a stale copy with every origin down.
+
     At each V2 cache, an object read whole, which it holds, and another
     it never read. Once the first is stale (max-age), every origin is
-    stopped. The first must still come back, as the cache holds it; the
-    other must fail, and never come back with bytes that are not its
-    own. Then the origins start again, and the federation must serve as
-    before.
+    stopped. The first must still come back, as the cache holds it, if
+    stale_ok; else it must not. The other must fail, and never come
+    back with bytes that are not its own. Then the origins start again,
+    and the federation must serve as before.
+
+    Args:
+        test: The test.
+        value: The Cache-Control that the origins send.
+        scenario: The scenario, whose collection holds the objects.
+        stale_ok: Whether a cache may serve its stale copy.
     """
     if test.fed.tiny:
         return SKIP, "the tiny topology's origin is the whole federation's process"
@@ -977,13 +1004,14 @@ def stale_if_error(test: Test, value: str) -> Row:
     if why:
         return SKIP, why
     fresh = seconds_of(value, "max-age")
-    held = {c.svc: test.rel("stale-if-error", f"held-{c.svc}") for c in test.v2}
-    cold = {c.svc: test.rel("stale-if-error", f"cold-{c.svc}") for c in test.v2}
+    held = {c.svc: test.rel(scenario, f"held-{c.svc}") for c in test.v2}
+    cold = {c.svc: test.rel(scenario, f"cold-{c.svc}") for c in test.v2}
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in [*held.values(), *cold.values()]}
     why = test.put(objects)
     if why:
         return FAIL, why
     problems: list[str] = []
+    notes = [f"{len(test.v2)} cache(s), {len(test.origins)} origin(s) stopped"]
     stale_at = 0.0
     for cache in test.v2:
         rel = held[cache.svc]
@@ -1001,11 +1029,19 @@ def stale_if_error(test: Test, value: str) -> Row:
             stopped.append(origin.svc)
         for cache in test.v2:
             rel = held[cache.svc]
-            why = served(test.ask("GET", cache.url, rel, timeout=180), objects[rel])
-            if why:
+            answer = test.ask("GET", cache.url, rel, timeout=180)
+            why = served(answer, objects[rel])
+            if why and stale_ok:
                 problems.append(
                     f"{cache.svc}: its stale copy, with every origin down, got {why}"
                 )
+            elif answer.ok and not stale_ok:
+                problems.append(
+                    f"{cache.svc}: its stale copy, with every origin down, came back"
+                    + f" ({answer.describe()}), not 504"
+                )
+            elif not stale_ok:
+                notes.append(f"{cache.svc}: {answer.describe()}")
             rel = cold[cache.svc]
             answer = test.ask("GET", cache.url, rel, timeout=180)
             if answer.ok:
@@ -1025,7 +1061,7 @@ def stale_if_error(test: Test, value: str) -> Row:
         problems.append(f"once the origins started again, {why}")
     if problems:
         return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} cache(s), {len(test.origins)} origin(s) stopped"
+    return PASS, "; ".join(notes)
 
 
 def immediate(test: Test, value: str) -> Row:
@@ -1304,9 +1340,9 @@ CASES = (
     Case("propfind-freshness", "empty", None, propfind_empty),
     Case("propfind-freshness", "overwrite", MAX_AGE, propfind_overwrite),
     Case("stale-if-error", "", MAX_AGE, stale_if_error),
+    Case("must-revalidate", "", f"{MAX_AGE}, must-revalidate", must_revalidate),
     Case("cc-immediate", "max-age=0", "max-age=0", immediate),
     Case("cc-immediate", "no-cache", "no-cache", immediate),
-    Case("cc-immediate", "must-revalidate", "must-revalidate, max-age=0", immediate),
     Case("cc-not-stored", "no-store", "no-store", not_stored),
     Case("cc-not-stored", "private", "private", not_stored),
     Case("s-maxage", "", "max-age=120, s-maxage=20", s_maxage),

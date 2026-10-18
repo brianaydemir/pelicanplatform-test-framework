@@ -21,12 +21,18 @@ it so too. A listing's hrefs are decoded before they are compared.
                follows it, leads to each object by its name
   origin-list  each origin lists every name, once, with its size
   cache-list   each federated cache does, as it relays the listing
-  client-get   `pelican object get` of every object into a directory
-               writes a file of each one's name, with its bytes:
-               through a cache, direct, and from each federated cache,
-               named
-  client-put   `pelican object put` of a file of each name into a
-               collection lands as the object of that name
+  client-get   `pelican object get` of each object, in a command of its
+               own, into a directory writes a file of its name, with
+               its bytes: through a cache, direct, and from each
+               federated cache, named
+  client-put   `pelican object put` of a file of each name, in a
+               command of its own, lands as the object of that name
+
+The client commands move one object each, since a command asks the
+director once for each namespace, and reuses its answer for the rest
+of the namespace's objects (cachedDirectorInfo in Pelican's
+client/director.go), which would hide a name that the client
+mishandles in the director's answer.
   client-ls    `pelican object ls` lists every name
 """
 
@@ -53,10 +59,10 @@ SCENARIOS = {
     "origin-list": "each origin lists every name once, decoded, with its size",
     "cache-list": "each federated cache lists every name once, decoded, with its size",
     "client-get": (
-        "`pelican object get` writes a file of each object's name, with its bytes: through a"
-        " cache, direct, and from each federated cache, named"
+        "`pelican object get` of each object alone writes a file of its name, with its bytes:"
+        " through a cache, direct, and from each federated cache, named"
     ),
-    "client-put": "`pelican object put` of a file of each name lands as that object",
+    "client-put": "`pelican object put` of a file of each name, alone, lands as that object",
     "client-ls": "`pelican object ls` lists every name",
 }
 
@@ -382,13 +388,13 @@ def fetched(test: Test, target: str) -> Optional[str]:
 def client_get(test: Test) -> tuple[str, str]:
     """Check that `pelican object get` writes a file of each object's name.
 
-    A get of every object, into a directory, must write a file of each
-    one's name, with its bytes, and nothing else, in each of the three
-    ways a client reaches an object: through the cache the director
-    picks; direct from an origin (--direct), where /protected-a takes
-    direct clients; and from each federated cache in turn, named
-    (--cache), which alone may serve it, since the client builds that
-    cache's URL of each name itself.
+    A get of each object, in a command of its own (see above), into a
+    directory, must write a file of its name, with its bytes, and the
+    directory nothing else, in each of the three ways a client reaches
+    an object: through the cache the director picks; direct from an
+    origin (--direct), where /protected-a takes direct clients; and from
+    each federated cache in turn, named (--cache), which alone may serve
+    it, since the client builds that cache's URL of each name itself.
     """
     urls = [f"{test.fed.url}/protected-a/{quote(test.rel(name))}" for name in NAMES]
     # Each way: its key, the client's flags, and the cache it names.
@@ -405,35 +411,36 @@ def client_get(test: Test) -> tuple[str, str]:
     for key, flags, cache in ways:
         target = os.path.join(test.tmp, f"client-get-{key}")
         os.makedirs(target)
-        stats = os.path.join(test.tmp, f"client-get-{key}.stats.json")
-        code, out, err = test.session.pelican_cmd(
-            "object",
-            "get",
-            "--token",
-            test.token_file,
-            "--transfer-stats",
-            stats,
-            *flags,
-            *urls,
-            target,
-        )
-        if code != 0:
-            return FAIL, f"{key}: exit {code}: {last_line(err or out)}"
+        for n, (name, url) in enumerate(zip(NAMES, urls)):
+            stats = os.path.join(test.tmp, f"client-get-{key}-{n}.stats.json")
+            code, out, err = test.session.pelican_cmd(
+                "object",
+                "get",
+                "--token",
+                test.token_file,
+                "--transfer-stats",
+                stats,
+                *flags,
+                url,
+                target,
+            )
+            if code != 0:
+                return FAIL, f"{key}: {name!r}: exit {code}: {last_line(err or out)}"
+            if cache is not None:
+                try:
+                    with open(stats, encoding="utf-8") as f:
+                        hosts = transfers.stats_endpoints(json.load(f))
+                except (OSError, ValueError):
+                    hosts = []
+                others = sorted({h for h in hosts if h != director.host(cache.url)})
+                if not hosts or others:
+                    return FAIL, (
+                        f"{key}: {name!r} served by"
+                        f" {', '.join(others) or 'no server recorded'}, not {cache.svc}"
+                    )
         why = fetched(test, target)
         if why:
             return FAIL, f"{key}: {why}"
-        if cache is not None:
-            try:
-                with open(stats, encoding="utf-8") as f:
-                    hosts = transfers.stats_endpoints(json.load(f))
-            except (OSError, ValueError):
-                hosts = []
-            others = sorted({h for h in hosts if h != director.host(cache.url)})
-            if not hosts or others:
-                return FAIL, (
-                    f"{key}: served by {', '.join(others) or 'no server recorded'},"
-                    f" not {cache.svc}"
-                )
         notes.append(f"{key}: {len(NAMES)} files")
     return PASS, "; ".join(notes)
 
@@ -441,10 +448,11 @@ def client_get(test: Test) -> tuple[str, str]:
 def client_put(test: Test) -> tuple[str, str]:
     """Check that `pelican object put` of each name lands as that object.
 
-    A put of a file of each name into a new collection must make an
-    object of each name, with the file's bytes, at some origin; and no
-    store may hold one of any other name there: on disk, no file, and in
-    a pstore origin's catalog, as its storage API lists it, no entry.
+    A put of a file of each name, in a command of its own (see above),
+    to its object's URL in a new collection must make an object of the
+    name, with the file's bytes, at some origin; and no store may hold
+    one of any other name there: on disk, no file, and in a pstore
+    origin's catalog, as its storage API lists it, no entry.
     """
     if "Writes" not in test.caps:
         return SKIP, "/protected-a takes no writes"
@@ -458,16 +466,17 @@ def client_put(test: Test) -> tuple[str, str]:
     for name, data in files.items():
         with open(os.path.join(directory, name), "wb") as f:
             f.write(data)
-    code, out, err = test.session.pelican_cmd(
-        "object",
-        "put",
-        "--token",
-        test.token_file,
-        *(os.path.join(directory, name) for name in NAMES),
-        f"{test.fed.url}/protected-a/{quote(collection)}/",
-    )
-    if code != 0:
-        return FAIL, f"exit {code}: {last_line(err or out)}"
+    for name in NAMES:
+        code, out, err = test.session.pelican_cmd(
+            "object",
+            "put",
+            "--token",
+            test.token_file,
+            os.path.join(directory, name),
+            f"{test.fed.url}/protected-a/{quote(collection)}/{quote(name)}",
+        )
+        if code != 0:
+            return FAIL, f"{name!r}: exit {code}: {last_line(err or out)}"
     tokens = {"protected-a": test.setup}
     for name, data in files.items():
         held = stores.held_anywhere(test.origins, "protected-a", f"{collection}/{name}", tokens)

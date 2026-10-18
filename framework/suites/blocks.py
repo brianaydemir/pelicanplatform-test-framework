@@ -2237,9 +2237,9 @@ def digest_overwrite(test: Test) -> tuple[str, str]:
 
 
 # The algorithms the client knows (ChecksumType in client/handle_http.go),
-# each told by its digest: the client's stats number them, by a
-# numbering that v26.0.0-rc.3's stats do not share with its code (3 is
-# md5 there, not sha), so the number is not relied on.
+# each told by its digest: the client's stats number them by ChecksumType,
+# whose iota counts the three constants before it in its const block, so
+# that md5 is 3 and sha 6; the number is not relied on.
 CLIENT_ALGORITHMS = ("md5", "crc32c", "crc32", "sha")
 # How long a V2 cache may take to record the origins' digests of an object
 # it has read whole: it asks an origin for them once the body has come.

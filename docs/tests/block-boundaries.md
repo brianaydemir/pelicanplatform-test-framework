@@ -175,10 +175,12 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   origin keeps digests by the file's modification time,
   to the second, and must not report a stale one; and its `ETag`, by
   which a cache tells that an object has changed, must change too. An
-  XRootD origin (XRootD 5.9.7, in the v26.0.0-rc.3 images) reports
-  `crc32=ffffffff` of an empty object, the CRC-32 of nothing without
-  its final complement (`00000000` is right), so `digests` fails there
-  at its `whole/0` row; and it keeps an object's digests by the file's
+  XRootD origin (XRootD 5.9.7, in the v26.0.0-rc.3 images) reports as
+  `crc32` the POSIX `cksum` (`XrdCksCalccrc32`), not the CRC-32 that
+  Pelican's client and native origins mean by it, so `digests` fails
+  there at every object, and the row's note says that the value is
+  the object's `cksum` (`ffffffff` of the empty object, where the
+  CRC-32 is `00000000`); and it keeps an object's digests by the file's
   modification time, to the second, so after a PUT within the same
   second it reports the old version's, and `digest-overwrite` fails
   there too. `digest-overwrite` skips where the origins take no direct
@@ -227,9 +229,10 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   get --cache` must bring the object, and its transfer statistics
   (`--transfer-stats`: the `serverChecksums` that it asked the cache
   for once the body came) must hold the same digests, each the
-  object's, each told by its value alone, since the statistics number
-  the algorithms by a numbering that v26.0.0-rc.3's do not share with
-  the client's code (3 is `md5` there, not `sha`); the client has no
+  object's, each told by its value alone: the statistics number the
+  algorithms by the client's `ChecksumType`, whose `iota` counts the
+  three constants before it in its `const` block, so that `md5` is 3
+  and `sha` 6, which the row does not rely on. The client has no
   `--require-checksum` for a download. A V2
   cache asks an origin for every digest in one `Want-Digest`, which an
   XRootD origin answers with one, `md5`, so over XRootD origins

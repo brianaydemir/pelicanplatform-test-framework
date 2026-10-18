@@ -122,6 +122,13 @@ ROTATE_INTERVAL = 15
 NAMED_WAIT = 150
 # How long a V2 cache may take to say, with Age, that it holds an object.
 HELD_WAIT = 30
+# How long a V2 cache may take to serve the probe again: hot-rotate's
+# disruption can leave it without the namespace's issuer for a while.
+PROBE_WAIT = 150
+# How a server answers the probe for a token (Test.probe()): it serves
+# the probe, or refuses the token, by one of REFUSALS.
+SERVED, REFUSED = "served", "refused"
+REFUSALS = (401, 403)
 # A V2 cache's master key file, under its store (local_cache/encryption.go);
 # and a pstore origin's, under its /data, in its store
 # (Origin.PStoreLocation, /data/pstore, in
@@ -376,8 +383,21 @@ class Test:
 
     def served(self, url: str, token: str) -> bool:
         """Return whether the server at url serves the probe for token."""
+        return self.probe(url, token) == SERVED
+
+    def probe(self, url: str, token: str) -> str:
+        """Return how the server at url answers a GET of the probe for token.
+
+        Returns:
+            SERVED, if it serves the probe; REFUSED, if it refuses the
+            token (REFUSALS); or else what it answered, for a message.
+        """
         answer = web.request("GET", f"{url}{self.path}", token=token, timeout=60)
-        return answer.status == 200 and answer.body == self.data
+        if answer.status == 200 and answer.body == self.data:
+            return SERVED
+        if answer.status in REFUSALS:
+            return REFUSED
+        return "HTTP 200, not the probe" if answer.status == 200 else answer.describe()
 
 
 def put_back(test: Test) -> None:
@@ -481,15 +501,21 @@ def hot_rotate(test: Test) -> list[Row]:
     The keys are watched for ROTATE_WINDOW seconds, every ROTATE_INTERVAL:
     every director must go on naming origin-0 and the cache (`directors`),
     each origin and cache must come to take tokens signed with the origins'
-    new key (`new-key`), and must take the old key's throughout (`old-key`),
-    and the issuer's tokens must come to carry the new kid (`issuer-kid`);
+    new key (`new-key`), and must take the old key's throughout (`old-key`:
+    a refusal, by one of REFUSALS, fails it; any other answer but the
+    probe leaves it inconclusive, since the server neither took nor
+    refused the token), and the issuer's tokens must come to carry the
+    new kid (`issuer-kid`);
     the registry must come to list the origins' new key (`registry-origins`)
     and the cache's (`registry-cache`). A director checks an ad against the
     keys it fetched for the server's prefix up to Director.AdvertisementTTL
     (15 minutes) before, and never refetches for a kid it lacks
     (verifyAdvertiseToken in director/origin_api.go), so once their ads
     carry the new kid the directors refuse them, and drop origin-0 and the
-    cache; and a cache never pushes a new key to the registry.
+    cache; and a cache never pushes a new key to the registry. A V2 cache
+    trusts the issuers of the namespaces the director lists, which it asks
+    for every minute (updateConfig in local_cache/persistent_cache.go), so
+    within a minute of that, it refuses every token for its namespaces.
     Origins and caches keep a namespace's keyset for up to 15 minutes too
     (origin_serve/authz.go, local_cache/cache_authz.go), so `new-key` is
     inconclusive if the window is not enough. The tokens of each key are
@@ -538,6 +564,8 @@ def hot_rotate(test: Test) -> list[Row]:
     # By server and profile.
     accepted: dict[tuple[str, str], float] = {}
     refused_old: dict[tuple[str, str], float] = {}
+    # The first answer to an old key's token that was neither.
+    unanswered_old: dict[tuple[str, str], tuple[float, str]] = {}
     issuer_kid_at: Optional[float] = None
     registry_at: dict[str, float] = {}
     started = time.monotonic()
@@ -551,8 +579,12 @@ def hot_rotate(test: Test) -> list[Row]:
                 key = (svc, profile)
                 if key not in accepted and test.served(url, new_tokens[profile]):
                     accepted[key] = now
-                if key not in refused_old and not test.served(url, old_tokens[profile]):
-                    refused_old[key] = now
+                if key not in refused_old:
+                    got = test.probe(url, old_tokens[profile])
+                    if got == REFUSED:
+                        refused_old[key] = now
+                    elif got != SERVED and key not in unanswered_old:
+                        unanswered_old[key] = (now, got)
         if client and issuer_kid_at is None:
             try:
                 minted = issuer.token(client, User(token=admin_web), ("storage.read:/",))
@@ -617,6 +649,16 @@ def hot_rotate(test: Test) -> list[Row]:
                         f"old-key {case}",
                         FAIL,
                         f"refused the old key's token {refused_old[key]:.0f}s in",
+                    )
+                )
+            elif key in unanswered_old:
+                at, got = unanswered_old[key]
+                rows.append(
+                    (
+                        f"old-key {case}",
+                        INCONCLUSIVE,
+                        f"never refused the old key's token, but {at:.0f}s in answered it"
+                        + f" with {got}, neither the probe nor a refusal",
                     )
                 )
             else:
@@ -796,6 +838,31 @@ def held_with_age(test: Test, cache: common.Cache) -> Optional[int]:
     return int(age) if age.isdigit() else None
 
 
+def hold_probe(test: Test, cache: common.Cache) -> Optional[str]:
+    """Have cache hold the probe, by reading it whole.
+
+    The cache may refuse it for up to PROBE_WAIT seconds, as after
+    hot-rotate, and must then say, with Age, that it holds it.
+
+    Returns:
+        Why it does not hold it, or None if it does.
+    """
+    if held_with_age(test, cache) is not None:
+        return None
+    last = [""]
+
+    def read() -> bool:
+        answer = web.request("GET", f"{cache.url}{test.path}", token=test.token, timeout=120)
+        last[0] = answer.describe()
+        return answer.status == 200 and answer.body == test.data
+
+    if not common.wait_for(read, PROBE_WAIT, 5):
+        return f"{PROBE_WAIT}s on, a GET of the probe got {last[0]}, or not the probe"
+    if not common.wait_for(lambda: held_with_age(test, cache) is not None, HELD_WAIT, 1):
+        return f"no Age within {HELD_WAIT}s of a whole read of the probe"
+    return None
+
+
 def master_key(test: Test) -> list[Row]:
     """Check that a V2 cache's master key is sealed with each of its keys.
 
@@ -804,13 +871,14 @@ def master_key(test: Test) -> list[Row]:
     before a restart (`sealed`) and after one (`sealed-after-restart`):
     Pelican re-seals it only through a key-change callback that the
     launcher registers for its local cache module, not for the cache
-    server, and loading never re-saves it. Then, destructively,
-    with every key but the newest removed from the cache's key
-    directory, the cache restarted must still open its store, and serve
-    the probe it held, with Age, fetching nothing (`retired`): a master
-    key it cannot unseal is replaced by a new one, with which its store
-    cannot be read. Afterward the keys and the master key file are put
-    back, and the cache restarted again.
+    server, and loading never re-saves it. Then, destructively, once
+    the cache holds the probe (hold_probe(); `retired` is inconclusive
+    if it never does), with every key but the newest removed from the
+    cache's key directory, the cache restarted must still open its
+    store, and serve the probe it held, with Age, fetching nothing
+    (`retired`): a master key it cannot unseal is replaced by a new
+    one, with which its store cannot be read. Afterward the keys and
+    the master key file are put back, and the cache restarted again.
     """
     fed = test.fed
     cache = test.cache
@@ -828,16 +896,6 @@ def master_key(test: Test) -> list[Row]:
     keys = sorted(glob.glob(os.path.join(dirs[0], "[0-9][0-9]-*.pem")))
     host = director.host(cache.url)
     rows: list[Row] = [sealed_row("sealed", path, keys)]
-    if held_with_age(test, cache) is None:
-        answer = web.request("GET", f"{cache.url}{test.path}", token=test.token, timeout=120)
-        if answer.status != 200 or answer.body != test.data:
-            return rows + [
-                ("sealed-after-restart", FAIL, f"a GET of the probe got {answer.describe()}")
-            ]
-        if not common.wait_for(lambda: held_with_age(test, cache) is not None, HELD_WAIT, 1):
-            return rows + [
-                ("sealed-after-restart", FAIL, f"no Age within {HELD_WAIT}s of a whole read")
-            ]
     try:
         control.restart(cache.svc)
     except control.ControlError as e:
@@ -851,6 +909,9 @@ def master_key(test: Test) -> list[Row]:
             )
         ]
     rows.append(sealed_row("sealed-after-restart", path, keys))
+    why = hold_probe(test, cache)
+    if why:
+        return rows + [("retired", INCONCLUSIVE, why)]
     # The destructive part: keep the newest key alone.
     newest = keys[-1]
     retired = [k for k in keys if k != newest]
