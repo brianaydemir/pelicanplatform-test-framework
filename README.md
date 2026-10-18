@@ -73,11 +73,13 @@ to `framework/var/results/` ([Results](docs/ci.md#results)), and
 interrupted, `./fed.sh test` then keeps every service's log, from when
 its container was created, in `framework/var/logs/<time>/`: a file per
 service; `ps.txt`, the containers' states; `shape.txt`, the presets,
-topology, profiles, tag, and images; and `test.log`, everything the
-tests printed, as it was printed. The tests restart services but
-never recreate them, so these cover the whole run, and the startup
-before it; `./fed.sh up` and `restart` start a recreated container's
-log afresh.
+topology, profiles, tag, and images; `test.log`, everything the tests
+printed, as it was printed; and `control.log`, what the
+[control helper](#service-control) did for them. The tests restart
+services but never recreate them, so these cover the whole run, and
+the startup before it; `./fed.sh up` and `restart` start a recreated
+container's log afresh. A token that a message quotes, as a director's
+redirect carries one, is kept without its signature.
 
 
 ## Workflow
@@ -406,7 +408,7 @@ them.
 | `data/webdav-gate/`  | the `Authorization` of every request an `https` or `httpsv2` origin sent its backend through the gate (`exports`) |
 | `data/idp/`          | every request the identity provider served (`-p auth-oidc`), one JSON object per line, without its secrets         |
 | `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                   |
-| `logs/<time>/`       | every service's log, the containers' states, the shape, and what the tests printed, as each `./fed.sh test` ended |
+| `logs/<time>/`       | every service's log, the containers' states, the shape, what the tests printed, and what the control helper did, as each `./fed.sh test` ended |
 | `control/`           | the tests' requests to [control services](#service-control), and their configuration of a service (`config/<svc>/`) |
 | `issuer-keys/<svc>/` | each service's issuer keys (`/fed/issuer-keys`), and `issuer/`, the external issuer's                           |
 | `test-keys/`         | private keys for the [authorization tests](docs/tests/authorization.md)                                         |

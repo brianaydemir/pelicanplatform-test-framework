@@ -912,6 +912,7 @@ class Results:
 
     def add(self, scenario: str, status: str, note: str = "") -> None:
         """Record a row, and print it briefly."""
+        note = report_module.redact(note)
         self.report.add(scenario, status, note)
         row = f"{scenario:<{self.name_width}} {status:<{self.status_width}} {note}"
         self.rows.append(row.rstrip())

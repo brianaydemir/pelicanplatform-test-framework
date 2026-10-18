@@ -87,6 +87,22 @@ def slug(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "results"
 
 
+# A JWT in its compact form: a base64url header (which begins `{"`, so
+# `eyJ`), claims, and signature.
+_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+
+
+def redact(text: str) -> str:
+    """Return text with the signature of each JWT in it cut out.
+
+    A note or a message may quote a URL that carries a token, as a
+    director's redirect does, and the results and logs keep it. Without
+    its signature the token is of no use to anyone, while its claims
+    still say what it was.
+    """
+    return _JWT.sub(lambda m: m.group(0).rsplit(".", 1)[0] + ".<signature>", text)
+
+
 @dataclass(frozen=True)
 class Row:
     """A case, as recorded.
@@ -127,7 +143,8 @@ class Report:
         """Record a case.
 
         By default its duration is the time since the previous case;
-        pass None for no duration.
+        pass None for no duration. Any token in the note loses its
+        signature (see redact()).
         """
         if status not in STATUSES:
             raise ValueError(f"unknown status: {status}")
@@ -135,7 +152,7 @@ class Report:
         if seconds is not None and seconds < 0:
             seconds = now - self._mark
         self._mark = now
-        self.rows.append(Row(case, status, seconds, note))
+        self.rows.append(Row(case, status, seconds, redact(note)))
 
     @property
     def failed(self) -> int:

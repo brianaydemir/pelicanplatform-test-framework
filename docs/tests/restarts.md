@@ -103,6 +103,25 @@ every origin is stopped.
   unpaused, or started, and every director must name it again within
   150 seconds (`back`). Each row's case begins with `paused` or
   `killed`, as in `paused early`.
+- `origin-failover`, with several origins, each holding every object
+  (`-p topo-multi-origin`): the last is paused, and then killed. Each
+  time, `pelican object get` and stash_plugin must each get an object
+  of their own, direct from an origin (`--direct`, or `?directread`;
+  not under `-p origin-no-direct`) and through a cache (or, with none,
+  from whichever origin the directors send them to), served by a server
+  other than the one away, while the directors still name it for an
+  origin's read (`early`; inconclusive if they had already dropped it),
+  and once they have dropped it, within `Server.AdLifetime` and 30 more
+  (`late`). Until its ad expires, the directors still list the origin
+  from its ad, but a director that has the namespace's token stats the
+  origins before it redirects (`Director.CheckOriginPresence`), and so
+  sends a client to the one that answers; a cache fetches from the
+  origins as a client does, with the client's token, and must get the
+  object too. The note says which servers each client tried. Afterward
+  the origin is unpaused, or started, and every director must name it
+  again within 150 seconds (`back`). Each row's case is `paused` or
+  `killed`, `early` or `late`, and `direct` or `cache`, as in `killed
+  late direct`.
 - `peer-director`, with several directors: the second killed, the first
   must list only itself at `/api/v1.0/director/directors` within
   `Server.AdLifetime` and 30 more, since its peer's ad has expired

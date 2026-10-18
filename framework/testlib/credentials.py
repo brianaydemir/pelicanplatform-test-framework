@@ -67,6 +67,11 @@ OTHER = {"protected-a": "protected-b", "protected-b": "protected-a"}
 LONG = 14400
 EXPIRED = 1
 
+# How long `pelican token create`, which fetches the issuer's keys to
+# check the signing key against, may take before it is killed, in
+# seconds.
+MINT_TIMEOUT = 120
+
 # Scopes, as `pelican token create` flags.
 RWM = ("read", "write", "modify")
 WM = ("write", "modify")
@@ -478,14 +483,21 @@ def mint(
         command += ["--audience", audience]
     command += ["--profile", PELICAN_PROFILES[profile]]
     with open(out, "w", encoding="utf-8") as f:
-        done = subprocess.run(  # nosec B603
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=f,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
+        try:
+            done = subprocess.run(  # nosec B603
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=f,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=MINT_TIMEOUT,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            common.die(
+                f"`pelican token create` for {prefix} ran over {MINT_TIMEOUT}s, and was"
+                + " killed; does the issuer answer?"
+            )
     if done.returncode != 0:
         sys.stderr.write(done.stderr)
         common.die(f"could not create a token for {prefix} with framework/var/{key}")

@@ -47,7 +47,7 @@ The suites run in this order:
 | `webdav`     | the origins' WebDAV methods beyond GET, HEAD, PUT, DELETE, and PROPFIND, and how each is authorized: POST, COPY, MOVE, MKCOL, LOCK, PROPPATCH, and OPTIONS; writes through symbolic links that leave a store; how an origin serves stored HTML; and that a cache serves those methods for no one, and changes no origin ([WebDAV methods](webdav-methods.md)) |
 | `auth`       | each [credential](authorization.md) at each server, in each namespace; each issuer's keys; tokens of one storage scope, for another audience or one origin's, in the query string, and several at once; tokens whose times, claims, or signatures are wrong, one that expires while in use, and a server's own web tokens ([token validation](token-validation.md)); paths and symbolic links that climb out of a namespace or a token's scope; a protected prefix inside a public one; and what a refusal tells a client |
 | `transfers`  | gets and puts through `pelican object`, `stash_plugin`, and a plain HTTP client that follows the director's redirects as curl does, in every namespace with every credential: gets through the cache the director picks, direct from an origin, and from a cache the client names, byte-checked ([test data](test-data.md)) |
-| `restart`    | what survives a server's restart, and what a server does while another is gone: a cache's store, every server's identity and database, the directors' routing once a server is killed and once it is back, an origin whose storage service is stopped, the clients' failover from a cache that is paused or killed, and a director's view of its peer ([restarts](restarts.md)) |
+| `restart`    | what survives a server's restart, and what a server does while another is gone: a cache's store, every server's identity and database, the directors' routing once a server is killed and once it is back, an origin whose storage service is stopped, the clients' failover from a cache, or from a replica origin, that is paused or killed, and a director's view of its peer ([restarts](restarts.md)) |
 | `keys`       | keys added and rotated while the servers run: the registry's and the origins' JWKS, the directors' routing, tokens of either key at every server, the issuer's kid, the master keys of a V2 cache and a pstore origin, and every server's database backups ([keys](keys.md)) |
 
 A suite that doesn't apply to the shape is skipped, and says why.
@@ -144,7 +144,10 @@ in `scitokens`. `./fed.sh test -l` marks each such scenario `WLCG only`,
 and `./fed.sh test --profile wlcg` (or `scitokens`) runs one pass alone.
 `federation`'s `ready` and `caches`, once they have passed, try once in
 the second pass, since the federation is no longer starting; the second
-pass repeats every other suite's restarts.
+pass repeats every other suite's restarts. In a pass of SciTokens alone
+(`--profile scitokens`), they judge whether the federation serves at
+all with a WLCG token as well, so a federation that refuses SciTokens
+fails them, and stops nothing.
 
 Pelican's native origins and V2 caches compare a token's scopes with
 the WLCG profile's alone (`ParseResourceScopeString` in

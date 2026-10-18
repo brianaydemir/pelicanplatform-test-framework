@@ -74,7 +74,10 @@ is removed after the suite.
 Its SciTokens pass presents SciTokens where the WLCG pass presents its
 own: its probes are put in place with WLCG tokens either way. Once
 `ready` or `caches` has passed, neither waits again in a later pass:
-the federation is no longer starting.
+the federation is no longer starting. In a pass of another profile
+alone (`--profile scitokens`), a federation that refuses the pass's
+tokens but serves a WLCG token is up, so the row fails, and the run
+goes on.
 """
 
 import json
@@ -89,7 +92,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from testlib import accounts, common, credentials, director, owners, stores, transfers, web
 from testlib.common import die
-from testlib.credentials import ALLOW
+from testlib.credentials import ALLOW, WLCG
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -247,8 +250,11 @@ class Probe:
         self.uploaded = True
         return None
 
-    def get(self) -> Optional[str]:
+    def get(self, setup: bool = False) -> Optional[str]:
         """Get the object through the federation with `pelican object get`.
+
+        With setup, present the setup token, WLCG's, in place of the
+        session's.
 
         Returns:
             What went wrong, or None if nothing did.
@@ -256,11 +262,12 @@ class Probe:
         target = self.session.path("federation-probe")
         if os.path.exists(target):
             os.remove(target)
-        token = (
-            []
-            if self.read_ns == "public"
-            else ["--token", self.session.token_file(self.read_ns)]
+        token_file = (
+            self.session.setup_token_file(self.read_ns)
+            if setup
+            else self.session.token_file(self.read_ns)
         )
+        token = [] if self.read_ns == "public" else ["--token", token_file]
         code, out, err = self.session.pelican_cmd(
             "object", "get", *token, f"{self.fed.url}/{self.read_ns}/{self.rel}", target
         )
@@ -340,7 +347,10 @@ def ready(probe: Probe) -> tuple[str, str]:
     Where the registry requires approval, each try first approves what is
     pending, since a server registers once it is up. Once it has passed,
     in an earlier pass of the run, it tries once, and fails rather than
-    dies.
+    dies; so it does in a pass of another profile alone, where the
+    federation refuses the session's token but serves a WLCG one, since
+    the refusal is its verdict on the profile, not a federation that is
+    down.
 
     Raises:
         Died: The federation never serves: nothing after it could pass.
@@ -354,6 +364,8 @@ def ready(probe: Probe) -> tuple[str, str]:
         if why is None:
             SETTLED.add("ready")
             return PASS, f"{probe.read_ns}, after {n} tries" if n > 1 else probe.read_ns
+        if probe.uploaded and probe.session.profile != WLCG and probe.get(setup=True) is None:
+            return FAIL, f"{probe.read_ns}: {why} (served with a WLCG token)"
         if n == 1 and tries > 1:
             print(
                 f"Waiting for the federation to serve {probe.fed.url}/{probe.read_ns}/"
@@ -370,11 +382,39 @@ def ready(probe: Probe) -> tuple[str, str]:
     )
 
 
+def cache_problem(probe: Probe, cache: common.Cache, answer: web.Response) -> Optional[str]:
+    """Return what is wrong with answer, cache's to a GET of the object."""
+    if answer.status != 200:
+        # What the cache says of its failure, e.g. that its director
+        # serves no federation metadata, tells why.
+        said = last_line(answer.body.decode(errors="replace"))[:200]
+        return f"{cache.svc}: {answer.describe()}" + (f" ({said})" if said else "")
+    if answer.body != probe.data[probe.namespace]:
+        return f"{cache.svc}: the body is not the object"
+    return None
+
+
+def serves_setup(probe: Probe, cache: common.Cache) -> bool:
+    """Return whether cache serves the object with the setup token, WLCG's.
+
+    In a pass of another profile alone, a cache that refuses the
+    session's token but serves WLCG's is up, and the refusal is its
+    verdict on the profile: no waiting for it, and no stopping the run
+    over it. In the WLCG pass the two tokens are one, so it is False.
+    """
+    if probe.session.profile == WLCG:
+        return False
+    url = f"{cache.url}/{probe.namespace}/{probe.rel}"
+    answer = web.request("GET", url, token=probe.session.setup_token(probe.namespace))
+    return cache_problem(probe, cache, answer) is None
+
+
 def caches(probe: Probe) -> tuple[str, str]:
     """Check that each cache serves the object with the server's token.
 
     Raises:
-        Died: No cache serves it, in its first pass: nothing that reads
+        Died: No cache serves it, in its first pass, with the session's
+            token or (see serves_setup()) with WLCG's: nothing that reads
             through a cache could pass.
     """
     if not probe.fed.caches:
@@ -382,33 +422,33 @@ def caches(probe: Probe) -> tuple[str, str]:
     token = probe.session.token(probe.namespace)
     tries = 1 if "caches" in SETTLED else TRIES
     problems: list[str] = []
+    serving = 0
     for cache in probe.fed.caches:
         url = f"{cache.url}/{probe.namespace}/{probe.rel}"
         answer = web.request("GET", url, token=token)
+        why = cache_problem(probe, cache, answer)
+        up = why is None or serves_setup(probe, cache)
         # A new cache refuses the token (403) until it has learned the
         # namespace's issuers, and may fail otherwise, or not answer,
         # while it finds the origins.
         for n in range(1, tries):
-            if answer.ok:
+            if up:
                 break
             if n == 1:
                 print(f"Waiting for {cache.svc} to serve the object ({answer.describe()}) ...")
             time.sleep(INTERVAL)
             answer = web.request("GET", url, token=token)
-        if answer.status != 200:
-            # What the cache says of its failure, e.g. that its director
-            # serves no federation metadata, tells why.
-            said = last_line(answer.body.decode(errors="replace"))[:200]
-            problems.append(
-                f"{cache.svc}: {answer.describe()}" + (f" ({said})" if said else "")
-            )
-        elif answer.body != probe.data[probe.namespace]:
-            problems.append(f"{cache.svc}: the body is not the object")
+            why = cache_problem(probe, cache, answer)
+            up = why is None or serves_setup(probe, cache)
+        if why:
+            problems.append(why)
+        if up:
+            serving += 1
     if problems:
         # Where no cache serves, nothing that reads through one could
         # pass, and nearly every suite does: stop, as ready() does when
         # the federation never serves, rather than fail for an hour.
-        if len(problems) == len(probe.fed.caches) and "caches" not in SETTLED:
+        if not serving and "caches" not in SETTLED:
             die(f"no cache serves the object: {'; '.join(problems)}")
         return FAIL, common.first(problems)
     SETTLED.add("caches")

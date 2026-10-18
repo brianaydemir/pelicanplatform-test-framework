@@ -30,6 +30,10 @@ afterward. A scenario with several cases records a row per case, named
   cache-failover   with several caches, the clients get an object while
                    the first cache is paused, and killed, before the
                    directors drop it and after
+  origin-failover  with several origins, the clients get an object,
+                   direct and through a cache, while the last origin is
+                   paused, and killed, before the directors drop it and
+                   after
   peer-director    with several directors, a director killed drops from
                    its peer's list of directors once its ad expires, and
                    returns
@@ -84,6 +88,10 @@ SCENARIOS = {
     "cache-failover": (
         "the clients get an object while the first cache is paused, or killed, before the"
         " directors drop it and after (several caches)"
+    ),
+    "origin-failover": (
+        "the clients get an object, direct and through a cache, while the last origin is"
+        " paused, or killed, before the directors drop it and after (several origins)"
     ),
     "peer-director": "a director killed drops from its peer's list, and returns (several directors)",
 }
@@ -1082,10 +1090,11 @@ class Fetched:
     hosts: list[str]
 
 
-def get_pelican(test: Test, name: str, url: str) -> Fetched:
+def get_pelican(test: Test, name: str, url: str, direct: bool = False) -> Fetched:
     """Run `pelican object get` of url into a directory of its own.
 
-    It writes transfer stats, which give the host of each attempt.
+    It writes transfer stats, which give the host of each attempt. With
+    direct, it asks for an origin (--direct).
     """
     directory = test.directory(name)
     stats = os.path.join(directory, "stats.json")
@@ -1096,6 +1105,7 @@ def get_pelican(test: Test, name: str, url: str) -> Fetched:
         test.token_file,
         "--transfer-stats",
         stats,
+        *(["--direct"] if direct else []),
         url,
         "object",
         cwd=directory,
@@ -1122,16 +1132,20 @@ def get_pelican(test: Test, name: str, url: str) -> Fetched:
     return Fetched(status, out + err, directory, hosts)
 
 
-def get_plugin(test: Test, name: str, url: str) -> Fetched:
+def get_plugin(test: Test, name: str, url: str, direct: bool = False) -> Fetched:
     """Run stash_plugin's download of url into a directory of its own.
 
-    The server's token is in its credentials directory.
+    The server's token is in its credentials directory. With direct, it
+    asks for an origin, by the URL's query, since the plugin has no flag
+    for it (transfers.DIRECT_QUERY).
     """
     directory = test.directory(name)
     creds = os.path.join(test.tmp, f"{name}.creds")
     os.makedirs(creds, exist_ok=True)
     shutil.copyfile(test.token_file, os.path.join(creds, "scitokens.use"))
     infile, outfile = (os.path.join(test.tmp, f"{name}.{ext}") for ext in ("in", "ad"))
+    if direct:
+        url += transfers.DIRECT_QUERY
     with open(infile, "w", encoding="utf-8") as f:
         f.write(f'[ Url="{url}"; LocalFileName="object" ]\n')
     env = dict(test.session.env)
@@ -1166,10 +1180,10 @@ def get_plugin(test: Test, name: str, url: str) -> Fetched:
 
 
 def failover_problems(fetch: Fetched, data: bytes, dead: str, client: str) -> list[str]:
-    """Return what is wrong with a download while cache dead is away.
+    """Return what is wrong with a download while server dead is away.
 
     client's download must succeed, with the object, served by another
-    cache.
+    server.
     """
     if client == "pelican" and fetch.status != 0:
         return [f"exit {fetch.status}: {last_line(fetch.said)}"]
@@ -1284,6 +1298,120 @@ def cache_failover(test: Test) -> list[Row]:
 
 
 # --------------------------------------------------------------------------
+# origin-failover
+
+
+def origin_failover(test: Test) -> list[Row]:
+    """Check that the clients get an object while the last origin is away.
+
+    With several origins, each holding the object: the last is paused
+    (its ports take connections that nothing answers), and then killed
+    (they refuse). Each time, `pelican object get` and stash_plugin must
+    each get an object of their own, direct from an origin
+    (`--direct`, or `?directread`), where the namespace takes direct
+    clients, and through a cache (or, with none, from whichever origin
+    the directors send them to), served by a server other than the one
+    away, while the directors still name it for an origin's read, as
+    they do until its ad expires (before its ad expires, a director
+    that has a token stats the origins, and sends a client elsewhere;
+    a cache fetches from the origins as a client does, and must get
+    the object too), and once they have dropped it. The note says which
+    servers each client tried. Afterward the origin is unpaused, or
+    started, and every director must name it again.
+    """
+    fed = test.fed
+    if len(fed.origins) < 2:
+        return [("", SKIP, "fewer than two origins ('-p topo-multi-origin')")]
+    dead = fed.origins[-1]
+    host = director.host(dead.url)
+    routes = ["cache"]
+    if "DirectReads" in test.caps:
+        routes.insert(0, "direct")
+    test.put("origin-probe", os.urandom(4096))
+    path = test.path("origin-probe")
+    rows: list[Row] = []
+    for mode, away, back in (
+        ("paused", control.pause, control.unpause),
+        ("killed", control.kill, control.start),
+    ):
+        objects = {
+            f"origin-{mode}-{when}-{client}-{route}": os.urandom(OBJECT_SIZE)
+            for when in ("early", "late")
+            for client in ("pelican", "plugin")
+            for route in routes
+        }
+        for name, data in objects.items():
+            test.put(name, data)
+        if len(test.named_by("origin", path, host)) != len(fed.directors):
+            rows.append(
+                (mode, FAIL, f"before {dead.svc} was {mode}, not every director named it")
+            )
+            continue
+        try:
+            away(dead.svc)
+        except control.ControlError as e:
+            rows.append((mode, FAIL, str(e)))
+            continue
+        try:
+            for when in ("early", "late"):
+                if when == "late":
+                    dropped = test.wait_unnamed(
+                        "origin", path, host, AD_LIFETIME + EXPIRY_SLACK
+                    )
+                    if dropped is None:
+                        rows.append(
+                            (
+                                f"{mode} late",
+                                FAIL,
+                                f"{AD_LIFETIME + EXPIRY_SLACK}s after {dead.svc} was {mode}, a director still named it",
+                            )
+                        )
+                        continue
+                elif not test.named_by("origin", path, host):
+                    rows.append(
+                        (
+                            f"{mode} early",
+                            INCONCLUSIVE,
+                            f"the directors had dropped {dead.svc} before the clients ran",
+                        )
+                    )
+                    continue
+                for route in routes:
+                    problems: list[str] = []
+                    tried: list[str] = []
+                    for client, runner in (("pelican", get_pelican), ("plugin", get_plugin)):
+                        name = f"origin-{mode}-{when}-{client}-{route}"
+                        fetch = runner(test, name, test.url(name), route == "direct")
+                        problems += [
+                            f"{client}: {p}"
+                            for p in failover_problems(fetch, objects[name], dead.svc, client)
+                        ]
+                        tried.append(f"{client} tried {fetch.hosts or 'nothing recorded'}")
+                    rows.append(
+                        (f"{mode} {when} {route}", *outcome(problems, "; ".join(tried))[1:])
+                    )
+        finally:
+            try:
+                back(dead.svc)
+                took = test.wait_named("origin", path, host, NAMED_WAIT)
+                if took is None:
+                    rows.append(
+                        (
+                            f"{mode} back",
+                            FAIL,
+                            f"{NAMED_WAIT}s after {dead.svc} came back, not every director named it",
+                        )
+                    )
+                else:
+                    rows.append(
+                        (f"{mode} back", PASS, f"named again {took:.0f}s after it came back")
+                    )
+            except control.ControlError as e:
+                rows.append((f"{mode} back", FAIL, str(e)))
+    return rows
+
+
+# --------------------------------------------------------------------------
 # peer-director
 
 
@@ -1372,6 +1500,7 @@ RUN: dict[str, Callable[[Test], Rows]] = {
     "ad-expiry": ad_expiry,
     "backend-outage": backend_outage,
     "cache-failover": cache_failover,
+    "origin-failover": origin_failover,
     "peer-director": peer_director,
 }
 

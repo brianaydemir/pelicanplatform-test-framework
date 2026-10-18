@@ -158,7 +158,11 @@ pass alone ([token profiles](README.md#token-profiles)). `ready`,
 pass's tokens, though their objects are put in place with WLCG tokens
 either way. Once `ready` or `caches` has passed, it tries once in a
 later pass, since the federation is no longer starting, and fails
-rather than stop the run.
+rather than stop the run. In a pass of SciTokens alone
+(`--profile scitokens`), each judges whether the federation serves at
+all with a WLCG token as well: a federation that serves it but refuses
+the pass's tokens, as Pelican's native servers do, is up, so the row
+fails, and the run goes on.
 
 [What the tests check](README.md#suites) says where Pelican as it is
 fails `caches`, which stops the run, and `directors`, `redirects`, and

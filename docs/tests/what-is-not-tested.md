@@ -91,8 +91,6 @@ exercise, or not in a way that would catch a fault:
 
 - `topo-tiny`: nothing confirms that a client's download came through
   the cache, since the `transfers` suite's `served-by` checks skip.
-- `topo-multi-origin`: no read with one replica down; `restart` fails
-  over only between caches.
 - `topo-site-local-cache`: of cache-2, only its reads, a refusal, a
   listing, and what it leaves in a federated cache (`sitelocal`); the
   suites that check a cache's own APIs, the freshness of its copies, or

@@ -2404,12 +2404,17 @@ fed_dev_up() {
 }
 
 # Serve the tests' requests to control the services
-# (framework/control.py) in the background, for as long as they run.
-# A background job ignores SIGINT, so the helper outlives an interrupt
-# long enough to put back what the tests leave behind.
+# (framework/control.py) in the background, for as long as they run,
+# with what it says appended to file $1, if given, and otherwise on
+# stderr. A background job ignores SIGINT, so the helper outlives an
+# interrupt long enough to put back what the tests leave behind.
 fed_control_start() {
   fed_require_python
-  python3 framework/control.py serve &
+  if [ -n "${1:-}" ]; then
+    python3 framework/control.py serve 2>>"$1" &
+  else
+    python3 framework/control.py serve &
+  fi
   fed_control_pid=$!
 }
 
@@ -2423,9 +2428,10 @@ fed_control_stop() {
 # Keep every service's log in framework/var/logs/$1/, once: <svc>.log,
 # from when its container was created; ps.txt, the containers' states;
 # and shape.txt, the presets, topology, profiles, and images, beside
-# test.log, what the tests printed (see `test` below). The tests restart
-# services but never recreate them, so a log covers the whole run, and
-# the startup before it.
+# test.log, what the tests printed, and control.log, what the control
+# helper did for them (see `test` below). The tests restart services
+# but never recreate them, so a log covers the whole run, and the
+# startup before it.
 fed_save_logs() {
   [ -n "$1" ] && [ -z "${fed_logs_saved:-}" ] || return 0
   fed_logs_saved=yes
@@ -2697,7 +2703,14 @@ case "${cmd}" in
           exec ${no_tty:+"${no_tty}"} dev "$@"
     fi
     # The logs are saved after the helper puts back what the tests left.
-    fed_control_start
+    # What the helper does for the tests is kept beside them, as
+    # control.log, where their output is kept.
+    log_dir=""
+    if [ -n "${logs}" ]; then
+      log_dir="framework/var/logs/${logs}"
+      mkdir -p "${log_dir}"
+    fi
+    fed_control_start "${log_dir:+${log_dir}/control.log}"
     trap 'fed_control_stop' EXIT
     trap 'fed_control_stop; fed_save_logs "${logs}"; exit 130' INT
     trap 'fed_control_stop; fed_save_logs "${logs}"; exit 143' TERM
@@ -2706,8 +2719,6 @@ case "${cmd}" in
       # What the tests print is kept beside the services' logs, as
       # test.log (see fed_save_logs), through a pipe, so the tests get
       # no TTY, and the subshell leaves the exit status in a file.
-      log_dir="framework/var/logs/${logs}"
-      mkdir -p "${log_dir}"
       {
         docker compose -f framework/docker-compose.yaml exec -T dev "$@" 2>&1 \
             || printf '%s\n' "$?" >"${log_dir}/.status"

@@ -36,7 +36,8 @@ everything first removes the results of earlier runs with the same
 RESULTS_TAG. A pass that prints nothing for STALL_SECONDS, or runs for
 BUDGET_SECONDS, is abandoned, and recorded as `aborted` (or `setup`,
 if it recorded no case), so that a scenario stuck on a server that
-never answers cannot stall the run.
+never answers cannot stall the run; its cleanup, if that too takes
+over GRACE_SECONDS, is interrupted again.
 """
 
 import contextlib
@@ -59,7 +60,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fra
 from suites import SUITES
 from testlib import common
 from testlib.credentials import PROFILES, WLCG
-from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP, Report
+from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP, Report, redact
 from testlib.session import Session
 
 # pylint: enable=wrong-import-position
@@ -72,17 +73,27 @@ RESULTS = os.path.join(common.VAR, "results")
 # minutes), or once it has run for this long, however much it prints.
 STALL_SECONDS = 20 * 60
 BUDGET_SECONDS = 90 * 60
+# Once abandoned, how long its cleanup (the suite's `finally` blocks,
+# which put back what it restarted or wrote) may take before it is
+# interrupted again, and again.
+GRACE_SECONDS = 5 * 60
 
 
-class Stalled(Exception):
-    """A suite's pass that the watchdog gave up on (see watched())."""
+class Stalled(BaseException):
+    """A suite's pass that the watchdog gave up on (see watched()).
+
+    Not an Exception: a suite catches those around each scenario, so
+    that the next still runs, and must not catch this.
+    """
 
 
 class Activity:
     """A text stream that notes when it was last written to.
 
     It stands in for sys.stdout and sys.stderr, so that the watchdog can
-    tell a pass that is getting on from one that is stuck.
+    tell a pass that is getting on from one that is stuck. It also cuts
+    the signature out of any token written (report.redact()), since
+    what the tests print is kept with the logs.
     """
 
     last_write = time.monotonic()
@@ -93,12 +104,12 @@ class Activity:
     def write(self, text: str) -> int:
         """Write text, and note the time."""
         Activity.last_write = time.monotonic()
-        return self._stream.write(text)
+        return self._stream.write(redact(text))
 
     def writelines(self, lines: Any) -> None:
         """Write each of lines, and note the time."""
         Activity.last_write = time.monotonic()
-        self._stream.writelines(lines)
+        self._stream.writelines(redact(line) for line in lines)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._stream, name)
@@ -112,7 +123,9 @@ def watched(name: str) -> Generator[None, None, None]:
     nothing for STALL_SECONDS, or has run for BUDGET_SECONDS, it sends
     the process SIGALRM, whose handler raises Stalled in the main thread,
     wherever it is: a blocked read or join included, since a signal
-    interrupts those. The suite's cleanup runs as for any other error.
+    interrupts those. The suite's cleanup runs as for any other error;
+    if the pass is still going GRACE_SECONDS later, as when the cleanup
+    waits on the same server, it is interrupted again, until it ends.
     SIGALRM is ignored outside the block, so a late one does no harm.
     """
     why: list[str] = []
@@ -131,6 +144,13 @@ def watched(name: str) -> Generator[None, None, None]:
                 continue
             print(f"\n{common.PROG}: {why[0]}", file=sys.stderr)
             os.kill(os.getpid(), signal.SIGALRM)
+            while not stop.wait(GRACE_SECONDS):
+                print(
+                    f"\n{common.PROG}: {name} has not ended {GRACE_SECONDS}s after being"
+                    + " abandoned; interrupting its cleanup",
+                    file=sys.stderr,
+                )
+                os.kill(os.getpid(), signal.SIGALRM)
             return
 
     def alarm(_signum: int, _frame: Any) -> None:
@@ -142,9 +162,11 @@ def watched(name: str) -> Generator[None, None, None]:
     try:
         yield
     finally:
+        # Ignored first, so that an alarm sent as the pass ended cannot
+        # abandon it after the fact.
+        signal.signal(signal.SIGALRM, signal.SIG_IGN)
         stop.set()
         watcher.join()
-        signal.signal(signal.SIGALRM, signal.SIG_IGN)
 
 
 def current_shape() -> Optional[common.Federation]:
@@ -262,6 +284,8 @@ def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report,
                 module.run(session, selected, results)
     except common.Died as e:
         error = e.message
+    except Stalled as e:
+        error = str(e)
     except KeyboardInterrupt:
         report.write("interrupted")
         raise
