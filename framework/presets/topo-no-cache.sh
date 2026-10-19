@@ -16,5 +16,6 @@
 # `topo-site-local-cache`, `cache-mixed`, `cache-xrootd` (the kind is
 # moot: say none), `cache-tiered`, `cache-memory`, `cache-small`, and
 # `origin-no-direct`, under which the origins serve only caches; and the
-# `tiny` and `standalone` topologies, whose caches are not cache-0's.
+# `tiny` and `standalone` topologies, whose caches are not cache-0's;
+# and `origin-firewalled`, whose origin only a cache could reach.
 FEDERATED_CACHE=false

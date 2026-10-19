@@ -286,6 +286,7 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 | `origin-no-direct`      | origins serve only caches (`Origin.DisableDirectClients`); one export, read-only: `/protected-a`, or `/public` with `origin-public`; the suites that write skip |
 | `origin-multiuser`      | the origin reads and writes as each token's user (`Origin.Multiuser`); `posixv2` and `origin-xrootd` only; see `users` |
 | `origin-broker`         | origin-0 uses director-0 as its connection broker; XRootD origins only; one export: `/protected-a`, or `/public` with `origin-public` |
+| `origin-firewalled`     | `origin-broker`, with origin-0 behind a firewall: on a network of its own, which the caches are not on, and whose name they resolve to their own loopback, so their connections to it are refused, and they reach it only through the broker; the directors, registry, discovery host, identity provider, the origin's backend, the transfer server, and the dev container are on both; XRootD caches only (the V2 cache has no broker client), with `auth-external-issuer` or `origin-public`, since the caches must reach the issuer, and not `topo-no-cache`; see `federation`'s `broker`; in v26.0.0-rc.3 the XRootD cache never asks the broker, so the run stops at `federation`'s `ready` |
 | `origin-ssh-tunnel`     | the origin reaches its helper on the lab server through the SSH connection (`Origin.SSH.TunnelCallback`), as it must where the storage host cannot reach the origin; `origin-ssh` only |
 | `origin-transfer-api`   | the origins run the transfer API (`Origin.EnableTransferAPI`), of which `transfer-api` tests origin-0's, but skips unless `/protected-a` takes writes |
 | `origin-short-tokens`   | the origins' issuer mints access tokens and codes that last a minute and refresh tokens four (`Issuer.*Lifetime`); see `issuer` |
@@ -464,7 +465,8 @@ in your hosts file, as any user of `framework/etc/idp-users.json`.
   `pre-commit install` in `/app`, which installs Pelican's Git hook in
   the checkout that `PELICAN_SRC_DIR` names.
 - **`-p topo-tiny`** refuses `cache-xrootd`, `auth-external-issuer`,
-  `director-discovery`, `origin-broker`, `topo-no-cache`, and every
+  `director-discovery`, `origin-broker`, `origin-firewalled`,
+  `topo-no-cache`, and every
   preset that adds a service but `origin-metadata`,
   `origin-metadata-tx`, and `auth-oidc`.
 - **`-p origin-metadata`** builds the verifier's image from GitHub on the

@@ -811,6 +811,15 @@ class Federation:
         return self._line("origin-broker") == "true"
 
     @cached_property
+    def firewalled(self) -> bool:
+        """ORIGIN_FIREWALLED (see presets/origin-firewalled.sh).
+
+        Whether origin-0 is cut off from the caches, which then reach it
+        only through the connection broker.
+        """
+        return self._line("origin-firewalled") == "true"
+
+    @cached_property
     def transfer_api(self) -> Optional[TransferApi]:
         """Where the transfer API is served, if it is (see TransferApi).
 

@@ -157,6 +157,9 @@ The exceptions:
   run together, are refused together, since the `transfer-api` suite
   tests one transfer API at a time; `framework/matrix.py` takes them
   for two levels of one choice (`transfer_api`).
+- `origin-firewalled` includes `origin-broker`, so `fed.sh` takes the
+  two together, while `framework/matrix.py` takes them for two levels
+  of one choice (`broker`), of which a smoke shape makes one.
 - `cache-tiered` has no effect with a cache image older than Pelican's
   main, but `fed.sh` only warns, and only of the released image, which
   it knows by name, since it cannot tell what an image holds; the

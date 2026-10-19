@@ -101,7 +101,17 @@ as its note, and the rest still run. Each scenario is a row.
   Each director's list of servers (`/api/v1.0/director_ui/servers`;
   `listServers` in `director/director_ui.go`) must give each origin
   the same `brokerUrl`, and a cache none. All of it must hold within
-  60 seconds, asked every 5. It skips elsewhere.
+  60 seconds, asked every 5. Behind a firewall (`-p origin-firewalled`),
+  where origin-0 is on a network the caches are not on, every fetch of
+  theirs comes through the broker: `caches` has just had each cache
+  fetch the probe, so origin-0's `pelican_broker_connections_total`
+  (`server_type="origin"`) and `pelican_broker_object_requests_total`
+  (`metrics/server.go`, counted in `origin/broker_client.go`) must each
+  be at least 1, and the note says what it counted. In v26.0.0-rc.3
+  (xrdcl-pelican 1.8.2), the XRootD cache is told of the broker, but
+  reports its refused connection to the origin and never asks the
+  broker for one, so `ready` fails there and the run stops; the check
+  is for a release that brokers a cache's fetch. It skips elsewhere.
 - `hints`: each director's redirect (307) of a GET of the object, with
   no token, for a cache and for an origin, in each exported namespace,
   must tell the client the namespace and whether it takes a token

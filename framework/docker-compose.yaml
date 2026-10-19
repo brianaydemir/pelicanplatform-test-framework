@@ -154,6 +154,7 @@ services:
   # that https://idp:9007 serves a browser too, given a hosts entry.
   idp:
     hostname: idp
+    networks: [default, firewalled]
     image: python:3-alpine
     profiles: ["idp"]
     command: ["python3", "-u", "/fed/bin/idp.py"]
@@ -193,6 +194,7 @@ services:
   # issuer, if at all.
   discovery:
     hostname: discovery
+    networks: [default, firewalled]
     image: nginx:alpine
     profiles: ["discovery", "external-issuer"]
     # 127.0.0.1, not localhost: BusyBox wget tries only the first address,
@@ -225,6 +227,7 @@ services:
 
   director-0:
     hostname: director-0
+    networks: [default, firewalled]
     image: "${IMAGE_DIRECTOR:?run through ./fed.sh}"
     profiles: ["federation"]
     healthcheck: *pelican-health
@@ -260,6 +263,7 @@ services:
   # `-p director-discovery`.
   director-1:
     hostname: director-1
+    networks: [default, firewalled]
     image: "${IMAGE_DIRECTOR:?run through ./fed.sh}"
     profiles: ["multi-director"]
     healthcheck: *pelican-health
@@ -299,6 +303,7 @@ services:
   # (etc/tls.req).
   director:
     hostname: director
+    networks: [default, firewalled]
     image: nginx:alpine
     profiles: ["director-ha"]
     depends_on:
@@ -324,6 +329,7 @@ services:
   # start.
   registry:
     hostname: registry
+    networks: [default, firewalled]
     image: "${IMAGE_REGISTRY:?run through ./fed.sh}"
     profiles: ["federation"]
     healthcheck: *pelican-health
@@ -355,6 +361,8 @@ services:
 
   origin-0:
     hostname: origin-0
+    # Behind a firewall (`origin-firewalled`), a network the caches are not on.
+    networks: ["${ORIGIN_0_NETWORK:?run through ./fed.sh}"]
     image: "${IMAGE_ORIGIN:?run through ./fed.sh}"
     healthcheck: *pelican-health
     depends_on:
@@ -463,6 +471,10 @@ services:
   cache-0:
     hostname: cache-0
     image: "${IMAGE_CACHE:?run through ./fed.sh}"
+    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the cache's
+    # own loopback, where nothing listens on its ports, so a connection is
+    # refused at once, as by a firewall that rejects.
+    extra_hosts: ["${CACHES_BLACKHOLE:?run through ./fed.sh}:127.0.0.1"]
     profiles: ["cache"]
     healthcheck: *pelican-health
     depends_on:
@@ -494,6 +506,10 @@ services:
   cache-1:
     hostname: cache-1
     image: "${IMAGE_CACHE:?run through ./fed.sh}"
+    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the cache's
+    # own loopback, where nothing listens on its ports, so a connection is
+    # refused at once, as by a firewall that rejects.
+    extra_hosts: ["${CACHES_BLACKHOLE:?run through ./fed.sh}:127.0.0.1"]
     profiles: ["multi-cache"]
     healthcheck: *pelican-health
     depends_on:
@@ -527,6 +543,10 @@ services:
   cache-2:
     hostname: cache-2
     image: "${IMAGE_CACHE:?run through ./fed.sh}"
+    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the cache's
+    # own loopback, where nothing listens on its ports, so a connection is
+    # refused at once, as by a firewall that rejects.
+    extra_hosts: ["${CACHES_BLACKHOLE:?run through ./fed.sh}:127.0.0.1"]
     profiles: ["site-local-cache"]
     healthcheck: *pelican-health
     # It fetches objects through cache-0.
@@ -564,6 +584,7 @@ services:
   # (docker-compose.tiny.yaml). It needs no storage.
   transfer:
     hostname: transfer
+    networks: [default, firewalled]
     image: "${IMAGE_ORIGIN:?run through ./fed.sh}"
     profiles: ["transfer"]
     entrypoint: ["/entrypoint.sh", "pelican-server"]
@@ -598,6 +619,7 @@ services:
   # at /scratch.
   dev:
     hostname: dev
+    networks: [default, firewalled]
     image: "${IMAGE_DEV:?run through ./fed.sh}"
     command: ["tini", "--", "/bin/sleep", "infinity"]
     deploy:
@@ -662,6 +684,7 @@ services:
   # origins would send one.
   webdav:
     hostname: webdav
+    networks: [default, firewalled]
     image: rclone/rclone:1.75.1
     profiles: ["webdav"]
     command:
@@ -700,6 +723,7 @@ services:
   # tests can see what an origin sends its backend.
   webdav-gate:
     hostname: webdav-gate
+    networks: [default, firewalled]
     image: nginx:alpine
     profiles: ["webdav"]
     depends_on:
@@ -736,6 +760,7 @@ services:
   # the caches' are, take memory to buffer.
   s3:
     hostname: s3
+    networks: [default, firewalled]
     image: rclone/rclone:1.75.1
     profiles: ["s3"]
     entrypoint: ["/bin/sh", "-c"]
@@ -846,3 +871,20 @@ services:
       - "9003:3000"
     volumes:
       - ./var/grafana:/var/lib/grafana
+
+#===========================================================================
+# Networks
+#
+# Every service is on `default`, but origin-0, which is on the network
+# that ORIGIN_0_NETWORK names: `default`, or `firewalled` behind a
+# firewall (`origin-firewalled`), which the caches are not on, so that
+# they reach it only through the connection broker; and the caches then
+# resolve its name to their own loopback (CACHES_BLACKHOLE), so that a
+# connection is refused rather than the name unknown, as a firewall
+# leaves it. The services that the origin must reach, and that a site's
+# own hosts would, are on both.
+#===========================================================================
+
+networks:
+  default: {}
+  firewalled: {}

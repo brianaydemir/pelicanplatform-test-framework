@@ -11,7 +11,8 @@
 #
 # Needs `topo-multi-cache`, for cache-1. Refuses `cache-tiered` and
 # `cache-memory`, whose settings reach every cache, and which the XRootD
-# cache does not read. `cache-small` bounds each cache its own way.
+# cache does not read, and `origin-firewalled`, whose origin only an
+# XRootD cache can reach. `cache-small` bounds each cache its own way.
 
 CACHE_VARIANT=v2
 CACHE_1_VARIANT=xrootd

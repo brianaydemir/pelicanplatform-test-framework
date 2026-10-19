@@ -270,6 +270,21 @@ if [ "${fed_topology}" = standalone ]; then
 fi
 export ORIGIN_STANDALONE
 
+# The Docker network that origin-0 is on (docker-compose.yaml): the one
+# every service shares, or, behind a firewall (`origin-firewalled`), one
+# of its own, which the caches are not on.
+# The caches resolve the host that CACHES_BLACKHOLE names to their own
+# loopback (docker-compose.yaml): origin-0, behind a firewall, so that
+# their connections to it are refused, as a firewall refuses them,
+# rather than its name unknown; otherwise a name that nothing asks for.
+ORIGIN_0_NETWORK=default
+CACHES_BLACKHOLE=firewalled.invalid
+if [ "${ORIGIN_FIREWALLED}" = true ]; then
+  ORIGIN_0_NETWORK=firewalled
+  CACHES_BLACKHOLE=origin-0
+fi
+export ORIGIN_0_NETWORK CACHES_BLACKHOLE
+
 : "${IMAGE_DEV:=${IMAGE_HUB}/pelican-dev:${PELICAN_DEV_TAG}}"
 : "${IMAGE_ORIGIN:=${IMAGE_HUB}/origin:${PELICAN_TAG}}"
 : "${IMAGE_CACHE:=${IMAGE_HUB}/cache:${PELICAN_TAG}}"
@@ -287,7 +302,7 @@ for fed_knob in ORIGIN_ENABLE_ISSUER ENABLE_OIDC EXTERNAL_ISSUER \
     ORIGIN_MULTIUSER ORIGIN_BROKER ORIGIN_TRANSFER_API TRANSFER_SERVER CACHE_TIERING \
     FEDERATED_CACHE SERVER_DROP_PRIVILEGES REGISTRY_REQUIRE_APPROVAL ISSUER_SHORT_TOKENS \
     ORIGIN_EXPORT_TEMPLATES DIRECTOR_DISCOVERY ORIGIN_PUBLIC_ONLY DIRECTOR_HA \
-    ORIGIN_SSH_TUNNEL ORIGIN_PUBLIC_WRITES; do
+    ORIGIN_SSH_TUNNEL ORIGIN_PUBLIC_WRITES ORIGIN_FIREWALLED; do
   eval "fed_value=\${${fed_knob}}"
   # shellcheck disable=SC2154  # assigned by the eval above
   case "${fed_value}" in
@@ -516,6 +531,30 @@ if [ "${ORIGIN_BROKER}" = true ]; then
           "profile '${fed_profile}' ($(fed_profile_presets "${fed_profile}"))"
     fi
   done
+fi
+
+# Behind a firewall (`origin-firewalled`), origin-0 is on a network of
+# its own, which the caches are not on, so they reach it only through
+# the broker; and only an XRootD cache has a broker client
+# (cache/broker_client.go in Pelican), so every cache must be one, and
+# there must be one. The caches verify a token with the keys they fetch
+# from its issuer, and the origins' own issuer is out of their reach, so
+# the exports must trust an issuer they can reach, or take no token.
+if [ "${ORIGIN_FIREWALLED}" = true ]; then
+  [ "${ORIGIN_BROKER}" = true ] \
+      || die "ORIGIN_FIREWALLED ('origin-firewalled') cuts origin-0 off from the caches, which" \
+             "then reach it only through the connection broker (ORIGIN_BROKER, 'origin-broker')"
+  [ "${FEDERATED_CACHE}" = true ] \
+      || die "ORIGIN_FIREWALLED ('origin-firewalled') needs a cache to reach origin-0 through" \
+             "the broker, and FEDERATED_CACHE ('topo-no-cache') runs none"
+  [ "${CACHE_VARIANT}" = xrootd ] && [ "${CACHE_1_VARIANT}" = xrootd ] \
+      || die "ORIGIN_FIREWALLED ('origin-firewalled') needs every cache XRootD's ('cache-xrootd')," \
+             "which alone has a broker client; a V2 cache could not reach origin-0 at all"
+  if [ "${EXTERNAL_ISSUER}" = false ] && [ "${ORIGIN_PUBLIC_ONLY}" = false ]; then
+    die "ORIGIN_FIREWALLED ('origin-firewalled') puts the origins' own issuer out of the caches'" \
+        "reach, so they could verify no token: the exports must trust an issuer they can" \
+        "reach ('auth-external-issuer'), or take none ('origin-public')"
+  fi
 fi
 
 # The identity provider (`auth-oidc`) serves the servers' OIDC login, so
@@ -1268,6 +1307,7 @@ fed_generate() {
   printf '%s\n' "${fed_topology}" | fed_write framework/var/generated/topology
   printf '%s\n' "${ORIGIN_VARIANT}" | fed_write framework/var/generated/origin-variant
   printf '%s\n' "${ORIGIN_BROKER}" | fed_write framework/var/generated/origin-broker
+  printf '%s\n' "${ORIGIN_FIREWALLED}" | fed_write framework/var/generated/origin-firewalled
   printf '%s\n' "${DIRECTOR_DEFAULT_RESPONSE}" \
       | fed_write framework/var/generated/director-default-response
   printf '%s\n' "${REGISTRY_REQUIRE_APPROVAL}" \

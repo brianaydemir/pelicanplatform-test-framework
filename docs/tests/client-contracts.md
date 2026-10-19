@@ -14,6 +14,13 @@ reads what the clients report. Its objects go under
 afterward. It needs `/protected-a`, as `commands` does. A scenario with
 several cases records a row per case, named `<scenario> <case>`.
 
+The plugin's `stage` subcommand (`stash_plugin stage`; `StagePlugin.*`),
+by which an HTCondor hook copies a job's files from a local mount into
+a shadow origin, is not tested: its uploads are the plugin's, which
+`transfers` covers, and the rest is its mapping of local paths to
+prefixes and its exchange of ClassAds with HTCondor, neither of them a
+federation's.
+
 - `plugin-ads`: stash_plugin's result ads (`cmd/plugin.go`), one per
   line of its outfile, in the order the transfers finished, so each is
   known by its `TransferUrl`; of a batch of two objects through a cache, cold

@@ -87,6 +87,17 @@ standalone origin, which has no director. Each case is a row, named
   `pstore` origin should fail, and the `status`, `test-runs`, and
   `component` rows with them, on v26.0.0-rc.3 and main alike. This
   comes from reading the code, not from a run.
+
+  Under `-p origin-broker`, a director reaches origin-0 only through
+  its connection broker, so its tests of that origin go through it,
+  and fail: the director's dialer (`broker/dialer.go`) asks its broker
+  for a reversed connection with a token signed with the director's
+  own key, which the broker (`/api/v1.0/broker/reverse` in
+  `broker/server_apis.go`) verifies against the registry's keys for
+  the origin's prefix (`/origins/<host>`), the origin's, and so refuses
+  (400, "Failed to verify provided token"), on v26.0.0-rc.3 and main
+  alike. So the `status`, `test-runs`, and `component` rows of
+  origin-0 fail there too, at an XRootD origin as well.
 - `health-test-file`: the test file a director serves the caches
   (`/api/v1.0/director/healthTest/pelican/monitoring/directorTest/director-test-<RFC 3339 time>.txt`;
   `getHealthTestFile` in `director/director.go`). A GET must get the

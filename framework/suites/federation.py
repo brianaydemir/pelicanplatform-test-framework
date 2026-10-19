@@ -33,7 +33,11 @@ The suite puts an object in place at every origin's store, under
              the server's own keys
   broker     under `-p origin-broker`, each director names origin-0's
              connection broker, for an origin, and so does its list of
-             servers, which names none for a cache; within 60 seconds
+             servers, which names none for a cache; within 60 seconds;
+             and behind a firewall (`-p origin-firewalled`), the origin
+             must have counted connections made in reverse, and object
+             requests over them, since `caches` could have fetched the
+             probe only through the broker
   hints      each director's redirect, for a cache and for an origin, in
              each namespace, tells the client the namespace, whether it
              takes a token, and its issuer (the X-Pelican-Namespace,
@@ -90,7 +94,17 @@ from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
-from testlib import accounts, common, credentials, director, owners, stores, transfers, web
+from testlib import (
+    accounts,
+    common,
+    credentials,
+    director,
+    metrics,
+    owners,
+    stores,
+    transfers,
+    web,
+)
 from testlib.common import die
 from testlib.credentials import ALLOW, WLCG
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
@@ -109,7 +123,10 @@ SCENARIOS = {
         " cache, an origin in a cache's place"
     ),
     "discovery": "a Pelican server's discovery document names the federation's servers",
-    "broker": "the directors name origin-0's connection broker, and no cache's",
+    "broker": (
+        "the directors name origin-0's connection broker, and no cache's; behind a firewall,"
+        " the origin counts what came through it"
+    ),
     "hints": "each director's redirect names the namespace, whether it takes a token, and its issuer",
     "redirects": (
         "a plain HTTP client follows each director's redirects, of bare paths too, to a"
@@ -652,11 +669,48 @@ def broker_problems(fed: common.Federation, path: str, namespace: str) -> list[s
     return problems
 
 
+# The origin's counters of what came through the broker: the connections
+# it made in reverse, and the object requests they carried
+# (metrics/server.go in Pelican, counted in origin/broker_client.go).
+BROKER_CONNECTIONS = "pelican_broker_connections_total"
+BROKER_OBJECTS = "pelican_broker_object_requests_total"
+
+
+def brokered(origin: common.Origin) -> tuple[Optional[str], str]:
+    """Return what is wrong with origin's count of what the broker carried.
+
+    Behind a firewall, every fetch of a cache's comes through the broker,
+    so once `caches` has had each cache fetch the probe, the origin must
+    count at least one connection made in reverse, and at least one
+    object request over them.
+
+    Returns:
+        What is wrong, or None; and what it counted.
+    """
+    found = metrics.fetch(origin.web_url)
+    if found is None:
+        return f"{origin.svc}: /metrics did not answer", ""
+    connections = found.value(BROKER_CONNECTIONS, server_type="origin")
+    objects = found.value(BROKER_OBJECTS)
+    carried = (
+        f"{origin.svc} counted {connections:.0f} brokered connection(s), carrying"
+        f" {objects:.0f} object request(s)"
+    )
+    if connections < 1 or objects < 1:
+        return (
+            f"nothing came through the broker, though the caches fetched the probe: {carried}",
+            carried,
+        )
+    return None, carried
+
+
 def broker(probe: Probe) -> tuple[str, str]:
     """Check that each director names origin-0's connection broker.
 
     This holds under `-p origin-broker`, within DIRECTORS_WAIT seconds (see
-    broker_problems()).
+    broker_problems()). Behind a firewall (`-p origin-firewalled`), the
+    origin must then have counted what came through the broker (see
+    brokered()).
     """
     fed = probe.fed
     if not fed.broker:
@@ -670,7 +724,13 @@ def broker(probe: Probe) -> tuple[str, str]:
 
     if not common.wait_for(named, DIRECTORS_WAIT, interval=5):
         return FAIL, f"after {DIRECTORS_WAIT}s, {common.first(found)}"
-    return PASS, f"{len(fed.directors)} director(s)"
+    note = f"{len(fed.directors)} director(s)"
+    if fed.firewalled:
+        why, carried = brokered(fed.origins[0])
+        if why:
+            return FAIL, why
+        note += f"; {carried}"
+    return PASS, note
 
 
 def hints(probe: Probe) -> tuple[str, str]:

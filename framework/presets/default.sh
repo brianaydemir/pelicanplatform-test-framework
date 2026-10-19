@@ -103,6 +103,11 @@ ORIGIN_MULTIUSER=false
 # presets/origin-broker.sh).
 ORIGIN_BROKER=false
 
+# Whether origin-0 is on a Docker network of its own, which the caches
+# are not on, so that they reach it only through the connection broker
+# (see presets/origin-firewalled.sh).
+ORIGIN_FIREWALLED=false
+
 # Origin.SSH.TunnelCallback: whether an ssh origin dials its helper
 # through the SSH connection, rather than the helper connecting back to
 # the origin's web URL (see presets/origin-ssh-tunnel.sh).

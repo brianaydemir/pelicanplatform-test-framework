@@ -72,6 +72,21 @@ lists the scenarios.
   -p origin-ssh`); nothing is removed there either.
 - `ls -r` must list every object by its path in the tree, once
   (`ls-recursive`).
+- With several origins (`-p topo-multi-origin`), the director asks the
+  origins which holds a path before it redirects, by a HEAD
+  (`Director.CheckOriginPresence`; `queryOrigins` in `director/stat.go`),
+  when the request needs no token or carries the namespace's. A native
+  origin answers a HEAD of a collection with 405, which the director
+  takes for absence, as it does any status but 200, 404, and 403, so
+  it finds no origin holding any collection (404, "No sources reported
+  possession"), and every command that has it find one fails there:
+  `ls-public`, `du-public`, `get-recursive`, `copy-tpc`,
+  `copy-tpc-public`, `copy-tpc-direct`, `sync-download`, `sync-tpc`,
+  `sync-unchanged`, and `sync-changed`, over native origins, on
+  v26.0.0-rc.3 and main alike. `ls-protected-a` and `du-protected-a`
+  pass, since `ls` and `du` show the director no token, so it does not
+  ask; and with one origin it assumes the path is there
+  (`Director.AssumePresenceAtSingleOrigin`).
 - `du --json` must give each collection's bytes, objects, and
   collections, and `du --count`, whose counts only its text output
   shows, must print the same (`du-protected-a`, `du-public`); `du -s`,

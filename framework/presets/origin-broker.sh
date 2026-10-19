@@ -10,9 +10,16 @@
 # a broker of their own.
 #
 # The origin stays reachable directly: only the director always goes
-# through the broker; a cache tries it only when it cannot connect, and a
-# V2 cache or a client never does. The federation suite's `broker`
-# scenario checks what the director and the origin advertise.
+# through the broker (and fails, on v26.0.0-rc.3 and main alike: its
+# broker verifies the director's token against the origin's registered
+# keys, so its health tests of the origin fail; see the director-api
+# suite's `health`); an XRootD cache is told of it (the director's
+# X-Pelican-Broker), but in v26.0.0-rc.3 (xrdcl-pelican 1.8.2) never asks
+# it, even once its connection to the origin is refused; and a V2 cache
+# or a client has no broker client. The federation suite's `broker`
+# scenario checks what the director and the origin advertise. To send
+# the caches' fetches through the broker, add `origin-firewalled`,
+# which cuts the origin off from them.
 #
 # Pelican brokers only for an XRootD origin with one export, so fed.sh
 # refuses native origins, and the origins export only /protected-a. It

@@ -82,6 +82,35 @@ Features that would seem natural presets, and why none is offered:
   on port 443**, which Pelican leaves out of the URLs it derives: every
   server here listens on 8444, and `director-ha`'s load balancer passes
   TLS through.
+- **A cache behind a firewall** (`Cache.EnableBroker`, which
+  `origin-broker` turns off at the caches): the director would reach it
+  through its broker, for its health tests, but no client outside the
+  site could, so it would serve only the site's own clients, which
+  nothing here stands in for; `origin-firewalled` puts an origin there.
+- **XRootD clustering** (`Origin.EnableCmsd` and `Xrootd.ManagerHost`,
+  by which an XRootD origin joins a redirector, as the OSDF's origins
+  join its legacy ones): the manager is an XRootD redirector that no
+  Pelican server runs, and the directors send clients to an origin by
+  its own URL, so the path through a redirector is XRootD's.
+- **A certificate chain** (`Server.TLSCertificateChain` holding an
+  intermediate CA's certificate, as a public CA issues): Go's and
+  XRootD's TLS both read the chain from the file, and Pelican's part is
+  naming it, which every server does alike; the framework's CA signs
+  each certificate directly.
+- **Directors that route to a cache in an error state**
+  (`Director.FilterCachesInErrorState` off): it would hide what a
+  server's `critical` health status does to its routing, which
+  `advertise`'s `spoofed-status` checks.
+- **An XRootD cache's read-ahead** (`Cache.BlocksToPrefetch`, off by
+  default): it changes when a cache fetches blocks, not what it serves,
+  which the `blocks` suite reads at the block boundaries either way.
+- **A server without its web UI** (`Server.EnableUI` off): only the
+  pages go; its API, login, and issuer stay, which the `webapi` suite
+  checks.
+- **Virtual-host-style S3 URLs** (`Origin.S3UrlStyle` `virtual`), by
+  which an origin asks for `<bucket>.<service>/<object>`: the form is
+  the AWS SDK's to build, and Pelican passes the style through; the
+  `s3` service serves path style, at `<service>/<bucket>/<object>`.
 
 
 ## Not exercised
@@ -124,8 +153,11 @@ exercise, or not in a way that would catch a fault:
 - `origin-broker`: no data goes through the broker. The origin stays
   reachable, so the caches and the clients connect to it directly, and
   only the director's own requests, chiefly its health tests, are
-  brokered: Pelican's brokered path to an unreachable origin does not
-  work end to end.
+  brokered. `origin-firewalled` cuts the origin off from the caches,
+  whose fetches must then go through it, which in v26.0.0-rc.3 they
+  never do, since the XRootD cache never asks it; a client's never go
+  through it either, since the dev container is on the origin's
+  network, as a site's own hosts are.
 - `origin-ssh-tunnel`: nothing tells the tunnel from the default mode;
   the lab server can still reach the origin, so an origin that ignored
   the setting would pass every check.

@@ -15,7 +15,7 @@ The suites run in this order:
 
 | Suite        | Tests                                                                 |
 | ------------ | --------------------------------------------------------------------- |
-| `federation` | that the federation serves at all ([federation](federation.md)), and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients, and with no cache (`-p topo-no-cache`) an origin in a cache's place; what its redirects tell a client of a namespace, and where they lead a plain HTTP client, bare paths included ([redirects](redirects.md)); a Pelican server's discovery document; under `-p origin-broker`, the connection broker; with several origins, that an object one of them alone holds is routed there, and comes back; under `-p registry-approval`, that nothing is routed to before its registration is approved; and that a server its admin declares down is routed to by no director until the downtime ends ([downtime](downtime.md)) |
+| `federation` | that the federation serves at all ([federation](federation.md)), and every director names every federated cache and every origin, and for a client's direct read (`?directread`) only origins that take direct clients, and with no cache (`-p topo-no-cache`) an origin in a cache's place; what its redirects tell a client of a namespace, and where they lead a plain HTTP client, bare paths included ([redirects](redirects.md)); a Pelican server's discovery document; under `-p origin-broker`, the connection broker, and behind a firewall (`-p origin-firewalled`), what came through it; with several origins, that an object one of them alone holds is routed there, and comes back; under `-p registry-approval`, that nothing is routed to before its registration is approved; and that a server its admin declares down is routed to by no director until the downtime ends ([downtime](downtime.md)) |
 | `selftest`   | the tests' own helpers ([self-tests](self-tests.md)): reading a V2 cache's `X-Transfer-Status` trailer, signing tokens of any claims and checking signatures, reading `/metrics`, and restarting a service mid-run |
 | `commands`   | `ls`, `stat`, `delete`, `copy`, `sync`, and `du`, and what `get` and `put` do with what already exists ([client commands](client-commands.md)) |
 | `client`     | the contracts that only show through the clients: stash_plugin's result ads, of downloads and uploads, failing over between caches partway through a download, the ETags the servers agree on, which token the client and the plugin present, the forms of URL they take (a bare path, `osdf:///`, and `-f`), how `pelican token create` finds an issuer, share URLs, the director's recorded decision, direct reads with `?skipstat`, several sources at once and `?recursive` by either client, a preferred cache that is down, and transfers handed to the client agent (`--async`) ([client contracts](client-contracts.md)) |
@@ -74,7 +74,10 @@ cache is clean). Where XRootD serves the caches over native origins
 v26.0.0-rc.3 origin with a token the origin cannot parse
 ([authorization](authorization.md)), so nearly every protected read
 through the cache fails there (403), though `federation`'s `caches`
-may pass. The framework works around none of these. The
+may pass. Behind a firewall (`-p origin-firewalled`), the XRootD cache
+of v26.0.0-rc.3 (xrdcl-pelican 1.8.2) is refused its connection to the
+origin and never asks the broker for one, so `ready` fails, and the
+run stops there too. The framework works around none of these. The
 `expired` credential must be 70 seconds past its expiry before it is
 presented, so `auth` and `transfers` run after every suite but two, by
 which time it usually is. `restart` and `keys` come last of all, since

@@ -65,7 +65,7 @@ FACTORS: dict[str, tuple[str, ...]] = {
     "metadata": ("off", "eventual", "transactional"),
     "max_age": ("off", "on"),
     "multiuser": ("off", "on"),
-    "broker": ("off", "on"),
+    "broker": ("off", "on", "firewalled"),
     "ssh_tunnel": ("off", "on"),
     "transfer_api": ("off", "on", "server"),
     "tiering": ("off", "on"),
@@ -116,6 +116,7 @@ PRESETS: dict[str, tuple[str, str]] = {
     "origin-max-age": ("max_age", "on"),
     "origin-multiuser": ("multiuser", "on"),
     "origin-broker": ("broker", "on"),
+    "origin-firewalled": ("broker", "firewalled"),
     "origin-ssh-tunnel": ("ssh_tunnel", "on"),
     "origin-transfer-api": ("transfer_api", "on"),
     "topo-transfer-server": ("transfer_api", "server"),
@@ -309,7 +310,7 @@ REFUSED: list[Rule] = [
     ),
     (
         "the connection broker relays only to XRootD",
-        lambda s: s["broker"] == "on" and s["origin"] not in XROOTD_ORIGINS,
+        lambda s: s["broker"] != "off" and s["origin"] not in XROOTD_ORIGINS,
     ),
     (
         "the SSH tunnel is the ssh origin's",
@@ -317,8 +318,24 @@ REFUSED: list[Rule] = [
     ),
     (
         "the connection broker needs origin-0 alone, in the full topology",
-        lambda s: s["broker"] == "on"
+        lambda s: s["broker"] != "off"
         and (s["topology"] != "full" or "on" in (s["multi_origin"], s["multi_owner"])),
+    ),
+    (
+        "a firewalled origin is reached only through the broker, which only an XRootD cache"
+        + " can use",
+        lambda s: s["broker"] == "firewalled" and s["cache"] != "xrootd",
+    ),
+    (
+        "a firewalled origin needs a cache to reach it through the broker",
+        lambda s: s["broker"] == "firewalled" and s["caches"] == "none",
+    ),
+    (
+        "a firewalled origin's own issuer is out of the caches' reach, so the exports must"
+        + " trust an issuer they can reach, or take no token",
+        lambda s: s["broker"] == "firewalled"
+        and s["issuer"] != "external"
+        and s["namespaces"] != "public",
     ),
     (
         "mixed kinds of cache put XRootD at cache-1, which needs topo-multi-cache",
@@ -348,7 +365,7 @@ REFUSED: list[Rule] = [
         and (
             s["origin"] in ("https", "httpsv2")
             or s["direct"] == "no"
-            or s["broker"] == "on"
+            or s["broker"] != "off"
             or s["namespaces"] == "public"
         ),
     ),
@@ -377,7 +394,7 @@ REFUSED: list[Rule] = [
         "writes to /public are given where it is exported: not beside /protected-a alone",
         lambda s: s["public_writes"] == "on"
         and s["namespaces"] == "all"
-        and (s["origin"] in ("https", "httpsv2") or s["broker"] == "on"),
+        and (s["origin"] in ("https", "httpsv2") or s["broker"] != "off"),
     ),
     (
         "writes to /public need direct clients, without which Pelican allows only reads",
@@ -389,7 +406,7 @@ REFUSED: list[Rule] = [
     ),
     (
         "the connection broker's state is one director's, which a load balancer hides",
-        lambda s: s["director_ha"] == "on" and s["broker"] == "on",
+        lambda s: s["director_ha"] == "on" and s["broker"] != "off",
     ),
 ]
 
