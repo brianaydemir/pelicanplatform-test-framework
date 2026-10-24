@@ -90,6 +90,23 @@ every origin is stopped.
   plugins (`-p origin-s3`, `-p origin-https`) answer with their backend
   gone, no run has yet shown. It skips where the origin stores on its
   own disk.
+- `xrootd-wedged`, where XRootD serves the origins or a federated
+  cache: a server probes its own XRootD, by a TLS handshake that XRootD
+  itself must answer, and once XRootD has answered none for
+  `Xrootd.LivenessMaxUnresponsiveTime`, shuts it down, and ends with it,
+  so that what runs the server can start it afresh
+  (`xrootd/liveness.go`; Pelican's main, not v26.0.0-rc.3). Origin-0,
+  if XRootD serves it, and the first federated XRootD cache are each
+  restarted with the probe's timings shortened, from a minute between
+  probes, three minutes for one, and ten without an answer, to 2
+  seconds, 3, and 20. Once its health says `xrootd-liveness` is `ok`,
+  the control helper stops its XRootD daemons (SIGSTOP), which leaves
+  their port taking connections, from the kernel's backlog, but
+  answering nothing. Its health must then say `warning` or `critical`,
+  and within 90 seconds its container must have exited; the note times
+  both. It is then started again as it was, and every director must
+  name it again within 150 seconds. A row per server, named after it.
+  It presents no storage token, and runs in the WLCG pass alone.
 - `cache-failover`, with several federated caches: the first is paused
   (its ports take connections that nothing answers), and then killed
   (they refuse). Each time, `pelican object get` and stash_plugin of

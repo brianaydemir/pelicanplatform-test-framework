@@ -197,3 +197,24 @@ skip.
   client's token, and none the static one; the rest, the origins' own
   probes, which carry no client's token, and what they fetched for a
   cache, are counted in the row's note.
+- `sentinel`: an administrator may name, for each export, a file in its
+  storage (`SentinelLocation` in `Origin.Exports`), which shows that the
+  storage is mounted; the origin reads each through itself as it
+  starts, and refuses to start without it, rather than serve an empty
+  export (`CheckOriginSentinelLocations` in `server_utils/origin.go`).
+  The first origin, of whatever kind, is restarted with `fed.sh`'s
+  `Origin.Exports` restated with a `SentinelLocation` for every export:
+  one that each export's storage holds, put there first, with which it
+  must start and serve the suite's probe (`present`); and one that no
+  storage holds, with which its container must exit within 120 seconds
+  (`missing`). An origin that would not start with its sentinels in
+  place shows nothing by exiting without them, so `missing` is then
+  inconclusive, and not run. Afterward it is restored, and the
+  sentinels removed. It needs `/protected-a` to take writes from direct
+  clients, a control helper, and a topology other than `tiny`; elsewhere
+  it skips. It presents no storage token of the tests', and runs in the
+  WLCG pass alone. The origin reads each sentinel at `Origin.Url`,
+  which for a native origin names port 8443, XRootD's, where it serves
+  nothing (see `auth`'s `audience-specific`), so a native origin with
+  any sentinel exits as it starts ("connection refused"), and `present`
+  fails there (main, under the default shape).

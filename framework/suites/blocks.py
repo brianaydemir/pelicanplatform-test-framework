@@ -52,13 +52,11 @@ import os
 import random
 import re
 import shutil
-import subprocess  # nosec B404
 import threading
 import time
 import traceback
 from collections import Counter
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from email.utils import formatdate
 from typing import Optional
 from urllib.parse import urlencode, urlsplit
@@ -78,7 +76,7 @@ from testlib import (
 )
 from testlib.common import die, first, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
-from testlib.session import CLIENT_TIMEOUT, Session, json_object, json_objects, last_line
+from testlib.session import Session, json_object, json_objects, last_line
 
 SCENARIOS = {
     "put-declared": "upload every size with a Content-Length to every origin",
@@ -101,6 +99,7 @@ SCENARIOS = {
         " and every range, from the cache (or, with none, the origin) it leads to"
     ),
     "cache-range-first": "each cache: a cold range first, then every range, then the whole",
+    "cache-stored": "each XRootD cache's store on disk holds every object's bytes, block by block",
     "cache-overlap": "each cache: ranges that overlap what it holds, in turn and at once",
     "coalescing": "each federated cache: concurrent cold reads of an object fetch it from the origins once",
     "cache-assemble": "each cache: ranges that add up to an object leave it holding all",
@@ -134,6 +133,7 @@ SCENARIOS = {
 CACHE_SCENARIOS = (
     "cache-whole-first",
     "cache-range-first",
+    "cache-stored",
     "cache-overlap",
     "coalescing",
     "cache-assemble",
@@ -342,7 +342,7 @@ class Test:
             if answer.body != data:
                 return f"{len(answer.body)} bytes, not the object"
             return None
-        return blocks.check(data, request, answer.status, answer.headers, answer.body)
+        return blocks.check(data, request, answer)
 
     def get(
         self, base_url: str, rel: str, data: bytes, request: Optional[blocks.Request]
@@ -420,7 +420,7 @@ class Test:
         def one(job: tuple[int, blocks.Request]) -> Optional[str]:
             return self.read(base_url, set_name, *job, through=through)
 
-        with ThreadPoolExecutor(8) as pool:
+        with common.pool(8) as pool:
             found = pool.map(one, jobs)
         return [p for p in found if p]
 
@@ -458,7 +458,7 @@ def at_once(jobs: list[Callable[[], Optional[str]]]) -> list[Optional[str]]:
             return "could not start with the others"
         return job()
 
-    with ThreadPoolExecutor(len(jobs)) as pool:
+    with common.pool(len(jobs)) as pool:
         return list(pool.map(start, jobs))
 
 
@@ -612,26 +612,8 @@ def plugin(
     env["_CONDOR_CREDS"] = creds
     if cache:
         env["PELICAN_CLIENT_PREFERREDCACHES"] = cache
-    args = [test.session.plugin, *(["-upload"] if upload else [])]
-    try:
-        done = subprocess.run(  # nosec B603
-            [*args, "-infile", infile, "-outfile", outfile],
-            cwd=directory,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=CLIENT_TIMEOUT,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"timed out after {CLIENT_TIMEOUT:.0f}s"
-    try:
-        with open(outfile, encoding="utf-8") as f:
-            ads = f.read()
-    except FileNotFoundError:
-        ads = ""
-    return transfers.plugin_passed(ads), ads or done.stderr or done.stdout
+    _, out, err, ads = test.session.plugin_cmd(infile, outfile, upload, env, directory)
+    return transfers.plugin_passed(ads), ads or err or out
 
 
 def put_plugin(test: Test) -> tuple[str, str]:
@@ -990,6 +972,57 @@ def cache_range_first(test: Test) -> tuple[str, str]:
     return PASS, f"{len(test.caches)} cache(s)"
 
 
+def cache_stored(test: Test) -> tuple[str, str]:
+    """Check the bytes that each XRootD cache wrote to its store on disk.
+
+    By now each cache has read every object of the `whole` and `ranged`
+    sets whole (cache-whole-first, cache-range-first). An XRootD cache
+    keeps an object in a plain file, so each block that it records as
+    held must be the object's bytes there (blocks.xrootd_stored()), read
+    from its store on disk rather than through the cache. A V2 cache
+    encrypts its store with keys of its own, and is passed over. An
+    object whose record is missing, as one the cache has evicted, is not
+    compared; a cache of which none could be is inconclusive.
+    """
+    if why := test.not_uploaded(True, False):
+        return FAIL, why
+    xrootd = [c for c in test.caches if c.kind == "xrootd"]
+    if not xrootd:
+        return SKIP, "no XRootD cache here, and a V2 cache's store is encrypted"
+    problems: list[str] = []
+    doubts: list[str] = []
+    notes: list[str] = []
+    for cache in xrootd:
+        compared = objects = 0
+        missing: list[str] = []
+        for set_name in ("whole", "ranged"):
+            for size in blocks.SIZES:
+                rel = test.rel(set_name, size)
+                count, wrong, why = blocks.xrootd_stored(
+                    cache, rel, test.data[(set_name, size)]
+                )
+                problems += [f"{cache.svc}: {set_name}/{size}: {w}" for w in wrong]
+                if why:
+                    missing.append(why)
+                    continue
+                compared += count
+                objects += 1
+        if not objects:
+            doubts.append(f"{cache.svc}: no object's blocks could be read: {first(missing)}")
+            continue
+        notes.append(f"{cache.svc}: {compared} blocks of {objects} objects")
+        if missing:
+            notes.append(f"{cache.svc}: {len(missing)} not compared: {first(missing)}")
+    if problems:
+        return FAIL, first(problems)
+    if doubts:
+        return INCONCLUSIVE, "; ".join(doubts)
+    passed_over = [c.svc for c in test.caches if c.kind != "xrootd"]
+    if passed_over:
+        notes.append(f"passed over V2 {', '.join(passed_over)}")
+    return PASS, "; ".join(notes)
+
+
 def cache_overlap(test: Test) -> tuple[str, str]:
     """Check ranges that overlap what each cache holds, in turn and at once.
 
@@ -1270,8 +1303,10 @@ SENT_BYTES = "pelican_http_bytes_total"
 SENT = {"server_type": "origin", "direction": "out", "method": "GET"}
 GETS = "pelican_http_requests_total"
 OUR_GETS = {"server_type": "origin", "method": "GET", "username": credentials.SUBJECT}
-# How many GETs a V2 cache may make of the origins for the cold reads: it
-# fetches a whole object in one (downloadObject in Pelican's
+# How many GETs a V2 cache may make of the origins for the cold reads,
+# besides one of a byte at each origin, by which the client it fetches
+# through ranks them (sortAttempts in Pelican's client/handle_http.go): it
+# fetches a whole object in one (downloadObject in
 # local_cache/persistent_cache.go), and may need a second.
 COALESCE_GETS = 2
 # How many bytes the origins may send while the reads are warm: the
@@ -1358,10 +1393,10 @@ def coalesced(test: Test, cache: common.Cache, rel: str, data: bytes, found: Fin
             f"{cache.svc}: for {COALESCE_READERS} cold reads at once, the origins sent"
             + f" {copies:.1f} objects' worth, not one"
         )
-    elif cache.kind == "v2" and gets > COALESCE_GETS:
+    elif cache.kind == "v2" and gets > COALESCE_GETS + len(test.fed.origins):
         found.fail(
             f"{cache.svc}: for {COALESCE_READERS} cold reads at once, the origins served"
-            + f" {gets:g} GETs, not one or {COALESCE_GETS}"
+            + f" {gets:g} GETs, more than {COALESCE_GETS} and one at each origin"
         )
     unnamed = " (none under the tests' username)" if not gets else ""
     note = f"{cache.svc}: cold, {copies:.2f} objects in {gets:g} GETs{unnamed}"
@@ -1393,7 +1428,7 @@ def coalescing(test: Test) -> tuple[str, str]:
     their counters show (SENT_BYTES): not once per reader, which a cache
     is there to spare them. A V2 cache fetches an object whole in one GET,
     and may make no more than COALESCE_GETS for it under the tests'
-    username (GETS); an XRootD cache fetches it block by block, so only
+    username (GETS), besides one at each origin; an XRootD cache fetches it block by block, so only
     the bytes are judged. Then as many warm reads must have the origins
     serve no GET of the tests', and send no more than the directors'
     health tests do (WARM_SLACK). Only a native origin keeps the counters.
@@ -1718,7 +1753,7 @@ def read_status(
         "GET", f"{url}/protected-a/{rel}", token=test.token, headers=headers, timeout=120
     )
     if request:
-        why = blocks.check(data, request, answer.status, answer.headers, answer.body)
+        why = blocks.check(data, request, answer)
     elif answer.status != 200:
         why = f"{answer.describe()}, not 200"
     else:
@@ -3992,9 +4027,7 @@ class Versions:
         url = f"{cache.url}/protected-a/{self.base}/{key}"
         answer = web.request("GET", url, token=self.test.token, headers=headers, timeout=120)
         versions = {"v1": self.v1[key], "v2": self.v2[key]}
-        version, why = blocks.which_version(
-            versions, request, answer.status, answer.headers, answer.body
-        )
+        version, why = blocks.which_version(versions, request, answer)
         if version and request is None:
             wrong, _ = digests.check(answer.header("Digest"), versions[version])
             if wrong:
@@ -4023,7 +4056,7 @@ class Versions:
         def read(job: tuple[str, Optional[blocks.Request]]) -> tuple[Optional[str], str]:
             return self.which(cache, *job)
 
-        with ThreadPoolExecutor(8) as pool:
+        with common.pool(8) as pool:
             found = list(pool.map(read, jobs))
         counts: Counter[str] = Counter()
         wrong: list[str] = []
@@ -4528,6 +4561,7 @@ RUN = {
     "cache-whole-first": cache_whole_first,
     "director-read": director_read,
     "cache-range-first": cache_range_first,
+    "cache-stored": cache_stored,
     "cache-overlap": cache_overlap,
     "coalescing": coalescing,
     "cache-assemble": cache_assemble,

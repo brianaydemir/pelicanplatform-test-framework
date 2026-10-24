@@ -22,6 +22,11 @@ local_cache/schema.go). Beyond that:
   share reads 16 blocks per read of its disk (local_cache/range_reader.go,
   storage.go).
 - The XRootD cache uses 128 KiB blocks (xrootd/resources/xrootd-cache.cfg).
+- XRootD's HTTP server, in front of an XRootD origin or cache, reads a
+  single range by reads of up to 8 MiB, and several ranges by vector
+  reads, a round at a time: each of at most 512 chunks, of at most
+  512 KiB each, and 8 MiB in all (XrdHttpReadRangeHandler::splitRanges
+  in XRootD).
 - The V2 cache marks an object complete once it holds every block, and
   only then sends Age (local_cache/storage.go, persistent_cache_api.go).
   The XRootD cache records the blocks it holds in a bitmap in
@@ -43,7 +48,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Optional
 
-from . import common
+from . import common, web
 
 BLOCK = 4080
 TAG = 16
@@ -52,6 +57,9 @@ SPILL = 1 << 20
 CHUNK_DECLARED_2M = 2097120
 CHUNK_UNDECLARED = 8388480
 XROOTD_BLOCK = 128 << 10
+READV_CHUNKS = 512
+READV_CHUNK = 512 << 10
+READ_MAX = 8 << 20
 
 SIZES = (
     0,
@@ -76,6 +84,7 @@ SIZES = (
     2 << 20,
     CHUNK_UNDECLARED,
     CHUNK_UNDECLARED + 1,
+    READ_MAX + 2,
 )
 
 # Offsets worth straddling, where an object is big enough: the first block
@@ -167,7 +176,34 @@ def requests(size: int) -> list[Request]:
         found.append(((BLOCK - 80, 2 * BLOCK + 40),))
     if size > BLOCK + 1:
         found.append(((0, 0), (BLOCK - 1, BLOCK), (size - 1, size - 1)))
+    found += readv_edges(size)
     return list(dict.fromkeys(found))
+
+
+def readv_edges(size: int) -> list[Request]:
+    """Return requests at the edges of XRootD's reads of an object of size.
+
+    They are, where the object is big enough: several ranges, of which the
+    first fills one vector read chunk (READV_CHUNK), and then one byte
+    more; as many one-byte ranges as one vector read holds
+    (READV_CHUNKS), and one more; two ranges a byte more than one round's
+    worth (READ_MAX) between them; and one range a byte more than a
+    read's worth, short of the whole object.
+    """
+    found: list[Request] = []
+    if size > READV_CHUNK + 1:
+        found += [
+            ((0, READV_CHUNK - 1), (size - 1, size - 1)),
+            ((0, READV_CHUNK), (size - 1, size - 1)),
+        ]
+    for count in (READV_CHUNKS, READV_CHUNKS + 1):
+        step = size // count
+        if step >= 2:
+            found.append(tuple((n * step, n * step) for n in range(count)))
+    if size >= READ_MAX + 2:
+        middle = size // 2
+        found += [((0, middle), (middle + 2, size - 1)), ((1, None),)]
+    return found
 
 
 def content_range(value: str) -> Optional[tuple[int, int, int]]:
@@ -222,13 +258,7 @@ def merge(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
-def check(
-    data: bytes,
-    request: Request,
-    status: Optional[int],
-    headers: Sequence[tuple[str, str]],
-    body: bytes,
-) -> Optional[str]:
+def check(data: bytes, request: Request, answer: web.Response) -> Optional[str]:
     """Return what is wrong with a response to request, or None if nothing.
 
     A range with no byte in the object is passed over, as a server passes
@@ -242,27 +272,21 @@ def check(
     Args:
         data: The object's bytes.
         request: The ranges asked for.
-        status: The response's status, or None if none came.
-        headers: The response's headers, as (name, value) pairs.
-        body: The response's body.
+        answer: The response.
     """
     size = len(data)
-
-    def get(name: str) -> str:
-        values = [v for k, v in headers if k.lower() == name]
-        return values[-1] if values else ""
-
+    status, get, body = answer.status, answer.header, answer.body
     satisfiable = [r for r in request if not unsatisfiable(size, (r,))]
     if not satisfiable:
         if status == 416:
             return None
-        return "no response" if status is None else f"HTTP {status}, not 416, for no byte"
+        return answer.describe() if status is None else f"HTTP {status}, not 416, for no byte"
     wanted = [resolve(size, r) for r in satisfiable]
     whole = merge(wanted) == [(0, size - 1)]
     if status == 200 and (len(request) > 1 or whole):
         return None if body == data else "HTTP 200, but the body is not the object"
     if status != 206:
-        return "no response" if status is None else f"HTTP {status}, not 206"
+        return answer.describe() if status is None else f"HTTP {status}, not 206"
 
     kind = get("content-type")
     if len(request) > 1 and kind.lower().startswith("multipart/byteranges"):
@@ -316,31 +340,26 @@ def unsatisfiable(size: int, request: Request) -> bool:
 
 
 def which_version(
-    versions: dict[str, bytes],
-    request: Optional[Request],
-    status: Optional[int],
-    headers: Sequence[tuple[str, str]],
-    body: bytes,
+    versions: dict[str, bytes], request: Optional[Request], answer: web.Response
 ) -> tuple[Optional[str], str]:
     """Return which of versions a response to request came from.
 
     Args:
         versions: Each version's bytes, by name.
         request: The ranges asked for, or None for the whole object.
-        status: The response's status, or None if none came.
-        headers: The response's headers, as (name, value) pairs.
-        body: The response's body.
+        answer: The response.
 
     Returns:
         The version's name and "", if the response is entirely that
         one's; or None and why, if it is none of them, e.g. mixed, with
         another version's size, or an error.
     """
+    status, body = answer.status, answer.body
     if status is None or 300 <= status < 400 or (status >= 400 and status != 416):
-        return None, "no response" if status is None else f"HTTP {status}"
-    lengths = [v for k, v in headers if k.lower() == "content-length"]
-    if lengths and lengths[-1].strip() != str(len(body)):
-        return None, f"Content-Length {lengths[-1].strip()}, but {len(body)} bytes came"
+        return None, answer.describe()
+    length = answer.header("content-length").strip()
+    if length and length != str(len(body)):
+        return None, f"Content-Length {length}, but {len(body)} bytes came"
     if request is None:
         if status != 200:
             return None, f"HTTP {status}, not 200"
@@ -349,15 +368,14 @@ def which_version(
                 return name, ""
         return None, f"{len(body)} bytes, but not any one version"
     if status == 416:
-        ranges = [v for k, v in headers if k.lower() == "content-range"]
-        m = re.fullmatch(r"\s*bytes\s+\*/(\d+)\s*", ranges[-1]) if ranges else None
+        m = re.fullmatch(r"\s*bytes\s+\*/(\d+)\s*", answer.header("content-range"))
         for name, data in versions.items():
             if unsatisfiable(len(data), request) and (not m or int(m.group(1)) == len(data)):
                 return name, ""
         return None, "HTTP 416, but the range is satisfiable in that version"
     problems: list[str] = []
     for name, data in versions.items():
-        why = check(data, request, status, headers, body)
+        why = check(data, request, answer)
         if why is None:
             return name, ""
         problems.append(f"{name}: {why}")
@@ -616,17 +634,25 @@ def store_bytes(cache: common.Cache) -> Optional[int]:
     return total
 
 
-def read_cinfo(cache: common.Cache, rel: str) -> tuple[Optional[Cinfo], str]:
-    """Return what an XRootD cache's .cinfo of rel in /protected-a records.
+def read_space_file(cache: common.Cache, name: str) -> tuple[Optional[bytes], str]:
+    """Return a file of an XRootD cache's, by its name in namespace/.
 
-    The cache links it from namespace/ to where it keeps it, by a path in
-    its own mount.
+    The cache links each file from namespace/, where its path in the
+    federation puts it, to where it keeps it, in its data space (an
+    object's bytes) or its meta space (its .cinfo), by a path in its own
+    mount.
+
+    Args:
+        cache: The cache.
+        name: The file's path under namespace/, e.g.
+            protected-a/data/0.1.cinfo.
 
     Returns:
-        A pair: the record and "", or None and why it could not be read.
+        A pair: the file's bytes and "", or None and why it could not be
+        read.
     """
     root = cache_dir(cache)
-    link = f"{root}/namespace/protected-a/{rel}.cinfo"
+    link = f"{root}/namespace/{name}"
     try:
         target = os.readlink(link)
     except FileNotFoundError:
@@ -637,13 +663,65 @@ def read_cinfo(cache: common.Cache, rel: str) -> tuple[Optional[Cinfo], str]:
         target = f"{root}/{target[len('/data/'):]}"
     try:
         with open(target, "rb") as f:
-            return parse_cinfo(f.read()), ""
+            return f.read(), ""
     except FileNotFoundError:
         return None, f"framework/var/{target} is missing"
     except OSError as e:
         return None, f"framework/var/{target}: {e.strerror}"
+
+
+def read_cinfo(cache: common.Cache, rel: str) -> tuple[Optional[Cinfo], str]:
+    """Return what an XRootD cache's .cinfo of rel in /protected-a records.
+
+    Returns:
+        A pair: the record and "", or None and why it could not be read.
+    """
+    found, why = read_space_file(cache, f"protected-a/{rel}.cinfo")
+    if found is None:
+        return None, why
+    try:
+        return parse_cinfo(found), ""
     except ValueError as e:
-        return None, f"framework/var/{target}: {e}"
+        return None, f"the .cinfo of /protected-a/{rel}: {e}"
+
+
+def xrootd_stored(cache: common.Cache, rel: str, data: bytes) -> tuple[int, list[str], str]:
+    """Compare what an XRootD cache wrote of rel in /protected-a with data.
+
+    The cache writes each block it fetches into a plain file of the
+    object's, at the block's place, and records it in the object's
+    .cinfo once the file holds it (XrdPfc's synced bitmap). So each block
+    that the .cinfo records must be, in the file, data's bytes at that
+    place; one it does not record yet is not compared. This reads the
+    cache's store on disk, apart from anything the cache says.
+
+    Returns:
+        How many blocks were compared; what is wrong; and, where none
+        could be, why not.
+    """
+    info, why = read_cinfo(cache, rel)
+    if info is None:
+        return 0, [], why
+    if info.file_size != len(data):
+        return 0, [f"its .cinfo records {info.file_size} bytes, not {len(data)}"], ""
+    held, why = read_space_file(cache, f"protected-a/{rel}")
+    if held is None:
+        return 0, [f"its .cinfo records blocks, but {why}"], ""
+    problems: list[str] = []
+    if len(held) > len(data):
+        problems.append(f"its file holds {len(held)} bytes, more than the object's")
+    compared = 0
+    for i in range(info.blocks):
+        if not info.bitmap[i // 8] >> (i % 8) & 1:
+            continue
+        start = i * info.block_size
+        want = data[start : start + info.block_size]
+        if held[start : start + len(want)] != want:
+            problems.append(
+                f"block {i} (bytes {start}-{start + len(want) - 1}) is not the object's"
+            )
+        compared += 1
+    return compared, problems, ""
 
 
 def xrootd_holds(cache: common.Cache, rel: str) -> Optional[bool]:

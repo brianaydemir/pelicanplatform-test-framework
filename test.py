@@ -36,11 +36,13 @@ everything first removes the results of earlier runs with the same
 RESULTS_TAG. A pass that prints nothing for STALL_SECONDS, or runs for
 BUDGET_SECONDS, is abandoned, and recorded as `aborted` (or `setup`,
 if it recorded no case), so that a scenario stuck on a server that
-never answers cannot stall the run; its cleanup, if that too takes
-over GRACE_SECONDS, is interrupted again.
+never answers cannot stall the run; where each of its threads was is
+printed first. Its cleanup, if that too takes over GRACE_SECONDS, is
+interrupted again.
 """
 
 import contextlib
+import faulthandler
 import os
 import signal
 import sys
@@ -120,13 +122,14 @@ def watched(name: str) -> Generator[None, None, None]:
     """Abandon the pass of suite name within the block if it stalls.
 
     A thread watches the output and the clock; when the pass has printed
-    nothing for STALL_SECONDS, or has run for BUDGET_SECONDS, it sends
-    the process SIGALRM, whose handler raises Stalled in the main thread,
-    wherever it is: a blocked read or join included, since a signal
-    interrupts those. The suite's cleanup runs as for any other error;
-    if the pass is still going GRACE_SECONDS later, as when the cleanup
-    waits on the same server, it is interrupted again, until it ends.
-    SIGALRM is ignored outside the block, so a late one does no harm.
+    nothing for STALL_SECONDS, or has run for BUDGET_SECONDS, it prints
+    where every thread is, for the log, and sends the process SIGALRM,
+    whose handler raises Stalled in the main thread, wherever it is: a
+    blocked read or join included, since a signal interrupts those. The
+    suite's cleanup runs as for any other error; if the pass is still
+    going GRACE_SECONDS later, as when the cleanup waits on the same
+    server, it is interrupted again, until it ends. SIGALRM is ignored
+    outside the block, so a late one does no harm.
     """
     why: list[str] = []
     stop = threading.Event()
@@ -142,7 +145,8 @@ def watched(name: str) -> Generator[None, None, None]:
                 why.append(f"{name} printed nothing for {STALL_SECONDS}s, and was abandoned")
             else:
                 continue
-            print(f"\n{common.PROG}: {why[0]}", file=sys.stderr)
+            print(f"\n{common.PROG}: {why[0]}; where each thread was:", file=sys.stderr)
+            print_stacks()
             os.kill(os.getpid(), signal.SIGALRM)
             while not stop.wait(GRACE_SECONDS):
                 print(
@@ -167,6 +171,28 @@ def watched(name: str) -> Generator[None, None, None]:
         signal.signal(signal.SIGALRM, signal.SIG_IGN)
         stop.set()
         watcher.join()
+
+
+def print_stacks() -> None:
+    """Print every thread's stack, most recent call first, to stderr."""
+    sys.stderr.flush()
+    stream = sys.__stderr__
+    if stream is not None:
+        faulthandler.dump_traceback(stream, all_threads=True)
+        stream.flush()
+
+
+def lingering() -> list[threading.Thread]:
+    """Return the threads that would keep the interpreter from exiting.
+
+    An abandoned pass may leave some running: a task its pool had begun,
+    or one of its own, until a timeout of the task's ends it.
+    """
+    return [
+        t
+        for t in threading.enumerate()
+        if t is not threading.main_thread() and not t.daemon and t.is_alive()
+    ]
 
 
 def current_shape() -> Optional[common.Federation]:
@@ -410,7 +436,18 @@ def main() -> int:
             if stopped:
                 break
     summarize(reports, time.monotonic() - started)
-    return 1 if any(r.failed for r in reports) else 0
+    status = 1 if any(r.failed for r in reports) else 0
+    left = lingering()
+    if left:
+        # The interpreter would wait for each to end before exiting.
+        common.warn(
+            f"exiting without waiting for {len(left)} thread(s) that abandoned passes"
+            + f" left running: {', '.join(t.name for t in left)}"
+        )
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(status)
+    return status
 
 
 if __name__ == "__main__":

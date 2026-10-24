@@ -11,17 +11,22 @@ what the stores hold, use the server's own tokens of the WLCG profile
 whatever the session's (setup_token()), so that each scenario's twin
 tests only the token it presents. The expired ones are minted as the
 session starts, so that they are long past their expiry by the time
-those suites, which run late, present them. last_line() and the json_*
-functions read what a client printed.
+those suites, which run late, present them. Every client command that
+pelican_cmd() or plugin_cmd() runs goes, with all it printed, in the
+pass's commands_log. last_line() and the json_* functions read what a
+client printed.
 """
 
 import json
 import os
+import shlex
 import subprocess  # nosec B404
+import threading
 import time
+from collections.abc import Mapping
 from typing import Any, Optional, Union, cast
 
-from . import common, credentials
+from . import common, credentials, report
 from .credentials import RWM, WLCG, Credential
 
 # How long a client command may run before it is killed and fails, and
@@ -39,6 +44,15 @@ def _text(output: Union[str, bytes, None]) -> str:
     if output is None:
         return ""
     return output.decode(errors="replace") if isinstance(output, bytes) else output
+
+
+def _read(path: str) -> str:
+    """Return the text of the file at path, or "" if there is none."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
 
 
 class Session:
@@ -60,6 +74,9 @@ class Session:
         sync_env: The same, for `object sync`, which wants overwrites off.
         namespaces: The namespaces that the federation exports.
         stale_at: When the last expired token expired.
+        commands_log: Where each client command that pelican_cmd() or
+            plugin_cmd() runs is logged, under framework/var: data/commands.log, or
+            data/commands-<profile>.log in another profile's pass.
     """
 
     def __init__(
@@ -95,6 +112,10 @@ class Session:
         self._server: dict[tuple[str, str, tuple[str, ...]], str] = {}
         self._credential: dict[tuple[str, str, str], Optional[str]] = {}
         self.stale_at: Optional[float] = None
+        self.commands_log = f"{self.var_dir('data/commands')}.log"
+        with open(self.commands_log, "w", encoding="utf-8"):
+            pass
+        self._log_lock = threading.Lock()
         for cred in credentials.CREDENTIALS:
             if cred.expired and not credentials.moot(self.fed, cred):
                 for namespace in self.namespaces:
@@ -205,7 +226,7 @@ class Session:
 
         With no token, `pelican object` would otherwise try to acquire one
         interactively. A run that outlasts timeout is killed, and fails
-        with "timed out" in its stderr.
+        with "timed out" in its stderr. Each run goes in commands_log.
 
         Args:
             *args: The arguments to `pelican`.
@@ -216,9 +237,61 @@ class Session:
         Returns:
             Its exit status, stdout, and stderr.
         """
+        started = time.monotonic()
+        found = self._run([self.pelican, *args], env, cwd, timeout)
+        self.log_command(
+            ["pelican", *args], cwd or self.tmp, time.monotonic() - started, *found
+        )
+        return found
+
+    def plugin_cmd(
+        self,
+        infile: str,
+        outfile: str,
+        upload: bool = False,
+        env: Optional[dict[str, str]] = None,
+        cwd: Optional[str] = None,
+        timeout: float = CLIENT_TIMEOUT,
+    ) -> tuple[int, str, str, str]:
+        """Run stash_plugin, as HTCondor does, on the transfers in infile.
+
+        It writes an ad of each transfer's result to outfile. A run that
+        outlasts timeout is killed, as pelican_cmd() kills one. Each run
+        goes in commands_log, with its transfers and its ads.
+
+        Args:
+            infile: The transfers, a ClassAd each (transfers.transfer_ad()).
+            outfile: Where it is to write its ads.
+            upload: Whether it uploads (-upload) rather than downloads.
+            env: The environment, if not the session's env.
+            cwd: The working directory, if not the scratch directory.
+            timeout: How long the run may take, in seconds.
+
+        Returns:
+            Its exit status, stdout, stderr, and ads ("" if it wrote none).
+        """
+        args = [*(["-upload"] if upload else []), "-infile", infile, "-outfile", outfile]
+        started = time.monotonic()
+        status, out, err = self._run([self.plugin, *args], env, cwd, timeout)
+        ads = _read(outfile)
+        files = {"infile": _read(infile), "outfile": ads}
+        seconds = time.monotonic() - started
+        self.log_command(
+            ["stash_plugin", *args], cwd or self.tmp, seconds, status, out, err, files
+        )
+        return status, out, err, ads
+
+    def _run(
+        self,
+        command: list[str],
+        env: Optional[dict[str, str]],
+        cwd: Optional[str],
+        timeout: float,
+    ) -> tuple[int, str, str]:
+        """Run command, for pelican_cmd() or plugin_cmd()."""
         try:
             done = subprocess.run(  # nosec B603
-                [self.pelican, *args],
+                command,
                 env=env or self.env,
                 cwd=cwd or self.tmp,
                 stdin=subprocess.DEVNULL,
@@ -228,9 +301,36 @@ class Session:
                 timeout=timeout,
                 check=False,
             )
+            return done.returncode, done.stdout, done.stderr
         except subprocess.TimeoutExpired as e:
             return TIMED_OUT, _text(e.stdout), _text(e.stderr) + f"\n{timed_out(timeout)}\n"
-        return done.returncode, done.stdout, done.stderr
+
+    def log_command(
+        self,
+        args: list[str],
+        cwd: str,
+        seconds: float,
+        status: int,
+        out: str,
+        err: str,
+        files: Optional[Mapping[str, str]] = None,
+    ) -> None:
+        """Append a command, its exit status, and its output to commands_log.
+
+        files are the texts of files it read or wrote, by name, which go
+        after its output. Each token's signature is cut out
+        (report.redact()).
+        """
+        sections = [("stdout", out), ("stderr", err), *(files or {}).items()]
+        said = "".join(
+            f"--- {name}\n{text.rstrip()}\n" for name, text in sections if text.strip()
+        )
+        entry = (
+            f"==> {time.strftime('%Y-%m-%d %H:%M:%S')} {shlex.join(args)}\n"
+            + f"    in {cwd}: exit {status} after {seconds:.1f}s\n{said}\n"
+        )
+        with self._log_lock, open(self.commands_log, "a", encoding="utf-8") as f:
+            f.write(report.redact(entry))
 
 
 def last_line(text: str) -> str:

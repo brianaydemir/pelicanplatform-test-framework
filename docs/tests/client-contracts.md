@@ -40,7 +40,11 @@ federation's.
   (`dne`): `TransferSuccess` false, `TransferRetryable` false, an error
   of type `Specification` with `PelicanErrorCode` 5011, and nothing
   left. Of a download refused, with a token signed by a key no server
-  knows (`refused`): an error of type `Authorization`. Of a batch of
+  knows (`refused`): an error of type `Authorization`. With several
+  origins (`-p topo-multi-origin`), the director answers both itself, by
+  its check of which origin holds the object, and the client takes its
+  answer for a failure to reach it (`Contact`, 3001), so both rows fail
+  there, on main. Of a batch of
   one that exists and one that does not (`mixed`): a failed download
   ends a batch, so the plugin writes the ads of what finished before it,
   then the failure's, and no more; so one ad or two, the last the
@@ -176,7 +180,11 @@ federation's.
   it asks of the director's UI (`getNsAd` in `cmd/token.go`,
   `/api/v1.0/director_ui/namespaces`); a standalone origin
   (`-p topo-standalone`) serves no such route, so there the client says
-  only that no issuer was found, and the row fails.
+  only that no issuer was found, and the row fails. With several origins
+  (`-p topo-multi-origin`), the client learns a path's namespace from the
+  director's object route, whose check of which origin holds the object
+  answers 404 for a path not yet written, so `public` fails there, on
+  main.
 - `share-url`: `pelican object share` of a collection in
   `/protected-a`, its device flow approved as the admin, whom the issuer
   grants the namespace (`client/sharing_url.go`, `cmd/object_share.go`):
@@ -241,7 +249,10 @@ federation's.
   there, or in the directory itself, and the note says which. The two
   `?recursive` gets need `Listings`, and every row from
   `put-collection` on needs writes: where `/protected-a` takes none,
-  one row, `put`, skips in their place.
+  one row, `put`, skips in their place. With several origins
+  (`-p topo-multi-origin`), the director finds no origin holding a
+  collection ([client commands](client-commands.md)), so both
+  `?recursive` gets fail there, on main.
 - `preferred-cache-down`: `pelican object get --cache
   https://<cache>:1,+`, a preferred cache that answers nothing (no
   server listens on port 1) and then, with `+`, the director's caches:

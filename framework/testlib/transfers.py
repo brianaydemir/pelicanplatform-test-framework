@@ -446,11 +446,30 @@ def http_target(
     return f"{cache if scenario.named else director}{rest}"
 
 
+def classad_string(value: str) -> str:
+    """Return value as a ClassAd string literal.
+
+    It is quoted, with each backslash and double quote escaped, as
+    HTCondor writes a string in the ads it hands a plugin, and as the
+    ClassAd parser that stash_plugin reads them with expects.
+    """
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def transfer_ad(url: str, local: str) -> str:
+    """Return the ad, in stash_plugin's input format, of one transfer.
+
+    Args:
+        url: The object's URL.
+        local: Its local file: where a download goes, or an upload comes
+            from.
+    """
+    return f"[ Url={classad_string(url)}; LocalFileName={classad_string(local)} ]\n"
+
+
 def format_batch(batch: Batch) -> str:
     """Return batch, in stash_plugin's input format."""
-    return "".join(
-        f'[ Url="{url}"; LocalFileName="{local_name(url)}" ]\n' for url in batch.urls
-    )
+    return "".join(transfer_ad(url, local_name(url)) for url in batch.urls)
 
 
 def parse_batch(scenario: Scenario, index: int, text: str) -> Batch:
@@ -693,6 +712,34 @@ def plugin_passed(text: str) -> bool:
     return "TransferSuccess = true" in text and "TransferSuccess = false" not in text
 
 
+def plugin_error(text: str) -> Optional[str]:
+    """Return the first TransferError in the plugin's result ads, if any.
+
+    It is the ad's string, unescaped.
+    """
+    found = re.search(r'\bTransferError = "((?:[^"\\]|\\.)*)"', text)
+    if found is None:
+        return None
+    return re.sub(r"\\(.)", r"\1", found.group(1))
+
+
+def plugin_endpoints(text: str) -> list[str]:
+    """Return the host that served each object the plugin moved.
+
+    Args:
+        text: The plugin's result ads, one per line: of each successful
+            transfer, the host of its highest-numbered EndpointN.
+    """
+    hosts: list[str] = []
+    for ad in text.splitlines():
+        if "TransferSuccess = true" not in ad:
+            continue
+        endpoints = re.findall(r'Endpoint(\d+) = "([^":]*)', ad)
+        if endpoints:
+            hosts.append(max(endpoints, key=lambda e: int(e[0]))[1])
+    return hosts
+
+
 # --------------------------------------------------------------------------
 # The verdict.
 
@@ -822,8 +869,11 @@ def check_served_by(
     """Return the verdict on the hosts that served route's downloads.
 
     A director that routes around its caches would pass every scenario,
-    so each namespace with a download through a cache must have had some
-    served by a cache (`cache-<N>`). A direct download must come from an
+    so every download through a cache must have been served by one
+    (`cache-<N>`): a director sends a client to an origin in a cache's
+    place only where no cache can serve the namespace (redirectToCache
+    in Pelican's director/director.go), and the client tries only the
+    servers that the director names. A direct download must come from an
     origin, as must every download where there is no cache (cacheless),
     and a plain HTTP client's download of a bare path where the director
     sends those to an origin (`-p director-default-origin`), which the
@@ -860,14 +910,15 @@ def check_served_by(
         if others:
             return report.FAIL, f"named reads served by {', '.join(others)}, not {named}"
     elif route == "cache" and not cacheless:
-        lacking = [
-            ns
-            for ns, counts in sorted(served.items())
-            if counts and not any(h.startswith("cache-") for h in counts)
-        ]
-        if lacking:
-            namespaces = ", ".join(f"/{ns}" for ns in lacking)
-            return report.FAIL, f"no download from {namespaces} went through a cache"
+        others = sorted(h for h in hosts if not h.startswith("cache-"))
+        if others:
+            where = ", ".join(
+                f"/{ns}" for ns, counts in sorted(served.items()) if set(counts) & set(others)
+            )
+            return (
+                report.FAIL,
+                f"reads through a cache served by {', '.join(others)}, in {where}",
+            )
     else:
         others = sorted(h for h in hosts if h not in origin_hosts)
         if others:

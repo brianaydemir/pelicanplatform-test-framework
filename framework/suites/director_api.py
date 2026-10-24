@@ -49,6 +49,7 @@ import json
 import re
 import time
 import traceback
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -1366,14 +1367,26 @@ class Forwarding:
     def ads_seen(self, url: str) -> Optional[float]:
         """Return how many of the cache's ads the director at url has taken.
 
-        Each of its namespaces' series counts every ad. Return None if
-        it won't say.
+        Each of its namespaces' series counts every ad, once for each
+        time the ad lists the namespace: a cache lists one once for
+        each origin exporting it (listNamespacesFromOrigins in
+        director/director.go), so each series is divided by that.
+        Return None if it won't say.
         """
         found = metrics.fetch(url)
         if found is None:
             return None
+        listed = Counter(
+            (common.as_object(n) or {}).get("path")
+            for n in common.as_array(self.cache.detail.get("namespaces")) or []
+        )
         labels = {"server_name": self.cache.name, "server_type": "Cache", "status_code": "200"}
-        return max(found.series(ADS_RECEIVED, **labels).values(), default=0.0)
+        counts = [0.0]
+        for have, value in found.series(ADS_RECEIVED, **labels).items():
+            times = listed[dict(have).get("namespace_prefix")]
+            if times:
+                counts.append(value / times)
+        return max(counts)
 
     def fresh(self, url: str) -> bool:
         """Wait for the cache's own next ad to reach the director at url.
@@ -1463,8 +1476,11 @@ def shutdown_lifted(f: Forwarding) -> Row:
         return "", FAIL, f"posting to {director.host(f.first)}: {answer.describe()}, not 200"
     lifted = common.wait_for(lambda: not f.listed(f.second).get("filtered"), FORWARD_WAIT, 0.5)
     after = f.ads_seen(f.second)
-    if before is None or after is None or after - before != 1:
-        return "", INCONCLUSIVE, f"the cache's own ad reached {second} meanwhile"
+    if before is None or after is None:
+        return "", INCONCLUSIVE, f"{second} won't say how many of the cache's ads it took"
+    if after - before != 1:
+        taken = f"{after - before:g} ads, not 1"
+        return "", INCONCLUSIVE, f"the cache's own ad reached {second} meanwhile ({taken})"
     if lifted:
         return "", PASS, f"{second} unfiltered it"
     got = f.listed(f.second).get("filteredType")

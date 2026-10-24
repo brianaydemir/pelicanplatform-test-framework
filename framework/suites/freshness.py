@@ -378,9 +378,7 @@ class Versions:
         headers = {"Range": blocks.header(request)} if request else {"Want-Digest": "crc32c"}
         answer = test.ask("GET", cache.url, rel, headers)
         versions = {"v1": self.v1[rel], "v2": self.v2[rel]}
-        version, why = blocks.which_version(
-            versions, request, answer.status, answer.headers, answer.body
-        )
+        version, why = blocks.which_version(versions, request, answer)
         if version and request is None:
             wrong, _ = digests.check(answer.header("Digest"), versions[version])
             if wrong:
@@ -1152,7 +1150,7 @@ def ranged(
         cache passing through an object it may not store does so, as
         RFC 9110 allows.
     """
-    why = blocks.check(data, request, answer.status, answer.headers, answer.body)
+    why = blocks.check(data, request, answer)
     if (
         why
         and answer.status == 200

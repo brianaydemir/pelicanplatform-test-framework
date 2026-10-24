@@ -15,16 +15,22 @@ The suite checks that each does what the suites that use it rely on.
             testlib.control restarts a service mid-run: cache-0, once it
             holds the object whole, comes back, every director names it
             again, and it serves the object, a V2 cache from its store
+  pool      testlib.common.pool(), which runs a suite's tasks at once,
+            drops the tasks it has not started when an exception that
+            no suite catches, as test.py's watchdog raises, leaves its
+            block, and waits for every one otherwise
 
-Each reads an object of its own under /protected-a/data/selftest/<run>/,
-which the suite puts in place and removes, with a read token of the
-session's profile.
+Each but `pool` reads an object of its own under
+/protected-a/data/selftest/<run>/, which the suite puts in place and
+removes, with a read token of the session's profile.
 """
 
 import json
 import os
+import threading
 import time
 import traceback
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Optional
 
@@ -37,8 +43,8 @@ from testlib.session import Session
 # `restart-cache` presents the setup token alone, since its reads are
 # how it fills the cache and sees it serve again, not what it checks; so
 # it runs in the WLCG pass alone (see suites/__init__.py), and cache-0
-# is restarted once.
-ONE_PROFILE = ("restart-cache",)
+# is restarted once. `pool` presents no token.
+ONE_PROFILE = ("restart-cache", "pool")
 
 SCENARIOS = {
     "trailers": "a V2 cache's X-Transfer-Status trailer comes back when asked for, and only then",
@@ -50,6 +56,10 @@ SCENARIOS = {
     "restart-cache": (
         "cache-0, restarted mid-run, is named by every director again, and serves what"
         " it held from its store"
+    ),
+    "pool": (
+        "testlib.common.pool() drops the tasks it has not started when an abandoned pass"
+        " leaves it, and waits for every one otherwise"
     ),
 }
 
@@ -363,6 +373,63 @@ def restart_cache(test: Test) -> tuple[str, str]:
     return PASS, f"{note}, and serves the object from its store (Age {found})"
 
 
+class Abandoned(BaseException):
+    """What `pool` leaves a pool's block with, as test.py's Stalled does."""
+
+
+def pool(_test: Test) -> tuple[str, str]:
+    """Check what testlib.common.pool() does as its block ends.
+
+    Ten tasks are queued on a pool of two workers, each of which holds
+    its worker until it is let go. Left by an exception that no suite
+    catches, as test.py's watchdog leaves a pass, with two running, the
+    block must cancel the eight not started, and return at once; the two
+    then end on their own. Left as usual, it must wait for every task.
+    """
+    lock = threading.Lock()
+    started: list[int] = []
+    release = threading.Event()
+
+    def task(n: int) -> int:
+        with lock:
+            started.append(n)
+        release.wait(30)
+        return n
+
+    futures: list[Future[int]] = []
+    left = time.monotonic()
+    took = float("inf")
+    try:
+        with common.pool(2) as workers:
+            futures = [workers.submit(task, n) for n in range(10)]
+            common.wait_for(lambda: len(started) == 2, 10, interval=0.05)
+            left = time.monotonic()
+            raise Abandoned()
+    except Abandoned:
+        took = time.monotonic() - left
+    release.set()
+    problems: list[str] = []
+    cancelled = sum(f.cancelled() for f in futures)
+    if cancelled != 8:
+        problems.append(f"abandoned with 2 tasks running, it cancelled {cancelled} of 8 queued")
+    if took > 5:
+        problems.append(f"abandoned, its block took {took:.1f}s to end, waiting for its tasks")
+    ran = [f.result(30) for f in futures if not f.cancelled()]
+    if sorted(started) != sorted(ran) or len(started) != 2:
+        problems.append(f"abandoned, it started tasks {sorted(started)}, and ran {sorted(ran)}")
+    done: list[int] = []
+    with common.pool(2) as workers:
+        for n in range(10):
+            workers.submit(done.append, n)
+    if sorted(done) != list(range(10)):
+        problems.append(
+            f"left as usual, it had run only tasks {sorted(done)} of 10 as it ended"
+        )
+    if problems:
+        return FAIL, first(problems)
+    return PASS, f"abandoned, it cancelled 8 queued tasks, and ended in {took:.1f}s"
+
+
 # The scenarios, by name: each takes the Test, and returns its result and
 # a note.
 RUN = {
@@ -370,6 +437,7 @@ RUN = {
     "jwt": jwt_tokens,
     "metrics": http_requests,
     "restart-cache": restart_cache,
+    "pool": pool,
 }
 
 

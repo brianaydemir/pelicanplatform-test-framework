@@ -118,6 +118,14 @@ Features that would seem natural presets, and why none is offered:
 What a preset implies about the handling of data that the tests don't
 exercise, or not in a way that would catch a fault:
 
+- `cache-v2` and `origin-pstore`: the bytes in the store on disk. Both
+  encrypt each object's blocks with a key of the object's own, which
+  they keep, sealed by the server's master key, in a BadgerDB catalog,
+  so only Pelican can read them back. The tests compare what such a
+  server serves with the bytes they wrote, read a pstore origin's
+  uploads back through it, and check the sizes of a V2 cache's files on
+  disk; the bytes that an XRootD cache, or any other origin, keeps on
+  disk they read there ([block boundaries](block-boundaries.md)).
 - `topo-tiny`: nothing confirms that a client's download came through
   the cache, since the `transfers` suite's `served-by` checks skip.
 - `topo-site-local-cache`: of cache-2, only its reads, a refusal, a

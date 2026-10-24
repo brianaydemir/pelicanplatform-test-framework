@@ -27,6 +27,12 @@ afterward. A scenario with several cases records a row per case, named
                    `webdav`, or `lab-server`) refuses with a server error,
                    never a missing object, and serves again once it is
                    back; its health says so meanwhile
+  xrootd-wedged    the first XRootD origin, and the first federated
+                   XRootD cache, whose XRootD is stopped (SIGSTOP), say
+                   so in their health, and shut down once it has
+                   answered nothing for Xrootd.LivenessMaxUnresponsiveTime,
+                   which the suite shortens; started again, every
+                   director names them
   cache-failover   with several caches, the clients get an object while
                    the first cache is paused, and killed, before the
                    directors drop it and after
@@ -40,15 +46,15 @@ afterward. A scenario with several cases records a row per case, named
 
 The reads that the scenarios check present tokens of the session's
 profile; the objects are put in place, and the caches filled, with WLCG
-tokens either way. `state-survives`, `ad-expiry`, and `peer-director`
-present no storage token, and run in the WLCG pass alone.
+tokens either way. `state-survives`, `ad-expiry`, `xrootd-wedged`, and
+`peer-director` present no storage token, and run in the WLCG pass
+alone.
 """
 
 import json
 import os
 import re
 import shutil
-import subprocess  # nosec B404
 import time
 import traceback
 import uuid
@@ -72,7 +78,7 @@ from testlib.accounts import Api
 from testlib.common import die, first, warn
 from testlib.issuer import User
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
-from testlib.session import CLIENT_TIMEOUT, Session, last_line
+from testlib.session import Session, last_line
 
 SCENARIOS = {
     "cache-restart": "each cache, restarted, serves what it held from its store",
@@ -84,6 +90,10 @@ SCENARIOS = {
     "backend-outage": (
         "an origin whose storage service is stopped answers a server error, never a missing"
         " object, and serves again once it is back"
+    ),
+    "xrootd-wedged": (
+        "an XRootD origin and cache whose XRootD stops answering say so, and shut down; started"
+        " again, they serve"
     ),
     "cache-failover": (
         "the clients get an object while the first cache is paused, or killed, before the"
@@ -98,7 +108,7 @@ SCENARIOS = {
 
 NAMESPACE = "protected-a"
 # The scenarios that present no storage token (see suites/__init__.py).
-ONE_PROFILE = ("state-survives", "ad-expiry", "peer-director")
+ONE_PROFILE = ("state-survives", "ad-expiry", "xrootd-wedged", "peer-director")
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.
 Row = tuple[str, str, str]
@@ -132,6 +142,20 @@ BACKENDS = {
 }
 # The health component of each, where there is one (metrics/health.go).
 BACKEND_COMPONENTS = {"ssh": "ssh-backend"}
+# xrootd-wedged: the probe of a server's own XRootD, shortened from a
+# minute between probes, three minutes for one, and ten unanswered
+# before XRootD is shut down; its health component; and how long the
+# server may take to exit once XRootD stops: the window, a probe, and
+# Xrootd.ShutdownTimeout (config.d/base/60-xrootd.yaml), with room.
+LIVENESS_FILE = "90-liveness.yaml"
+LIVENESS_CONFIG = (
+    "Xrootd:\n"
+    + "  LivenessCheckInterval: 2s\n"
+    + "  LivenessCheckTimeout: 3s\n"
+    + "  LivenessMaxUnresponsiveTime: 20s\n"
+)
+LIVENESS = "xrootd-liveness"
+WEDGED_WAIT = 90
 # A downtime's severity, as the web UI offers it.
 SEVERITY = "Outage (completely inaccessible)"
 # The admin's password (framework/etc/server-web-passwd).
@@ -859,16 +883,22 @@ def ad_expiry(test: Test) -> list[Row]:
 # backend-outage
 
 
-def health_component(test: Test, origin: common.Origin, component: str) -> str:
-    """Return what origin's health report says of component.
+def health_of(test: Test, svc: str, web_url: str, component: str) -> str:
+    """Return what the health report of svc, at web_url, says of component.
 
     Returns:
-        Its status, as the admin reads it; "" if nothing.
+        Its status, as the admin reads it; "" if nothing, as where svc does
+        not answer.
     """
-    answer = test.admin(origin.web_url, f"issuer-keys/{origin.svc}").call("GET", HEALTH)
+    answer = test.admin(web_url, f"issuer-keys/{svc}").call("GET", HEALTH)
     components = common.as_object(answer.object.get("components")) or {}
     found = common.as_object(components.get(component)) or {}
     return str(found.get("status", ""))
+
+
+def health_component(test: Test, origin: common.Origin, component: str) -> str:
+    """Return what origin's health report says of component (health_of())."""
+    return health_of(test, origin.svc, origin.web_url, component)
 
 
 def restart_backend(backend: str) -> Optional[str]:
@@ -1073,6 +1103,91 @@ def backend_outage(test: Test) -> list[Row]:
 
 
 # --------------------------------------------------------------------------
+# xrootd-wedged
+
+
+def xrootd_targets(fed: common.Federation) -> list[tuple[str, str, str]]:
+    """Return the servers whose XRootD xrootd-wedged stops.
+
+    They are the first origin, where XRootD serves the origins, and the
+    first federated cache that XRootD serves.
+
+    Returns:
+        Each one's service, web URL, and director route: `origin` or
+        `object`, by which every director must name it again afterward.
+    """
+    found: list[tuple[str, str, str]] = []
+    if not fed.native_origins:
+        found.append((fed.origins[0].svc, fed.origins[0].web_url, "origin"))
+    cache = next((c for c in fed.federated_caches if c.kind == "xrootd"), None)
+    if cache is not None:
+        found.append((cache.svc, cache.web_url, "object"))
+    return found
+
+
+def wedge(test: Test, svc: str, web_url: str, route: str) -> tuple[str, str]:
+    """Run xrootd-wedged at one server; return its row's status and note."""
+    problems: list[str] = []
+    notes: list[str] = []
+    try:
+        with control.restart_with(svc, {LIVENESS_FILE: LIVENESS_CONFIG}):
+            if not common.wait_for(
+                lambda: health_of(test, svc, web_url, LIVENESS) == "ok", HEALTH_WAIT, interval=2
+            ):
+                seen = health_of(test, svc, web_url, LIVENESS)
+                problems.append(f"before its XRootD stopped, {LIVENESS} was {seen!r}, not 'ok'")
+            control.freeze_xrootd(svc)
+            frozen = time.monotonic()
+            unwell: list[str] = []
+
+            def ended() -> bool:
+                if not unwell:
+                    seen = health_of(test, svc, web_url, LIVENESS)
+                    if seen in ("warning", "critical"):
+                        unwell.append(f"{seen} {time.monotonic() - frozen:.0f}s in")
+                return control.state(svc) != "running"
+
+            if common.wait_for(ended, WEDGED_WAIT, interval=2):
+                notes.append(f"it exited {time.monotonic() - frozen:.0f}s after XRootD stopped")
+                if unwell:
+                    notes.append(f"{LIVENESS} was {unwell[0]}")
+                else:
+                    problems.append(f"its health never said {LIVENESS} was unwell")
+            else:
+                problems.append(f"{WEDGED_WAIT}s after its XRootD stopped, it still runs")
+                control.thaw_xrootd(svc)
+    except control.ControlError as e:
+        problems.append(str(e))
+    # restart_with() has started it again as it was, and waited until it
+    # answers; the directors must route to it again, as before.
+    if test.wait_named(route, test.path("wedged"), svc, NAMED_WAIT) is None:
+        problems.append(f"{NAMED_WAIT}s after it started again, not every director named it")
+    return outcome(problems, "; ".join(notes))[1:]
+
+
+def xrootd_wedged(test: Test) -> list[Row]:
+    """Check that a server whose XRootD stops answering shuts itself down.
+
+    Pelican probes its own XRootD, and once XRootD has answered no probe
+    for Xrootd.LivenessMaxUnresponsiveTime, shuts it down, and the server
+    ends with it, so that what runs the server can start it afresh
+    (xrootd/liveness.go; Pelican's main, not v26.0.0-rc.3). At each of
+    xrootd_targets(), restarted with the probe's timings shortened
+    (LIVENESS_CONFIG), once its health says `xrootd-liveness` is `ok`,
+    its XRootD daemons are stopped (SIGSTOP), which leaves their port
+    taking connections, but answering nothing; its health must then say
+    `warning` or `critical`, and within WEDGED_WAIT seconds its container
+    must have exited. It is then started again, as it was, and every
+    director must name it again.
+    """
+    targets = xrootd_targets(test.fed)
+    if not targets:
+        return [("", SKIP, "XRootD serves neither the origins nor a federated cache")]
+    test.put("wedged", os.urandom(OBJECT_SIZE))
+    return [(svc, *wedge(test, svc, web_url, route)) for svc, web_url, route in targets]
+
+
+# --------------------------------------------------------------------------
 # cache-failover
 
 
@@ -1150,25 +1265,8 @@ def get_plugin(test: Test, name: str, url: str, direct: bool = False) -> Fetched
         f.write(f'[ Url="{url}"; LocalFileName="object" ]\n')
     env = dict(test.session.env)
     env["_CONDOR_CREDS"] = creds
-    try:
-        done = subprocess.run(  # nosec B603
-            [test.session.plugin, "-infile", infile, "-outfile", outfile],
-            cwd=directory,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=CLIENT_TIMEOUT,
-            check=False,
-        )
-        status, output = done.returncode, done.stderr or done.stdout
-    except subprocess.TimeoutExpired:
-        status, output = -1, f"timed out after {CLIENT_TIMEOUT:.0f}s"
-    try:
-        with open(outfile, encoding="utf-8") as f:
-            ads = f.read()
-    except FileNotFoundError:
-        ads = ""
+    status, out, err, ads = test.session.plugin_cmd(infile, outfile, env=env, cwd=directory)
+    output = err or out
     hosts: list[str] = []
     for ad in ads.splitlines():
         if "TransferSuccess = true" in ad:
@@ -1499,6 +1597,7 @@ RUN: dict[str, Callable[[Test], Rows]] = {
     "state-survives": state_survives,
     "ad-expiry": ad_expiry,
     "backend-outage": backend_outage,
+    "xrootd-wedged": xrootd_wedged,
     "cache-failover": cache_failover,
     "origin-failover": origin_failover,
     "peer-director": peer_director,

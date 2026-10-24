@@ -1,7 +1,8 @@
 """Controlling the federation's services in the middle of a run.
 
 A test may restart, stop, start, pause, unpause, or kill a service, or
-restart one with configuration of its own; and ask what state a
+restart one with configuration of its own; stop and resume the XRootD
+daemons in one, leaving the rest of it running; and ask what state a
 service's container is in, as when a server may have exited on its own.
 
 The dev container has no Docker, so a helper on the host,
@@ -45,10 +46,26 @@ REQUESTS = os.path.join(DIR, "requests")
 CONFIG = os.path.join(DIR, "config")
 
 # What the helper does, each by `docker compose <action> <service>` but
-# `ping`, which only answers, and `state`, which only looks (`docker
-# compose ps`); and what puts back what an action leaves undone.
-ACTIONS = ("ping", "state", "restart", "stop", "start", "pause", "unpause", "kill")
-UNDO = {"stop": "start", "kill": "start", "pause": "unpause"}
+# `ping`, which only answers; `state`, which only looks (`docker compose
+# ps`); and those of SIGNALS. And what puts back what an action leaves
+# undone.
+ACTIONS = (
+    "ping",
+    "state",
+    "restart",
+    "stop",
+    "start",
+    "pause",
+    "unpause",
+    "kill",
+    "freeze-xrootd",
+    "thaw-xrootd",
+)
+UNDO = {"stop": "start", "kill": "start", "pause": "unpause", "freeze-xrootd": "thaw-xrootd"}
+# The actions that signal the XRootD daemons in a service's container,
+# rather than the container, each by its signal: `docker compose exec`
+# of `pkill -<signal> -x xrootd` there.
+SIGNALS = {"freeze-xrootd": "STOP", "thaw-xrootd": "CONT"}
 
 # How long the helper lets an action run, and how long a request waits
 # for its answer, in seconds.
@@ -206,6 +223,29 @@ def kill(svc: str) -> None:
     _ask("kill", svc)
 
 
+def freeze_xrootd(svc: str) -> None:
+    """Stop the XRootD daemons in svc's container (SIGSTOP).
+
+    The rest of the server runs on. XRootD's port takes connections, from
+    the kernel's backlog, but XRootD answers nothing on them.
+
+    Raises:
+        ControlError: The action failed, as where svc runs no XRootD, or
+            the helper did not answer.
+    """
+    _ask("freeze-xrootd", svc)
+
+
+def thaw_xrootd(svc: str) -> None:
+    """Resume the XRootD daemons in svc's container (SIGCONT).
+
+    Raises:
+        ControlError: The action failed, as where svc runs no XRootD, or
+            the helper did not answer.
+    """
+    _ask("thaw-xrootd", svc)
+
+
 def state(svc: str) -> str:
     """Return the state of svc's container, as `docker compose ps` says it.
 
@@ -220,7 +260,9 @@ def state(svc: str) -> str:
 
 
 @contextlib.contextmanager
-def restart_with(svc: str, files: Mapping[str, str]) -> Generator[None, None, None]:
+def restart_with(
+    svc: str, files: Mapping[str, str], serves: bool = True
+) -> Generator[None, None, None]:
     """Restart svc with files as the last of its configuration layers.
 
     That layer wins over every other. Afterward, even on failure, remove
@@ -230,6 +272,9 @@ def restart_with(svc: str, files: Mapping[str, str]) -> Generator[None, None, No
     Args:
         svc: The Pelican server to restart.
         files: YAML text, by file name (e.g. `90-test.yaml`).
+        serves: Whether to wait, as restart() does, until svc serves
+            with files; a test that expects it not to looks for itself
+            (see state()). Afterward, it waits either way.
 
     Raises:
         ControlError: There is no directory for svc under config/ (it is
@@ -253,7 +298,10 @@ def restart_with(svc: str, files: Mapping[str, str]) -> Generator[None, None, No
             written.append(path)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
-        restart(svc)
+        if serves:
+            restart(svc)
+        else:
+            _ask("restart", svc)
         yield
     finally:
         for path in written:

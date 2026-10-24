@@ -5,6 +5,7 @@ framework/var (see enter_var), so the paths they use are relative to it.
 Messages name paths from the top of the checkout.
 """
 
+import contextlib
 import fnmatch
 import glob
 import hashlib
@@ -16,7 +17,8 @@ import re
 import shutil
 import sys
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import cached_property
@@ -185,6 +187,26 @@ def sha256(path: str) -> Optional[str]:
     return found.hexdigest()
 
 
+@contextlib.contextmanager
+def pool(workers: int) -> Generator[ThreadPoolExecutor, None, None]:
+    """Run tasks on a pool of worker threads, for the length of a block.
+
+    The block waits for every task when it ends, as a ThreadPoolExecutor's
+    own does; but one left by an exception, such as test.py's when it
+    abandons a pass, cancels the tasks not yet started. A
+    ThreadPoolExecutor would run every one of them, in the background,
+    while later suites ran, and the interpreter would wait for them as
+    it exited. The tasks already running end by their own timeouts.
+    """
+    executor = ThreadPoolExecutor(workers)
+    try:
+        yield executor
+    except BaseException:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    executor.shutdown(wait=True)
+
+
 def wait_for(condition: Callable[[], bool], seconds: float, interval: float = 0.5) -> bool:
     """Return whether condition holds within seconds.
 
@@ -210,8 +232,15 @@ def shown(path: Optional[str]) -> str:
 
 
 def first(problems: Sequence[str]) -> str:
-    """Return the first of problems, and how many more there are."""
-    more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
+    """Return the first of problems, and how many more there are.
+
+    Where there are more, every one is printed, so that the log holds
+    them all, though a row's note names only the first.
+    """
+    more = ""
+    if len(problems) > 1:
+        print("".join(f"    {problem}\n" for problem in problems), end="")
+        more = f" (and {len(problems) - 1} more)"
     return problems[0] + more
 
 

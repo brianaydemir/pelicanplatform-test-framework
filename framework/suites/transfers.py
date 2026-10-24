@@ -8,9 +8,9 @@ http_transfer()); the direct-* scenarios get from an origin rather
 than a cache, and the cache-* scenarios from the first federated cache,
 which the client names. Then compare every byte moved with the origins'
 stores, and check that no batch left anything else in its directory,
-nor a failed get any file; and outside the tiny topology, check that in
-each namespace some cache served the downloads meant for one, only an
-origin the direct ones, and only the named cache the named ones.
+nor a failed get any file; and outside the tiny topology, check that
+only caches served the downloads meant for one, only an origin the
+direct ones, and only the named cache the named ones.
 
 What each scenario expects, how many batches it runs, and how a batch
 is judged, is in framework/testlib/transfers.py. Results go to
@@ -39,7 +39,7 @@ import subprocess  # nosec B404
 import sys
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from typing import Optional
 from urllib.parse import urljoin, urlsplit
 
@@ -257,7 +257,7 @@ def seed_pstore(
         directory = f"{origin.store_of(namespace)}/data"
         names = sorted(n for n in os.listdir(directory) if os.path.isfile(f"{directory}/{n}"))
         jobs += [(namespace, f"data/{name}") for name in names]
-    with ThreadPoolExecutor(8) as pool:
+    with common.pool(8) as pool:
         errors = [e for e in pool.map(seed_one, jobs) if e]
     for error in errors:
         print(error, file=sys.stderr)
@@ -283,7 +283,7 @@ def empty_put_collections(fed: common.Federation, plan: Plan, tokens: dict[str, 
             )
         return errors
 
-    with ThreadPoolExecutor(8) as pool:
+    with common.pool(8) as pool:
         errors = [e for found in pool.map(empty, plan.puts) for e in found]
     for error in errors:
         print(error, file=sys.stderr)
@@ -490,7 +490,7 @@ def transfer_all(session: Session, plan: Plan) -> float:
 
     print(f"\nStarting {len(order)} transfers, {transfers.CONCURRENCY} at a time ...\n")
     started = time.monotonic()
-    with ThreadPoolExecutor(transfers.CONCURRENCY) as pool:
+    with common.pool(transfers.CONCURRENCY) as pool:
         running = [pool.submit(transfer, session, plan, batch) for batch in order]
         for done, future in enumerate(as_completed(running), 1):
             future.result()
@@ -590,7 +590,7 @@ def uploaded_hashes(
         except stores.Unreadable as e:
             return None, str(e)
 
-    with ThreadPoolExecutor(8) as pool:
+    with common.pool(8) as pool:
         found = list(pool.map(read_back, jobs))
     unreadable: list[str] = []
     for (origin, namespace, rel), (at_origin, trouble) in zip(jobs, found):
@@ -694,17 +694,9 @@ def served_by(plan: Plan, batch: Batch) -> list[str]:
     if batch.scenario.client == "plugin":
         try:
             with open(f"{plan.out}/output/{batch.id}.ad", encoding="utf-8") as f:
-                ads = f.read().splitlines()
+                return transfers.plugin_endpoints(f.read())
         except FileNotFoundError:
             return []
-        hosts: list[str] = []
-        for ad in ads:
-            if "TransferSuccess = true" not in ad:
-                continue
-            endpoints = re.findall(r'Endpoint(\d+) = "([^":]*)', ad)
-            if endpoints:
-                hosts.append(max(endpoints, key=lambda e: int(e[0]))[1])
-        return hosts
 
     try:
         with open(f"{plan.out}/output/{batch.id}.json", encoding="utf-8") as f:
@@ -720,9 +712,9 @@ def check_served(
     """Check which servers served the successful downloads.
 
     They are judged by client and route, by transfers.check_served_by():
-    outside `tiny`, a cache must have served some of those meant for one
-    in each namespace, an origin every direct one, and every one where
-    there is no cache, and the named cache every named one. A plain HTTP
+    outside `tiny`, a cache must have served every one meant for one, an
+    origin every direct one, and every one where there is no cache, and
+    the named cache every named one. A plain HTTP
     client's bare paths go where the director sends them: to an origin
     under `-p director-default-origin`, where every one must then come
     from an origin. Uploads go straight to an origin, so they don't

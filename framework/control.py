@@ -14,13 +14,15 @@ serves at a time: another that finds it serving leaves the tests to it.
 framework/testlib/control.py describes the requests, which come through
 files under framework/var/control/. Each is done, one at a time, with
 `docker compose <action> <service>`, on the shape's services but `dev`;
-`state` only asks `docker compose ps` what state a container is in.
-On stopping, the helper puts back what the tests left: it removes
-their configuration from control/config/, and restarts each service it
-was in, if running; and it starts, or unpauses, what they stopped,
-killed, or paused. On starting, it removes, and restarts for, any
-configuration still left, as by a helper that was killed: what an
-earlier one did to the services, it never knew.
+`state` only asks `docker compose ps` what state a container is in; and
+`freeze-xrootd` and `thaw-xrootd` signal the XRootD daemons in a
+service's container, with `docker compose exec`. On stopping, the
+helper puts back what the tests left: it removes their configuration
+from control/config/, and restarts each service it was in, if running;
+and it starts, unpauses, or thaws what they stopped, killed, paused, or
+froze. On starting, it removes, and restarts for, any configuration
+still left, as by a helper that was killed: what an earlier one did to
+the services, it never knew.
 """
 
 import contextlib
@@ -90,6 +92,14 @@ def compose(*args: str) -> tuple[bool, str]:
     return True, output
 
 
+def compose_args(action: str, svc: str) -> list[str]:
+    """Return the `docker compose` arguments that do action to svc."""
+    signal_name = control.SIGNALS.get(action)
+    if signal_name is not None:
+        return ["exec", "-T", svc, "pkill", f"-{signal_name}", "-x", "xrootd"]
+    return [action, svc]
+
+
 class Helper:
     """What does the tests' requests, and puts back what they left undone.
 
@@ -130,7 +140,7 @@ class Helper:
         if action == "state":
             return compose("ps", "--all", "--format", "{{.State}}", svc)
         say(f"{action} {svc}")
-        ok, output = compose(action, svc)
+        ok, output = compose(*compose_args(action, svc))
         if ok:
             if action in control.UNDO:
                 self.undo[svc] = control.UNDO[action]
@@ -144,8 +154,9 @@ class Helper:
         """Put back what the tests left.
 
         Remove configuration that they left in control/config/, and start,
-        or unpause, what they left stopped, killed, or paused; then
-        restart each running service that had configuration of theirs.
+        unpause, or thaw what they left stopped, killed, paused, or
+        frozen; then restart each running service that had configuration
+        of theirs.
         """
         configured: set[str] = set()
         for svc in sorted(os.listdir(control.CONFIG)):
@@ -158,7 +169,7 @@ class Helper:
                 configured.add(svc)
         for svc, action in sorted(self.undo.items()):
             say(f"{action} {svc}, which a test left so")
-            ok, output = compose(action, svc)
+            ok, output = compose(*compose_args(action, svc))
             if not ok:
                 say(output)
             elif action == "start":

@@ -275,7 +275,11 @@ for shape in ${shapes}; do
     result=FAIL
     failed=$(( failed + 1 ))
     ./fed.sh ps --all >"${log_dir}/${shape}.compose.log" 2>&1
-    ./fed.sh logs --no-color --timestamps >>"${log_dir}/${shape}.compose.log" 2>&1
+    # Each token's signature cut out, as fed.sh cuts it out of the logs
+    # it keeps (fed_redact_tokens).
+    ./fed.sh logs --no-color --timestamps 2>&1 \
+        | sed -E 's/(eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,})\.[A-Za-z0-9_-]{8,}/\1.<signature>/g' \
+        >>"${log_dir}/${shape}.compose.log"
   fi
   # After a failed reset, framework/var/results/ may be another shape's.
   if [ -n "${fresh}" ]; then

@@ -72,14 +72,26 @@ to `framework/var/results/` ([Results](docs/ci.md#results)), and
 `test.py` exits non-zero if any case failed. Pass or fail, or
 interrupted, `./fed.sh test` then keeps every service's log, from when
 its container was created, in `framework/var/logs/<time>/`: a file per
-service; `ps.txt`, the containers' states; `shape.txt`, the presets,
-topology, profiles, tag, and images; `test.log`, everything the tests
-printed, as it was printed; and `control.log`, what the
+service; `ps.txt`, the containers' states; `containers.txt`, each
+container's exit code, and whether the kernel killed it for want of
+memory; `stats.txt`, what each uses of its memory limit; `shape.txt`,
+the presets, topology, profiles, tag, and images; `config/`, the
+configuration that `fed.sh` generated for the shape, without its
+secrets; `results/`, the rows of the suites that the run ran;
+`commands.log` (and `commands-scitokens.log`), the client commands
+that each pass ran, `pelican` and `stash_plugin` alike, with each one's
+exit status, all it printed, and the plugin's input and result ads,
+where a row's note quotes only its last line (the `transfers` suite
+keeps its own, in `data/transfers/`); `test.log`, everything the tests
+printed, as it was printed, among it every problem of a row whose note
+names only the first; and `control.log`, what the
 [control helper](#service-control) did for them. The tests restart
 services but never recreate them, so these cover the whole run, and
 the startup before it; `./fed.sh up` and `restart` start a recreated
-container's log afresh. A token that a message quotes, as a director's
-redirect carries one, is kept without its signature.
+container's log afresh. A token that any of these quotes, as a
+director's redirect, or an XRootD cache's log, carries one, is kept
+without its signature. A suite's pass that the watchdog abandons first
+prints where each of its threads was.
 
 
 ## Workflow
@@ -165,7 +177,7 @@ To test your own client, build it over that file from the dev
 container:
 
 ```sh
-cd /app && CGO_ENABLED=0 go build -tags forceposix,client -o /scratch/framework/var/bin/linux/pelican ./cmd
+cd /app && CGO_ENABLED=0 go build -tags client -o /scratch/framework/var/bin/linux/pelican ./cmd
 ```
 
 `init` keeps your binary. Only a change to `PELICAN_TAG`, or `reset.sh`,
@@ -351,7 +363,8 @@ details, including what it refuses. To write your own, see
 ## Service control
 
 Some tests restart, stop, start, pause, unpause, or kill a service in
-the middle of a run, or restart one with configuration of their own.
+the middle of a run, restart one with configuration of their own, or
+stop and resume the XRootD daemons in one, leaving the rest running.
 The dev container can't control Docker, so `./fed.sh test` runs a helper
 on the host beside the tests (`framework/control.py`), which does it for
 them, and stops it when they finish. They ask it through files in
@@ -371,10 +384,11 @@ The tests write their configuration of a service in
 [configuration layers](docs/configuration.md#pelican-configuration), and
 remove it once they're done, restarting the service again. Whatever
 tests leave behind, the helper puts back when it stops: it removes their
-configuration, restarting the services that had it, and starts or
-unpauses what they left stopped, killed, or paused. The next one to
-start removes any configuration still left, as by a helper that was
-killed, but cannot know what else that one left undone.
+configuration, restarting the services that had it, and starts,
+unpauses, or resumes what they left stopped, killed, paused, or
+frozen. The next one to start removes any configuration still left, as
+by a helper that was killed, but cannot know what else that one left
+undone.
 
 
 ## Where things live
@@ -408,8 +422,9 @@ them.
 | `data/metadata/`     | every request the metadata recorder received                                                                    |
 | `data/webdav-gate/`  | the `Authorization` of every request an `https` or `httpsv2` origin sent its backend through the gate (`exports`) |
 | `data/idp/`          | every request the identity provider served (`-p auth-oidc`), one JSON object per line, without its secrets         |
+| `data/commands.log`  | the client commands the tests ran, with each one's exit status and output; `commands-scitokens.log`, in their SciTokens pass |
 | `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                   |
-| `logs/<time>/`       | every service's log, the containers' states, the shape, what the tests printed, and what the control helper did, as each `./fed.sh test` ended |
+| `logs/<time>/`       | every service's log, the containers' states, the shape and its configuration, the run's results, what the tests printed, and what the control helper did, as each `./fed.sh test` ended |
 | `control/`           | the tests' requests to [control services](#service-control), and their configuration of a service (`config/<svc>/`) |
 | `issuer-keys/<svc>/` | each service's issuer keys (`/fed/issuer-keys`), and `issuer/`, the external issuer's                           |
 | `test-keys/`         | private keys for the [authorization tests](docs/tests/authorization.md)                                         |

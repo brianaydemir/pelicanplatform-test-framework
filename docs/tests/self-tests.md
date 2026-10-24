@@ -61,3 +61,14 @@ origin, reads it, and removes it.
   WLCG pass alone, and restarts cache-0 once. It skips where no helper
   serves the run, in the tiny topology, whose cache is the whole
   federation's process, and where there is no cache-0.
+- `pool`: `testlib.common.pool()` runs a suite's tasks at once, and when
+  `test.py`'s watchdog abandons a pass, which it does by raising an
+  exception that no suite catches, it must drop the tasks it has not
+  started, as a `ThreadPoolExecutor`'s own block would not, so that
+  they run neither beside the suites that follow nor keep the run from
+  ending. Ten tasks queued on two workers, each of which holds its
+  worker until it is let go, are left by such an exception with two
+  running: the other eight must be cancelled, the block must end at
+  once, and the two must end on their own. Left as usual, the block
+  must wait for every task. It needs no federation, and runs in the
+  WLCG pass alone.

@@ -55,8 +55,20 @@ the WLCG pass alone. A suite that keeps files under
 `framework/var/data/` for people to read keeps each pass's apart, with
 `session.var_dir()`.
 
+`test.py` abandons a pass that stalls, by raising an exception in the
+suite wherever it is. So a suite gives every client command and request
+a timeout, runs tasks at once on `testlib.common.pool()`, which drops
+what it had queued when its block is left so, rather than on a
+`ThreadPoolExecutor` of its own, which would run all of it, and puts
+back what it changed in `finally` blocks. It runs the clients with
+`session.pelican_cmd()` and `session.plugin_cmd()`, which kill a run
+that outlasts its timeout and log every run, with all it printed, in
+the pass's `commands.log`.
+
 A suite records a row per case ([Results](ci.md#results)), named
-`<scenario>` or `<scenario> <case>`, through `testlib.report`. A row the
+`<scenario>` or `<scenario> <case>`, through `testlib.report`. A row
+that found several problems names the first in its note with
+`testlib.common.first()`, which prints them all, for the log. A row the
 suite could not judge is `INCONCLUSIVE`, with a note saying why, rather
 than a pass. Each suite's page under
 [What the tests check](tests/README.md) describes every scenario, and
@@ -67,17 +79,19 @@ is a change to its page.
 ## Service control from a test
 
 `framework/testlib/control.py` has a function for each action the
-helper takes (`restart`, `stop`, `start`, `pause`, `unpause`, and
-`kill`), each of which returns once the action is done, and for a
-restart, a start, or an unpause, once the server answers again;
+helper takes (`restart`, `stop`, `start`, `pause`, `unpause`, `kill`,
+and `freeze_xrootd` and `thaw_xrootd`, which stop and resume the XRootD
+daemons in a service's container), each of which returns once the
+action is done, and for a restart, a start, or an unpause, once the
+server answers again;
 `state()`, which asks what state a service's container is in, for a
 test to notice a server that exited on its own, and start it again;
 `restart_with()`, which configures a service for the length of a
 `with` block; and `unavailable()`, which says why the tests can't
 control services here, if they can't. Its docstring describes the files
 under `framework/var/control/` by which the tests and the helper talk.
-A scenario should put back whatever it stops, pauses, kills, or
-configures, even if it fails; the helper puts back what is left only
+A scenario should put back whatever it stops, pauses, kills, freezes,
+or configures, even if it fails; the helper puts back what is left only
 when it stops serving, and the next one to start only the configuration.
 
 

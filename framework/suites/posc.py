@@ -41,7 +41,6 @@ import threading
 import time
 import traceback
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from http.client import HTTPException, HTTPSConnection
 from typing import Optional
@@ -762,7 +761,7 @@ def concurrent(test: Test) -> tuple[str, str]:
         return test.full_put(data, name)
 
     test.mark()
-    with ThreadPoolExecutor(len(versions)) as pool:
+    with common.pool(len(versions)) as pool:
         answers = list(pool.map(put, versions))
     said = ", ".join(a.describe() for a in answers)
     succeeded = [n for n, answer in enumerate(answers) if answer.ok]

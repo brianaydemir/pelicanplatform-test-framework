@@ -22,12 +22,13 @@ and the image registries.
   lists the shapes one per line, for a matrix of one shape per job.
 - **What comes back:** the exit status (non-zero if any shape failed),
   and, in `DIR`, each shape's log, its results in `results/<shape>/`,
-  its services' logs and the tests' output from each run of the tests
-  in `logs/<shape>/<time>/`, and, merged over the shapes, `results.tsv`,
-  `junit.xml` (for a test reporter), and `summary.md` (for
-  `$GITHUB_STEP_SUMMARY`). A shape that failed also leaves
-  `<shape>.compose.log`, every service's log as it failed. See
-  [Results](#results).
+  from each run of the tests its services' logs and containers' states,
+  its configuration, the tests' output, and every client command's, in
+  `logs/<shape>/<time>/` (see the [README](../README.md#quickstart)),
+  and, merged over the shapes, `results.tsv`, `junit.xml` (for a test
+  reporter), and `summary.md` (for `$GITHUB_STEP_SUMMARY`). A shape that
+  failed also leaves `<shape>.compose.log`, every service's log as it
+  failed. See [Results](#results).
 
 For example, as steps of a job in a matrix over the shapes:
 

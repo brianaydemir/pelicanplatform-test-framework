@@ -32,14 +32,17 @@ class Response:
     """A server's answer, or the lack of one.
 
     Attributes:
-        status: Its status; None if no response came.
+        status: Its status; None if no whole response came.
         trailers: Those after a chunked body.
+        error: If none came, what went wrong, e.g. a status then a body
+            that broke off.
     """
 
     status: Optional[int]
     body: bytes = b""
     headers: tuple[tuple[str, str], ...] = ()
     trailers: tuple[tuple[str, str], ...] = ()
+    error: str = ""
 
     def header(self, name: str) -> str:
         """Return the last value of header name, or ""."""
@@ -62,8 +65,10 @@ class Response:
         return self.status is not None and 200 <= self.status < 300
 
     def describe(self) -> str:
-        """Return the status, for a message."""
-        return "no response" if self.status is None else f"HTTP {self.status}"
+        """Return the status, for a message, or why none came."""
+        if self.status is not None:
+            return f"HTTP {self.status}"
+        return f"no response ({self.error})" if self.error else "no response"
 
     def json(self) -> Any:
         """Return the body, as JSON; None if it is not JSON."""
@@ -126,6 +131,14 @@ def _pieces(data: bytes, size: int = 1 << 16) -> Iterator[bytes]:
         yield data[start : start + size]
 
 
+def _failure(status: Optional[int], error: Exception) -> str:
+    """Return what went wrong, for a Response's error.
+
+    status is the one that came before error, if one did.
+    """
+    return repr(error) if status is None else f"HTTP {status}, then {error!r}"
+
+
 def _connect(url: str, timeout: float) -> tuple[http.client.HTTPConnection, str]:
     """Return a connection to url's server, and the target to ask it for."""
     parts = urlsplit(url)
@@ -175,14 +188,16 @@ def request(
     body: Union[bytes, Iterable[bytes], None] = data
     if chunked and data is not None:
         body = _pieces(data)
+    status: Optional[int] = None
     try:
         conn.request(method, target, body=body, headers=sent, encode_chunked=chunked)
         answer = conn.getresponse()
+        status = answer.status
         body = answer.read()
         trailers = answer.trailers if isinstance(answer, _Answer) else ()
         return Response(answer.status, body, tuple(answer.getheaders()), trailers)
-    except (OSError, http.client.HTTPException):
-        return Response(None)
+    except (OSError, http.client.HTTPException) as e:
+        return Response(None, error=_failure(status, e))
     finally:
         conn.close()
 
@@ -219,17 +234,19 @@ def timed_get(
         sent["Authorization"] = f"Bearer {token}"
     started = time.monotonic()
     head: Optional[float] = None
+    status: Optional[int] = None
     try:
         conn.request("GET", target, headers=sent)
         answer = conn.getresponse()
+        status = answer.status
         body = answer.read(first)
         if len(body) == first:
             head = time.monotonic() - started
         body += answer.read()
         whole = time.monotonic() - started
         return Timed(Response(answer.status, body, tuple(answer.getheaders())), head, whole)
-    except (OSError, http.client.HTTPException):
-        return Timed(Response(None), head, None)
+    except (OSError, http.client.HTTPException) as e:
+        return Timed(Response(None, error=_failure(status, e)), head, None)
     finally:
         conn.close()
 
@@ -310,11 +327,13 @@ def read_part(
     sent = dict(headers or {})
     if token is not None:
         sent["Authorization"] = f"Bearer {token}"
+    status: Optional[int] = None
     try:
         conn.request("GET", target, headers=sent)
         answer = conn.getresponse()
+        status = answer.status
         return Response(answer.status, answer.read(size), tuple(answer.getheaders()))
-    except (OSError, http.client.HTTPException):
-        return Response(None)
+    except (OSError, http.client.HTTPException) as e:
+        return Response(None, error=_failure(status, e))
     finally:
         conn.close()

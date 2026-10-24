@@ -4,14 +4,15 @@ Part of [What the tests check](README.md).
 
 No server is slow as a shape is, so the `throttling` suite makes them
 so for as long as it runs. It restarts every origin with
-`Origin.TransferRateLimit: 256KB/s` (a KB is 1,024 bytes), and every
-federated V2 cache with a small fair scheduler: `Cache.WorkerCount: 2`,
+`Origin.TransferRateLimit: 256KB/s` (a KB is 1,024 bytes), and runs
+`range-ahead`; then it restarts every federated V2 cache with a small
+fair scheduler for the rest: `Cache.WorkerCount: 2`,
 `Cache.Throttle.PerOriginStarvingPercent` and `PerOriginActivePercent`
 25, `PerOriginPendingSize` 1, and `RetryAfter` 2s. A cache then fetches
 from one origin one object at a time, queues one more, and sheds the
 rest. Both go in the last of the servers' configuration layers
 ([service control](../../README.md#service-control)); afterward the suite
-restores them, and waits, before and after, until every director names
+restores them, and waits, after each restart, until every director names
 every origin and every cache answers, as `freshness` does. The rate limit
 slows only a `posixv2` origin (`origin_serve/rate_limited_fs.go` in
 Pelican), so the suite needs `posixv2` origins, a federated V2 cache,
@@ -28,6 +29,22 @@ fetch there, and a cache's fetches share one scheduler queue, which is
 per origin host. A scenario with several cases records a row per case,
 named `<scenario> <case>`.
 
+- `range-ahead`: at each V2 cache, a cold read of a 4 MiB object, which
+  takes about 15 seconds to come, and 2 seconds in, a read of the range
+  from a kilobyte before its last 128 KiB to its end, which crosses the
+  edge of the last of the 128 KiB chunks by which the cache's download
+  tells waiting readers of its progress, and the edges of its 4,080-byte
+  blocks (`local_cache/block_fetcher.go`). A V2 cache holds a reader
+  behind a download that it expects to write the reader's blocks within
+  5 seconds, and otherwise fills the reader's range by a fetch of its
+  own, which the download then passes over (`beginFill` in
+  `local_cache/block_state.go`; Pelican's main, not v26.0.0-rc.3).
+  So the range must come within 5 seconds, as 206 with exactly its
+  bytes; the whole read must then come back as the object, its download
+  having found blocks already written; and so must a warm read. A whole
+  read in under about 7.5 seconds shows nothing, since the origins were
+  not slow, and leaves the row inconclusive. It runs before the caches'
+  scheduler shrinks, which would queue the fill behind the download.
 - `shed-429`: at each V2 cache, 30 reads at once of cold 1 MiB objects,
   each of which takes the cache seconds to fetch, and half a second in,
   a read of an object that no origin holds. The cache must shed some:

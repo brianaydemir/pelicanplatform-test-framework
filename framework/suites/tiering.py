@@ -47,7 +47,6 @@ at the origins with WLCG tokens either way.
 import hashlib
 import os
 import shutil
-import subprocess  # nosec B404
 import time
 import traceback
 from collections.abc import Callable
@@ -57,7 +56,7 @@ from urllib.parse import urlsplit
 from testlib import blocks, common, digests, director, metrics, stores, transfers, web
 from testlib.common import die, first
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
-from testlib.session import CLIENT_TIMEOUT, Session, last_line
+from testlib.session import Session, last_line
 
 SCENARIOS = {
     "tiered": "an object over the threshold, read whole, lands in the bucket",
@@ -295,25 +294,8 @@ class Test:
         env["_CONDOR_CREDS"] = creds
         env["PELICAN_CLIENT_PREFERREDCACHES"] = cache.url
         target = os.path.join(work, transfers.local_name(url))
-        try:
-            done = subprocess.run(  # nosec B603
-                [self.session.plugin, "-infile", infile, "-outfile", outfile],
-                cwd=work,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=CLIENT_TIMEOUT,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return False, target, f"timed out after {CLIENT_TIMEOUT:.0f}s"
-        try:
-            with open(outfile, encoding="utf-8") as f:
-                ads = f.read()
-        except FileNotFoundError:
-            ads = ""
-        return transfers.plugin_passed(ads), target, ads or done.stderr or done.stdout
+        _, out, err, ads = self.session.plugin_cmd(infile, outfile, env=env, cwd=work)
+        return transfers.plugin_passed(ads), target, ads or err or out
 
     def get_tiered(
         self, cache: common.Cache, name: str, headers: dict[str, str]
@@ -498,7 +480,7 @@ def ranges(test: Test) -> tuple[str, str]:
                 if answer.status == 200 and answer.body == data[first_byte : last_byte + 1]:
                     deviations.append(f"{cache.svc} {headers['Range']}")
                     continue
-            why = blocks.check(data, request, answer.status, answer.headers, answer.body)
+            why = blocks.check(data, request, answer)
             if why:
                 return f"{headers['Range']}: {why}"
         return None

@@ -1,11 +1,17 @@
 """How the servers, and the clients, behave when an origin is slow.
 
-A V2 cache sheds what it has no room for, with 429 and Retry-After;
+A V2 cache fills a range far ahead of a download under way by a fetch
+of its own; sheds what it has no room for, with 429 and Retry-After;
 answers by the time a client's X-Pelican-Timeout says; and streams the
 first bytes of a cold object before it has all of it. The clients
 classify a throttled attempt, and a transfer too slow to finish, by
 error code.
 
+  range-ahead      each V2 cache, while a cold whole read of an object
+                   streams in, serves a range near its end, which the
+                   read will not reach for many seconds, at once, by a
+                   fill of its own; and both, and a warm read after,
+                   come back intact
   shed-429         each V2 cache, sent a burst of cold reads, sheds some
                    with 429, Retry-After, and a reason; a missing object
                    is still 404
@@ -22,12 +28,13 @@ error code.
                    and through a cache
 
 Nothing is slow as the shape is, so the suite makes it so for as long as
-it runs: it restarts every origin with Origin.TransferRateLimit, and
+it runs: it restarts every origin with Origin.TransferRateLimit, as the
+last of their configuration layers (control.restart_with()), runs
+range-ahead, which needs the caches' scheduler as it is, then restarts
 every federated V2 cache with a small fair scheduler (Cache.WorkerCount,
-Cache.Throttle.*), as the last of their configuration layers
-(control.restart_with()), and afterward restores them. The rate limit
-slows only a posixv2 origin (origin_serve/rate_limited_fs.go in
-Pelican), so the suite needs posixv2 origins, a federated V2 cache, a
+Cache.Throttle.*) for the rest, and afterward restores them all. The
+rate limit slows only a posixv2 origin (origin_serve/rate_limited_fs.go
+in Pelican), so the suite needs posixv2 origins, a federated V2 cache, a
 control helper, and a topology other than `tiny`, whose servers are one
 process.
 
@@ -47,11 +54,9 @@ import json
 import os
 import re
 import shutil
-import subprocess  # nosec B404
 import time
 import traceback
 from collections.abc import Callable, Generator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import quote
@@ -59,15 +64,25 @@ from urllib.parse import quote
 from testlib import common, control, director, stores, transfers, web
 from testlib.common import Findings, die, first, warn
 from testlib.report import FAIL, PASS, SKIP
-from testlib.session import CLIENT_TIMEOUT, Session, last_line
+from testlib.session import Session, last_line
 
 SCENARIOS = {
+    "range-ahead": (
+        "each V2 cache serves a range far ahead of a cold read under way at once, and both"
+        " come back intact"
+    ),
     "shed-429": "each V2 cache sheds a burst of cold reads with 429 and Retry-After, not a 404",
     "client-throttled": "the clients, shed by a V2 cache, report a retryable error and retry",
     "timeout-header": "each V2 cache answers 504 by X-Pelican-Timeout, and goes on filling",
     "streaming": "each V2 cache sends a cold object's first bytes long before its last",
     "slow-transfer": "the clients give up on a transfer too slow, with error 6002",
 }
+
+# The scenarios that run with the origins slowed, and the caches'
+# scheduler as the shape has it: the small one lets a cache fetch from
+# an origin once at a time, which would queue range-ahead's fill behind
+# the download it is ahead of.
+SCHEDULER_AS_IS = ("range-ahead",)
 
 NAMESPACE = "protected-a"
 
@@ -138,6 +153,21 @@ STREAM_HEAD = 4096
 STREAM_FIRST = 5.0
 # Less than this for the whole read, and the origins were not slow.
 STREAM_SLOWEST = 0.5 * (STREAM_SIZE - RATE) / RATE
+
+# range-ahead: an object whose cold read takes seconds; once that read
+# is under way, a range that begins a kilobyte before its last 128 KiB
+# chunk (the granularity at which a V2 cache's download tells readers
+# of its progress; local_cache/block_fetcher.go), and runs to its end,
+# crossing that chunk's edge and blocks' edges. A V2 cache waits for a
+# download that is expected to write a block within 5 seconds
+# (ETAStaleThreshold), and otherwise fills the range itself, so the
+# range must come within AHEAD_ANSWER, many seconds before the read
+# reaches it.
+AHEAD_SIZE = 4 << 20
+AHEAD_START = AHEAD_SIZE - (128 << 10) - 1000
+AHEAD_DELAY = 2.0
+AHEAD_ANSWER = 5.0
+AHEAD_SLOWEST = 0.5 * (AHEAD_SIZE - RATE) / RATE
 
 ONLY_IF_CACHED = {"Cache-Control": "only-if-cached"}
 
@@ -330,20 +360,17 @@ def settle(test: Test) -> Optional[str]:
 
 
 @contextlib.contextmanager
-def slowed(test: Test) -> Generator[None, None, None]:
-    """Restart the origins and the V2 caches slowed, for the with block.
+def slowed(services: Sequence[str], config: str) -> Generator[None, None, None]:
+    """Restart services with config, for the with block.
 
-    Every origin gets the rate limit, and every federated V2 cache the
-    small scheduler; and afterward, each is restarted as it was.
+    Afterward, each is restarted as it was.
 
     Raises:
         control.ControlError: Restarting, or restoring, failed.
     """
     with contextlib.ExitStack() as stack:
-        for origin in test.origins:
-            stack.enter_context(control.restart_with(origin.svc, {CONFIG_FILE: ORIGIN_CONFIG}))
-        for cache in test.v2:
-            stack.enter_context(control.restart_with(cache.svc, {CONFIG_FILE: CACHE_CONFIG}))
+        for svc in services:
+            stack.enter_context(control.restart_with(svc, {CONFIG_FILE: config}))
         yield
 
 
@@ -365,7 +392,7 @@ def burst(test: Test, cache: common.Cache, found: Findings) -> None:
         time.sleep(MISSING_DELAY)
         return test.ask("GET", cache.url, missing)
 
-    with ThreadPoolExecutor(BURST + 1) as pool:
+    with common.pool(BURST + 1) as pool:
         reads = [pool.submit(test.ask, "GET", cache.url, rel) for rel in rels]
         lost = pool.submit(get_missing)
         answers = [r.result() for r in reads]
@@ -582,6 +609,60 @@ def streaming(test: Test) -> Row:
     return found.row(f"{len(test.v2)} cache(s)")
 
 
+def range_ahead(test: Test) -> Row:
+    """Check that each V2 cache serves a range far ahead of a read under way.
+
+    At each, a cold whole read of an object that takes many seconds to
+    fetch; AHEAD_DELAY seconds in, a range from AHEAD_START to the end,
+    which the read will not reach for many seconds more. The range must
+    come back within AHEAD_ANSWER seconds, as 206 with exactly its bytes,
+    rather than wait for the read; the read must come back intact, though
+    its download found blocks that the range's fill had written already;
+    and so must a warm whole read afterward. A whole read faster than
+    AHEAD_SLOWEST shows nothing, since the origins were not slow.
+    """
+    found = Findings()
+    for cache in test.v2:
+        rel = test.rel("range-ahead", cache.svc)
+        data = os.urandom(AHEAD_SIZE)
+        why = test.put({rel: data})
+        if why:
+            found.problems.append(why)
+            continue
+        with common.pool(1) as pool:
+            whole = pool.submit(
+                web.timed_get, test.url(cache.url, rel), test.token, 64 << 10, timeout=120
+            )
+            time.sleep(AHEAD_DELAY)
+            asked = time.monotonic()
+            ranged = test.ask("GET", cache.url, rel, headers={"Range": f"bytes={AHEAD_START}-"})
+            took = time.monotonic() - asked
+            read = whole.result()
+        want = f"bytes {AHEAD_START}-{AHEAD_SIZE - 1}/{AHEAD_SIZE}"
+        if ranged.status != 206 or ranged.header("Content-Range") != want:
+            found.problems.append(
+                f"{cache.svc}: the range got {ranged.describe()}, Content-Range"
+                + f" '{ranged.header('Content-Range')}', not 206 and '{want}'"
+            )
+        elif ranged.body != data[AHEAD_START:]:
+            found.problems.append(f"{cache.svc}: the range's bytes are not the object's")
+        why = served(read.response, data)
+        if why or read.whole is None:
+            found.problems.append(f"{cache.svc}: the read under way got {why or 'no body'}")
+            continue
+        why = served(test.ask("GET", cache.url, rel), data)
+        if why:
+            found.problems.append(f"{cache.svc}: a warm read after both got {why}")
+        times = f"the range in {took:.1f}s, the whole read in {read.whole:.1f}s"
+        if read.whole < AHEAD_SLOWEST:
+            found.doubts.append(f"{cache.svc}: {times}: the origins were not slow")
+        elif took > AHEAD_ANSWER:
+            found.problems.append(f"{cache.svc}: {times}: the range waited for the read")
+        else:
+            found.notes.append(f"{cache.svc}: {times}")
+    return found.row(f"{len(test.v2)} cache(s)")
+
+
 # --------------------------------------------------------------------------
 # The clients.
 
@@ -726,26 +807,8 @@ def get_plugin(
     env["_CONDOR_CREDS"] = creds
     if cache:
         env["PELICAN_CLIENT_PREFERREDCACHES"] = cache.url
-    try:
-        done = subprocess.run(  # nosec B603
-            [test.session.plugin, "-infile", infile, "-outfile", outfile],
-            cwd=directory,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=CLIENT_TIMEOUT,
-            check=False,
-        )
-        status, output = done.returncode, done.stderr or done.stdout
-    except subprocess.TimeoutExpired:
-        status, output = -1, f"timed out after {CLIENT_TIMEOUT:.0f}s"
-    try:
-        with open(outfile, encoding="utf-8") as f:
-            ads = f.read()
-    except FileNotFoundError:
-        ads = ""
-    return fetched(directory, status, ads or output)
+    status, out, err, ads = test.session.plugin_cmd(infile, outfile, env=env, cwd=directory)
+    return fetched(directory, status, ads or err or out)
 
 
 def plugin_problems(fetch: Fetched, codes: set[int]) -> list[str]:
@@ -838,7 +901,7 @@ def shed_client(test: Test, cache: common.Cache, found: dict[str, Findings]) -> 
         return
 
     shed: dict[str, Fetched] = {}
-    with ThreadPoolExecutor(2) as pool:
+    with common.pool(2) as pool:
         first_read = pool.submit(test.ask, "GET", cache.url, slot)
         time.sleep(OCCUPY_DELAY)
         second_read = pool.submit(test.ask, "GET", cache.url, queue)
@@ -991,6 +1054,7 @@ CASES: dict[str, Callable[[Test], dict[str, Row]]] = {
     "client-throttled": client_throttled,
     "timeout-header": timeout_header,
     "streaming": single(streaming),
+    "range-ahead": single(range_ahead),
     "slow-transfer": slow_transfer,
 }
 
@@ -1011,6 +1075,24 @@ def run_scenario(test: Test, scenario: str, results: common.Results) -> None:
         rows = {"": (FAIL, f"{type(e).__name__}: {e}")}
     for name, (status, note) in rows.items():
         results.add(row_name(scenario, name), status, note)
+
+
+def run_phase(
+    test: Test, scenarios: list[str], results: common.Results, done: set[str]
+) -> None:
+    """Run scenarios, once the federation serves again, and note each done.
+
+    Each fails where it does not serve within SETTLE_WAIT seconds.
+    """
+    if not scenarios:
+        return
+    why = settle(test)
+    for scenario in scenarios:
+        if why:
+            results.add(scenario, FAIL, f"with the servers restarted slowed, {why}")
+        else:
+            run_scenario(test, scenario, results)
+        done.add(scenario)
 
 
 def skip(fed: common.Federation) -> Optional[str]:
@@ -1064,16 +1146,16 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         why = test.put({test.rel(PROBE): os.urandom(PROBE_SIZE)}, everywhere=True)
         if why:
             die(f"could not put the probe in place: {why}")
-        print(f"\nRestarting the origins limited to {RATE_LIMIT}, and the V2 caches throttled")
+        first_phase = [s for s in selected if s in SCHEDULER_AS_IS]
+        rest = [s for s in selected if s not in SCHEDULER_AS_IS]
+        print(f"\nRestarting the origins limited to {RATE_LIMIT}")
         try:
-            with slowed(test):
-                why = settle(test)
-                for scenario in selected:
-                    if why:
-                        results.add(scenario, FAIL, f"with the servers restarted slowed, {why}")
-                    else:
-                        run_scenario(test, scenario, results)
-                    done.add(scenario)
+            with slowed([o.svc for o in test.origins], ORIGIN_CONFIG):
+                run_phase(test, first_phase, results, done)
+                if rest:
+                    print("\nRestarting the V2 caches throttled")
+                    with slowed([c.svc for c in test.v2], CACHE_CONFIG):
+                        run_phase(test, rest, results, done)
         except control.ControlError as e:
             # Restarting, or restoring, failed: what is left unrun fails.
             for scenario in selected:

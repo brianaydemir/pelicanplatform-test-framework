@@ -66,7 +66,6 @@ import json
 import os
 import re
 import shutil
-import subprocess  # nosec B404
 import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
@@ -89,7 +88,7 @@ from testlib import (
 from testlib.common import die, first
 from testlib.issuer import User
 from testlib.report import FAIL, PASS, SKIP
-from testlib.session import CLIENT_TIMEOUT, Session, last_line
+from testlib.session import Session, last_line
 
 SCENARIOS = {
     "plugin-ads": (
@@ -514,30 +513,10 @@ class Test:
             for n, url in enumerate(urls):
                 local = sources[n] if sources else transfers.local_name(url)
                 f.write(f'[ Url="{url}"; LocalFileName="{local}" ]\n')
-        command = [self.session.plugin]
-        if upload:
-            command.append("-upload")
-        command += ["-infile", infile, "-outfile", outfile]
-        try:
-            done = subprocess.run(  # nosec B603
-                command,
-                cwd=directory,
-                env=dict(env) if env is not None else self.session.env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=CLIENT_TIMEOUT,
-                check=False,
-            )
-            status, output = done.returncode, done.stderr or done.stdout
-        except subprocess.TimeoutExpired:
-            status, output = -1, f"timed out after {CLIENT_TIMEOUT:.0f}s"
-        try:
-            with open(outfile, encoding="utf-8") as f:
-                ads = f.read()
-        except FileNotFoundError:
-            ads = ""
-        return Fetched(status, ads or output, directory)
+        status, out, err, ads = self.session.plugin_cmd(
+            infile, outfile, upload, dict(env) if env is not None else None, directory
+        )
+        return Fetched(status, ads or err or out, directory)
 
     def creds_env(self, creds: str, **extra: str) -> dict[str, str]:
         """Return the session's environment, with _CONDOR_CREDS at creds.

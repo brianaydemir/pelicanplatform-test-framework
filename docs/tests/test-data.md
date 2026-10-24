@@ -124,11 +124,13 @@ unexpected result; `log/<scenario>/<batch>` keeps the plain HTTP
 client's requests and the answers to each, its tokens redacted.
 
 Last, it shows which servers served the successful downloads, by client and
-route. In each namespace with downloads meant for a cache, a cache must have
-served some, since a director that routed around its caches would otherwise
-pass every scenario; only an origin may serve a direct one; and only the
-named cache a named one, since a client that fell back to the director's
-caches would otherwise pass. The plain HTTP client's bare paths go where
+route. Only a cache may serve a download meant for one, since a director
+that routed around its caches would otherwise pass every scenario: a
+director sends a client to an origin in a cache's place only where no cache
+can serve the namespace (`redirectToCache` in `director/director.go`), and
+the clients try only the servers it names. Only an origin may serve a
+direct one; and only the named cache a named one, since a client that fell
+back to the director's caches would otherwise pass. The plain HTTP client's bare paths go where
 the director sends them, so under `-p director-default-origin` only an
 origin may serve those too. Under `topo-tiny`, whose cache and origin are
 one host, these checks are skipped. Where a namespace takes no direct

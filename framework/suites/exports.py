@@ -41,6 +41,11 @@ could serve, or destroy, more than its configuration allows.
                            token (Origin.HttpAuthTokenPassthrough): each
                            request of the client's carries it, and none
                            the static token
+  sentinel                 the first origin, each export of which names
+                           a SentinelLocation, a file that its storage
+                           must hold to show that it is mounted: it
+                           starts and serves where each does, and
+                           refuses to start where one does not
 
 The capability scenarios, and disable-copies's `disabled` row, need
 capabilities that no shape gives, so the suite restarts every origin to
@@ -55,7 +60,9 @@ origin is the whole federation's process; elsewhere those rows skip.
 with an export of the run's own nested in /public, which no shape has
 either (nest()). The backend scenarios likewise restart the
 origins to reach their backend through the `webdav-gate` service, which
-logs what each request carried (see GATE_LOG).
+logs what each request carried (see GATE_LOG); and `sentinel` the first
+origin, of any kind, where /protected-a takes writes from direct
+clients, with a SentinelLocation for every export.
 
 Each scenario asks only the native origins (origin_serve/ in Pelican)
 but `multipart-put` and disable-copies's `public` row, which ask an
@@ -84,7 +91,7 @@ from urllib.parse import quote
 from testlib import common, control, credentials, director, jwt, registry, stores, web, webdav
 from testlib.common import Findings, die, first, warn
 from testlib.recorder import index
-from testlib.report import FAIL, PASS, SKIP
+from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 from testlib.stub import HOST as STUB_HOST
 from testlib.stub import Reply, Stub
@@ -113,6 +120,10 @@ SCENARIOS = {
         "an httpsv2 backend reached with the client's token (Origin.HttpAuthTokenPassthrough):"
         " the client's requests carry it, and none the static one"
     ),
+    "sentinel": (
+        "an origin starts where each export's storage holds its SentinelLocation, and refuses"
+        " to where one lacks it"
+    ),
 }
 
 # A row's status, and its note.
@@ -125,6 +136,7 @@ NAMESPACE = "protected-a"
 MULTIPART_CASES = ("pelican-shaped", "form-shaped")
 FAILURE_CASES = ("bad-source", "source-error", "missing-source", "mid-stream")
 NESTED_CASES = ("served", "token", "wrong-scope", "protected")
+SENTINEL_CASES = ("present", "missing")
 ROWS: dict[str, tuple[str, ...]] = {
     "multipart-put": tuple(f"multipart-put {c}" for c in MULTIPART_CASES),
     "tpc-body": ("tpc-body",),
@@ -135,9 +147,13 @@ ROWS: dict[str, tuple[str, ...]] = {
     "nested-export": tuple(f"nested-export {c}" for c in NESTED_CASES),
     "backend-token": ("backend-token",),
     "backend-passthrough": ("backend-passthrough",),
+    "sentinel": tuple(f"sentinel {c}" for c in SENTINEL_CASES),
 }
 # The rows that need the origins restarted with other exports.
 RESTARTED = ("disable-copies disabled", "listings-capability", "direct-reads-capability")
+# The scenarios that present no storage token of the tests' minting (see
+# suites/__init__.py): sentinel's origin reads its sentinel itself.
+ONE_PROFILE = ("sentinel",)
 
 # A small object at every origin, as a COPY's Source where it does not
 # matter, and to show that the origins serve again after a restart.
@@ -207,6 +223,13 @@ BACKEND_FILE = "92-backend.yaml"
 GATED_SIZE = 40000
 # The range they read, within one.
 GATED_RANGE = (100, 199)
+
+# sentinel's restart: its configuration layer, fed.sh's Origin.Exports
+# with a SentinelLocation for each export (with_sentinel()), and how
+# long the first origin may take to give up when its sentinel is
+# missing.
+SENTINEL_FILE = "94-sentinel.yaml"
+SENTINEL_WAIT = 120
 
 # What every refusal of a request must be; of a listing, an origin may
 # also answer that it does not allow the method (405).
@@ -1933,6 +1956,134 @@ def run_restarted(test: Test, rows: Sequence[str], record: Callable[[str, Row], 
 
 
 # --------------------------------------------------------------------------
+# sentinel
+
+
+def with_sentinel(text: str, name: str) -> str:
+    """Return text, fed.sh's Origin.Exports, with a SentinelLocation each.
+
+    Each export names name, a file in its storage (beneath its
+    StoragePrefix), which the origin reads through itself as it starts,
+    and without which it refuses to (CheckOriginSentinelLocations in
+    server_utils/origin.go).
+
+    Raises:
+        SetupError: text lists no export.
+    """
+    lines: list[str] = []
+    for line in text.splitlines():
+        lines.append(line)
+        m = re.match(r"(\s*)- FederationPrefix:", line)
+        if m:
+            lines.append(f"{m.group(1)}  SentinelLocation: {name}")
+    if len(lines) == len(text.splitlines()):
+        raise SetupError("fed.sh's Origin.Exports lists no export")
+    return "\n".join(lines) + "\n"
+
+
+def sentinel_storages(test: Test, origin: common.Origin) -> list[str]:
+    """Return the namespaces whose storage holds origin's exports' sentinel.
+
+    Each export's own, but a pstore's /public, which reads /protected-a's.
+    """
+    found = {origin.storage_namespace(ns) for ns in test.fed.exports}
+    return sorted(found)
+
+
+def sentinel_present(test: Test, origin: common.Origin, text: str) -> Row:
+    """Restart origin with a sentinel that each export's storage holds.
+
+    It must start, and serve the probe again.
+    """
+    name = f"sentinel-{test.session.run}"
+    for storage in sentinel_storages(test, origin):
+        error = stores.seed(
+            origin,
+            storage,
+            name,
+            b"mounted\n",
+            test.session.setup_token(storage),
+            test.fed.exports[storage],
+        )
+        if error:
+            raise SetupError(f"could not put the sentinel in place: {error}")
+    try:
+        with control.restart_with(origin.svc, {SENTINEL_FILE: with_sentinel(text, name)}):
+            answer = web.request(
+                "HEAD", stores.url(origin, NAMESPACE, f"{test.base}/{PROBE}"), token=test.setup
+            )
+            if answer.status != 200:
+                return (
+                    FAIL,
+                    f"with the sentinel in place, HEAD of the probe got {answer.describe()}",
+                )
+    except control.ControlError as e:
+        return FAIL, f"with the sentinel in place: {e}"
+    finally:
+        for storage in sentinel_storages(test, origin):
+            stores.delete(origin, storage, name, test.session.setup_token(storage))
+    return PASS, f"{origin.svc} started, and serves"
+
+
+def sentinel_missing(test: Test, origin: common.Origin, text: str) -> Row:
+    """Restart origin with a sentinel that no storage holds.
+
+    It must exit within SENTINEL_WAIT seconds, rather than serve exports
+    whose storage may not be there.
+    """
+    name = f"sentinel-{test.session.run}-missing"
+    try:
+        with control.restart_with(
+            origin.svc, {SENTINEL_FILE: with_sentinel(text, name)}, serves=False
+        ):
+            started = time.monotonic()
+            if common.wait_for(
+                lambda: control.state(origin.svc) not in ("running", "restarting"),
+                SENTINEL_WAIT,
+                interval=2,
+            ):
+                took = time.monotonic() - started
+                return PASS, f"{origin.svc} exited {took:.0f}s after it started"
+            state = "answers on its web port" if control.answers(origin.svc) else "runs"
+            return FAIL, f"{SENTINEL_WAIT}s after it started, {origin.svc} {state}"
+    except control.ControlError as e:
+        return FAIL, str(e)
+
+
+def sentinel(test: Test) -> dict[str, Row]:
+    """Check that the first origin starts only where its sentinels are.
+
+    It is restarted with every export naming a SentinelLocation: one
+    that each export's storage holds, with which it must start and serve
+    (`present`); and one that none does, with which it must exit
+    (`missing`). Afterward it is restored, and the federation must serve
+    again.
+    """
+    rows = ROWS["sentinel"]
+    why = test.writable() or control.unavailable()
+    if test.fed.tiny:
+        why = "the tiny topology's origin is the whole federation's process"
+    if why:
+        return {row: (SKIP, why) for row in rows}
+    origin = test.fed.origins[0]
+    text = generated_exports(origin.svc)
+    print(f"\nRestarting {origin.svc} with a SentinelLocation for each export")
+    found = {"sentinel present": attempt(partial(sentinel_present, test, origin, text))}
+    if found["sentinel present"][0] == PASS:
+        found["sentinel missing"] = attempt(partial(sentinel_missing, test, origin, text))
+    else:
+        found["sentinel missing"] = (
+            INCONCLUSIVE,
+            f"{origin.svc} did not start with its sentinels in place either, so its refusal"
+            + " would show nothing",
+        )
+    why = settle(test)
+    if why:
+        warn(f"with {origin.svc} restored, {why}")
+    return found
+
+
+# --------------------------------------------------------------------------
 
 
 def attempt(check: Callable[[], Row]) -> Row:
@@ -2049,5 +2200,11 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 if name in selected:
                     print(f"  {name} ...")
                     record(name, gated(test, name == "backend-passthrough"))
+            if "sentinel" in selected:
+                print("  sentinel ...")
+                for row, result in attempt_all(
+                    ROWS["sentinel"], partial(sentinel, test)
+                ).items():
+                    record(row, result)
     finally:
         clean("after the run")

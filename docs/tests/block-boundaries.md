@@ -10,6 +10,15 @@ clients, whole and in byte ranges that straddle the boundaries.
 `framework/testlib/blocks.py` lists the sizes and ranges, and the facts
 about Pelican's stores behind them: 4,080-byte blocks, pstore's inline,
 buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
+It also crosses, by a byte, the edges of the reads by which XRootD's
+HTTP server, in front of an XRootD origin or cache, answers ranges
+(`XrdHttpReadRangeHandler::splitRanges`): a range, or an object, of
+more than 8 MiB, which it reads 8 MiB at a time; and several ranges,
+which it reads by vector reads of at most 512 chunks of at most
+512 KiB, and 8 MiB in all: a range of 512 KiB and then of a byte more
+beside another, 512 and then 513 one-byte ranges, and two ranges of a
+byte more than 8 MiB between them. Every server is asked these, not
+only XRootD's.
 
 - Each object goes straight to every origin, with a `Content-Length` or
   in chunks with none, which is how the client uploads; `pelican object
@@ -46,6 +55,18 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   transfer statistics and the plugin's result ads must say, so that each
   kind of cache the shape has (`-p cache-mixed`) serves a client that
   names it.
+- `cache-stored`: once each cache has read the objects of the sets it
+  read whole first and in ranges first all whole (`cache-whole-first`,
+  `cache-range-first`), what each XRootD cache wrote to its store on
+  disk must be the objects' bytes. It keeps an object in a plain file, at each
+  block's place, and records in the object's `.cinfo` each block that
+  the file holds (XrdPfc's synced bitmap), so every block that a
+  `.cinfo` records is compared with the object's bytes there, read from
+  `data/cache/<N>/` rather than through the cache. An object whose
+  `.cinfo` is gone, as one the cache evicted, is not compared; a cache
+  of which none could be leaves the row inconclusive. A V2 cache
+  encrypts its store with keys of its own, so only what it serves can be
+  checked, and it is passed over.
 - `director-read`: a plain HTTP client that asks a director for a cache
   (`/api/v1.0/director/object/`) and sends the same request, token and
   `Range` and all, to wherever the redirect (307) leads, as `curl -L`
@@ -58,24 +79,31 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   plan in turn, so that every read after the first covers both blocks
   the cache fetched for an earlier one and blocks it must fetch now, at
   both block sizes; then it reads one more object in overlapping ranges
-  all at once. The whole object must come back intact after each.
-- `coalescing`: a cache is there to spare the origins. Each federated
-  cache, read cold and whole by 16 clients at once, of a 4 MiB object of
-  its own, must fetch it from the origins about once: the native
-  origins' counters of GETs (`pelican_http_bytes_total` and
-  `pelican_http_requests_total`, `metrics/http_metrics.go`) must show
-  less than two objects' worth of bytes sent, and, for a V2 cache,
-  which fetches an object whole in one GET, no more than two GETs under
-  the username of the tests' token. An XRootD cache fetches an object a
-  block at a time, so only its bytes are judged. Then 16 warm reads
-  must have the origins serve no GET under that username, and send no
-  more than the directors' health tests do (64 KiB). Other traffic
-  moves the counters too, so no count is exact; where the origins
-  counted fewer bytes than the object, the row is inconclusive. It
-  skips where XRootD serves the origins, which keep no such counters. A
-  site-local cache reads through another cache, so this and each
-  scenario below that names federated caches leave it out, as
-  `sitelocal` does ([what is not tested](what-is-not-tested.md)).
+  all at once. The whole object must come back intact after each. On
+  main, an XRootD cache in front of native origins now and then holds a
+  read for 60 seconds, one of its GETs of the object from the origin
+  paused all the while, and then fails it (`timer expired`), so that
+  its client gets no response; this row, `cache-range-first`,
+  `coalescing`, and others that read through that cache then fail,
+  though a rerun may pass. No run over XRootD origins has shown it.
+- `coalescing`: a cache is there to spare the origins. Each federated cache,
+  read cold and whole by 16 clients at once, of a 4 MiB object of its own,
+  must fetch it from the origins about once: the native origins' counters of
+  GETs (`pelican_http_bytes_total` and `pelican_http_requests_total`,
+  `metrics/http_metrics.go`) must show less than two objects' worth of bytes
+  sent, and, for a V2 cache, which fetches an object whole in one GET, no
+  more than two GETs under the username of the tests' token, besides the
+  one-byte GET at each origin by which the client it fetches through ranks
+  them (`sortAttempts` in `client/handle_http.go`). An XRootD cache fetches
+  an object a block at a time, so only its bytes are judged. Then 16 warm
+  reads must have the origins serve no GET under that username, and send no
+  more than the directors' health tests do (64 KiB). Other traffic moves the
+  counters too, so no count is exact; where the origins counted fewer bytes
+  than the object, the row is inconclusive. It skips where XRootD serves the
+  origins, which keep no such counters. A site-local cache reads through
+  another cache, so this and each scenario below that names federated caches
+  leave it out, as `sitelocal` does ([what is not
+  tested](what-is-not-tested.md)).
 - `cache-assemble` reads unaligned, overlapping ranges that together
   cover an object, out of order. The cache must hold part of it after
   the first and all of it after the last. A V2 cache's introspection
@@ -167,9 +195,14 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   since it records none of them (`digest-range-first`), and neither
   need an XRootD or site-local cache. Over XRootD origins, a V2 cache
   knows only their `md5` of an object it has not read (`digest-relay`),
-  so `digests` run without `cache-whole-first` fails there. The row's
-  note names the servers that report none. `digest-overwrite` then
-  overwrites an object at each origin, by a PUT at once, where
+  so `digests` run without `cache-whole-first` fails there. A server
+  that cannot give a digest asked for must answer without it, as a
+  native origin answers `adler32`, which it does not compute; an XRootD
+  cache in front of native origins (`-p cache-xrootd`, or cache-1 under
+  `-p cache-mixed`) answers 500 instead, so `digests` fails there, on
+  main. The row's note names the servers that report none.
+  `digest-overwrite` then overwrites an object at each origin, by a PUT
+  at once, where
   `/protected-a` takes writes, and by a write in the store a second
   later, but in a `pstore` origin's, which is encrypted: a native
   origin keeps digests by the file's modification time,
@@ -273,7 +306,7 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   cache keeps nothing, but a ranged read then fills the object block by
   block, unchecked, and the cache serves it whole afterward, `200: OK`;
   `pelican object get` probes with a one-byte range first, so it
-  succeeds, and the row fails, on v26.0.0-rc.3 (main not run).
+  succeeds, and the row fails, on v26.0.0-rc.3 and main alike.
 - Ranges past an object's end: a suffix longer than the object is all
   of it, and a range that runs past the end stops at its last byte; one
   that starts at or past the end (`past-end`) must get 416, or, from a
@@ -386,7 +419,9 @@ buffered, and streamed tiers, and the XRootD cache's 128 KiB blocks.
   range as for the whole object. A V2 cache of v26.0.0-rc.3 keeps the
   block it holds and fetches the rest of the new version beside it, so
   its whole object is the old first block and the new rest, and the
-  row fails there (main not run).
+  row fails there. Main's V2 cache sees the new `ETag` and drops its
+  copy, but resets the stream of the range it has yet to fetch before
+  it sends a header ("got no response"), so the row fails there too.
 - `overwrite-cached` and `overwrite-range-first` overwrite objects at the
   origins once each cache holds them (read whole, or a range first): one
   keeping its size, one growing, and one shrinking. Every response, whole

@@ -48,7 +48,10 @@ of them but prestage, through the xrdhttp-pelican plugin, so only
   leave the cache holding it (an XRootD cache's `.cinfo` showing every
   block); of a collection, where `/protected-a` takes listings and
   direct clients, so that the client can list it, every object in it;
-  and of a missing object it must exit non-zero.
+  and of a missing object it must exit non-zero. With several origins
+  (`-p topo-multi-origin`), the director finds no origin holding a
+  collection ([client commands](client-commands.md)), so the prestage
+  of one fails there, on main.
 - `evict`: `GET`, `POST`, or `DELETE /pelican/api/v1.0/evict?path=<path>`
   evicts every object the cache holds at that path or under it, at once
   with `immediate=true`, and otherwise marks them to go first when it

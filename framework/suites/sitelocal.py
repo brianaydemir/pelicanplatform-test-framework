@@ -32,14 +32,13 @@ import json
 import os
 import re
 import shutil
-import subprocess  # nosec B404
 import traceback
 from typing import Optional
 
 from testlib import common, credentials, stores, transfers, web, webdav
 from testlib.common import die, first
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
-from testlib.session import CLIENT_TIMEOUT, Session, last_line
+from testlib.session import Session, last_line
 
 SCENARIOS = {
     "get-public": "`pelican object get --cache` of /public: served by the site-local cache",
@@ -201,26 +200,9 @@ def plugin_get(test: Test, namespace: str) -> tuple[str, str]:
     env = dict(test.session.env)
     env["_CONDOR_CREDS"] = creds
     env["PELICAN_CLIENT_PREFERREDCACHES"] = test.cache.url
-    try:
-        done = subprocess.run(  # nosec B603
-            [test.session.plugin, "-infile", infile, "-outfile", outfile],
-            cwd=test.tmp,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=CLIENT_TIMEOUT,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return FAIL, f"timed out after {CLIENT_TIMEOUT:.0f}s"
-    try:
-        with open(outfile, encoding="utf-8") as f:
-            ad = f.read()
-    except FileNotFoundError:
-        ad = ""
+    status, out, err, ad = test.session.plugin_cmd(infile, outfile, env=env, cwd=test.tmp)
     if not transfers.plugin_passed(ad):
-        return FAIL, f"exit {done.returncode}: {last_line(done.stderr or done.stdout or ad)}"
+        return FAIL, f"exit {status}: {last_line(err or out or ad)}"
     if common.sha256(os.path.join(test.tmp, name)) != common.digest(data):
         return FAIL, "the file is not the object"
     endpoints = re.findall(r'Endpoint(\d+) = "([^":]*)', ad)

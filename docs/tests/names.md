@@ -21,9 +21,9 @@ here and below.
   and in a pstore origin's catalog, as its storage API lists it, as an
   entry of its object's size, whose checksums, as the store recorded
   them as it wrote it, are its bytes' ([pstore](pstore.md)). After
-  `pelican object put` of a file of each name, too, no store may hold
-  an object of another name in that collection, a pstore's catalog
-  included.
+  `pelican object put`, or `stash_plugin`'s, of a file of each name,
+  too, no store may hold an object of another name in its collection,
+  a pstore's catalog included.
 - Every origin and cache must serve each object by its name: any bytes
   but its own fail, and a decoy's are named.
 - Every director, asked for each object by its name through its object
@@ -48,30 +48,42 @@ here and below.
   command, and reuses its answer for the rest of the namespace's
   objects (`cachedDirectorInfo` in `client/director.go`), so a command
   of several would hide a name that the client mishandles in the
-  director's answer.
-- Pelican's client fails two of these, on v26.0.0-rc.3 and main alike.
-  It reads the director's `Link` header by splitting it at `;`, so a
-  URL with `;` in it is cut there (and a character more, for the `>`
-  it expects): `semi;colon` is fetched, and put, as `.../sem` with the
-  object's path appended, which no server holds, and a `put` lands the
-  object under a collection `sem` (`client-get`, `client-put`).
+  director's answer. Every name is tried every way, and the row's note
+  names the first that failed; the log lists them all.
+- `stash_plugin` must do the same (`plugin-get`, `plugin-put`), one
+  object a run. It reads each transfer from an ad of its input, as
+  HTCondor writes it: the object's URL, encoded as above, with
+  `?directread` for an origin, and its local file, the name's own path,
+  as a ClassAd string, whose `"` and `\` are escaped (`it's "quoted"`
+  needs it). It names a cache by `Client.PreferredCaches`, and the
+  result ad's endpoint must be that cache.
+- Pelican's client fails two of these, on v26.0.0-rc.3 and main alike,
+  and so does `stash_plugin`, which is the same client. It reads the
+  director's `Link` header by splitting it at `;`, so a URL with `;` in
+  it is cut there (and a character more, for the `>` it expects):
+  `semi;colon`, and `<angle>&amp;`, whose `&amp;` ends in one, are
+  fetched, and put, as `.../sem` and `.../<angle>&am` with the object's
+  path appended, which no server holds, and a put lands the object
+  under a collection of that name (`client-get`, `client-put`,
+  `plugin-get`, `plugin-put`). A get from a cache it names is spared,
+  since the client then builds the cache's URL itself.
   And `pelican object ls` prints a name as it stands in the listing's
   href, decoded once, but with what a URL may not hold encoded again,
   `%` excepted: `a b` as `a%20b`, like the decoy `a%20b`, and `hash#tag`
   as `hash%23tag` (`client-ls`).
 - XRootD mishandles several of these names (XRootD 5.9.7, in the
-  v26.0.0-rc.3 images), so where it serves the origins or the caches
-  (`-p origin-xrootd`, `-p cache-xrootd`), these rows fail. An XRootD
-  origin decodes a PUT's path and then splits it at `?`, so `what?q=1`
-  lands as `what`, over the decoy (`origin-put`, `origin-get`,
-  `client-put`); its PROPFIND writes each name into its `href` as it
-  is, not percent-encoded, so `hash#tag` reads as `hash` with a
-  fragment, and `hash` is listed twice (`origin-list`, and `client-ls`
-  with it).
-  An XRootD cache decodes a name a second time as it asks the origin
-  for it: a cold read of `a b` or `hash#tag` gets 403, and one of
-  `x%41y` the decoy `xAy`, or 404 (`cache-get`, `director-get`,
-  `client-get`); and it lists no collection at all (`cache-list`; see
+  v26.0.0-rc.3 images, and 5.9.8, in main's), so where it serves the
+  origins or the caches (`-p origin-xrootd`, `-p cache-xrootd`), these
+  rows fail. An XRootD origin decodes a PUT's path and then splits it
+  at `?`, so `what?q=1` lands as `what`, over the decoy (`origin-put`,
+  `origin-get`, `client-put`, `plugin-put`); its PROPFIND writes each
+  name into its `href` as it is, not percent-encoded, so `hash#tag`
+  reads as `hash` with a fragment, and `hash` is listed twice
+  (`origin-list`, and `client-ls` with it). An XRootD cache decodes a
+  name a second time as it asks the origin for it: a cold read of `a b`
+  or `hash#tag` gets 403, and one of `x%41y` the decoy `xAy`, or 404
+  (`cache-get`, `director-get`, `client-get`, `plugin-get`); and it
+  lists no collection at all (`cache-list`; see
   [listings](listings.md)).
 - An `ssh` origin (v26.0.0-rc.3, seen under `-p topo-standalone
   -p origin-ssh`) gets most of these names wrong between its PUT, its

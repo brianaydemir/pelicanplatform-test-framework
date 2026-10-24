@@ -2465,13 +2465,30 @@ fed_control_stop() {
   fed_control_pid=""
 }
 
+# Copy stdin to stdout with the signature of each JWT in it cut out, as
+# test.py cuts it out of what the tests print (redact() in
+# framework/testlib/report.py): a server's log may quote a token, as
+# XRootD's cache does a client's, which would otherwise be good for as
+# long as it lasts to whoever reads the log.
+fed_redact_tokens() {
+  sed -E 's/(eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,})\.[A-Za-z0-9_-]{8,}/\1.<signature>/g'
+}
+
 # Keep every service's log in framework/var/logs/$1/, once: <svc>.log,
-# from when its container was created; ps.txt, the containers' states;
-# and shape.txt, the presets, topology, profiles, and images, beside
-# test.log, what the tests printed, and control.log, what the control
-# helper did for them (see `test` below). The tests restart services
-# but never recreate them, so a log covers the whole run, and the
-# startup before it.
+# from when its container was created, its tokens' signatures cut out;
+# ps.txt, the containers' states;
+# containers.txt, how each container stands or ended, and whether the
+# kernel killed it for want of memory; stats.txt, what each uses of its
+# memory limit; shape.txt, the presets, topology, profiles, and images;
+# config/, the configuration that fed.sh generated for the shape
+# (framework/var/generated/, but its secrets: keys, tokens, and the
+# OIDC client's secret); results/, the rows of the suites that this run
+# ran; and commands.log (commands-scitokens.log), every client command
+# that each pass of the tests ran, with all it printed; beside test.log,
+# what the tests printed, and control.log, what the control helper did
+# for them (see `test` below). The tests
+# restart services but never recreate them, so a log covers the whole
+# run, and the startup before it.
 fed_save_logs() {
   [ -n "$1" ] && [ -z "${fed_logs_saved:-}" ] || return 0
   fed_logs_saved=yes
@@ -2485,10 +2502,34 @@ fed_save_logs() {
         "${IMAGE_ORIGIN}" "${IMAGE_CACHE}" "${IMAGE_DIRECTOR}" "${IMAGE_REGISTRY}"
   } >"${dir}/shape.txt"
   docker compose ps --all >"${dir}/ps.txt" 2>&1 || true
+  ids=$(docker compose ps --all --quiet 2>/dev/null) || ids=""
+  if [ -n "${ids}" ]; then
+    # shellcheck disable=SC2086  # one container ID per word
+    docker inspect --format \
+        '{{index .Config.Labels "com.docker.compose.service"}}: {{.State.Status}}, exit code {{.State.ExitCode}}, OOM-killed {{.State.OOMKilled}}, started {{.State.StartedAt}}, finished {{.State.FinishedAt}}{{if .State.Health}}, {{.State.Health.Status}}{{end}}' \
+        ${ids} >"${dir}/containers.txt" 2>&1 || true
+    # shellcheck disable=SC2086
+    docker stats --no-stream ${ids} >"${dir}/stats.txt" 2>&1 || true
+  fi
+  ( cd framework/var/generated \
+      && find . -type f ! -path './ssh/*' ! -name '*.key' ! -name '*-key' \
+          ! -name '*secret*' ! -name '*token*' ! -name '*.new' ) \
+      | while read -r f; do
+          mkdir -p "${dir}/config/$(dirname -- "${f}")" \
+              && cp "framework/var/generated/${f}" "${dir}/config/${f}"
+        done
+  if [ -f "${dir}/.started" ]; then
+    mkdir -p "${dir}/results"
+    find framework/var/results -name '*.tsv' -newer "${dir}/.started" \
+        -exec cp {} "${dir}/results/" \;
+    find framework/var/data -maxdepth 1 -name 'commands*.log' -newer "${dir}/.started" \
+        -exec cp {} "${dir}/" \;
+    rm -f "${dir}/.started"
+  fi
   for svc in $(docker compose ps --all --services 2>/dev/null); do
-    docker compose logs --no-color --no-log-prefix --timestamps "${svc}" \
-        >"${dir}/${svc}.log" 2>&1 \
-        || warn "cannot save ${svc}'s log; see ${dir}/${svc}.log"
+    { docker compose logs --no-color --no-log-prefix --timestamps "${svc}" 2>&1 \
+          || warn "cannot save ${svc}'s log; see ${dir}/${svc}.log"; } \
+        | fed_redact_tokens >"${dir}/${svc}.log"
   done
   printf 'Service logs are in %s/.\n' "${dir}"
 }
@@ -2749,6 +2790,8 @@ case "${cmd}" in
     if [ -n "${logs}" ]; then
       log_dir="framework/var/logs/${logs}"
       mkdir -p "${log_dir}"
+      # The results that this run writes are those newer than this.
+      : >"${log_dir}/.started"
     fi
     fed_control_start "${log_dir:+${log_dir}/control.log}"
     trap 'fed_control_stop' EXIT

@@ -99,10 +99,14 @@ x-pelican-health: &pelican-health
   retries: 3
 
 # `required: false`: a standalone origin (`-p topo-standalone`) runs
-# without them.
+# without them, and only some shapes run the others. A server finds the
+# federation through the directors' load balancer (`director`) under
+# `-p director-ha -p director-discovery`, and refuses to start if it
+# cannot.
 x-needs-federation: &needs-federation
   discovery: { condition: service_healthy, required: false }
   director-0: { condition: service_healthy, required: false }
+  director: { condition: service_healthy, required: false }
   registry: { condition: service_healthy, required: false }
   idp: { condition: service_healthy, required: false }
 
@@ -325,8 +329,9 @@ services:
       - ./etc/nginx-director.conf:/etc/nginx/nginx.conf:ro
 
   # It starts after director-0, which under `-p director-discovery` it
-  # discovers the federation through; a director needs no registry to
-  # start.
+  # discovers the federation through, and after the directors' load
+  # balancer, through which it does under `-p director-ha` too; a
+  # director needs no registry to start.
   registry:
     hostname: registry
     networks: [default, firewalled]
@@ -336,6 +341,7 @@ services:
     depends_on:
       discovery: { condition: service_healthy, required: false }
       director-0: { condition: service_healthy }
+      director: { condition: service_healthy, required: false }
       idp: { condition: service_healthy, required: false }
     deploy:
       resources:

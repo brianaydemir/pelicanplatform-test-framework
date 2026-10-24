@@ -152,7 +152,12 @@ as its note, and the rest still run. Each scenario is a row.
   `pelican object get` must fetch it, byte for byte, by both of the
   client's routes: through a cache, and with `--direct` where the
   namespace takes direct clients. It skips a shape of one origin, or of
-  origins that share a store.
+  origins that share a store. A director asks the origins before a GET
+  or a HEAD, but not before a PROPFIND, which it sends to any origin
+  (`shouldStatOrigins` in `director/stat.go`), and an XRootD cache stats
+  an object by PROPFIND before it opens it, so an XRootD cache answers
+  404 (`-p cache-xrootd`, or cache-1 under `-p cache-mixed`), and the row
+  fails there, on main.
 - `downtime`: a server's admin declares it down through its web API,
   as before maintenance: every director must name it before, none
   within 150 seconds, and every director again as soon once the
