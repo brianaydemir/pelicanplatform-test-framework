@@ -351,15 +351,23 @@ class Test:
         """
         return director.naming(self.fed.directors, route, self.path, host)
 
-    def wait_named(self, route: str, host: str, seconds: float = NAMED_WAIT) -> bool:
+    def wait_named(self, route: str, host: str, seconds: float = NAMED_WAIT) -> Optional[str]:
         """Wait until every director names host for the probe.
 
+        A server that exited on its own ends the wait at once
+        (control.settle()).
+
         Returns:
-            Whether they all did within seconds.
+            Why they did not all within seconds, or None if they did.
         """
-        return common.wait_for(
-            lambda: len(self.named(route, host)) == len(self.fed.directors), seconds, 5
-        )
+
+        def unnamed() -> Optional[str]:
+            named = self.named(route, host)
+            if len(named) == len(self.fed.directors):
+                return None
+            return f"{len(named)} of {len(self.fed.directors)} director(s) named {host}"
+
+        return control.settle(unnamed, seconds)
 
     def signed_with(self, key: str, profile: str) -> str:
         """Return a token like the `server` token, but signed with key.
@@ -414,8 +422,9 @@ def put_back(test: Test) -> None:
         except OSError as e:
             warn(f"could not demote {name} in {dirs}: {e}")
     test.rotated.clear()
-    if test.fed.directors and not test.wait_named("origin", test.origin_host()):
-        warn(f"{NAMED_WAIT}s after the keys were put back, not every director names origin-0")
+    why = test.wait_named("origin", test.origin_host()) if test.fed.directors else None
+    if why:
+        warn(f"with the keys put back, {why}")
 
 
 # --------------------------------------------------------------------------
@@ -900,14 +909,9 @@ def master_key(test: Test) -> list[Row]:
         control.restart(cache.svc)
     except control.ControlError as e:
         return rows + [("sealed-after-restart", FAIL, str(e))]
-    if not test.wait_named("object", host):
-        return rows + [
-            (
-                "sealed-after-restart",
-                FAIL,
-                f"{NAMED_WAIT}s after the restart, not every director named it",
-            )
-        ]
+    why = test.wait_named("object", host)
+    if why:
+        return rows + [("sealed-after-restart", FAIL, f"after the restart, {why}")]
     rows.append(sealed_row("sealed-after-restart", path, keys))
     why = hold_probe(test, cache)
     if why:
@@ -925,10 +929,9 @@ def master_key(test: Test) -> list[Row]:
                 os.remove(os.path.join(key_dir, os.path.basename(key)))
         try:
             control.start(cache.svc)
-            if not test.wait_named("object", host):
-                problems.append(
-                    f"{NAMED_WAIT}s after it started with the old keys retired, not every director named it"
-                )
+            why = test.wait_named("object", host)
+            if why:
+                problems.append(f"once it started with the old keys retired, {why}")
             else:
                 age = held_with_age(test, cache)
                 if age is None:
@@ -975,11 +978,8 @@ def restore_cache(
     why = put_keys_back(cache.svc, dirs, kept, retired, master_key_path(cache))
     if why:
         return why
-    if not test.wait_named("object", director.host(cache.url)):
-        return (
-            f"{NAMED_WAIT}s after its keys were put back, not every director names {cache.svc}"
-        )
-    return None
+    why = test.wait_named("object", director.host(cache.url))
+    return f"with its keys put back, {why}" if why else None
 
 
 # --------------------------------------------------------------------------

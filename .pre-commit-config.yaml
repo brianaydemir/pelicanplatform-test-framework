@@ -1,0 +1,96 @@
+# Pre-commit (https://pre-commit.com)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=128]
+      - id: check-builtin-literals
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-illegal-windows-names
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-shebang-scripts-are-executable
+      - id: check-symlinks
+      - id: check-toml
+      - id: check-vcs-permalinks
+      - id: check-xml
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: debug-statements
+      - id: destroyed-symlinks
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: fix-byte-order-marker
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+  #
+  # Check shell scripts
+  #
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        # Require that only the most serious problems be addressed
+        args: [--severity=warning]
+  #
+  # Check Python code
+  #
+  - repo: local
+    hooks:
+      - id: isort
+        name: isort
+        language: system
+        entry: uv run --frozen isort
+        types: [python]
+      - id: black
+        name: black
+        language: system
+        entry: uv run --frozen black
+        types: [python]
+      - id: bandit
+        name: bandit
+        language: system
+        entry: uv run --frozen bandit -c pyproject.toml
+        types: [python]
+      - id: pylint
+        name: pylint
+        language: system
+        entry: uv run --frozen pylint
+        types: [python]
+      - id: pyright
+        name: pyright
+        language: system
+        entry: uv run --frozen pyright
+        types: [python]
+      - id: pytest
+        name: pytest
+        language: system
+        entry: |
+          # pytest exits 5 when it collects no tests
+          bash -c '
+            uv run --frozen pytest || [ $? -eq 5 ]
+          '
+        pass_filenames: false
+        types: [python]
+  #
+  # Check text
+  #
+  - repo: https://github.com/hukkin/mdformat
+    rev: 1.0.0
+    hooks:
+      - id: mdformat
+        language: python
+        additional_dependencies:
+          - mdformat-frontmatter==2.1.2
+          - mdformat-gfm==1.0.0
+          - mdformat-gfm-alerts==2.1.0
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.51.1
+    hooks:
+      - id: typos
+        # Override the hook's default behavior that fixes alleged typos
+        args: [--sort, --force-exclude]

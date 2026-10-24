@@ -1297,6 +1297,28 @@ def failover_problems(fetch: Fetched, data: bytes, dead: str, client: str) -> li
     return problems
 
 
+def unfetched(
+    test: Test, name: str, data: bytes, routes: Sequence[str] = ("",)
+) -> Optional[str]:
+    """Return why a client can't get object name with every server up.
+
+    None if both can. `pelican object get` and stash_plugin each get it
+    by each of routes: `direct` from an origin, `cache` through a cache,
+    or "", through the federation, as the failover scenarios get their
+    objects. A client that can't can't with a server away either, so
+    none of their rows could pass.
+    """
+    for route in routes:
+        for client, runner in (("pelican", get_pelican), ("plugin", get_plugin)):
+            label = f"{name}-{client}-{route}" if route else f"{name}-{client}"
+            fetch = runner(test, label, test.url(name), route == "direct")
+            problems = failover_problems(fetch, data, "", client)
+            if problems:
+                how = f"{client} ({route})" if route else client
+                return f"with every server up, {how} could not get {name}: {first(problems)}"
+    return None
+
+
 def cache_failover(test: Test) -> list[Row]:
     """Check that the clients get an object while the first cache is away.
 
@@ -1307,7 +1329,8 @@ def cache_failover(test: Test) -> list[Row]:
     still name the first (before its ad expires), and once they have
     dropped it. The note says which caches each client tried. Afterward
     the cache is unpaused, or started, and every director must name it
-    again.
+    again. First, with every cache up, both clients must get the probe
+    (unfetched()), or the scenario fails at once.
     """
     fed = test.fed
     caches = fed.federated_caches
@@ -1315,8 +1338,12 @@ def cache_failover(test: Test) -> list[Row]:
         return [("", SKIP, "fewer than two federated caches ('-p topo-multi-cache')")]
     dead = caches[0]
     host = director.host(dead.url)
-    test.put("probe", os.urandom(4096))
+    probe = os.urandom(4096)
+    test.put("probe", probe)
     path = test.path("probe")
+    why = unfetched(test, "probe", probe)
+    if why:
+        return [("", FAIL, why)]
     rows: list[Row] = []
     for mode, away, back in (
         ("paused", control.pause, control.unpause),
@@ -1415,7 +1442,9 @@ def origin_failover(test: Test) -> list[Row]:
     a cache fetches from the origins as a client does, and must get
     the object too), and once they have dropped it. The note says which
     servers each client tried. Afterward the origin is unpaused, or
-    started, and every director must name it again.
+    started, and every director must name it again. First, with every
+    origin up, both clients must get the probe by each route
+    (unfetched()), or the scenario fails at once.
     """
     fed = test.fed
     if len(fed.origins) < 2:
@@ -1425,8 +1454,12 @@ def origin_failover(test: Test) -> list[Row]:
     routes = ["cache"]
     if "DirectReads" in test.caps:
         routes.insert(0, "direct")
-    test.put("origin-probe", os.urandom(4096))
+    probe = os.urandom(4096)
+    test.put("origin-probe", probe)
     path = test.path("origin-probe")
+    why = unfetched(test, "origin-probe", probe, routes)
+    if why:
+        return [("", FAIL, why)]
     rows: list[Row] = []
     for mode, away, back in (
         ("paused", control.pause, control.unpause),

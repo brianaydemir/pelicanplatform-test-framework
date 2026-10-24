@@ -347,16 +347,13 @@ def serving(test: Test) -> Optional[str]:
 def settle(test: Test) -> Optional[str]:
     """Wait until the federation serves /protected-a as before.
 
+    See serving(). A server that exited on its own ends the wait at once
+    (control.settle()).
+
     Returns:
-        Why it doesn't within SETTLE_WAIT seconds (see serving()), or
-        None.
+        Why it doesn't within SETTLE_WAIT seconds, or None.
     """
-    deadline = time.time() + SETTLE_WAIT
-    why = serving(test)
-    while why and time.time() < deadline:
-        time.sleep(5)
-        why = serving(test)
-    return f"after {SETTLE_WAIT}s, {why}" if why else None
+    return control.settle(lambda: serving(test), SETTLE_WAIT)
 
 
 @contextlib.contextmanager
@@ -504,7 +501,11 @@ def timeouts(test: Test, cache: common.Cache, found: dict[str, Findings]) -> Non
         else:
             found["held"].notes.append(f"{cache.svc}: in {took:.1f}s")
 
+    # Which cold reads were answered 504, behind which a fetch goes on.
+    timed_out: set[str] = set()
     answer, took = timed(test, cache, slow, SHORT_TIMEOUT)
+    if answer.status == 504:
+        timed_out.add("short")
     why = answered_in(answer, took, 504, SHORT_ANSWER)
     if why:
         found["short"].problems.append(
@@ -512,6 +513,8 @@ def timeouts(test: Test, cache: common.Cache, found: dict[str, Findings]) -> Non
         )
     time.sleep(OCCUPY_DELAY)
     answer, took = timed(test, cache, queued, QUEUED_TIMEOUT)
+    if answer.status == 504:
+        timed_out.add("queued")
     if answer.status == 429:
         found["queued"].doubts.append(
             f"{cache.svc}: shed (429): another fetch had the origin's place in the queue"
@@ -528,8 +531,11 @@ def timeouts(test: Test, cache: common.Cache, found: dict[str, Findings]) -> Non
                 + f" {QUEUED_TIMEOUT}, got {why}"
             )
 
-    # The fetches go on, and finish, behind the 504s.
+    # The fetches go on, and finish, behind the 504s. A read refused, or
+    # shed, began none, so there is none to wait for.
     for case, rel in (("short", slow), ("queued", queued)):
+        if case not in timed_out:
+            continue
         if test.wait_held(cache, [rel], FILL_WAIT):
             found[case].problems.append(
                 f"{cache.svc}: after the 504, the cache did not hold the object within"
@@ -567,8 +573,8 @@ def timeout_header(test: Test) -> dict[str, Row]:
       malformed  a cold read with a value that is no duration must come
                  back, the value ignored
 
-    For `short` and `queued`, the fetch must go on behind the 504: the
-    cache must then hold the object, and serve it.
+    For `short` and `queued`, where the read got its 504, the fetch must
+    go on behind it: the cache must then hold the object, and serve it.
     """
     found = {case: Findings() for case in TIMEOUT_CASES}
     for cache in test.v2:

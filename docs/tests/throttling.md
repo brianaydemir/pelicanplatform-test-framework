@@ -86,13 +86,15 @@ named `<scenario> <case>`.
   while the fetch goes on (`serveObject` in
   `local_cache/persistent_cache_api.go`). At each V2 cache: `short`, a
   cold read of a 2 MiB object with `20ms` must get 504 within 3 seconds;
-  `queued`, 2 seconds later, while that fetch holds the origin's slot,
-  a cold read of another with `2s`, which must wait behind it, must get
+  `queued`, 2 seconds later, while that fetch holds the origin's slot, a
+  cold read of another with `2s`, which must wait behind it, must get
   504 within 3 seconds (if the cache sheds it instead, or serves it at
   once, the row is inconclusive); and then the cache must come to hold
-  each object, as `only-if-cached` shows, and serve it. `held`: an
-  object the cache holds, with `5s`, must come back. `malformed`: a cold
-  read with `soon`, no duration, must come back, the value ignored.
+  each object whose read got its 504, as `only-if-cached` shows, and
+  serve it (a read refused, or shed, began no fetch to wait for).
+  `held`: an object the cache holds, with `5s`, must come back.
+  `malformed`: a cold read with `soon`, no duration, must come back, the
+  value ignored.
 - `streaming`: at each V2 cache, a cold read of a 2 MiB object, which
   takes about 7 seconds to come: its first 4 KiB must come within 5
   seconds, and in less than half the time of the whole, which must be

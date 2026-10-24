@@ -1179,7 +1179,8 @@ def settle(test: Test) -> Optional[str]:
     """Wait until the API answers, and the directors name origin-0 again.
 
     Each director, where there are any, must name it for the source
-    object.
+    object. A server that exited on its own ends the wait at once
+    (control.settle()).
 
     Returns:
         Why that did not happen within SETTLE_WAIT seconds, or None.
@@ -1187,23 +1188,17 @@ def settle(test: Test) -> Optional[str]:
     fed = test.fed
     path = f"/protected-a/{test.rel('src')}"
     host = director.host(fed.origins[0].url)
-    found: list[str] = []
 
-    def ready() -> bool:
-        found.clear()
+    def unready() -> Optional[str]:
         status, _, _ = test.call("GET", "/ping", None)
         if status != 200:
-            found.append(f"the API's ping got HTTP {status}")
-            return False
+            return f"the API's ping got HTTP {status}"
         named = director.naming(fed.directors, "origin", path, host)
         if len(named) != len(fed.directors):
-            found.append(f"only {named} named {host}")
-            return False
-        return True
+            return f"only {named} named {host}"
+        return None
 
-    if not common.wait_for(ready, SETTLE_WAIT, interval=5):
-        return f"after {SETTLE_WAIT}s, {first(found) if found else 'origin-0 is not back'}"
-    return None
+    return control.settle(unready, SETTLE_WAIT)
 
 
 def run_configured(test: Test, names: list[str], results: common.Results) -> None:

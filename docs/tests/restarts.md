@@ -109,36 +109,39 @@ every origin is stopped.
   It presents no storage token, and runs in the WLCG pass alone.
 - `cache-failover`, with several federated caches: the first is paused
   (its ports take connections that nothing answers), and then killed
-  (they refuse). Each time, `pelican object get` and stash_plugin of
-  an object of their own through the federation must succeed, served
-  by another cache, while the directors still name the first (`early`;
+  (they refuse). Each time, `pelican object get` and stash_plugin of an
+  object of their own through the federation must succeed, served by
+  another cache, while the directors still name the first (`early`;
   inconclusive if they had already dropped it), and once they have
   dropped it, within `Server.AdLifetime` and 30 more (`late`). The note
-  says which caches each client tried: the client probes each
-  endpoint for a second before it downloads, so a cache that answers
-  nothing may be tried last rather than fail. Afterward the cache is
-  unpaused, or started, and every director must name it again within
-  150 seconds (`back`). Each row's case begins with `paused` or
-  `killed`, as in `paused early`.
+  says which caches each client tried: the client probes each endpoint
+  for a second before it downloads, so a cache that answers nothing may
+  be tried last rather than fail. Afterward the cache is unpaused, or
+  started, and every director must name it again within 150 seconds
+  (`back`). Each row's case begins with `paused` or `killed`, as in
+  `paused early`. First, with every cache up, both clients must get a
+  probe through the federation; if one can't, it can't with a cache away
+  either, and the scenario fails at once, in a row of its own.
 - `origin-failover`, with several origins, each holding every object
   (`-p topo-multi-origin`): the last is paused, and then killed. Each
-  time, `pelican object get` and stash_plugin must each get an object
-  of their own, direct from an origin (`--direct`, or `?directread`;
-  not under `-p origin-no-direct`) and through a cache (or, with none,
-  from whichever origin the directors send them to), served by a server
-  other than the one away, while the directors still name it for an
-  origin's read (`early`; inconclusive if they had already dropped it),
-  and once they have dropped it, within `Server.AdLifetime` and 30 more
-  (`late`). Until its ad expires, the directors still list the origin
-  from its ad, but a director that has the namespace's token stats the
-  origins before it redirects (`Director.CheckOriginPresence`), and so
-  sends a client to the one that answers; a cache fetches from the
-  origins as a client does, with the client's token, and must get the
-  object too. The note says which servers each client tried. Afterward
-  the origin is unpaused, or started, and every director must name it
-  again within 150 seconds (`back`). Each row's case is `paused` or
-  `killed`, `early` or `late`, and `direct` or `cache`, as in `killed
-  late direct`.
+  time, `pelican object get` and stash_plugin must each get an object of
+  their own, direct from an origin (`--direct`, or `?directread`; not
+  under `-p origin-no-direct`) and through a cache (or, with none, from
+  whichever origin the directors send them to), served by a server other
+  than the one away, while the directors still name it for an origin's
+  read (`early`; inconclusive if they had already dropped it), and once
+  they have dropped it, within `Server.AdLifetime` and 30 more (`late`).
+  Until its ad expires, the directors still list the origin from its ad,
+  but a director that has the namespace's token stats the origins before
+  it redirects (`Director.CheckOriginPresence`), and so sends a client
+  to the one that answers; a cache fetches from the origins as a client
+  does, with the client's token, and must get the object too. The note
+  says which servers each client tried. Afterward the origin is
+  unpaused, or started, and every director must name it again within 150
+  seconds (`back`). Each row's case is `paused` or `killed`, `early` or
+  `late`, and `direct` or `cache`, as in `killed late direct`. First,
+  with every origin up, both clients must get a probe by each route, or
+  the scenario fails at once, as `cache-failover` does.
 - `peer-director`, with several directors: the second killed, the first
   must list only itself at `/api/v1.0/director/directors` within
   `Server.AdLifetime` and 30 more, since its peer's ad has expired

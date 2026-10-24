@@ -22,10 +22,12 @@ direct clients, every request straight to one must be refused anyway.
 - `expired-in-use`: a token that lasts 30 seconds, presented at once and
   then every 30 seconds for three minutes, must be taken before it
   expires, and refused from 70 seconds past its expiry on; in between,
-  either. The row's note lists what each server answered, and when. An
-  origin that takes no direct clients is not asked. Pelican's native
-  origin and V2 cache keep what a token authorizes for 5 minutes from
-  its last use, and check its expiry only when they first see it
+  either. The row's note lists what each server answered, and when. A
+  server that refuses it before it expires is asked no more, since what
+  it does after can show nothing of expiry, and an origin that takes no
+  direct clients is not asked at all. Pelican's native origin and V2
+  cache keep what a token authorizes for 5 minutes from its last use,
+  and check its expiry only when they first see it
   (`origin_serve/authz.go` and `local_cache/cache_authz.go`), so a token
   in use never expires there, and the rows fail, on main and
   v26.0.0-rc.3 alike. The check runs beside the suite's others, in a

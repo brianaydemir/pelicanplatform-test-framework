@@ -14,8 +14,9 @@ serves at a time: another that finds it serving leaves the tests to it.
 framework/testlib/control.py describes the requests, which come through
 files under framework/var/control/. Each is done, one at a time, with
 `docker compose <action> <service>`, on the shape's services but `dev`;
-`state` only asks `docker compose ps` what state a container is in; and
-`freeze-xrootd` and `thaw-xrootd` signal the XRootD daemons in a
+`state` only asks `docker compose ps` what state a container is in, and
+`exited` which containers exited without the tests' stopping or killing
+them; and `freeze-xrootd` and `thaw-xrootd` signal the XRootD daemons in a
 service's container, with `docker compose exec`. On stopping, the
 helper puts back what the tests left: it removes their configuration
 from control/config/, and restarts each service it was in, if running;
@@ -132,6 +133,8 @@ class Helper:
             return False, f"no such action: {action!r} (try: {', '.join(control.ACTIONS)})"
         if action == "ping":
             return True, "serving"
+        if action == "exited":
+            return self.exited()
         if svc not in self.services:
             return False, (
                 f"the shape has no service {svc!r} that tests may control"
@@ -149,6 +152,30 @@ class Helper:
         else:
             say(output)
         return ok, output
+
+    def exited(self) -> tuple[bool, str]:
+        """Say which services exited on their own, each with its exit code.
+
+        Those the tests stopped or killed, which put_back() would start,
+        are passed over.
+
+        Returns:
+            Whether `docker compose ps` answered, and a line `<service>
+            <exit code>` for each.
+        """
+        ok, output = compose("ps", "--all", "--format", "{{.Service}} {{.State}} {{.ExitCode}}")
+        if not ok:
+            return ok, output
+        found: list[str] = []
+        for line in output.splitlines():
+            svc, state, code = (line.split() + ["", "", ""])[:3]
+            if (
+                svc in self.services
+                and state in ("exited", "dead")
+                and self.undo.get(svc) != "start"
+            ):
+                found.append(f"{svc} {code}")
+        return True, "\n".join(found)
 
     def put_back(self) -> None:
         """Put back what the tests left.

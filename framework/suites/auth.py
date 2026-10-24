@@ -1146,19 +1146,25 @@ class InUse:
     def ask(self) -> None:
         """GET the test object at each server where a token decides.
 
-        Ask at each of IN_USE_TIMES.
+        Ask at each of IN_USE_TIMES, but no more of a server that refused
+        the token (401 or 403) before its expiry: what it does after can
+        show nothing of expiry. Once none is left to ask, stop.
         """
+        asked = [(target, url) for target, url, decides in self.targets if decides]
         for offset in IN_USE_TIMES:
+            if not asked:
+                return
             delay = self.minted + offset - time.time()
             if delay > 0:
                 time.sleep(delay)
-            for target, url, decides in self.targets:
-                if decides:
-                    past = int(time.time()) - self.expiry
-                    answer = web.request(
-                        "GET", f"{url}/protected-a/{self.test.object}", token=self.token
-                    )
-                    self.answers[target].append((past, answer))
+            for target, url in list(asked):
+                past = int(time.time()) - self.expiry
+                answer = web.request(
+                    "GET", f"{url}/protected-a/{self.test.object}", token=self.token
+                )
+                self.answers[target].append((past, answer))
+                if past < 0 and answer.status in (401, 403):
+                    asked.remove((target, url))
 
     def record(self) -> None:
         """Wait for the thread, then record a row per server.

@@ -1,12 +1,37 @@
-# Everything the framework creates. local/ is deliberately not ignored,
-# so that `git status` shows your customizations.
-/framework/var/
-/smoke-logs/
+#---------------------------------------------------------------------------
+# Generic
 
-# Temporary files
-*.swp
+# Temporary and swap files
+*.tmp
+*.sw[po]
+*~
 
+# IDE and editor artifacts
+.DS_Store
+/.idea/
+/.vscode/
+
+#---------------------------------------------------------------------------
 # Python
-__pycache__/
+
+# Virtual environments and version managers
+/.pixi/
+/.poetry/
+/.uv/
+/.venv/
+/.python-version
+
+# Build artifacts
+/dist/
+
+# Runtime caches and bytecode
+*.py[cod]
 .mypy_cache/
-.venv/
+.pyright/
+.pytest_cache/
+__pycache__/
+
+#---------------------------------------------------------------------------
+# Project-specific
+
+# <to be filled in>

@@ -1,0 +1,67 @@
+# Project configuration (https://packaging.python.org)
+
+[project]
+name = "brianaydemir-pelicanplatform-testing-framework"
+version = "0.0.0"
+description = "brianaydemir-pelicanplatform-testing-framework"
+readme = "README.md"
+requires-python = ">=3.11,<3.16"
+license = "Apache-2.0"
+authors = [{ name = "Brian Aydemir", email = "baydemir@morgridge.org" }]
+dependencies = []
+
+[dependency-groups]
+# uv reads this table and installs the "dev" group by default.
+dev = [
+    "bandit~=1.9.0",
+    "black~=26.10.0",
+    "isort~=9.0.0",
+    "pre-commit~=4.7.0",
+    "pylint~=4.1.0",
+    "pyright~=1.1.0",
+    "pytest~=9.1.0",
+]
+
+[tool.bandit]
+exclude_dirs = [".venv", "dist", "tests"]
+
+[tool.black]
+line-length = 108
+
+[tool.isort]
+line_length = 108
+profile = "black"
+src_paths = ["framework"]
+
+[tool.pylint.messages-control]
+enable = [
+    "useless-suppression",
+]
+disable = [
+    "duplicate-code",
+    "line-too-long",
+    "too-many-arguments",
+    "too-many-positional-arguments",
+]
+
+[tool.pyright]
+typeCheckingMode = "strict"
+
+# Be more forgiving.
+reportMissingTypeStubs = "none"
+
+# Be less forgiving.
+deprecateTypingAliases = true
+reportImplicitOverride = true
+reportUnnecessaryTypeIgnoreComment = true
+reportUnreachable = true
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py"]
+
+[tool.uv]
+# Set `package = true` once the project ships a package under src/.
+package = false
+
+# Ignore releases newer than this.
+exclude-newer = "7 days"

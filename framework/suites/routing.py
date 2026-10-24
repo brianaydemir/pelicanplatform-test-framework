@@ -1083,20 +1083,13 @@ def serving(test: Test, filtered: frozenset[str] = frozenset()) -> Optional[str]
 def settle(test: Test, filtered: frozenset[str] = frozenset()) -> Optional[str]:
     """Wait until the directors route the probe as before.
 
+    See serving(). A server that exited on its own ends the wait at once
+    (control.settle()).
+
     Returns:
-        Why they don't within SETTLE_WAIT seconds (see serving()), or
-        None.
+        Why they don't within SETTLE_WAIT seconds, or None.
     """
-    found: list[str] = []
-
-    def served() -> bool:
-        why = serving(test, filtered)
-        found[:] = [why] if why else []
-        return why is None
-
-    if common.wait_for(served, SETTLE_WAIT, interval=5):
-        return None
-    return f"after {SETTLE_WAIT}s, {first(found)}"
+    return control.settle(lambda: serving(test, filtered), SETTLE_WAIT)
 
 
 @contextlib.contextmanager

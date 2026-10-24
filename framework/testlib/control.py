@@ -3,7 +3,8 @@
 A test may restart, stop, start, pause, unpause, or kill a service, or
 restart one with configuration of its own; stop and resume the XRootD
 daemons in one, leaving the rest of it running; and ask what state a
-service's container is in, as when a server may have exited on its own.
+service's container is in, as when a server may have exited on its own,
+or which servers have (exited(), crashed()).
 
 The dev container has no Docker, so a helper on the host,
 framework/control.py, acts for the tests: `./fed.sh test` runs one
@@ -19,11 +20,15 @@ They talk through files under framework/var/control/:
                       and empty but while restart_with() runs
 
 The helper takes the actions in ACTIONS, one at a time, on the shape's
-services but `dev`, and refuses anything else; `state` only looks.
-Each call here returns once its action is done, and raises ControlError
-if it failed. A Pelican server that is restarted, started, or unpaused
-must also answer on its web port again within SERVE_WAIT seconds. A
-scenario should put back whatever it stops, pauses, kills, or
+services but `dev`, and refuses anything else; `state` and `exited`
+only look. Each call here returns once its action is done, and raises
+ControlError if it failed. A Pelican server that is restarted, started,
+or unpaused must also answer on its web port again within SERVE_WAIT
+seconds, and fails at once if it exits first. A wait for the federation
+to serve again after a restart goes through settle(), which ends at once
+if a Pelican server has exited on its own, since none comes back by
+itself: one that panics as it starts may answer its health check first.
+A scenario should put back whatever it stops, pauses, kills, or
 configures, even if it fails; the helper puts back what is left only
 when it stops serving, and the next one to start only the configuration.
 """
@@ -35,7 +40,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import Generator, Mapping
+from collections.abc import Callable, Generator, Mapping, Sequence
 from typing import Optional
 
 from . import common, web
@@ -46,12 +51,13 @@ REQUESTS = os.path.join(DIR, "requests")
 CONFIG = os.path.join(DIR, "config")
 
 # What the helper does, each by `docker compose <action> <service>` but
-# `ping`, which only answers; `state`, which only looks (`docker compose
-# ps`); and those of SIGNALS. And what puts back what an action leaves
-# undone.
+# `ping`, which only answers; `state` and `exited`, which only look
+# (`docker compose ps`); and those of SIGNALS. And what puts back what an
+# action leaves undone.
 ACTIONS = (
     "ping",
     "state",
+    "exited",
     "restart",
     "stop",
     "start",
@@ -153,10 +159,79 @@ def wait_serving(svc: str, seconds: float = SERVE_WAIT) -> None:
     """Wait until svc, if it is a Pelican server, answers on its web port.
 
     Raises:
-        ControlError: It doesn't within seconds.
+        ControlError: It doesn't within seconds, or it exited on its own
+            first (crashed()).
     """
-    if pelican_server(svc) and not common.wait_for(lambda: answers(svc), seconds, interval=1):
-        raise ControlError(f"{svc} did not answer on its web port within {seconds:.0f}s")
+    if not pelican_server(svc):
+        return
+    deadline = time.time() + seconds
+    while not answers(svc):
+        why = crashed([svc])
+        if why:
+            raise ControlError(f"{why}, before it answered on its web port")
+        if time.time() >= deadline:
+            raise ControlError(f"{svc} did not answer on its web port within {seconds:.0f}s")
+        time.sleep(1)
+
+
+def exited() -> dict[str, int]:
+    """Return each Pelican server that exited on its own, by its exit code.
+
+    That is one whose container exited, or died, without a test's
+    stopping or killing it, as one that panics as it starts. Return none
+    where no helper serves this run, or it does not answer: knowing is
+    only a way to stop waiting sooner.
+    """
+    if unavailable():
+        return {}
+    try:
+        output = _ask("exited", "", PING_WAIT)
+    except ControlError:
+        return {}
+    found: dict[str, int] = {}
+    for line in output.splitlines():
+        svc, _, code = line.strip().partition(" ")
+        if pelican_server(svc):
+            found[svc] = int(code) if code.isdigit() else -1
+    return found
+
+
+def crashed(services: Optional[Sequence[str]] = None) -> Optional[str]:
+    """Return which Pelican server exited on its own (exited()), or None.
+
+    Only those of services count, if they are given.
+    """
+    for svc, code in sorted(exited().items()):
+        if services is None or svc in services:
+            return f"{svc} exited on its own (exit code {code})"
+    return None
+
+
+def settle(
+    problem: Callable[[], Optional[str]], seconds: float, interval: float = 5
+) -> Optional[str]:
+    """Ask problem() what is wrong until it finds nothing, or seconds pass.
+
+    It is asked at once, and then every interval seconds, as the
+    federation is waited for after a restart. Each time it finds
+    something, a Pelican server that exited on its own (crashed()) ends
+    the wait, since none comes back by itself.
+
+    Returns:
+        None once problem() finds nothing; otherwise which server exited,
+        or after seconds, what problem() last found.
+    """
+    deadline = time.time() + seconds
+    found = problem()
+    while found:
+        why = crashed()
+        if why:
+            return why
+        if time.time() >= deadline:
+            return f"after {seconds:.0f}s, {found}"
+        time.sleep(interval)
+        found = problem()
+    return None
 
 
 def restart(svc: str) -> None:

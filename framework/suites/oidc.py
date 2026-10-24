@@ -54,7 +54,6 @@ import os
 import secrets
 import subprocess  # nosec B404
 import threading
-import time
 import traceback
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -632,7 +631,8 @@ def settle(test: Test, rel: str) -> Optional[str]:
 
     Wait up to SETTLE_WAIT seconds, until it answers a HEAD of rel in
     the namespace, every director names it for the path, and every
-    federated cache answers a HEAD of it.
+    federated cache answers a HEAD of it. A server that exited on its
+    own ends the wait at once (control.settle()).
 
     Returns:
         Why it does not, or None if it does.
@@ -657,12 +657,7 @@ def settle(test: Test, rel: str) -> Optional[str]:
                 return f"{cache.svc}: HEAD of the object got {answer.describe()}"
         return None
 
-    deadline = time.time() + SETTLE_WAIT
-    why = unserved()
-    while why and time.time() < deadline:
-        time.sleep(5)
-        why = unserved()
-    return f"after {SETTLE_WAIT}s, {why}" if why else None
+    return control.settle(unserved, SETTLE_WAIT)
 
 
 @dataclass

@@ -60,10 +60,13 @@ suite wherever it is. So a suite gives every client command and request
 a timeout, runs tasks at once on `testlib.common.pool()`, which drops
 what it had queued when its block is left so, rather than on a
 `ThreadPoolExecutor` of its own, which would run all of it, and puts
-back what it changed in `finally` blocks. It runs the clients with
-`session.pelican_cmd()` and `session.plugin_cmd()`, which kill a run
-that outlasts its timeout and log every run, with all it printed, in
-the pass's `commands.log`.
+back what it changed in `finally` blocks. It waits for the federation to
+serve again after a restart with `testlib.control.settle()`, which, like
+`control.wait_serving()`, stops at once if a Pelican server has exited
+on its own, as one that panics as it starts does, rather than wait out
+its deadline. It runs the clients with `session.pelican_cmd()` and
+`session.plugin_cmd()`, which kill a run that outlasts its timeout and
+log every run, with all it printed, in the pass's `commands.log`.
 
 A suite records a row per case ([Results](ci.md#results)), named
 `<scenario>` or `<scenario> <case>`, through `testlib.report`. A row

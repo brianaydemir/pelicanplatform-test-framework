@@ -1062,17 +1062,13 @@ def serving(test: Test) -> Optional[str]:
 def settle(test: Test) -> Optional[str]:
     """Wait until the federation serves /protected-a as before.
 
-    See serving().
+    See serving(). A server that exited on its own ends the wait at once
+    (control.settle()).
 
     Returns:
         Why it doesn't within SETTLE_WAIT seconds, or None.
     """
-    deadline = time.time() + SETTLE_WAIT
-    why = serving(test)
-    while why and time.time() < deadline:
-        time.sleep(5)
-        why = serving(test)
-    return f"after {SETTLE_WAIT}s, {why}" if why else None
+    return control.settle(lambda: serving(test), SETTLE_WAIT)
 
 
 def copies_disabled(test: Test, _layout: Layout, _data: Mapping[str, bytes]) -> Row:

@@ -437,12 +437,13 @@ def serving(test: Test) -> Optional[str]:
 def settle(test: Test) -> Optional[str]:
     """Wait until the federation serves /protected-a as before.
 
+    See serving(). A server that exited on its own ends the wait at once
+    (control.settle()).
+
     Returns:
-        Why it doesn't within SETTLE_WAIT seconds (see serving()), or
-        None.
+        Why it doesn't within SETTLE_WAIT seconds, or None.
     """
-    why = poll(partial(serving, test), SETTLE_WAIT, 5)
-    return f"after {SETTLE_WAIT}s, {why}" if why else None
+    return control.settle(lambda: serving(test), SETTLE_WAIT)
 
 
 def not_sent(test: Test, value: str) -> Optional[str]:
