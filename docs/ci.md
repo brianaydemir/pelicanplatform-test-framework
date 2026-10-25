@@ -3,7 +3,6 @@
 How to run the smoke tests in CI, and the format of the results that
 `test.py` and `smoke.sh` write.
 
-
 ## Running in CI
 
 Pelican's own CI can run these tests; this repository ships no workflow
@@ -48,7 +47,6 @@ For example, as steps of a job in a matrix over the shapes:
     name: smoke-${{ matrix.shape }}
     path: smoke-results/
 ```
-
 
 ## Results
 

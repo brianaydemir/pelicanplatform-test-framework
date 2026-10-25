@@ -91,8 +91,7 @@ SCENARIOS = {
         " are refused; no credential's token is in the database in plain"
     ),
     "credential-cli": (
-        "`pelican transfer credential add`, `list`, and `delete` agree with the API,"
-        " and show no token"
+        "`pelican transfer credential add`, `list`, and `delete` agree with the API," " and show no token"
     ),
     "enabled-groups": (
         "with Transfer.EnabledGroups, the issuer grants pelican.transfer to a member alone,"
@@ -382,9 +381,7 @@ class Test:
         """
         upload = json.dumps(body).encode() if body is not None else None
         headers = {"Content-Type": "application/json"} if body is not None else {}
-        answer = web.request(
-            method, f"{self.url}{API}{path}", token=token, upload=upload, headers=headers
-        )
+        answer = web.request(method, f"{self.url}{API}{path}", token=token, upload=upload, headers=headers)
         try:
             found = common.as_object(json.loads(answer.body)) or {}
         except ValueError:
@@ -448,9 +445,7 @@ class Test:
                 return found
             time.sleep(2)
 
-    def copied(
-        self, name: str, source_id: str, dest_id: str, token: Optional[str] = None
-    ) -> Optional[str]:
+    def copied(self, name: str, source_id: str, dest_id: str, token: Optional[str] = None) -> Optional[str]:
         """Copy the source object to object name of the run, through a job.
 
         The job uses the credentials, as the user or as token's, and is
@@ -722,11 +717,7 @@ def path_not_allowed(test: Test) -> tuple[str, str]:
     transfer server's.
     """
     elsewhere = f"{test.fed.url}/elsewhere/{test.rel('x')}"
-    body = {
-        "transfers": [
-            {"operation": "copy", "source": elsewhere, "destination": f"{elsewhere}-2"}
-        ]
-    }
+    body = {"transfers": [{"operation": "copy", "source": elsewhere, "destination": f"{elsewhere}-2"}]}
     if not test.confined:
         return unconfined(test, body, "/elsewhere")
     status, found = test.submit(body)
@@ -890,9 +881,7 @@ def subjects(test: Test) -> list[Row]:
             status, _, _ = test.call("GET", f"/jobs/{mine[0]}", test.token)
             if status != 404:
                 problems.append(f"another subject's GET of the job: HTTP {status}, not 404")
-        rows.append(
-            (case, *outcome(problems, f"{subject[:40]!r}: lists, copies, and owns")[1:])
-        )
+        rows.append((case, *outcome(problems, f"{subject[:40]!r}: lists, copies, and owns")[1:]))
     return rows
 
 
@@ -1023,22 +1012,15 @@ def ssrf_and_prefixes(test: Test) -> list[Row]:
     rows: list[Row] = []
     problems: list[str] = []
     for case, source in SSRF_SOURCES:
-        body = {
-            "transfers": [
-                {"operation": "copy", "source": source, "destination": test.url_of("ssrf")}
-            ]
-        }
+        body = {"transfers": [{"operation": "copy", "source": source, "destination": test.url_of("ssrf")}]}
         status, found = test.submit(body)
         if status != 403 or found.get("code") != "ENDPOINT_NOT_ALLOWED":
             problems.append(
-                f"{case} ({source}): HTTP {status}, {found.get('code')}, not 403"
-                + " ENDPOINT_NOT_ALLOWED"
+                f"{case} ({source}): HTTP {status}, {found.get('code')}, not 403" + " ENDPOINT_NOT_ALLOWED"
             )
     rows.append(("endpoints", *outcome(problems, "loopback and link-local: 403")[1:]))
     sibling = f"{test.fed.url}/protected-ab/{test.rel('x')}"
-    body = {
-        "transfers": [{"operation": "copy", "source": sibling, "destination": f"{sibling}-2"}]
-    }
+    body = {"transfers": [{"operation": "copy", "source": sibling, "destination": f"{sibling}-2"}]}
     if not test.confined:
         rows.append(("prefix", *unconfined(test, body, "/protected-ab")))
     else:
@@ -1136,9 +1118,7 @@ def credential_cli(test: Test) -> tuple[str, str]:
         return FAIL, f"list does not show {name} ({cred_id}): {last_line(out)}"
     if test.storage in out + err:
         return FAIL, "list printed the token"
-    code, out, err = test.session.pelican_cmd(
-        "transfer", "credential", "delete", cred_id, *common_args
-    )
+    code, out, err = test.session.pelican_cmd("transfer", "credential", "delete", cred_id, *common_args)
     if code != 0:
         return FAIL, f"delete: exit {code}: {last_line(err or out)}"
     status, _, _ = test.call("GET", f"/credentials/{cred_id}", test.token)
@@ -1276,9 +1256,7 @@ def enabled_groups(test: Test) -> list[Row]:
         if role == "member":
             accounts.add_member(admin, gid, user_id)
         cookies[role] = log_in(test, username, user_id)
-    client = test.issuer_client(
-        issuer.LOCAL_NAMESPACE, (issuer.DEVICE_GRANT,), ("openid", SCOPE)
-    )
+    client = test.issuer_client(issuer.LOCAL_NAMESPACE, (issuer.DEVICE_GRANT,), ("openid", SCOPE))
     rows: list[Row] = []
     tokens: dict[str, str] = {}
     problems: list[str] = []
@@ -1305,13 +1283,9 @@ def enabled_groups(test: Test) -> list[Row]:
     rows.append(("token", *outcome(problems, "the member's taken, the other's refused")[1:]))
     problems = []
     for role, want in (("member", (200,)), ("other", (403,))):
-        answer = web.request(
-            "GET", f"{test.url}{API}/jobs", headers={"Cookie": f"login={cookies[role]}"}
-        )
+        answer = web.request("GET", f"{test.url}{API}/jobs", headers={"Cookie": f"login={cookies[role]}"})
         if answer.status not in want:
-            problems.append(
-                f"GET /jobs with {users[role]}'s login cookie: {answer.describe()}, not {want}"
-            )
+            problems.append(f"GET /jobs with {users[role]}'s login cookie: {answer.describe()}, not {want}")
     rows.append(("cookie", *outcome(problems, "the member's taken, the other's refused")[1:]))
     return rows
 
@@ -1371,9 +1345,7 @@ def oauth_clients(test: Test) -> list[Row]:
     device: Optional[issuer.Client] = None
     client_id, client_secret = f"made-up-{test.session.run}", secrets.token_urlsafe(24)
     if not external:
-        exchange = test.issuer_client(
-            "/protected-a", (issuer.EXCHANGE_GRANT, issuer.REFRESH_GRANT)
-        )
+        exchange = test.issuer_client("/protected-a", (issuer.EXCHANGE_GRANT, issuer.REFRESH_GRANT))
         device = test.issuer_client("/protected-a", (issuer.DEVICE_GRANT,))
         client_id, client_secret = exchange.client_id, exchange.client_secret
     test.secrets.append(client_secret)
@@ -1402,9 +1374,7 @@ def oauth_clients(test: Test) -> list[Row]:
     status, _, _ = test.call("POST", OAUTH_CLIENTS, test.token, body)
     if status != 409:
         problems.append(f"registering it again: HTTP {status}, not 409")
-    rows.append(
-        ("crud", *outcome(problems, f"{registered}: registered, listed, no secret")[1:])
-    )
+    rows.append(("crud", *outcome(problems, f"{registered}: registered, listed, no secret")[1:]))
     if device is None:
         skipped = (
             "the exports trust the external issuer, or the origins run none, so the origin"
@@ -1521,8 +1491,7 @@ def restart(test: Test) -> list[Row]:
             (
                 "interrupted",
                 FAIL,
-                f"after the restart, the job is {job.get('status')}:"
-                + f" {str(job.get('error'))[:120]!r}",
+                f"after the restart, the job is {job.get('status')}:" + f" {str(job.get('error'))[:120]!r}",
             )
         )
     else:
@@ -1532,9 +1501,7 @@ def restart(test: Test) -> list[Row]:
     forgotten_id = str(forgotten["job_id"])
     status, _, raw = test.call("DELETE", f"/jobs/{forgotten_id}", test.token)
     if status is None or not (200 <= status < 300 or status == 409):
-        rows.append(
-            ("forgotten", FAIL, f"cancelling it: HTTP {status}, not 2xx or 409: {raw[:120]!r}")
-        )
+        rows.append(("forgotten", FAIL, f"cancelling it: HTTP {status}, not 2xx or 409: {raw[:120]!r}"))
         return rows
     _, after, _ = test.call("GET", f"/jobs/{forgotten_id}", test.token)
     if after.get("status") != forgotten.get("status"):

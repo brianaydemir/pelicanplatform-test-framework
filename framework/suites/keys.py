@@ -282,9 +282,7 @@ class Test:
         self.origin_dirs = key_dirs_of(self.fed, "origins")
         self.origin_key = self.fed.origin_key
         self.cache = next((c for c in self.fed.federated_caches if c.kind == "v2"), None)
-        self.cache_key = (
-            common.signing_key(f"issuer-keys/{self.cache.svc}") if self.cache else ""
-        )
+        self.cache_key = common.signing_key(f"issuer-keys/{self.cache.svc}") if self.cache else ""
         self.added: list[tuple[list[str], str]] = []
         self.rotated: list[tuple[list[str], str]] = []
         self._cache_name: Optional[str] = None
@@ -486,17 +484,13 @@ def hot_add(test: Test) -> list[Row]:
         time.sleep(5)
     if len(gone) < len(sources):
         still = [case for case in sources if case not in gone]
-        rows.append(
-            ("removed", FAIL, f"{KEY_WAIT}s after the key was removed, it is still in {still}")
-        )
+        rows.append(("removed", FAIL, f"{KEY_WAIT}s after the key was removed, it is still in {still}"))
     else:
         rows.append(("removed", PASS, f"gone within {max(gone.values()):.0f}s"))
     if dropped is not None:
         rows.append(("routing", FAIL, f"a director dropped origin-0 {dropped:.0f}s in"))
     elif fed.directors:
-        rows.append(
-            ("routing", PASS, f"{len(fed.directors)} director(s) named origin-0 throughout")
-        )
+        rows.append(("routing", PASS, f"{len(fed.directors)} director(s) named origin-0 throughout"))
     return rows
 
 
@@ -625,13 +619,9 @@ def hot_rotate(test: Test) -> list[Row]:
                 )
             )
         else:
-            rows.append(
-                (f"directors {svc}", PASS, f"named by every director for {ROTATE_WINDOW}s")
-            )
+            rows.append((f"directors {svc}", PASS, f"named by every director for {ROTATE_WINDOW}s"))
     if fed.external_issuer:
-        rows.append(
-            ("tokens", SKIP, "the exports trust the external issuer, not the origins' keys")
-        )
+        rows.append(("tokens", SKIP, "the exports trust the external issuer, not the origins' keys"))
     for svc, _ in data_servers:
         for profile in credentials.PROFILES:
             key = (svc, profile)
@@ -695,15 +685,11 @@ def hot_rotate(test: Test) -> list[Row]:
             )
         )
     else:
-        rows.append(
-            ("registry-origins", FAIL, f"never listed the origins' new key in {ROTATE_WINDOW}s")
-        )
+        rows.append(("registry-origins", FAIL, f"never listed the origins' new key in {ROTATE_WINDOW}s"))
     if not test.cache:
         rows.append(("registry-cache", SKIP, "no federated V2 cache"))
     elif not cache_name:
-        rows.append(
-            ("registry-cache", INCONCLUSIVE, f"{test.cache.svc} would not say its name")
-        )
+        rows.append(("registry-cache", INCONCLUSIVE, f"{test.cache.svc} would not say its name"))
     elif "cache" in registry_at:
         rows.append(
             (
@@ -713,9 +699,7 @@ def hot_rotate(test: Test) -> list[Row]:
             )
         )
     else:
-        rows.append(
-            ("registry-cache", FAIL, f"never listed the cache's new key in {ROTATE_WINDOW}s")
-        )
+        rows.append(("registry-cache", FAIL, f"never listed the cache's new key in {ROTATE_WINDOW}s"))
     put_back(test)
     return rows
 
@@ -935,14 +919,10 @@ def master_key(test: Test) -> list[Row]:
             else:
                 age = held_with_age(test, cache)
                 if age is None:
-                    problems.append(
-                        "with the old keys retired, it does not serve the probe from its store"
-                    )
+                    problems.append("with the old keys retired, it does not serve the probe from its store")
                 after = sent_bytes(fed)
                 if before is not None and after is not None and after - before >= OBJECT_SIZE:
-                    problems.append(
-                        "with the old keys retired, the origins sent the probe again"
-                    )
+                    problems.append("with the old keys retired, the origins sent the probe again")
         except control.ControlError as e:
             problems.append(f"with the old keys retired, {e}")
     finally:
@@ -1129,9 +1109,7 @@ def services_of(fed: common.Federation) -> list[tuple[str, str]]:
     return found
 
 
-def verify_backup(
-    server: str, path: str, env: dict[str, str], cwd: str
-) -> tuple[int, str, str]:
+def verify_backup(server: str, path: str, env: dict[str, str], cwd: str) -> tuple[int, str, str]:
     """Run `pelican-server server database backup verify path`.
 
     Returns:
@@ -1212,9 +1190,7 @@ def backups(test: Test) -> list[Row]:
         for path in found:
             status, out, err = verify_backup(server, os.path.abspath(path), env, test.tmp)
             if status != 0:
-                problems.append(
-                    f"verify {os.path.basename(path)}: exit {status}: {last_line(err or out)}"
-                )
+                problems.append(f"verify {os.path.basename(path)}: exit {status}: {last_line(err or out)}")
                 break
             verified += 1
         rows.append((svc, *outcome(problems, f"{verified} encrypted backup(s) verified")[1:]))

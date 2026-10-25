@@ -761,14 +761,9 @@ def client_env(overwrites: bool = True) -> dict[str, str]:
     runtime = os.environ.get("XDG_RUNTIME_DIR", "/nonexistent")
     for path in (f"{runtime}/bt_u{uid}", f"/tmp/bt_u{uid}"):  # nosec B108
         if os.path.exists(path):
-            common.die(
-                f"the client would present {path} instead of each scenario's token;"
-                + " remove it"
-            )
+            common.die(f"the client would present {path} instead of each scenario's token;" + " remove it")
     shutil.rmtree(".client-credentials", ignore_errors=True)
-    env["PELICAN_CLIENT_CREDENTIALFILE"] = os.path.abspath(
-        ".client-credentials/client-credentials.pem"
-    )
+    env["PELICAN_CLIENT_CREDENTIALFILE"] = os.path.abspath(".client-credentials/client-credentials.pem")
     if overwrites:
         env["PELICAN_CLIENT_ENABLEOVERWRITES"] = "true"
     else:

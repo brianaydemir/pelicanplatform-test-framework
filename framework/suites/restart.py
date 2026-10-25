@@ -238,12 +238,8 @@ class Test:
     def put(self, name: str, data: bytes) -> None:
         """Put object name, holding data, at every origin."""
         rel = self.rel(name)
-        errors = stores.make_dirs(
-            self.fed.origins, NAMESPACE, rel.rsplit("/", 1)[0], self.setup
-        )
-        errors += stores.seed_everywhere(
-            self.fed.origins, NAMESPACE, rel, data, self.setup, self.caps
-        )
+        errors = stores.make_dirs(self.fed.origins, NAMESPACE, rel.rsplit("/", 1)[0], self.setup)
+        errors += stores.seed_everywhere(self.fed.origins, NAMESPACE, rel, data, self.setup, self.caps)
         if errors:
             die(f"could not put {rel} in place: {first(errors)}")
         self.objects[rel] = data
@@ -284,9 +280,7 @@ class Test:
         Returns:
             What went wrong, or None.
         """
-        answer = web.request(
-            "GET", f"{cache.url}{self.path(name)}", token=self.setup, timeout=120
-        )
+        answer = web.request("GET", f"{cache.url}{self.path(name)}", token=self.setup, timeout=120)
         if answer.status != 200 or answer.body != self.objects[self.rel(name)]:
             return f"{cache.svc}: a GET of {name} got {answer.describe()}"
         if cache.kind == "v2" and not common.wait_for(
@@ -417,17 +411,13 @@ def cache_restart(test: Test) -> list[Row]:
             continue
         ages: list[int] = []
         for name in names:
-            answer = web.request(
-                "GET", f"{cache.url}{test.path(name)}", token=test.token, timeout=120
-            )
+            answer = web.request("GET", f"{cache.url}{test.path(name)}", token=test.token, timeout=120)
             if answer.status != 200 or answer.body != test.objects[test.rel(name)]:
                 problems.append(f"after the restart, a GET of {name} got {answer.describe()}")
             elif cache.kind == "v2":
                 age = answer.header("Age").strip()
                 if not age.isdigit():
-                    problems.append(
-                        f"after the restart, {name} came with no Age, so not from its store"
-                    )
+                    problems.append(f"after the restart, {name} came with no Age, so not from its store")
                 else:
                     ages.append(int(age))
         after = sent_bytes(test.fed)
@@ -580,9 +570,7 @@ def record_state(test: Test, found: Recorded) -> list[str]:
                 {
                     "name": f"restart-{test.run}",
                     "scopes": [SCRAPE_SCOPE],
-                    "expiration": time.strftime(
-                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600)
-                    ),
+                    "expiration": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600)),
                 }
             ).encode(),
             headers={**accounts.JSON, "Cookie": f"login={cookie}"},
@@ -601,9 +589,7 @@ def record_state(test: Test, found: Recorded) -> list[str]:
             "startTime": now + 86_400_000,
             "endTime": now + 90_000_000,
         }
-        answer = admin.call(
-            "POST", f"{DOWNTIME}/{found.downtime_id}", declared, accounts.csrf(admin)
-        )
+        answer = admin.call("POST", f"{DOWNTIME}/{found.downtime_id}", declared, accounts.csrf(admin))
         if not answer.ok:
             problems.append(f"declaring a downtime for tomorrow: {answer.describe()}")
             found.downtime_id = ""
@@ -681,9 +667,7 @@ def state_survives(test: Test) -> list[Row]:
         before, after = found.metadata.get(server.svc, {}), local_metadata(test, server)
         for key in ("id", "name"):
             if before.get(key) and after.get(key) != before.get(key):
-                problems.append(
-                    f"{server.svc}'s {key} is {after.get(key)!r}, was {before.get(key)!r}"
-                )
+                problems.append(f"{server.svc}'s {key} is {after.get(key)!r}, was {before.get(key)!r}")
     rows.append(("ids", *outcome(problems, f"{len(found.metadata)} server(s) unchanged")[1:]))
     if fed.registry_url:
         listed = registered_servers(test)
@@ -692,9 +676,7 @@ def state_survives(test: Test) -> list[Row]:
             problems.append("the registry would not list its servers")
         else:
             if sorted(listed) != sorted(found.registered):
-                problems.append(
-                    f"the registry lists {sorted(listed)}, listed {sorted(found.registered)}"
-                )
+                problems.append(f"the registry lists {sorted(listed)}, listed {sorted(found.registered)}")
             names = [name for _, name in listed]
             if len(set(names)) != len(names):
                 problems.append(f"a server is registered twice: {names}")
@@ -712,15 +694,9 @@ def state_survives(test: Test) -> list[Row]:
     admin = test.admin(web_url, f"issuer-keys/{issuing.svc}")
     try:
         problems = list[str]()
-        if (
-            found.user_id
-            and accounts.find_user(admin, f"restart-user-{test.run}") != found.user_id
-        ):
+        if found.user_id and accounts.find_user(admin, f"restart-user-{test.run}") != found.user_id:
             problems.append("the user is gone, or has another ID")
-        if (
-            found.group_id
-            and accounts.find_group(admin, f"restart-group-{test.run}") != found.group_id
-        ):
+        if found.group_id and accounts.find_group(admin, f"restart-group-{test.run}") != found.group_id:
             problems.append("the group is gone, or has another ID")
         rows.append(("accounts", *outcome(problems, "the user and the group are there")[1:]))
         if found.api_token:
@@ -742,9 +718,7 @@ def state_survives(test: Test) -> list[Row]:
             answer = admin.call("GET", DOWNTIME)
             ids = [str((common.as_object(d) or {}).get("id")) for d in answer.array]
             if found.downtime_id not in ids:
-                rows.append(
-                    ("downtime", FAIL, f"the downtime is not listed: {answer.describe()}")
-                )
+                rows.append(("downtime", FAIL, f"the downtime is not listed: {answer.describe()}"))
             else:
                 rows.append(("downtime", PASS, "still declared"))
         if found.client and found.refresh:
@@ -775,9 +749,7 @@ def cleanup_state(test: Test, found: Recorded) -> None:
     admin = test.admin(web_url, f"issuer-keys/{origin.svc}")
     try:
         if found.downtime_id:
-            admin.call(
-                "DELETE", f"{DOWNTIME}/{found.downtime_id}", headers=accounts.csrf(admin)
-            )
+            admin.call("DELETE", f"{DOWNTIME}/{found.downtime_id}", headers=accounts.csrf(admin))
         if found.api_token_id:
             web.request(
                 "DELETE",
@@ -981,13 +953,9 @@ def backend_outage(test: Test) -> list[Row]:
                 if answer.status is None:
                     problems.append(f"{method} with {backend} stopped: no answer")
                 elif not 500 <= answer.status < 600:
-                    problems.append(
-                        f"{method} with {backend} stopped: {answer.describe()}, not 5xx"
-                    )
+                    problems.append(f"{method} with {backend} stopped: {answer.describe()}, not 5xx")
                 elif method == "GET" and answer.body == data:
-                    problems.append(
-                        f"GET with {backend} stopped: 5xx, but with the object's bytes"
-                    )
+                    problems.append(f"GET with {backend} stopped: 5xx, but with the object's bytes")
             rows.append(
                 (
                     "direct",
@@ -1026,9 +994,7 @@ def backend_outage(test: Test) -> list[Row]:
             if not common.wait_for(unwell, HEALTH_WAIT, interval=5):
                 rows.append(("health", FAIL, f"{component} stayed {seen!r} for {HEALTH_WAIT}s"))
             elif gone:
-                rows.append(
-                    ("health", FAIL, f"{origin.svc} stopped answering with {backend} stopped")
-                )
+                rows.append(("health", FAIL, f"{origin.svc} stopped answering with {backend} stopped"))
             else:
                 rows.append(("health", PASS, f"{component}: {seen}"))
     finally:
@@ -1046,14 +1012,10 @@ def backend_outage(test: Test) -> list[Row]:
 
     def serves() -> bool:
         if direct:
-            answer = web.request(
-                "GET", f"{origin.url}{test.path('outage')}", token=test.token, timeout=60
-            )
+            answer = web.request("GET", f"{origin.url}{test.path('outage')}", token=test.token, timeout=60)
             return answer.status == 200 and answer.body == data
         if cache is not None:
-            answer = web.request(
-                "GET", f"{cache.url}{test.path('outage')}", token=test.token, timeout=60
-            )
+            answer = web.request("GET", f"{cache.url}{test.path('outage')}", token=test.token, timeout=60)
             return answer.status == 200 and answer.body == data
         return True
 
@@ -1083,9 +1045,7 @@ def backend_outage(test: Test) -> list[Row]:
             if not answer.ok:
                 problems.append(f"PUT once {backend} was back: {answer.describe()}")
     if cache is not None:
-        answer = web.request(
-            "GET", f"{cache.url}{test.path('outage-cold')}", token=test.token, timeout=120
-        )
+        answer = web.request("GET", f"{cache.url}{test.path('outage-cold')}", token=test.token, timeout=120)
         if answer.status != 200 or answer.body != test.objects[test.rel("outage-cold")]:
             problems.append(f"through {cache.svc} once {backend} was back: {answer.describe()}")
     if component and not common.wait_for(
@@ -1237,9 +1197,7 @@ def get_pelican(test: Test, name: str, url: str, direct: bool = False) -> Fetche
                 pending.extend(nested)
                 continue
             result = common.as_object(item) or {}
-            attempts = [
-                common.as_object(a) or {} for a in common.as_array(result.get("attempts")) or []
-            ]
+            attempts = [common.as_object(a) or {} for a in common.as_array(result.get("attempts")) or []]
             for attempt in sorted(attempts, key=lambda a: int(a.get("attemptNumber") or 0)):
                 hosts.append(str(attempt.get("endpoint") or "").partition(":")[0])
     except (FileNotFoundError, ValueError):
@@ -1270,9 +1228,7 @@ def get_plugin(test: Test, name: str, url: str, direct: bool = False) -> Fetched
     hosts: list[str] = []
     for ad in ads.splitlines():
         if "TransferSuccess = true" in ad:
-            endpoints = sorted(
-                (int(n), host) for n, host in re.findall(r'Endpoint(\d+) = "([^":]*)', ad)
-            )
+            endpoints = sorted((int(n), host) for n, host in re.findall(r'Endpoint(\d+) = "([^":]*)', ad))
             hosts = [host for _, host in endpoints]
     return Fetched(status, ads or output, directory, hosts)
 
@@ -1297,9 +1253,7 @@ def failover_problems(fetch: Fetched, data: bytes, dead: str, client: str) -> li
     return problems
 
 
-def unfetched(
-    test: Test, name: str, data: bytes, routes: Sequence[str] = ("",)
-) -> Optional[str]:
+def unfetched(test: Test, name: str, data: bytes, routes: Sequence[str] = ("",)) -> Optional[str]:
     """Return why a client can't get object name with every server up.
 
     None if both can. `pelican object get` and stash_plugin each get it
@@ -1357,9 +1311,7 @@ def cache_failover(test: Test) -> list[Row]:
         for name, data in objects.items():
             test.put(name, data)
         if len(test.named_by("object", path, host)) != len(fed.directors):
-            rows.append(
-                (mode, FAIL, f"before {dead.svc} was {mode}, not every director named it")
-            )
+            rows.append((mode, FAIL, f"before {dead.svc} was {mode}, not every director named it"))
             continue
         try:
             away(dead.svc)
@@ -1369,9 +1321,7 @@ def cache_failover(test: Test) -> list[Row]:
         try:
             for when in ("early", "late"):
                 if when == "late":
-                    dropped = test.wait_unnamed(
-                        "object", path, host, AD_LIFETIME + EXPIRY_SLACK
-                    )
+                    dropped = test.wait_unnamed("object", path, host, AD_LIFETIME + EXPIRY_SLACK)
                     if dropped is None:
                         rows.append(
                             (
@@ -1396,8 +1346,7 @@ def cache_failover(test: Test) -> list[Row]:
                     name = f"{mode}-{when}-{client}"
                     fetch = runner(test, name, test.url(name))
                     problems += [
-                        f"{client}: {p}"
-                        for p in failover_problems(fetch, objects[name], dead.svc, client)
+                        f"{client}: {p}" for p in failover_problems(fetch, objects[name], dead.svc, client)
                     ]
                     tried.append(f"{client} tried {fetch.hosts or 'nothing recorded'}")
                 rows.append((f"{mode} {when}", *outcome(problems, "; ".join(tried))[1:]))
@@ -1414,9 +1363,7 @@ def cache_failover(test: Test) -> list[Row]:
                         )
                     )
                 else:
-                    rows.append(
-                        (f"{mode} back", PASS, f"named again {took:.0f}s after it came back")
-                    )
+                    rows.append((f"{mode} back", PASS, f"named again {took:.0f}s after it came back"))
             except control.ControlError as e:
                 rows.append((f"{mode} back", FAIL, str(e)))
     return rows
@@ -1474,9 +1421,7 @@ def origin_failover(test: Test) -> list[Row]:
         for name, data in objects.items():
             test.put(name, data)
         if len(test.named_by("origin", path, host)) != len(fed.directors):
-            rows.append(
-                (mode, FAIL, f"before {dead.svc} was {mode}, not every director named it")
-            )
+            rows.append((mode, FAIL, f"before {dead.svc} was {mode}, not every director named it"))
             continue
         try:
             away(dead.svc)
@@ -1486,9 +1431,7 @@ def origin_failover(test: Test) -> list[Row]:
         try:
             for when in ("early", "late"):
                 if when == "late":
-                    dropped = test.wait_unnamed(
-                        "origin", path, host, AD_LIFETIME + EXPIRY_SLACK
-                    )
+                    dropped = test.wait_unnamed("origin", path, host, AD_LIFETIME + EXPIRY_SLACK)
                     if dropped is None:
                         rows.append(
                             (
@@ -1518,9 +1461,7 @@ def origin_failover(test: Test) -> list[Row]:
                             for p in failover_problems(fetch, objects[name], dead.svc, client)
                         ]
                         tried.append(f"{client} tried {fetch.hosts or 'nothing recorded'}")
-                    rows.append(
-                        (f"{mode} {when} {route}", *outcome(problems, "; ".join(tried))[1:])
-                    )
+                    rows.append((f"{mode} {when} {route}", *outcome(problems, "; ".join(tried))[1:]))
         finally:
             try:
                 back(dead.svc)
@@ -1534,9 +1475,7 @@ def origin_failover(test: Test) -> list[Row]:
                         )
                     )
                 else:
-                    rows.append(
-                        (f"{mode} back", PASS, f"named again {took:.0f}s after it came back")
-                    )
+                    rows.append((f"{mode} back", PASS, f"named again {took:.0f}s after it came back"))
             except control.ControlError as e:
                 rows.append((f"{mode} back", FAIL, str(e)))
     return rows
@@ -1559,9 +1498,7 @@ def listed_directors(url: str) -> Optional[set[str]]:
         found = common.as_array(json.loads(answer.body)) or []
     except ValueError:
         return None
-    return {
-        director.host(str((common.as_object(d) or {}).get("advertise_url", ""))) for d in found
-    }
+    return {director.host(str((common.as_object(d) or {}).get("advertise_url", ""))) for d in found}
 
 
 def peer_director(test: Test) -> list[Row]:
@@ -1579,17 +1516,13 @@ def peer_director(test: Test) -> list[Row]:
     first_url, peer_url = fed.directors[0], fed.directors[1]
     me, peer = director.host(first_url), director.host(peer_url)
     if listed_directors(first_url) != {me, peer}:
-        return [
-            ("", FAIL, f"before the peer was killed, {me} lists {listed_directors(first_url)}")
-        ]
+        return [("", FAIL, f"before the peer was killed, {me} lists {listed_directors(first_url)}")]
     try:
         control.kill(peer)
     except control.ControlError as e:
         return [("", FAIL, str(e))]
     started = time.monotonic()
-    dropped = common.wait_for(
-        lambda: listed_directors(first_url) == {me}, AD_LIFETIME + EXPIRY_SLACK, 5
-    )
+    dropped = common.wait_for(lambda: listed_directors(first_url) == {me}, AD_LIFETIME + EXPIRY_SLACK, 5)
     took_drop = time.monotonic() - started
     try:
         control.start(peer)

@@ -154,10 +154,7 @@ CACHE_METHODS = ("POST", "MKCOL", "COPY", "MOVE", "PROPPATCH", "LOCK")
 # Objects a browser would run script in, if it rendered them.
 PAGES = {
     "x.html": b"<!doctype html><html><body><script>alert(document.domain)</script></body></html>",
-    "x.svg": (
-        b'<svg xmlns="http://www.w3.org/2000/svg">'
-        b"<script>alert(document.domain)</script></svg>"
-    ),
+    "x.svg": (b'<svg xmlns="http://www.w3.org/2000/svg">' b"<script>alert(document.domain)</script></svg>"),
 }
 # Types that a browser shows as text or saves, but does not render, if
 # it may not sniff.
@@ -394,9 +391,7 @@ def post_create_only(test: Test) -> tuple[str, str]:
         ):
             answer = web.request("POST", url, token=token)
             if answer.status not in REFUSED:
-                found.add(
-                    origin, f"POST with {name} alone got {answer.describe()}, not 401 or 403"
-                )
+                found.add(origin, f"POST with {name} alone got {answer.describe()}, not 401 or 403")
             if data in answer.body:
                 found.add(origin, f"POST with {name} alone got the object's bytes")
             found.add(origin, test.stored(origin, NAMESPACE, rel, data, "the object"))
@@ -454,9 +449,7 @@ def copy_move_destination(test: Test) -> tuple[str, str]:
             answer = copy_or_move(method, at(origin, src), test.token, at(origin, dst))
             if answer.status not in (201, 204):
                 found.add(origin, f"{what} got {answer.describe()}, not 201 or 204")
-            found.add(
-                origin, test.stored(origin, NAMESPACE, dst, data, f"{what}: the destination")
-            )
+            found.add(origin, test.stored(origin, NAMESPACE, dst, data, f"{what}: the destination"))
             kept = None if method == "MOVE" else data
             found.add(origin, test.stored(origin, NAMESPACE, src, kept, f"{what}: the source"))
 
@@ -475,9 +468,7 @@ def copy_move_destination(test: Test) -> tuple[str, str]:
                     origin,
                     test.stored(origin, namespace, rel, None, f"{what}: /{namespace}/{rel}"),
                 )
-                found.add(
-                    origin, test.stored(origin, NAMESPACE, src, data, f"{what}: the source")
-                )
+                found.add(origin, test.stored(origin, NAMESPACE, src, data, f"{what}: the source"))
 
             # Out of the token's scope.
             src, dst = f"{base}/a/{m}-src", f"{base}/b/{m}-dst"
@@ -486,9 +477,7 @@ def copy_move_destination(test: Test) -> tuple[str, str]:
             answer = copy_or_move(method, at(origin, src), narrow, at(origin, dst))
             if answer.status != 403:
                 found.add(origin, f"{what} got {answer.describe()}, not 403")
-            found.add(
-                origin, test.stored(origin, NAMESPACE, dst, None, f"{what}: the destination")
-            )
+            found.add(origin, test.stored(origin, NAMESPACE, dst, None, f"{what}: the destination"))
             found.add(origin, test.stored(origin, NAMESPACE, src, data, f"{what}: the source"))
 
             # No Destination.
@@ -552,9 +541,7 @@ def copy_move_scopes(test: Test) -> tuple[str, str]:
             data = test.seed(origin, src)
             old = test.seed(origin, dst)
             what = f"{method} onto an object with Overwrite: F"
-            answer = copy_or_move(
-                method, at(origin, src), test.token, at(origin, dst), overwrite="F"
-            )
+            answer = copy_or_move(method, at(origin, src), test.token, at(origin, dst), overwrite="F")
             if answer.status != 412:
                 found.add(origin, f"{what} got {answer.describe()}, not 412")
             found.add(origin, test.stored(origin, NAMESPACE, src, data, f"{what}: the source"))
@@ -625,9 +612,7 @@ def mkcol(test: Test) -> tuple[str, str]:
         rel = f"{base}/mkcol-read"
         answer = web.request("MKCOL", at(origin, rel), token=test.read_token)
         if answer.status not in REFUSED:
-            found.add(
-                origin, f"MKCOL with storage.read alone got {answer.describe()}, not 401 or 403"
-            )
+            found.add(origin, f"MKCOL with storage.read alone got {answer.describe()}, not 401 or 403")
         found.add(origin, test.made(origin, rel, False, "MKCOL with storage.read alone"))
 
         rel = f"{base}/mkcol-new"
@@ -711,9 +696,7 @@ def lock(test: Test) -> tuple[str, str]:
         statuses: list[str] = []
         for rel, what in ((new, "a new path"), (old, "an object")):
             url = at(origin, rel)
-            answer = web.request(
-                "LOCK", url, token=test.create_token, upload=LOCK_INFO, headers=headers
-            )
+            answer = web.request("LOCK", url, token=test.create_token, upload=LOCK_INFO, headers=headers)
             if answer.status is None:
                 found.add(origin, f"LOCK of {what} got no response")
                 continue
@@ -737,13 +720,9 @@ def lock(test: Test) -> tuple[str, str]:
         if granted:
             put = web.request("PUT", at(origin, new), token=test.token, upload=b"x")
             delete = web.request("DELETE", at(origin, old), token=test.token)
-            statuses.append(
-                f"with no lock token, PUT got {put.describe()}, DELETE {delete.describe()}"
-            )
+            statuses.append(f"with no lock token, PUT got {put.describe()}, DELETE {delete.describe()}")
         for url, lock_token in granted:
-            answer = web.request(
-                "UNLOCK", url, token=test.create_token, headers={"Lock-Token": lock_token}
-            )
+            answer = web.request("UNLOCK", url, token=test.create_token, headers={"Lock-Token": lock_token})
             if not answer.ok:
                 found.add(
                     origin,
@@ -1067,9 +1046,7 @@ def webdav_semantics(test: Test) -> tuple[str, str]:
         rel = f"{test.base(origin)}/root-sentinel"
         answer = web.request("DELETE", f"{origin.url}/{NAMESPACE}/", token=test.token)
         if answer.status not in (403, 405):
-            found.add(
-                origin, f"DELETE of /{NAMESPACE}'s root got {answer.describe()}, not 403 or 405"
-            )
+            found.add(origin, f"DELETE of /{NAMESPACE}'s root got {answer.describe()}, not 403 or 405")
         found.add(
             origin,
             test.stored(
@@ -1103,9 +1080,7 @@ def cache_request(method: str, url: str, token: str, destination: str) -> web.Re
     }
     if method in bodies:
         body, content_type = bodies[method]
-        return web.request(
-            method, url, token=token, upload=body, headers={"Content-Type": content_type}
-        )
+        return web.request(method, url, token=token, upload=body, headers={"Content-Type": content_type})
     return web.request(method, url, token=token)
 
 
@@ -1141,9 +1116,7 @@ def cache_methods(test: Test) -> tuple[str, str]:
         answered: list[str] = []
         for method in CACHE_METHODS:
             target = f"{cache.url}/{NAMESPACE}/{new if method == 'MKCOL' else rel}"
-            answer = cache_request(
-                method, target, test.token, f"{cache.url}/{NAMESPACE}/{destination}"
-            )
+            answer = cache_request(method, target, test.token, f"{cache.url}/{NAMESPACE}/{destination}")
             answered.append(f"{method} {answer.status}")
             if cache.kind == "v2" and answer.status != 405:
                 found.add(cache, f"{method} got {answer.describe()}, not 405")
@@ -1151,14 +1124,10 @@ def cache_methods(test: Test) -> tuple[str, str]:
                 found.add(cache, f"{method} got {answer.describe()}, not a refusal")
             for origin in stores.unique(fed.origins):
                 what = f"after {method} at {cache.svc}"
-                found.add(
-                    origin, test.stored(origin, NAMESPACE, rel, data, f"{what}: the object")
-                )
+                found.add(origin, test.stored(origin, NAMESPACE, rel, data, f"{what}: the object"))
                 found.add(
                     origin,
-                    test.stored(
-                        origin, NAMESPACE, destination, None, f"{what}: the Destination"
-                    ),
+                    test.stored(origin, NAMESPACE, destination, None, f"{what}: the Destination"),
                 )
                 found.add(origin, test.made(origin, new, False, f"{what}: the new path"))
         found.note(cache, ", ".join(answered))

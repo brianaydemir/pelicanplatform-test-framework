@@ -4,7 +4,6 @@ The terms these docs use, and what they mean here: first what the
 framework tests and what it doesn't, then the parts of the framework,
 then its approach to testing Pelican.
 
-
 ## Scope
 
 The framework tests Pelican: its servers in full, and its clients only
@@ -59,7 +58,6 @@ beyond its dealings with a federation, the
 in scope but has no test, or none that would catch a fault;
 [What is not tested](tests/what-is-not-tested.md) lists what matters
 most.
-
 
 ## The federation
 
@@ -124,7 +122,6 @@ suite's page often says which it means.
 Which servers run, and in how many containers: what the `topo-` presets
 choose. Part of the shape.
 
-
 ## Configuring the federation
 
 ### Shape
@@ -159,7 +156,6 @@ One of the directories of Pelican configuration files that each service
 merges, later ones winning: the framework's own, those that `fed.sh`
 generates from the shape, yours in `local/config.d/`, and last, the
 tests' own ([Configuration](configuration.md#pelican-configuration)).
-
 
 ## Running the tests
 
@@ -257,7 +253,6 @@ them, and checks them
 shapes are baselines, whose failures are none of the presets' doing:
 `default`, the framework's own choices, and `pelican-defaults`,
 Pelican's.
-
 
 ## The approach
 

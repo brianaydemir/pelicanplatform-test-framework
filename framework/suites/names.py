@@ -200,9 +200,7 @@ def catalogued(test: Test, origin: common.Origin) -> list[str]:
             held = f"{other!r}'s size" if other else f"{sizes[name]} bytes"
             problems.append(f"{name!r}: its catalog holds {held}, not its own")
             continue
-        found, why = stores.catalog_answer(
-            test.session, origin, "digest", "protected-a", test.rel(name)
-        )
+        found, why = stores.catalog_answer(test.session, origin, "digest", "protected-a", test.rel(name))
         if found is None:
             problems.append(why)
             continue
@@ -638,9 +636,7 @@ def client_put(test: Test) -> tuple[str, str]:
     """
 
     def put(source: str, url: str) -> Optional[str]:
-        code, out, err = test.session.pelican_cmd(
-            "object", "put", "--token", test.token_file, source, url
-        )
+        code, out, err = test.session.pelican_cmd("object", "put", "--token", test.token_file, source, url)
         return f"exit {code}: {last_line(err or out)}" if code != 0 else None
 
     return put_by(test, "client-put", put)

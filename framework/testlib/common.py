@@ -467,16 +467,12 @@ def parse_owners(owners: str, exports: str) -> list[Owner]:
     for line in exports.splitlines():
         if line.strip():
             svc, prefix, like, caps, issuer = line.split()
-            found.setdefault(svc, []).append(
-                Export(prefix, like, frozenset(caps.split(",")), issuer)
-            )
+            found.setdefault(svc, []).append(Export(prefix, like, frozenset(caps.split(",")), issuer))
     result: list[Owner] = []
     for line in owners.splitlines():
         if line.strip():
             svc, url, store, key_dir, web_url = line.split()
-            result.append(
-                Owner(Origin(svc, url, store, ""), key_dir, web_url, tuple(found.get(svc, ())))
-            )
+            result.append(Owner(Origin(svc, url, store, ""), key_dir, web_url, tuple(found.get(svc, ()))))
     return result
 
 
@@ -760,9 +756,7 @@ class Federation:
         There are none for a standalone origin.
         """
         found = self.discovery
-        urls = as_array(found.get("director_advertise_endpoints")) or [
-            found["director_endpoint"]
-        ]
+        urls = as_array(found.get("director_advertise_endpoints")) or [found["director_endpoint"]]
         return [str(url) for url in urls if url]
 
     @cached_property

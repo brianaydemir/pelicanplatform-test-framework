@@ -20,12 +20,12 @@ another. It needs the embedded issuer and a protected namespace, as
 `framework/config.d/base/40-origin.yaml` grants, within each namespace
 that has an issuer:
 
-| Prefix                       | Actions               | To                                               |
-| ---------------------------- | --------------------- | ------------------------------------------------ |
-| `/`                          | read, create, modify  | the built-in `admin`                             |
-| `/data/issuer/home/$USER`    | read, create, modify  | `test-analyst` and `test-member`                 |
-| `/data/issuer/projects/$GROUP` | read, create        | the groups `test-project-a` and `test-project-b` |
-| `/data/issuer/archive`       | read                  | any group named `test-project-*`                 |
+| Prefix                         | Actions              | To                                               |
+| ------------------------------ | -------------------- | ------------------------------------------------ |
+| `/`                            | read, create, modify | the built-in `admin`                             |
+| `/data/issuer/home/$USER`      | read, create, modify | `test-analyst` and `test-member`                 |
+| `/data/issuer/projects/$GROUP` | read, create         | the groups `test-project-a` and `test-project-b` |
+| `/data/issuer/archive`         | read                 | any group named `test-project-*`                 |
 
 Under `-p origin-export-templates`, `fed.sh` gives the `/protected-b`
 export templates of its own, read on `/data/issuer/export` for
@@ -54,11 +54,11 @@ part of (`gamma/shared`) with `test-analyst` (not under
 `-p origin-multiuser`, which refuses shares), and an object in each
 prefix above, with `decoy/obj` in none. So, within the namespace:
 
-| User            | May                                                                       |
-| --------------- | ------------------------------------------------------------------------- |
-| `test-analyst`  | read, create, and modify `home/test-analyst`; read the share              |
+| User            | May                                                                                                   |
+| --------------- | ----------------------------------------------------------------------------------------------------- |
+| `test-analyst`  | read, create, and modify `home/test-analyst`; read the share                                          |
 | `test-member`   | read, create, and modify `home/test-member` and `gamma`; read and create the projects; read `archive` |
-| `test-stranger` | read `gamma`; and `archive`, once the rogue group may match               |
+| `test-stranger` | read `gamma`; and `archive`, once the rogue group may match                                           |
 
 The admin creates the suite's clients through the issuer's admin API:
 one for the device flow and one for the authorization code flow, each
@@ -253,8 +253,7 @@ itself with PKCE. Only `registration`, and the Pelican client in
   `invalid_redirect_uri`), and one whose name is longer than 128 bytes
   (400, `invalid_client_metadata`). The client is bound to the first
   user who approves a flow for it: `test-member` gets a token through
-  it, and then `test-analyst`'s approval is refused (403, `This client
-  is registered to a different user`), and the flow still polls
+  it, and then `test-analyst`'s approval is refused (403, `This client is registered to a different user`), and the flow still polls
   `authorization_pending`. Its configuration (`<issuer>/oidc-cm/<id>`,
   RFC 7592) refuses a GET, PUT, or DELETE with no registration access
   token or a wrong one (401). With the right one, a GET shows the

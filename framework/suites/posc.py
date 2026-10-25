@@ -342,9 +342,7 @@ class Test:
         found: set[str] = set()
         if self.kind == "posc":
             for store in self.stores:
-                found.update(
-                    glob.glob(f"{store}/.pelican-posc/**/in_progress.*", recursive=True)
-                )
+                found.update(glob.glob(f"{store}/.pelican-posc/**/in_progress.*", recursive=True))
         elif self.kind == "atomic":
             for root in self.roots:
                 found.update(glob.glob(f"{root}/{ATOMIC_DIR}/**", recursive=True))
@@ -488,9 +486,7 @@ class Upload:
         error: Afterward, why it never got under way, if it didn't.
     """
 
-    def __init__(
-        self, test: Test, name: str, mode: str, total: int, send: int, hold: float = 60
-    ):
+    def __init__(self, test: Test, name: str, mode: str, total: int, send: int, hold: float = 60):
         self.sent = threading.Event()
         self.released = threading.Event()
         self.status: Optional[str] = None
@@ -500,13 +496,9 @@ class Upload:
         )
         self.thread.start()
 
-    def _put(
-        self, test: Test, name: str, mode: str, total: int, send: int, hold: float
-    ) -> None:
+    def _put(self, test: Test, name: str, mode: str, total: int, send: int, hold: float) -> None:
         try:
-            self.status = test.partial_put(
-                name, mode, total, send, hold, self.sent, self.released
-            )
+            self.status = test.partial_put(name, mode, total, send, hold, self.sent, self.released)
         except CouldNotConnect as e:
             self.error = f"could not connect: {e}"
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -830,9 +822,7 @@ def client(test: Test) -> tuple[str, str]:
             return FAIL, f"{shown(path)} holds {test.size(path)} of {total} bytes"
         if not wait_for(lambda: test.new_staging() is None, 10):
             return FAIL, f"staging file left: {shown(test.new_staging())}"
-        return PASS, (
-            "the store showed nothing of the upload while it ran" if unseen_but_judged else ""
-        )
+        return PASS, ("the store showed nothing of the upload while it ran" if unseen_but_judged else "")
     finally:
         # Don't leave up to 1 GiB behind.
         if path is not None:
@@ -965,9 +955,7 @@ def plant(test: Test, age: float) -> str:
             be written.
     """
     if not os.path.isdir(staging_root(test)):
-        raise Problem(
-            f"{shown(staging_root(test))} does not exist, though an upload has been staged"
-        )
+        raise Problem(f"{shown(staging_root(test))} does not exist, though an upload has been staged")
     rel = f".pelican-posc/expiry-{test.run}/in_progress.{int(time.time())}.{os.getpid()}"
     error = stores.write_file(test.origin.store_of("protected-a"), rel, b"abandoned\n")
     if error:
@@ -1097,9 +1085,7 @@ def expiry_idle(test: Test) -> Row:
     data = os.urandom(2 * MIB)
     url = urlsplit(f"{test.base_url}/{name}")
     test.mark()
-    conn = HTTPSConnection(
-        url.hostname or "", url.port or 443, timeout=120, context=web.tls_context()
-    )
+    conn = HTTPSConnection(url.hostname or "", url.port or 443, timeout=120, context=web.tls_context())
     try:
         conn.putrequest("PUT", url.path)
         conn.putheader("Authorization", f"Bearer {test.token}")
@@ -1186,9 +1172,7 @@ def idle_restarted(test: Test) -> Row:
     if why:
         return SKIP, why
     for origin in stores.unique(test.fed.origins):
-        error = stores.write_file(
-            origin.store_of("protected-a"), f"data/posc/{test.run}-probe", b"probe\n"
-        )
+        error = stores.write_file(origin.store_of("protected-a"), f"data/posc/{test.run}-probe", b"probe\n")
         if error:
             return FAIL, f"putting the probe: {error}"
     text = "\n".join(

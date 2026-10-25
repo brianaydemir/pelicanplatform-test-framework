@@ -252,9 +252,9 @@ class Test:
 
     def xrootd(self, server: Server) -> bool:
         """Return whether XRootD serves an origin or a cache of server's."""
-        return bool(
-            self.origins_at(server) and self.fed.origin_variant in common.XROOTD_ORIGINS
-        ) or any(c.kind == "xrootd" for c in self.caches_at(server))
+        return bool(self.origins_at(server) and self.fed.origin_variant in common.XROOTD_ORIGINS) or any(
+            c.kind == "xrootd" for c in self.caches_at(server)
+        )
 
     def federated(self, server: Server) -> bool:
         """Return whether server is a federated origin or cache.
@@ -264,13 +264,9 @@ class Test:
         """
         if self.fed.standalone:
             return False
-        return bool(self.origins_at(server)) or any(
-            not c.site_local for c in self.caches_at(server)
-        )
+        return bool(self.origins_at(server)) or any(not c.site_local for c in self.caches_at(server))
 
-    def web_token(
-        self, server: Server, scopes: tuple[str, ...], key: Optional[str] = None
-    ) -> str:
+    def web_token(self, server: Server, scopes: tuple[str, ...], key: Optional[str] = None) -> str:
         """Return a token of server's own making, with scopes.
 
         The token is the suite's (see credentials.web_token()); with key,
@@ -515,8 +511,7 @@ def health_api(test: Test) -> list[Row]:
 def gauges(snapshot: metrics.Snapshot) -> dict[str, float]:
     """Return pelican_component_health_status in snapshot, by component."""
     return {
-        dict(labels).get("component", ""): value
-        for labels, value in snapshot.series(COMPONENT).items()
+        dict(labels).get("component", ""): value for labels, value in snapshot.series(COMPONENT).items()
     }
 
 
@@ -576,13 +571,9 @@ def vector(answer: web.Response) -> Optional[list[tuple[dict[str, str], float]]]
     if answer.status != 200 or found.get("status") != "success":
         return None
     result: list[tuple[dict[str, str], float]] = []
-    for item in (
-        common.as_array((common.as_object(found.get("data")) or {}).get("result")) or []
-    ):
+    for item in common.as_array((common.as_object(found.get("data")) or {}).get("result")) or []:
         item = common.as_object(item) or {}
-        labels = {
-            str(k): str(v) for k, v in (common.as_object(item.get("metric")) or {}).items()
-        }
+        labels = {str(k): str(v) for k, v in (common.as_object(item.get("metric")) or {}).items()}
         value = common.as_array(item.get("value")) or []
         try:
             result.append((labels, float(value[1])))
@@ -679,10 +670,7 @@ def servers_scrape_problems(
     """
     if found is None:
         return ["its query of the servers' scrape failed"]
-    values = {
-        (labels.get("server_type", ""), labels.get("instance", "")): value
-        for labels, value in found
-    }
+    values = {(labels.get("server_type", ""), labels.get("instance", "")): value for labels, value in found}
     problems: list[str] = []
     for target in want:
         if target not in values:
@@ -737,9 +725,7 @@ def metric_authorization(test: Test) -> list[Row]:
     (promql_access()); and its own scrapes, and the directors'
     (scrape_rows()).
     """
-    rows = each_server(
-        test, lambda server: [metrics_access(test, server), promql_access(test, server)]
-    )
+    rows = each_server(test, lambda server: [metrics_access(test, server), promql_access(test, server)])
     return rows + guarded(functools.partial(scrape_rows, test))
 
 
@@ -765,8 +751,7 @@ def shown(series: Mapping[metrics.Labels, float]) -> str:
     if not series:
         return "none"
     return "; ".join(
-        "{" + ",".join(f"{k}={v}" for k, v in labels) + f"}} +{value:g}"
-        for labels, value in series.items()
+        "{" + ",".join(f"{k}={v}" for k, v in labels) + f"}} +{value:g}" for labels, value in series.items()
     )
 
 
@@ -793,9 +778,7 @@ def http_metrics(test: Test) -> list[Row]:
     # `refused` can be refused: the protected namespaces first, since
     # /public may take writes (`-p origin-public-writes`) but reads
     # without a token.
-    writable = [
-        ns for ns in credentials.exported(fed) if {"Writes", "DirectReads"} <= fed.exports[ns]
-    ]
+    writable = [ns for ns in credentials.exported(fed) if {"Writes", "DirectReads"} <= fed.exports[ns]]
     namespace = next(
         (ns for ns in writable if credentials.has_issuer(fed.exports[ns]) and ns != "public"),
         writable[0] if writable else None,
@@ -977,9 +960,7 @@ def delete_change(test: Test, server: Server, change: str) -> web.Response:
     """DELETE server's log level change, as its admin."""
     if change in test.changes.get(server.name, []):
         test.changes[server.name].remove(change)
-    return web.request(
-        "DELETE", f"{server.web_url}{LOG_LEVEL}/{change}", token=test.admin(server)
-    )
+    return web.request("DELETE", f"{server.web_url}{LOG_LEVEL}/{change}", token=test.admin(server))
 
 
 def undo_changes(test: Test) -> None:
@@ -1101,9 +1082,7 @@ def delete_row(test: Test, server: Server) -> Row:
         extra.append(f"the change is still listed: {active(status)}")
     if status.get("currentLevel") != before:
         extra.append(f"the level is {status.get('currentLevel')}, not {before}")
-    return judge(
-        case, [("first", first_delete, (200,)), ("second", second_delete, (404,))], extra
-    )
+    return judge(case, [("first", first_delete, (200,)), ("second", second_delete, (404,))], extra)
 
 
 def refusal_row(test: Test, server: Server) -> Row:
@@ -1369,11 +1348,7 @@ def xrootd_targets(test: Test) -> list[XrootdTarget]:
     fed = test.fed
     namespace = test.readable()
     path = f"/{namespace}/data/0.0"
-    token = (
-        test.session.setup_token(namespace)
-        if credentials.has_issuer(fed.exports[namespace])
-        else None
-    )
+    token = test.session.setup_token(namespace) if credentials.has_issuer(fed.exports[namespace]) else None
     by_url = {s.web_url: s for s in test.servers}
     found: list[XrootdTarget] = []
     if fed.origins and fed.origin_variant in common.XROOTD_ORIGINS:
@@ -1558,9 +1533,7 @@ def xrootd_rows(test: Test, target: XrootdTarget) -> list[Row]:
 
     served = web.request("GET", target.url, token=target.token).status
     if served is None:
-        return rows + [
-            (f"{name} restart", FAIL, "before the change, the object went unanswered")
-        ]
+        return rows + [(f"{name} restart", FAIL, "before the change, the object went unanswered")]
     duration = int(drain) + XROOTD_EXTRA
     answer = change_level(test, target.server, level, duration, target.parameter)
     change = made(test, target.server, answer)

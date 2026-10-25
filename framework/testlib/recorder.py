@@ -40,18 +40,12 @@ def since(after: int) -> list[list[str]]:
     Args:
         after: A time.time_ns().
     """
-    return [
-        row for row in index() if len(row) >= 5 and row[0].isdigit() and int(row[0]) > after
-    ]
+    return [row for row in index() if len(row) >= 5 and row[0].isdigit() and int(row[0]) > after]
 
 
 def deliveries(after: int, path: str = "", event_id: str = "") -> list[list[str]]:
     """Return since(after)'s rows for object path, or for event event_id."""
-    return [
-        row
-        for row in since(after)
-        if (path and row[3] == path) or (event_id and row[4] == event_id)
-    ]
+    return [row for row in since(after) if (path and row[3] == path) or (event_id and row[4] == event_id)]
 
 
 def event(capture: str, part: str) -> dict[str, Any]:

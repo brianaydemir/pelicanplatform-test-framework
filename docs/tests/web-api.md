@@ -13,8 +13,7 @@ director, and the registry, each once by its web URL, so in the `tiny`
 topology just `fed`.
 
 It acts at each server as its admin, with a bearer token signed with
-the server's own key, naming its local issuer, as `pelican cache
-introspect` mints the admin's (`credentials.mint_user()`), or with the
+the server's own key, naming its local issuer, as `pelican cache introspect` mints the admin's (`credentials.mint_user()`), or with the
 cookie of a login as `admin`; and as `test-webapi`, an ordinary user,
 whom the admin creates at each server once, and later runs reuse. Every
 server enforces a built-in acceptable use policy unless

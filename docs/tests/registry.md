@@ -70,8 +70,7 @@ the registry with them, or with a server's own key, through
     a key of the run's (`IssuerKeysDirectory`) and a site name
     (`Xrootd.Sitename`), must register the prefix with that key alone,
     and delete it.
-  - `cli-flags`: `pelican namespace register --privkey <key> --pubkey
-    <key> --namespace-url <registry>` must register the prefix with
+  - `cli-flags`: `pelican namespace register --privkey <key> --pubkey <key> --namespace-url <registry>` must register the prefix with
     `--privkey`'s key. Pelican binds `--privkey` to `IssuerKey`, and
     `--namespace-url` to `Federation.RegistryUrl`, only if each has a
     value when the command is defined, which it never does
@@ -193,16 +192,14 @@ the registry with them, or with a server's own key, through
   - `deny-resubmit`: once the admin denies it, its owner's edit must
     succeed, and resubmit it as Pending, still the owner's
     (`createUpdateNamespace`).
-  - `invite-refusals`: an invite to take it over (`POST
-    /namespaces/<id>/ownership-invites`,
+  - `invite-refusals`: an invite to take it over (`POST /namespaces/<id>/ownership-invites`,
     `createRegistrationOwnershipInvite`) is the owner's or the admin's
     to mint: `test-registry-heir`'s must get 403; the owner's with an
     `expiresIn` of `0s`, longer than 30 days
     (`maxOwnershipInviteExpiry`), or `soon`, which is no duration, 400;
     and the admin's, 201, with a token.
   - `invite-transfer`: the owner's invite, 201, must say that it is
-    single-use; `test-registry-heir` redeems it (`POST
-    /api/v1.0/invites/redeem/registration-ownership`, with the token;
+    single-use; `test-registry-heir` redeems it (`POST /api/v1.0/invites/redeem/registration-ownership`, with the token;
     `handleRedeemRegistrationOwnershipInvite`), 200, naming the
     registration's ID and prefix, after which the registration is
     theirs; the former owner's edit must then get 403, and the new
@@ -241,8 +238,7 @@ the registry with them, or with a server's own key, through
     with its ID and name. Its body says `"source": "Origin"`, as a
     server's own push does; with no source, the registry would take
     the downtime for its own, and refuse it (403).
-  - `source-registry`: one the origin declares with `"source":
-    "registry"` must get 403.
+  - `source-registry`: one the origin declares with `"source": "registry"` must get 403.
   - `admin-current`: one the registry's admin declares for the cache,
     now: within 150 seconds, no director may name the cache, and each
     must list it in `/api/v1.0/director_ui/servers` as `filtered`; once

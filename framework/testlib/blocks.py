@@ -717,9 +717,7 @@ def xrootd_stored(cache: common.Cache, rel: str, data: bytes) -> tuple[int, list
         start = i * info.block_size
         want = data[start : start + info.block_size]
         if held[start : start + len(want)] != want:
-            problems.append(
-                f"block {i} (bytes {start}-{start + len(want) - 1}) is not the object's"
-            )
+            problems.append(f"block {i} (bytes {start}-{start + len(want) - 1}) is not the object's")
         compared += 1
     return compared, problems, ""
 

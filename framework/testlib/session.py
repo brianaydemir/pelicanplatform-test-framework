@@ -154,9 +154,7 @@ class Session:
             self._server[key] = path
         return self._server[key]
 
-    def token(
-        self, namespace: str, scopes: tuple[str, ...] = RWM, profile: Optional[str] = None
-    ) -> str:
+    def token(self, namespace: str, scopes: tuple[str, ...] = RWM, profile: Optional[str] = None) -> str:
         """Return the same token itself."""
         with open(self.token_file(namespace, scopes, profile), encoding="utf-8") as f:
             return f.read().strip()
@@ -190,9 +188,7 @@ class Session:
         key = (cred.name, namespace, op)
         if key not in self._credential:
             path = self.path(f"tokens/{cred.name}.{namespace}.{op}")
-            expiry = credentials.mint_credential(
-                self.fed, cred, namespace, op, path, self.profile
-            )
+            expiry = credentials.mint_credential(self.fed, cred, namespace, op, path, self.profile)
             self._credential[key] = None if expiry is None else path
             if cred.expired and expiry is not None:
                 self.stale_at = max(self.stale_at or expiry, expiry)
@@ -239,9 +235,7 @@ class Session:
         """
         started = time.monotonic()
         found = self._run([self.pelican, *args], env, cwd, timeout)
-        self.log_command(
-            ["pelican", *args], cwd or self.tmp, time.monotonic() - started, *found
-        )
+        self.log_command(["pelican", *args], cwd or self.tmp, time.monotonic() - started, *found)
         return found
 
     def plugin_cmd(
@@ -276,9 +270,7 @@ class Session:
         ads = _read(outfile)
         files = {"infile": _read(infile), "outfile": ads}
         seconds = time.monotonic() - started
-        self.log_command(
-            ["stash_plugin", *args], cwd or self.tmp, seconds, status, out, err, files
-        )
+        self.log_command(["stash_plugin", *args], cwd or self.tmp, seconds, status, out, err, files)
         return status, out, err, ads
 
     def _run(
@@ -322,9 +314,7 @@ class Session:
         (report.redact()).
         """
         sections = [("stdout", out), ("stderr", err), *(files or {}).items()]
-        said = "".join(
-            f"--- {name}\n{text.rstrip()}\n" for name, text in sections if text.strip()
-        )
+        said = "".join(f"--- {name}\n{text.rstrip()}\n" for name, text in sections if text.strip())
         entry = (
             f"==> {time.strftime('%Y-%m-%d %H:%M:%S')} {shlex.join(args)}\n"
             + f"    in {cwd}: exit {status} after {seconds:.1f}s\n{said}\n"

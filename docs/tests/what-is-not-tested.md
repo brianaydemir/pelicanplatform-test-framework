@@ -8,7 +8,6 @@ exercise. What a preset itself limits, such as the namespaces it
 exports or the suites that skip under it, is in its row of the
 [README's preset tables](../../README.md#presets).
 
-
 ## Not offered as presets
 
 Features that would seem natural presets, and why none is offered:
@@ -26,8 +25,7 @@ Features that would seem natural presets, and why none is offered:
   which differ from Pelican's by their defaults (`osdf_default` in
   `docs/parameters.yaml`): those point at the OSDF's discovery host,
   legacy services, and OSG Topology, which only the OSDF serves.
-- **A local cache on the clients' host** (`pelican-server serve
-  --module localcache`): the V2 cache's own code in its client-side
+- **A local cache on the clients' host** (`pelican-server serve --module localcache`): the V2 cache's own code in its client-side
   mode (`LocalCache.*`), which joins no federation and listens on a
   Unix socket, which a client names (`--cache unix:///...`). It would
   need a service beside `dev` that shares the socket, and a suite of
@@ -38,8 +36,7 @@ Features that would seem natural presets, and why none is offered:
   of its own; the `cache-api` suite checks that a cache refuses a
   federation not its own.
 - **Modules sharing a process**, as a site might run a director with
-  its registry, or an origin with a cache (`pelican-server serve
-  --module ...`): `topo-tiny` runs every module in one process, and
+  its registry, or an origin with a cache (`pelican-server serve --module ...`): `topo-tiny` runs every module in one process, and
   the other shapes each in a process of its own.
 - **A broker in a server of its own** (`--module broker`): the
   directors here run one, as Pelican's do by default
@@ -111,7 +108,6 @@ Features that would seem natural presets, and why none is offered:
   which an origin asks for `<bucket>.<service>/<object>`: the form is
   the AWS SDK's to build, and Pelican passes the style through; the
   `s3` service serves path style, at `<service>/<bucket>/<object>`.
-
 
 ## Not exercised
 

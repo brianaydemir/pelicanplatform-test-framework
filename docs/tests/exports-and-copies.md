@@ -17,8 +17,7 @@ case, named `<scenario> <case>`.
 
 No shape gives an export without `Listings`, or one without
 `DirectReads` beside others with them, or turns copies off. So, for
-`listings-capability`, `direct-reads-capability`, and `disable-copies
-disabled`, the suite restarts every origin with `fed.sh`'s
+`listings-capability`, `direct-reads-capability`, and `disable-copies disabled`, the suite restarts every origin with `fed.sh`'s
 `Origin.Exports` restated, as the last of its configuration layers
 ([service control](../../README.md#service-control)): `/protected-b` (or,
 where it is not exported, `/protected-a`) without `Listings`; `/public`,
@@ -49,8 +48,7 @@ restore them afterward; the static token is one `fed.sh init` made, in
 take writes and direct clients, and a control helper; elsewhere they
 skip.
 
-- `multipart-put`: with metadata off, a PUT typed `multipart/form-data;
-  boundary=...` must be stored as sent, as a PUT stores its body (RFC
+- `multipart-put`: with metadata off, a PUT typed `multipart/form-data; boundary=...` must be stored as sent, as a PUT stores its body (RFC
   9110, section 9.3.4). At each origin that takes direct writes, a PUT
   of a well-formed multipart document, then a GET of it, must get it
   byte for byte, as must the store: `pelican-shaped`, a `metadata` part
@@ -154,8 +152,7 @@ skip.
   (`wrong-scope`); and with no token, be refused too (`protected`): the
   export takes a token, though it is nested in `/public`, which anyone
   may read. Afterward the origins are restored, and the export's
-  registration removed, with a token of the origins' key, as `pelican
-  namespace delete` mints one. Pelican's native origin registers a
+  registration removed, with a token of the origins' key, as `pelican namespace delete` mints one. Pelican's native origin registers a
   route group with a catch-all per export, and its router (gin) refuses
   a catch-all whose prefix holds another route, so an origin with an
   export nested in another panics as it starts, and never serves.

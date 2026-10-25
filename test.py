@@ -245,11 +245,7 @@ def list_suites(chosen: dict[str, list[str]]) -> None:
         required = getattr(module, "REQUIRED", ())
         once = getattr(module, "ONE_PROFILE", ())
         for scenario in scenarios:
-            notes = [
-                n
-                for n, of in (("always runs", required), ("WLCG only", once))
-                if scenario in of
-            ]
+            notes = [n for n, of in (("always runs", required), ("WLCG only", once)) if scenario in of]
             noted = f" ({'; '.join(notes)})" if notes else ""
             print(f"  {scenario:<{width}} {module.SCENARIOS[scenario]}{noted}")
         print()
@@ -427,8 +423,7 @@ def main() -> int:
                 # The first pass shows whether the federation serves at all.
                 if not finished and required and session is first:
                     print(
-                        f"\n{common.PROG}: stopping: {name} did not finish, so nothing else"
-                        + " can pass",
+                        f"\n{common.PROG}: stopping: {name} did not finish, so nothing else" + " can pass",
                         file=sys.stderr,
                     )
                     stopped = True

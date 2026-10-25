@@ -111,11 +111,7 @@ class Test:
         self.origins = stores.unique(self.fed.origins)
         self.storages = list(
             dict.fromkeys(
-                [
-                    owner.origin.store_of(e.path)
-                    for owner in self.fed.owners
-                    for e in owner.exports
-                ]
+                [owner.origin.store_of(e.path) for owner in self.fed.owners for e in owner.exports]
                 + [o.store_of(p.like) for o in self.origins for p in self.pairs]
             )
         )
@@ -220,9 +216,7 @@ def not_ready(test: Test) -> str:
             "object", "get", *args, f"{fed.url}{pair.export.prefix}/{rel}", target
         )
         if code != 0:
-            return (
-                f"`pelican object get` of {pair.export.prefix}/{rel}: {last_line(err or out)}"
-            )
+            return f"`pelican object get` of {pair.export.prefix}/{rel}: {last_line(err or out)}"
         if common.sha256(target) != want:
             return f"`pelican object get` of {pair.export.prefix}/{rel}: not the object"
         for cache in fed.caches:
@@ -306,9 +300,7 @@ def keys(test: Test) -> tuple[str, str]:
         theirs = [(f"{fed.origin_web_url}/.well-known/issuer.jwks", "origins-server")]
         for pair in test.pairs:
             if credentials.has_issuer(fed.exports[pair.like]):
-                theirs.append(
-                    (f"{fed.issuer_of(pair.like)}/.well-known/issuer.jwks", f"{pair.like}-jwks")
-                )
+                theirs.append((f"{fed.issuer_of(pair.like)}/.well-known/issuer.jwks", f"{pair.like}-jwks"))
         for url, name in dict.fromkeys(theirs):
             kids, why = get_kids(test, url, f"keys-{name}")
             checked += 1
@@ -358,9 +350,7 @@ def routing(test: Test) -> tuple[str, str]:
             for path, hosts, direct in sides:
                 answer = director.ask(url, "origin", path, query="directread")
                 wanted = hosts if direct else []
-                unwanted = hosts_named(
-                    answer, [h for h in origin_hosts + [owner_host] if h not in wanted]
-                )
+                unwanted = hosts_named(answer, [h for h in origin_hosts + [owner_host] if h not in wanted])
                 what = f"{director.host(url)}, for a direct read of {path},"
                 if wanted and not hosts_named(answer, wanted):
                     problems.append(f"{what} named none of {wanted}: {answer.describe()}")
@@ -409,8 +399,7 @@ def nested(test: Test, pair: Pair) -> list[str]:
                 problems.append(f"{cache.svc}: GET {path}: {answer.describe()}")
             elif answer.body == decoy:
                 problems.append(
-                    f"{cache.svc}: GET {path}: served what origin-0's /public holds"
-                    + " at other/..."
+                    f"{cache.svc}: GET {path}: served what origin-0's /public holds" + " at other/..."
                 )
             elif answer.body != want:
                 problems.append(f"{cache.svc}: GET {path}: not the object")
@@ -601,9 +590,7 @@ def client_get(
         return None
     if code != 0:
         return f"{what}: exit {code}: {last_line(err or out)}"
-    if common.sha256(target) != common.sha256(
-        test.path(test.stores_of(pair, side)[0], pair, side, rel)
-    ):
+    if common.sha256(target) != common.sha256(test.path(test.stores_of(pair, side)[0], pair, side, rel)):
         return f"{what}: not the object"
     try:
         with open(stats, encoding="utf-8") as f:
@@ -620,9 +607,7 @@ def client_get(
     return None
 
 
-def client_put(
-    test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: str
-) -> Optional[str]:
+def client_put(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: str) -> Optional[str]:
     """Run `pelican object put` of a new object to side with cred's token.
 
     Returns:
@@ -637,9 +622,7 @@ def client_put(
     rel = f"{test.base}/{tag}"
     ns = pair.namespace(side)
     args = ["--token", token_file] if token_file else []
-    code, out, err = test.session.pelican_cmd(
-        "object", "put", *args, source, f"{fed.url}/{ns}/{rel}"
-    )
+    code, out, err = test.session.pelican_cmd("object", "put", *args, source, f"{fed.url}/{ns}/{rel}")
     what = f"put to /{ns}/{rel} ({cred.name})"
     held = test.holders(pair, rel)
     if owners.expected(fed, cred, pair, side, "put", False) != ALLOW:
@@ -677,9 +660,7 @@ def client(test: Test, name: str) -> tuple[str, str]:
         found: list[Optional[str]] = []
         writes = "Writes" in pair.export.caps and "Writes" in test.fed.exports[pair.like]
         if name in ("get", "direct-get"):
-            found.append(
-                client_get(test, pair, "owner", reader(pair), name == "direct-get", tag)
-            )
+            found.append(client_get(test, pair, "owner", reader(pair), name == "direct-get", tag))
         elif name == "cross-get":
             if pair.like not in credentials.PROTECTED:
                 continue

@@ -24,8 +24,7 @@ objects are put in place, and the federated caches asked what they
 hold, with WLCG tokens either way. `get-public` and `plugin-get-public`
 present no token, and so run in the WLCG pass alone.
 
-- `get-public` and `get-protected-a`: `pelican object get --cache
-  <cache-2>` of a new object, to a file, with the `server` token
+- `get-public` and `get-protected-a`: `pelican object get --cache <cache-2>` of a new object, to a file, with the `server` token
   (`--token`) in `/protected-a`, must exit 0 and write the object; and
   its transfer statistics (`--transfer-stats`) must name cache-2, and
   no other server, as the one that served it.

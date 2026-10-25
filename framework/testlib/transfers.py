@@ -143,10 +143,7 @@ def outcome(scenario: Scenario, exports: Exports) -> Outcome:
     """
     cred = scenario.credential
     verdict = cred.verdict if cred else ALLOW
-    if (
-        credentials.decide(verdict, exports[scenario.namespace], scenario.op, scenario.direct)
-        != ALLOW
-    ):
+    if credentials.decide(verdict, exports[scenario.namespace], scenario.op, scenario.direct) != ALLOW:
         return Outcome.REFUSED
     if scenario.client == "http" and cred and cred.expired and scenario.asks_director:
         return Outcome.REFUSED
@@ -425,9 +422,7 @@ def batch_url(federation: str, scenario: Scenario, name: str) -> str:
     return f"{federation}{scenario.collection}{name}{query}"
 
 
-def http_target(
-    scenario: Scenario, url: str, federation: str, director: str, cache: str
-) -> str:
+def http_target(scenario: Scenario, url: str, federation: str, director: str, cache: str) -> str:
     """Return where a plain HTTP client sends its request for url.
 
     url is a batch URL of scenario's, at the federation (see batch_url()).

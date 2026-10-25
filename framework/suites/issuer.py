@@ -507,9 +507,7 @@ def prepare(test: Test) -> None:
         test.logins[role] = log_in(test, role)
     curator = test.api("curator")
     made = must(
-        collections.create(
-            curator, "gamma", f"/{test.namespace}/{test.gamma_rel}", sharing=True
-        ),
+        collections.create(curator, "gamma", f"/{test.namespace}/{test.gamma_rel}", sharing=True),
         "creating gamma",
     )
     test.gamma = str(made.object.get("id", ""))
@@ -520,9 +518,7 @@ def prepare(test: Test) -> None:
         )
     if not test.fed.multiuser:
         shared = must(
-            collections.share(
-                stranger, test.gamma, "shared", f"/{test.namespace}/{test.shared_rel}"
-            ),
+            collections.share(stranger, test.gamma, "shared", f"/{test.namespace}/{test.shared_rel}"),
             "sharing gamma/shared",
         )
         test.share = str(shared.object.get("id", ""))
@@ -588,9 +584,7 @@ def finish(test: Test) -> None:
                 warn(f"could not remove the {kind} client: {failed}")
     for namespace in test.seeded:
         for origin in stores.unique(test.fed.origins):
-            for error in stores.empty_tree(
-                origin, namespace, BASE, test.session.setup_token(namespace)
-            ):
+            for error in stores.empty_tree(origin, namespace, BASE, test.session.setup_token(namespace)):
                 warn(error)
 
 
@@ -708,15 +702,11 @@ def templates(test: Test) -> tuple[str, str]:
         problems += claim_problems(tok, role, test.issuer_url, earned.get(role, frozenset()))
     rogue = test.groups[f"{ROGUE}-{test.run}"]
     archive = scope("read", ARCHIVE)
-    must(
-        accounts.set_eligible(test.api("admin"), rogue, True), "making the rogue group eligible"
-    )
+    must(accounts.set_eligible(test.api("admin"), rogue, True), "making the rogue group eligible")
     try:
         tok = test.tokens("stranger", DATA_SCOPES).access
         if archive not in data_scopes(tok):
-            problems.append(
-                "test-stranger's token lacks the archive once their group may match"
-            )
+            problems.append("test-stranger's token lacks the archive once their group may match")
         if issuer.groups(tok) != frozenset({f"{ROGUE}-{test.run}"}):
             problems.append(f"test-stranger's token's groups are {sorted(issuer.groups(tok))}")
     finally:
@@ -734,8 +724,7 @@ def templates(test: Test) -> tuple[str, str]:
             found = data_scopes(tok)
             if found != want:
                 problems.append(
-                    f"{username(role)}'s /protected-b token has {sorted(found)},"
-                    + f" not {sorted(want)}"
+                    f"{username(role)}'s /protected-b token has {sorted(found)}," + f" not {sorted(want)}"
                 )
             if issuer.claims(tok).get("iss") != test.fed.issuer_of("protected-b"):
                 problems.append(f"{username(role)}'s /protected-b token names another issuer")
@@ -779,12 +768,8 @@ def requests_table(test: Test) -> list[Request]:
     reads = {s for s in test.allowed("member") if s.startswith(R)}
     writes = {s for s in test.allowed("member") if s.startswith(M)}
     rows = [
-        Request(
-            "member", (f"{R}:/{ARCHIVE}",), frozenset({f"{R}:/{ARCHIVE}"}), "allowed, as asked"
-        ),
-        Request(
-            "member", (f"{R}:/{ARCHIVE}/sub",), frozenset({f"{R}:/{ARCHIVE}/sub"}), "narrower"
-        ),
+        Request("member", (f"{R}:/{ARCHIVE}",), frozenset({f"{R}:/{ARCHIVE}"}), "allowed, as asked"),
+        Request("member", (f"{R}:/{ARCHIVE}/sub",), frozenset({f"{R}:/{ARCHIVE}/sub"}), "narrower"),
         Request("member", (f"{R}:/{BASE}",), frozenset(reads), "broader: the reads under it"),
         Request("member", (f"{M}:/{BASE}",), frozenset(writes), "broader: the writes under it"),
         Request("member", (f"{M}:/{ARCHIVE}",), frozenset(), "an action not allowed"),
@@ -806,9 +791,7 @@ def requests_table(test: Test) -> list[Request]:
         Request("member", ("storage.delete:/",), frozenset(), "an action no template knows"),
         Request("member", ("pelican.transfer",), frozenset(), "the transfer API's, ungranted"),
         Request("member", ("collection.read:/",), frozenset({"collection.read:/"}), "anyone's"),
-        Request(
-            "member", ("collection.create:/",), frozenset(), "a collection administrator's"
-        ),
+        Request("member", ("collection.create:/",), frozenset(), "a collection administrator's"),
         Request(
             "member",
             ("openid", "wlcg", "profile", "email"),
@@ -861,9 +844,7 @@ def requests(test: Test) -> tuple[str, str]:
             problems.append(f"a refresh token came without offline_access ({row.why})")
     toks = test.tokens("member", ("offline_access", f"{R}:/{ARCHIVE}"))
     if issuer.scopes(toks.access) != frozenset({"offline_access", f"{R}:/{ARCHIVE}"}):
-        problems.append(
-            f"with offline_access, the token has {sorted(issuer.scopes(toks.access))}"
-        )
+        problems.append(f"with offline_access, the token has {sorted(issuer.scopes(toks.access))}")
     if toks.refresh is None:
         problems.append("no refresh token came with offline_access")
     return outcome(problems, f"{len(rows) + 1} requests")
@@ -909,9 +890,7 @@ def code(test: Test) -> tuple[str, str]:
 
     def a_code(challenge: str) -> Optional[str]:
         """Return a code for the member's read of the archive, or None."""
-        sent = issuer.authorize(
-            client, test.user("member"), (f"{R}:/{ARCHIVE}",), challenge, "x" * 16
-        )
+        sent = issuer.authorize(client, test.user("member"), (f"{R}:/{ARCHIVE}",), challenge, "x" * 16)
         back = issuer.redirected(sent)
         if not back.get("code"):
             problems.append(f"the authorization for a code: {sent.describe()}, with {back}")
@@ -922,9 +901,7 @@ def code(test: Test) -> tuple[str, str]:
     if wrong_code:
         wrong = issuer.code_tokens(client, wrong_code, issuer.pkce()[0])
         if wrong.status != 400 or issuer.error_of(wrong) != "invalid_grant":
-            problems.append(
-                f"the code with a wrong verifier: {wrong.describe()}, not invalid_grant"
-            )
+            problems.append(f"the code with a wrong verifier: {wrong.describe()}, not invalid_grant")
     verifier, challenge = issuer.pkce()
     right_code = a_code(challenge)
     if right_code:
@@ -948,17 +925,13 @@ def code(test: Test) -> tuple[str, str]:
     public = test.client("public")
     asks: tuple[str, ...] = ("offline_access", f"{R}:/{ARCHIVE}")
     state = secrets.token_urlsafe(12)
-    back = issuer.redirected(
-        issuer.authorize(public, test.user("member"), asks, issuer.pkce()[1], state)
-    )
+    back = issuer.redirected(issuer.authorize(public, test.user("member"), asks, issuer.pkce()[1], state))
     if back.get("error") == "invalid_scope" and back.get("state") == state:
         asks = (f"{R}:/{ARCHIVE}",)
     try:
         toks = issuer.code_flow(public, test.user("member"), asks)
         if issuer.scopes(toks.access) != frozenset({f"{R}:/{ARCHIVE}"}):
-            problems.append(
-                f"the public client's token has {sorted(issuer.scopes(toks.access))}"
-            )
+            problems.append(f"the public client's token has {sorted(issuer.scopes(toks.access))}")
         if toks.refresh is not None:
             problems.append("the public client got a refresh token")
     except IssuerError as e:
@@ -977,9 +950,7 @@ def clients(test: Test) -> tuple[str, str]:
     toks = test.tokens("member", ("openid", "offline_access", *DATA_SCOPES), kind="narrow")
     want = frozenset({"openid"} | {s for s in test.allowed("member") if s.startswith(R)})
     if issuer.scopes(toks.access) != want:
-        problems.append(
-            f"the read-only client's token has {sorted(issuer.scopes(toks.access))}"
-        )
+        problems.append(f"the read-only client's token has {sorted(issuer.scopes(toks.access))}")
     if toks.refresh is not None:
         problems.append("the read-only client, which may not refresh, got a refresh token")
     refused = (
@@ -1012,9 +983,7 @@ def clients(test: Test) -> tuple[str, str]:
     ):
         answer = issuer.post(client, narrow.token_url, {"grant_type": "client_credentials"})
         if answer.status != status or issuer.error_of(answer) != error:
-            problems.append(
-                f"{what}'s client_credentials ping: {answer.describe()}, not {error}"
-            )
+            problems.append(f"{what}'s client_credentials ping: {answer.describe()}, not {error}")
     toks = test.tokens("member", ("offline_access", f"{R}:/{ARCHIVE}"), kind="public")
     if issuer.scopes(toks.access) != frozenset({f"{R}:/{ARCHIVE}"}) or toks.refresh is not None:
         problems.append(
@@ -1041,9 +1010,7 @@ def device(test: Test) -> tuple[str, str]:
         problems.append(f"the consent page names client {shown.get('client_id')!r}")
     polled = issuer.poll(client, device_code)
     if polled.status != 400 or issuer.error_of(polled) != "authorization_pending":
-        problems.append(
-            f"polling before approval: {polled.describe()}, not authorization_pending"
-        )
+        problems.append(f"polling before approval: {polled.describe()}, not authorization_pending")
     polled = issuer.poll(client, device_code)
     if polled.status != 400 or issuer.error_of(polled) != "slow_down":
         problems.append(f"polling again at once: {polled.describe()}, not slow_down")
@@ -1051,9 +1018,7 @@ def device(test: Test) -> tuple[str, str]:
     time.sleep(POLL_INTERVAL)
     polled = issuer.poll(test.client("narrow"), device_code)
     if polled.status != 400 or issuer.error_of(polled) != "invalid_grant":
-        problems.append(
-            f"another client redeeming the code: {polled.describe()}, not invalid_grant"
-        )
+        problems.append(f"another client redeeming the code: {polled.describe()}, not invalid_grant")
     time.sleep(POLL_INTERVAL)
     polled = issuer.poll(client, device_code)
     if polled.status != 200:
@@ -1148,9 +1113,7 @@ def write_problems(test: Test, origin: common.Origin, tokens: dict[str, str]) ->
         target = test.object_url(origin, rel)
         answer = web.request("PUT", target, token=tokens[role], upload=payload)
         if answer.status not in REFUSED:
-            problems.append(
-                f"PUT {target} as {username(role)}: {answer.describe()}, not refused"
-            )
+            problems.append(f"PUT {target} as {username(role)}: {answer.describe()}, not refused")
     for role, rel in (
         ("member", f"{home('member')}/put-{origin.svc}"),
         ("member", f"{project(GROUPS[0])}/put-{origin.svc}"),
@@ -1232,9 +1195,7 @@ def refresh(test: Test) -> tuple[str, str]:
     if second.refresh is None or second.refresh == first.refresh:
         problems.append("the refresh gave no new refresh token")
     if issuer.scopes(second.access) != issuer.scopes(first.access):
-        problems.append(
-            f"the refreshed token's scopes are {sorted(issuer.scopes(second.access))}"
-        )
+        problems.append(f"the refreshed token's scopes are {sorted(issuer.scopes(second.access))}")
     problems += claim_problems(second.access, "member", test.issuer_url, frozenset(GROUPS))
     if abs(second.expires_in - test.lifetimes.access) > 1:
         problems.append(f"the refreshed token's expires_in is {second.expires_in}")
@@ -1261,14 +1222,10 @@ def refresh(test: Test) -> tuple[str, str]:
     ):
         answer = issuer.refresh(other, second.refresh or "")
         if answer.status != status or issuer.error_of(answer) != error:
-            problems.append(
-                f"the refresh token used by {what}: {answer.describe()}, not {error}"
-            )
+            problems.append(f"the refresh token used by {what}: {answer.describe()}, not {error}")
     answer = issuer.refresh(client, "nonesuch")
     if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
-        problems.append(
-            f"a refresh token that never was: {answer.describe()}, not invalid_grant"
-        )
+        problems.append(f"a refresh token that never was: {answer.describe()}, not invalid_grant")
     return outcome(problems, "new tokens that work; the old one works within its grace period")
 
 
@@ -1326,9 +1283,7 @@ def revoked(test: Test) -> tuple[str, str]:
         time.sleep(test.lifetimes.grace + 3)
         answer = issuer.refresh(client, chain.refresh or "")
         if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
-            problems.append(
-                f"a refresh token reused past its grace period: {answer.describe()}"
-            )
+            problems.append(f"a refresh token reused past its grace period: {answer.describe()}")
         answer = issuer.refresh(client, newer.refresh or "")
         if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
             problems.append(f"the chain of a refresh token reused late: {answer.describe()}")
@@ -1383,19 +1338,13 @@ def exchange(test: Test) -> tuple[str, str]:
         problems.append(str(e))
     answer = issuer.exchange(client, subject, (f"{R}:/{ARCHIVE}",), "https://elsewhere.invalid")
     if answer.status != 400 or issuer.error_of(answer) != "invalid_target":
-        problems.append(
-            f"an exchange for another audience: {answer.describe()}, not invalid_target"
-        )
+        problems.append(f"an exchange for another audience: {answer.describe()}, not invalid_target")
     answer = issuer.exchange(test.client("device"), subject, (f"{R}:/{ARCHIVE}",))
     if answer.status != 400 or issuer.error_of(answer) != "unauthorized_client":
-        problems.append(
-            f"an exchange by the device client: {answer.describe()}, not unauthorized_client"
-        )
+        problems.append(f"an exchange by the device client: {answer.describe()}, not unauthorized_client")
     answer = issuer.exchange(client, "nonesuch", (f"{R}:/{ARCHIVE}",))
     if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
-        problems.append(
-            f"an exchange of a token that never was: {answer.describe()}, not invalid_grant"
-        )
+        problems.append(f"an exchange of a token that never was: {answer.describe()}, not invalid_grant")
     return outcome(problems, "narrowed, inherited, and refused as it should be")
 
 
@@ -1419,13 +1368,8 @@ def expiry(test: Test) -> tuple[str, str]:
     # is from now, not from iat.
     exp = float(claims.get("exp", 0))
     left = exp - time.time()
-    if (
-        toks.expires_in != lifetimes.access
-        or not lifetimes.access - 3 <= left <= lifetimes.access
-    ):
-        problems.append(
-            f"the token says expires_in {toks.expires_in}, and expires in {left:.0f}s"
-        )
+    if toks.expires_in != lifetimes.access or not lifetimes.access - 3 <= left <= lifetimes.access:
+        problems.append(f"the token says expires_in {toks.expires_in}, and expires in {left:.0f}s")
     time.sleep(max(0.0, exp + 1 - time.time()))
     if issuer.introspect(client, toks.access).get("active") is not False:
         problems.append("the expired token introspects as active")
@@ -1459,9 +1403,7 @@ def expiry(test: Test) -> tuple[str, str]:
         time.sleep(max(0.0, minted + lifetimes.refresh + 2 - time.time()))
         answer = issuer.refresh(client, doomed.refresh or "")
         if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
-            problems.append(
-                f"the expired refresh token: {answer.describe()}, not invalid_grant"
-            )
+            problems.append(f"the expired refresh token: {answer.describe()}, not invalid_grant")
         notes.append(f"the refresh token expired after {lifetimes.refresh}s")
     return outcome(problems, "; ".join(notes))
 
@@ -1491,9 +1433,7 @@ def client_scenario(test: Test) -> tuple[str, str]:
         problems.extend(done.problems)
         right = done.status == 0 and common.sha256(dest) == common.digest(test.data[rel])
         if not right:
-            problems.append(
-                f"`object get` ({name}): exit {done.status}: {last_line(done.stderr)}"
-            )
+            problems.append(f"`object get` ({name}): exit {done.status}: {last_line(done.stderr)}")
         return done, right
 
     done, _ = get("first")
@@ -1562,9 +1502,7 @@ def isolation(test: Test) -> tuple[str, str]:
         problems.append(f"the client at /{other}'s token endpoint: {answer.describe()}")
     answer = issuer.refresh(theirs, toks.refresh)
     if not refused_with(answer, 400, "invalid_grant"):
-        problems.append(
-            f"the refresh token at /{other}: {answer.describe()}, not invalid_grant"
-        )
+        problems.append(f"the refresh token at /{other}: {answer.describe()}, not invalid_grant")
     said = issuer.introspect(theirs, toks.access)
     if said.get("active") is not False:
         problems.append(f"the access token introspects at /{other} as {said}")
@@ -1675,9 +1613,7 @@ def admin_clients(test: Test) -> tuple[str, str]:
     )
     gone = False
     try:
-        answer = issuer.admin_call(
-            test.web, namespace, test.web_token("member"), "DELETE", made.client_id
-        )
+        answer = issuer.admin_call(test.web, namespace, test.web_token("member"), "DELETE", made.client_id)
         if answer.status != 403:
             problems.append(f"deleting a client as test-member: {answer.describe()}, not 403")
         listed = issuer.admin_call(test.web, namespace, admin)
@@ -1700,15 +1636,11 @@ def admin_clients(test: Test) -> tuple[str, str]:
             body={**body, "grant_types": ["client_credentials"]},
         )
         if answer.status != 400:
-            problems.append(
-                f"creating a client_credentials client: {answer.describe()}, not 400"
-            )
+            problems.append(f"creating a client_credentials client: {answer.describe()}, not 400")
             stray = str(issuer.decoded(answer).get("client_id") or "")
             if stray:
                 issuer.delete_client(test.web, namespace, admin, stray)
-        toks = issuer.device_tokens(
-            made, test.user("member"), ("offline_access", f"{R}:/{ARCHIVE}")
-        )
+        toks = issuer.device_tokens(made, test.user("member"), ("offline_access", f"{R}:/{ARCHIVE}"))
         problems += narrowed_client_problems(test, made, toks.refresh or "")
         answer = issuer.admin_call(
             test.web, namespace, admin, "PUT", f"nonesuch-{test.run}", {"scopes": ["openid"]}
@@ -1721,9 +1653,7 @@ def admin_clients(test: Test) -> tuple[str, str]:
             problems.append(f"deleting the client: {answer.describe()}, not 204")
         answer = issuer.refresh(made, toks.refresh or "")
         if not refused_with(answer, 401, "invalid_client"):
-            problems.append(
-                f"a refresh by the deleted client: {answer.describe()}, not invalid_client"
-            )
+            problems.append(f"a refresh by the deleted client: {answer.describe()}, not invalid_client")
         answer = issuer.admin_call(test.web, namespace, admin, "DELETE", made.client_id)
         if answer.status != 404:
             problems.append(f"deleting the client again: {answer.describe()}, not 404")
@@ -1753,9 +1683,7 @@ def narrowed_client_problems(test: Test, made: issuer.Client, refresh_token: str
     problems: list[str] = []
     namespace, admin = f"/{test.namespace}", test.web_token("admin")
     grants = [issuer.DEVICE_GRANT]
-    answer = issuer.admin_call(
-        test.web, namespace, admin, "PUT", made.client_id, {"grant_types": grants}
-    )
+    answer = issuer.admin_call(test.web, namespace, admin, "PUT", made.client_id, {"grant_types": grants})
     if answer.status != 200 or issuer.decoded(answer).get("grant_types") != grants:
         problems.append(f"dropping the refresh grant: {answer.describe()}")
     answer = issuer.refresh(made, refresh_token)
@@ -1764,9 +1692,7 @@ def narrowed_client_problems(test: Test, made: issuer.Client, refresh_token: str
             f"a refresh once the grant is dropped: {answer.describe()}, not unauthorized_client"
         )
     narrow = ["openid", f"{R}:/{ARCHIVE}"]
-    answer = issuer.admin_call(
-        test.web, namespace, admin, "PUT", made.client_id, {"scopes": narrow}
-    )
+    answer = issuer.admin_call(test.web, namespace, admin, "PUT", made.client_id, {"scopes": narrow})
     if answer.status != 200 or issuer.decoded(answer).get("scopes") != narrow:
         problems.append(f"narrowing the scopes: {answer.describe()}")
     wanted = ("openid", "offline_access", f"{R}:/", f"{M}:/")
@@ -1793,9 +1719,7 @@ def cors_and_pkce(test: Test) -> tuple[str, str]:
     found = web.request("GET", target, headers=evil)
     allowed = found.header("Access-Control-Allow-Origin")
     if found.status != 200 or allowed not in ("", "*"):
-        problems.append(
-            f"GET {target} from another site: {found.describe()}, allowing {allowed!r}"
-        )
+        problems.append(f"GET {target} from another site: {found.describe()}, allowing {allowed!r}")
     client = test.client("device")
     for method, url in (
         ("POST", client.token_url),
@@ -1806,13 +1730,9 @@ def cors_and_pkce(test: Test) -> tuple[str, str]:
         answer = web.request(method, url, upload=b"", headers=headers)
         allowed = answer.header("Access-Control-Allow-Origin")
         if answer.status is None or allowed:
-            problems.append(
-                f"{method} {url} from another site: {answer.describe()}, {allowed!r}"
-            )
+            problems.append(f"{method} {url} from another site: {answer.describe()}, {allowed!r}")
     state = secrets.token_urlsafe(12)
-    sent = issuer.authorize(
-        test.client("public"), test.user("member"), (f"{R}:/{ARCHIVE}",), "", state
-    )
+    sent = issuer.authorize(test.client("public"), test.user("member"), (f"{R}:/{ARCHIVE}",), "", state)
     back = issuer.redirected(sent)
     if back.get("code") or (back.get("error") != "invalid_request" and sent.status != 400):
         problems.append(
@@ -1837,9 +1757,7 @@ def code_expiry(test: Test) -> tuple[str, str]:
     unapproved = issuer.started(issuer.start_device(client, wanted), client)
     for flow in (approved, unapproved):
         if flow.get("expires_in") != lifetime:
-            problems.append(
-                f"a device flow expires_in {flow.get('expires_in')!r}, not {lifetime}"
-            )
+            problems.append(f"a device flow expires_in {flow.get('expires_in')!r}, not {lifetime}")
     issuer.approve(client.url, str(approved["user_code"]), member)
     code_client = test.client("code")
     verifier, challenge = issuer.pkce()
@@ -1861,8 +1779,7 @@ def code_expiry(test: Test) -> tuple[str, str]:
         answer = issuer.code_tokens(code_client, auth_code, verifier)
         if not refused_with(answer, 400, "invalid_grant"):
             problems.append(
-                f"redeeming an expired authorization code: {answer.describe()},"
-                + " not invalid_grant"
+                f"redeeming an expired authorization code: {answer.describe()}," + " not invalid_grant"
             )
     return outcome(problems, f"device and authorization codes expired after {lifetime}s")
 
@@ -1918,9 +1835,7 @@ def registration(test: Test) -> tuple[str, str]:
                 problems.append(f"registering with {what}: {answer.describe()}, not {error}")
                 stray = str(issuer.decoded(answer).get("client_id") or "")
                 if stray:
-                    issuer.delete_client(
-                        test.web, f"/{test.namespace}", test.web_token("admin"), stray
-                    )
+                    issuer.delete_client(test.web, f"/{test.namespace}", test.web_token("admin"), stray)
         if client_id and access:
             client = issuer.client_of(
                 test.web, f"/{test.namespace}", client_id, str(record.get("client_secret", ""))
@@ -1954,18 +1869,14 @@ def binding_problems(test: Test, client: issuer.Client) -> list[str]:
     answer = issuer.decide(client.url, str(flow["user_code"]), test.user("analyst"), "approve")
     said = issuer.decoded(answer)
     if answer.status != 403 or said.get("error") != BOUND_ELSEWHERE:
-        problems.append(
-            f"test-analyst approving after test-member: {answer.describe()}, {said}"
-        )
+        problems.append(f"test-analyst approving after test-member: {answer.describe()}, {said}")
     polled = issuer.poll(client, str(flow["device_code"]))
     if not refused_with(polled, 400, "authorization_pending"):
         problems.append(f"polling after test-analyst's approval: {polled.describe()}")
     return problems
 
 
-def configuration_problems(
-    test: Test, client_id: str, access: str, grants: set[str]
-) -> list[str]:
+def configuration_problems(test: Test, client_id: str, access: str, grants: set[str]) -> list[str]:
     """Return what is wrong with client_id's configuration endpoint.
 
     The endpoint (RFC 7592) should refuse no registration access token
@@ -1989,9 +1900,7 @@ def configuration_problems(
     changed = issuer.configuration(url, client_id, "PUT", access, wider)
     said = issuer.decoded(changed)
     if changed.status != 200 or said.get("client_name") != "renamed":
-        problems.append(
-            f"PUT its configuration: {changed.describe()}, named {said.get('client_name')!r}"
-        )
+        problems.append(f"PUT its configuration: {changed.describe()}, named {said.get('client_name')!r}")
     if set(common.as_array(said.get("grant_types")) or []) != grants:
         problems.append(f"PUT asking for the code grant gave it {said.get('grant_types')}")
     gone = issuer.configuration(url, client_id, "DELETE", access)

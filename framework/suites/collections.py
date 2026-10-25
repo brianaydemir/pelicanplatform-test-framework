@@ -240,9 +240,7 @@ class Test:
         The issuer is the issuer origin's.
         """
         if namespace not in self._clients:
-            self._clients[namespace] = issuer.create_client(
-                self.web, namespace, self.web_token("admin")
-            )
+            self._clients[namespace] = issuer.create_client(self.web, namespace, self.web_token("admin"))
         return self._clients[namespace]
 
     def user(self, role: str, web_url: Optional[str] = None) -> issuer.User:
@@ -264,9 +262,7 @@ class Test:
 
         It is from the origin's local issuer.
         """
-        return issuer.token(
-            self.client(issuer.LOCAL_NAMESPACE), self.user(role), CONTROL_SCOPES
-        )
+        return issuer.token(self.client(issuer.LOCAL_NAMESPACE), self.user(role), CONTROL_SCOPES)
 
     def token_file(self, role: str) -> str:
         """Return a `--token` file of a fresh data token for role's user."""
@@ -387,9 +383,7 @@ def prepare(test: Test) -> None:
     test.coll["alpha"] = make_collection(
         test, "alpha", ((readers, "read"), (writers, "write")), admins=True, sharing=True
     )
-    test.coll["beta"] = make_collection(
-        test, "beta", ((EVERYONE, "read"),), visibility="public"
-    )
+    test.coll["beta"] = make_collection(test, "beta", ((EVERYONE, "read"),), visibility="public")
     for name in OBJECTS:
         test.data[name] = os.urandom(OBJECT_SIZE)
         errors = stores.seed_everywhere(
@@ -413,9 +407,7 @@ def finish(test: Test) -> None:
         if failed:
             warn(f"could not remove the {name} group: {failed}")
     for origin in stores.unique(test.fed.origins):
-        for error in stores.empty_tree(
-            origin, test.namespace, "data/collections", test.server_token
-        ):
+        for error in stores.empty_tree(origin, test.namespace, "data/collections", test.server_token):
             warn(error)
 
 
@@ -423,9 +415,7 @@ def finish(test: Test) -> None:
 # The clients, acquiring tokens from the issuer themselves.
 
 
-def run_approving(
-    test: Test, args: Sequence[str], role: str, pelican: Optional[str] = None
-) -> ClientRun:
+def run_approving(test: Test, args: Sequence[str], role: str, pelican: Optional[str] = None) -> ClientRun:
     """Run `pelican <args>` as role's user, approving its device flows.
 
     Approve each device flow it announces on its stderr as that user, at
@@ -466,20 +456,13 @@ def users(test: Test) -> tuple[str, str]:
     their own, and nobody joins one uninvited.
     """
     problems: list[str] = []
-    found = {
-        row.get("username")
-        for row in objects(test.api("admin").call("GET", accounts.USERS).array)
-    }
+    found = {row.get("username") for row in objects(test.api("admin").call("GET", accounts.USERS).array)}
     absent = [username(role) for role in ROLES if username(role) not in found]
     if absent:
         problems.append(f"the admin's list of users lacks {', '.join(absent)}")
-    refused = test.api("outsider").call(
-        "POST", accounts.USERS, {"username": f"test-nobody-{test.run}"}
-    )
+    refused = test.api("outsider").call("POST", accounts.USERS, {"username": f"test-nobody-{test.run}"})
     if refused.status != 403:
-        problems.append(
-            f"an ordinary user's POST {accounts.USERS}: {refused.describe()}, not 403"
-        )
+        problems.append(f"an ordinary user's POST {accounts.USERS}: {refused.describe()}, not 403")
     mine = {row.get("id") for row in objects(test.api("reader").call("GET", MY_GROUPS).array)}
     if test.groups["readers"] not in mine:
         problems.append(f"test-reader's groups ({MY_GROUPS}) lack the readers group")
@@ -512,9 +495,7 @@ def create_scenario(test: Test) -> tuple[str, str]:
         )
         for name, want in wanted:
             if row.get(name) != want:
-                problems.append(
-                    f"the new collection's {name} is {row.get(name)!r}, not {want!r}"
-                )
+                problems.append(f"the new collection's {name} is {row.get(name)!r}, not {want!r}")
         gone = delete(curator, str(row.get("id")))
         if not gone.ok:
             problems.append(f"test-curator's delete of it: {gone.describe()}")
@@ -522,9 +503,7 @@ def create_scenario(test: Test) -> tuple[str, str]:
             problems.append("the deleted collection is still there")
     plain = create(test.api("owner"), "gamma", test.path("gamma"))
     if plain.status != 403:
-        problems.append(
-            f"test-owner's create, who administers no collections: {plain.describe()}, not 403"
-        )
+        problems.append(f"test-owner's create, who administers no collections: {plain.describe()}, not 403")
     bad = (
         (f"/elsewhere/{test.run}", "outside every export"),
         (f"/{test.namespace}/../../etc", "climbing out of its export"),
@@ -576,13 +555,9 @@ def visibility_scenario(test: Test) -> tuple[str, str]:
         if answer.status != 200:
             problems.append(f"{username(role)}'s GET of alpha: {answer.describe()}")
         elif answer.object.get("canEdit") is not can_edit:
-            problems.append(
-                f"canEdit of alpha is {answer.object.get('canEdit')!r} for {username(role)}"
-            )
+            problems.append(f"canEdit of alpha is {answer.object.get('canEdit')!r} for {username(role)}")
     if alpha not in listed(test.api("curator")):
-        problems.append(
-            "test-curator's list of collections, as their administrator, lacks alpha"
-        )
+        problems.append("test-curator's list of collections, as their administrator, lacks alpha")
     changed = patch(outsider, beta, description="changed by test-outsider")
     if changed.status != 404:
         problems.append(f"test-outsider's PATCH of beta: {changed.describe()}, not 404")
@@ -598,9 +573,7 @@ def acl_scenario(test: Test) -> tuple[str, str]:
     owner = test.api("owner")
     answer = grant(test.api("writer"), delta, readers, "read")
     if answer.status != 404:
-        problems.append(
-            f"test-writer's grant, who may only write: {answer.describe()}, not 404"
-        )
+        problems.append(f"test-writer's grant, who may only write: {answer.describe()}, not 404")
     answer = grant(owner, delta, readers, "owner")
     if answer.status != 400:
         problems.append(f"a grant of role `owner`: {answer.describe()}, not 400")
@@ -665,18 +638,12 @@ def tokens(test: Test) -> tuple[str, str]:
             problems.append(f"{username(role)}'s local token's issuer is not {local}")
         made = create(Api(test.web, token), "eta", test.path("eta"))
         if may_create and made.status != 201:
-            problems.append(
-                f"a create with test-curator's local token: {made.describe()}, not 201"
-            )
+            problems.append(f"a create with test-curator's local token: {made.describe()}, not 201")
         if not may_create and made.status != 403:
-            problems.append(
-                f"a create with test-outsider's local token: {made.describe()}, not 403"
-            )
+            problems.append(f"a create with test-outsider's local token: {made.describe()}, not 403")
         if made.ok:
             must(delete(test.api("curator"), str(made.object.get("id"))), "deleting eta")
-    return outcome(
-        problems, "each token has its collections' scopes; collection.create test-curator's"
-    )
+    return outcome(problems, "each token has its collections' scopes; collection.create test-curator's")
 
 
 def data(test: Test) -> tuple[str, str]:
@@ -702,13 +669,9 @@ def data(test: Test) -> tuple[str, str]:
                 url = test.object_url(origin, name)
                 answer = web.request("GET", url, token=token[role])
                 if allowed and (answer.status != 200 or answer.body != test.data[name]):
-                    problems.append(
-                        f"GET {url} as {username(role)}: {answer.describe()}, or wrong bytes"
-                    )
+                    problems.append(f"GET {url} as {username(role)}: {answer.describe()}, or wrong bytes")
                 if not allowed and answer.status not in REFUSED:
-                    problems.append(
-                        f"GET {url} as {username(role)}: {answer.describe()}, not refused"
-                    )
+                    problems.append(f"GET {url} as {username(role)}: {answer.describe()}, not refused")
             if writes:
                 problems += write_problems(test, origin, token)
         notes.append(f"at {len(test.fed.origins)} origin(s)")
@@ -768,9 +731,7 @@ def federation_problems(test: Test, writes: bool) -> list[str]:
             "--token",
             test.token_file(role),
         )
-        if allowed and (
-            status != 0 or common.sha256(dest) != common.digest(test.data["alpha/obj"])
-        ):
+        if allowed and (status != 0 or common.sha256(dest) != common.digest(test.data["alpha/obj"])):
             problems.append(f"`object get` as test-reader: exit {status}: {last_line(err)}")
         if not allowed and status == 0:
             problems.append("`object get` as test-outsider succeeded")
@@ -806,20 +767,12 @@ def client(test: Test) -> tuple[str, str]:
     problems: list[str] = []
     for role, allowed in (("reader", True), ("outsider", False)):
         dest = test.session.path(f"client-get-{role}")
-        done = run_approving(
-            test, ["object", "get", test.federation_url("alpha/obj"), dest], role
-        )
+        done = run_approving(test, ["object", "get", test.federation_url("alpha/obj"), dest], role)
         problems += done.problems
         if done.approvals == 0:
-            problems.append(
-                f"the client as {username(role)} announced no device flow to approve"
-            )
-        if allowed and (
-            done.status != 0 or common.sha256(dest) != common.digest(test.data["alpha/obj"])
-        ):
-            problems.append(
-                f"`object get` as test-reader: exit {done.status}: {last_line(done.stderr)}"
-            )
+            problems.append(f"the client as {username(role)} announced no device flow to approve")
+        if allowed and (done.status != 0 or common.sha256(dest) != common.digest(test.data["alpha/obj"])):
+            problems.append(f"`object get` as test-reader: exit {done.status}: {last_line(done.stderr)}")
         if not allowed and done.status == 0:
             problems.append("`object get` as test-outsider succeeded")
     return outcome(problems, "test-reader's get approved and done; test-outsider's refused")
@@ -896,9 +849,7 @@ def shares(test: Test) -> tuple[str, str]:
         problems.append("the share's parentCollectionId is not alpha's ID")
     answer = share(test.api("outsider"), alpha, "shared", test.path("alpha/shared"))
     if answer.status != 404:
-        problems.append(
-            f"test-outsider's share of alpha, unreadable to them: {answer.describe()}, not 404"
-        )
+        problems.append(f"test-outsider's share of alpha, unreadable to them: {answer.describe()}, not 404")
     answer = share(sharer, test.coll["beta"], "shared", test.path("beta"))
     if answer.status != 409:
         problems.append(f"a share of beta, with sharing off: {answer.describe()}, not 409")
@@ -909,9 +860,7 @@ def shares(test: Test) -> tuple[str, str]:
     access, shared = f"share.access:/{sid}", test.scope("read", "alpha/shared")
     found = data_scopes(test.data_token("guest"))
     if not {access, shared} <= found or test.scope("read", "alpha") in found:
-        problems.append(
-            f"test-guest's token has {sorted(found)}, not {access} and {shared} alone"
-        )
+        problems.append(f"test-guest's token has {sorted(found)}, not {access} and {shared} alone")
     if "DirectReads" in test.caps:
         for origin in test.fed.origins:
             token = test.data_token("guest")
@@ -922,16 +871,12 @@ def shares(test: Test) -> tuple[str, str]:
             url = test.object_url(origin, "alpha/obj")
             reply = web.request("GET", url, token=token)
             if reply.status not in REFUSED:
-                problems.append(
-                    f"GET {url} as test-guest, outside the share: {reply.describe()}"
-                )
+                problems.append(f"GET {url} as test-guest, outside the share: {reply.describe()}")
     must(grant(sharer, sid, personal("guest"), "write"), "granting write on the share")
     found = data_scopes(test.data_token("guest"))
     if test.scope("modify", "alpha/shared") in found:
         problems.append("test-guest may write the share, which test-sharer may only read")
-    must(
-        grant(owner, alpha, personal("sharer"), "write"), "granting test-sharer write on alpha"
-    )
+    must(grant(owner, alpha, personal("sharer"), "write"), "granting test-sharer write on alpha")
     found = data_scopes(test.data_token("guest"))
     if test.scope("modify", "alpha/shared") not in found:
         problems.append("test-guest may not write the share once test-sharer may write alpha")
@@ -939,9 +884,7 @@ def shares(test: Test) -> tuple[str, str]:
     accounts.remove_member(owner, test.groups["readers"], test.ids["sharer"])
     found = data_scopes(test.data_token("guest"))
     if found & {access, shared}:
-        problems.append(
-            f"test-guest's token has {sorted(found)} once test-sharer may not read alpha"
-        )
+        problems.append(f"test-guest's token has {sorted(found)} once test-sharer may not read alpha")
     must(delete(sharer, sid), "deleting the share")
     return outcome(problems, "test-guest's access through the share follows test-sharer's")
 
@@ -1124,15 +1067,11 @@ def cli(test: Test) -> tuple[str, str]:
     discovery = f"https://{urlsplit(test.fed.url).netloc}"
 
     def manage_as(role: str, *args: str) -> ClientRun:
-        done = run_approving(
-            test, ["--json", "-f", discovery, "origin", "collection", *args], role, server
-        )
+        done = run_approving(test, ["--json", "-f", discovery, "origin", "collection", *args], role, server)
         problems.extend(done.problems)
         return done
 
-    made = manage_as(
-        "curator", "create", "--name", f"cli-{test.run}", "--namespace", test.path("cli")
-    )
+    made = manage_as("curator", "create", "--name", f"cli-{test.run}", "--namespace", test.path("cli"))
     row = common.as_object(cli_json(made.stdout)) or {}
     cid = str(row.get("id", ""))
     if made.status != 0 or not cid:
@@ -1147,9 +1086,7 @@ def cli(test: Test) -> tuple[str, str]:
         problems.append("`collection create` as test-outsider succeeded")
         delete(curator, str((common.as_object(cli_json(done.stdout)) or {}).get("id")))
     done = manage_as("curator", "list")
-    if cid not in {
-        str(r.get("id")) for r in objects(common.as_array(cli_json(done.stdout)) or [])
-    }:
+    if cid not in {str(r.get("id")) for r in objects(common.as_array(cli_json(done.stdout)) or [])}:
         problems.append(f"`collection list`: exit {done.status}, without the new collection")
     done = manage_as("curator", "get", cid)
     if (common.as_object(cli_json(done.stdout)) or {}).get("namespace") != test.path("cli"):
@@ -1163,14 +1100,10 @@ def cli(test: Test) -> tuple[str, str]:
         problems.append(f"`collection acl grant`: exit {done.status}: {last_line(done.stderr)}")
     done = manage_as("curator", "acl", "list", cid)
     if readers not in done.stdout:
-        problems.append(
-            f"`collection acl list`: exit {done.status}, without the readers' grant"
-        )
+        problems.append(f"`collection acl list`: exit {done.status}, without the readers' grant")
     done = manage_as("curator", "metadata", "set", cid, "key", "value")
     if done.status != 0:
-        problems.append(
-            f"`collection metadata set`: exit {done.status}: {last_line(done.stderr)}"
-        )
+        problems.append(f"`collection metadata set`: exit {done.status}: {last_line(done.stderr)}")
     done = manage_as("curator", "metadata", "get", cid)
     if "value" not in done.stdout:
         problems.append(f"`collection metadata get`: exit {done.status}, without the value")

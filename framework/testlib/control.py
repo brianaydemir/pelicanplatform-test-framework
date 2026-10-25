@@ -207,9 +207,7 @@ def crashed(services: Optional[Sequence[str]] = None) -> Optional[str]:
     return None
 
 
-def settle(
-    problem: Callable[[], Optional[str]], seconds: float, interval: float = 5
-) -> Optional[str]:
+def settle(problem: Callable[[], Optional[str]], seconds: float, interval: float = 5) -> Optional[str]:
     """Ask problem() what is wrong until it finds nothing, or seconds pass.
 
     It is asked at once, and then every interval seconds, as the
@@ -335,9 +333,7 @@ def state(svc: str) -> str:
 
 
 @contextlib.contextmanager
-def restart_with(
-    svc: str, files: Mapping[str, str], serves: bool = True
-) -> Generator[None, None, None]:
+def restart_with(svc: str, files: Mapping[str, str], serves: bool = True) -> Generator[None, None, None]:
     """Restart svc with files as the last of its configuration layers.
 
     That layer wins over every other. Afterward, even on failure, remove

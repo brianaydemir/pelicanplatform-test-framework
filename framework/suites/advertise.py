@@ -188,9 +188,7 @@ def restored(test: Test, *servers: Server) -> list[str]:
             return len(naming(test, s)) == wanted
 
         if not common.wait_for(named, RESTORE_WAIT, 5):
-            problems.append(
-                f"{RESTORE_WAIT}s on, only {naming(test, server)} named {server.host} again"
-            )
+            problems.append(f"{RESTORE_WAIT}s on, only {naming(test, server)} named {server.host} again")
     return problems
 
 
@@ -376,9 +374,7 @@ def forged_ads(test: Test) -> list[Row]:
             for url in fed.directors:
                 if director.ask(url, route(server), path).names(server.host):
                     problems.append(f"{director.host(url)} now names {server.host} for {path}")
-        rows.append(
-            (name, FAIL if problems else PASS, first(problems) if problems else ", ".join(seen))
-        )
+        rows.append((name, FAIL if problems else PASS, first(problems) if problems else ", ".join(seen)))
     rows.append(restored_row(test, *servers))
     return rows
 
@@ -411,9 +407,7 @@ def bad_broker_url(test: Test) -> list[Row]:
     for url in test.fed.directors:
         listed = web.request("GET", f"{url}{SERVERS}")
         if listed.status != 200:
-            problems.append(
-                f"{director.host(url)} then answered {SERVERS} with {listed.describe()}"
-            )
+            problems.append(f"{director.host(url)} then answered {SERVERS} with {listed.describe()}")
     problems += restored(test, origin)
     note = f"{len(test.fed.directors)} director(s)"
     return [("", FAIL if problems else PASS, first(problems) if problems else note)]
@@ -486,16 +480,12 @@ def spoofed_status(test: Test) -> list[Row]:
     rows: list[Row] = []
     before = naming(test, first_cache)
     if len(before) != wanted:
-        return [
-            ("", FAIL, f"before anything was posted, only {before} named {first_cache.host}")
-        ]
+        return [("", FAIL, f"before anything was posted, only {before} named {first_cache.host}")]
     for status in ("shutting down", "critical"):
         name = "own-" + status.replace(" ", "-")
         own = test.advertise_token(first_cache)
         problems = post_everywhere(test, "Cache", ad(first_cache, status=status), own)
-        if not problems and not common.wait_for(
-            lambda: not naming(test, first_cache), DROP_WAIT, 1
-        ):
+        if not problems and not common.wait_for(lambda: not naming(test, first_cache), DROP_WAIT, 1):
             problems.append(f"{DROP_WAIT}s on, {naming(test, first_cache)} still named it")
         problems += restored(test, first_cache)
         rows.append(
@@ -508,8 +498,7 @@ def spoofed_status(test: Test) -> list[Row]:
     if len(caches) < 2:
         why = "needs a second cache (-p topo-multi-cache)"
         return rows + [
-            (n, SKIP, why)
-            for n in ("name-shutting-down", "name-critical", "name-downtime", "url-hijack")
+            (n, SKIP, why) for n in ("name-shutting-down", "name-critical", "name-downtime", "url-hijack")
         ]
     second = test.server("Cache", director.host(caches[1].url))
     spoofs = [
@@ -530,9 +519,7 @@ def spoofed_status(test: Test) -> list[Row]:
         named = naming(test, first_cache)
         if len(named) != wanted:
             problems.append(f"afterward, only {named} named {first_cache.host}")
-        listed = web.request(
-            "GET", f"{test.director}{SERVERS}/{quote(first_cache.name, safe='')}"
-        )
+        listed = web.request("GET", f"{test.director}{SERVERS}/{quote(first_cache.name, safe='')}")
         found = common.as_object(listed.json()) or {}
         if found.get("filtered"):
             problems.append(
@@ -705,9 +692,7 @@ def fed_token(test: Test) -> list[Row]:
     rows: list[Row] = []
     answer = get_fed_token(test, {"host": host, "sType": "Cache"}, token)
     problems = fed_token_problems(test, answer, host)
-    rows.append(
-        ("valid", FAIL if problems else PASS, first(problems) if problems else f"for {host}")
-    )
+    rows.append(("valid", FAIL if problems else PASS, first(problems) if problems else f"for {host}"))
     if len(caches) > 1:
         other = test.server("Cache", director.host(caches[1].url))
         other_query = {"host": other.registered_host, "sType": "Cache"}
@@ -827,9 +812,7 @@ def federation_key(fed: common.Federation) -> tuple[str, str]:
         for entry in (common.as_object(e) or {} for e in listed):
             if all(entry.get(k) == v for k, v in jwk.items()):
                 return key, str(entry.get("kid") or "")
-    raise Missing(
-        f"{jwks_uri} ({answer.describe()}) lists none of framework/var/issuer-keys/'s keys"
-    )
+    raise Missing(f"{jwks_uri} ({answer.describe()}) lists none of framework/var/issuer-keys/'s keys")
 
 
 def discover_servers(test: Test) -> list[Row]:
@@ -861,9 +844,7 @@ def discover_servers(test: Test) -> list[Row]:
                 why = f"{answer.describe()}, not 200"
             else:
                 why = first(listing_problems(fed, answer.json()) or [""])
-            note = why or (
-                f"{len(expected_targets(fed))} servers" if case == "federation" else "HTTP 403"
-            )
+            note = why or (f"{len(expected_targets(fed))} servers" if case == "federation" else "HTTP 403")
             rows.append((f"{name} {case}", FAIL if why else PASS, note))
     return rows
 
@@ -910,9 +891,7 @@ def broker(test: Test) -> list[Row]:
         return sign(key, kid, scope, issuer, base, server.registered_host)
 
     as_origin = {"origin": made_up, "prefix": origin.prefix}
-    unknown = unknown_token(
-        RETRIEVE, f"{fed.registry_url}/api/v1.0/registry{origin.prefix}", base
-    )
+    unknown = unknown_token(RETRIEVE, f"{fed.registry_url}/api/v1.0/registry{origin.prefix}", base)
     retrieve, reverse = "/api/v1.0/broker/retrieve", "/api/v1.0/broker/reverse"
     requests: list[BrokerRequest] = [
         (
@@ -953,10 +932,7 @@ def broker(test: Test) -> list[Row]:
         why = ""
         if answer.status not in statuses:
             why = f"{answer.describe()}, not {' or '.join(map(str, statuses))}"
-        elif (
-            name == "valid"
-            and (common.as_object(answer.json()) or {}).get("status") != "timeout"
-        ):
+        elif name == "valid" and (common.as_object(answer.json()) or {}).get("status") != "timeout":
             why = f"its status is not 'timeout': {answer.body[:200]!r}"
         rows.append((name, FAIL if why else PASS, why or answer.describe()))
     return rows
@@ -991,9 +967,7 @@ def put_probe(test: Test) -> None:
     for origin in stores.unique(fed.origins):
         if errors:
             break
-        error = stores.seed(
-            origin, test.namespace, test.rel, test.data, token, fed.exports[test.namespace]
-        )
+        error = stores.seed(origin, test.namespace, test.rel, test.data, token, fed.exports[test.namespace])
         if error:
             errors.append(error)
     if errors:

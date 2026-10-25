@@ -167,9 +167,7 @@ def trailers(test: Test) -> tuple[str, str]:
     return PASS, f"{len(caches)} cache(s): '{TRANSFER_OK}' when asked, nothing otherwise"
 
 
-def claims_problems(
-    ours: dict[str, object], theirs: dict[str, object], profile: str
-) -> list[str]:
+def claims_problems(ours: dict[str, object], theirs: dict[str, object], profile: str) -> list[str]:
     """Return how claims ours differ from theirs.
 
     The claims that differ from token to token are left out.
@@ -422,9 +420,7 @@ def pool(_test: Test) -> tuple[str, str]:
         for n in range(10):
             workers.submit(done.append, n)
     if sorted(done) != list(range(10)):
-        problems.append(
-            f"left as usual, it had run only tasks {sorted(done)} of 10 as it ended"
-        )
+        problems.append(f"left as usual, it had run only tasks {sorted(done)} of 10 as it ended")
     if problems:
         return FAIL, first(problems)
     return PASS, f"abandoned, it cancelled 8 queued tasks, and ended in {took:.1f}s"

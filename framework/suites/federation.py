@@ -259,9 +259,7 @@ class Probe:
                 errors = stores.make_dirs([origin], ns, self.base, token)
                 if errors:
                     return errors[0]
-                error = stores.seed(
-                    origin, ns, self.rel, self.data[ns], token, self.fed.exports[ns]
-                )
+                error = stores.seed(origin, ns, self.rel, self.data[ns], token, self.fed.exports[ns])
                 if error:
                     return error
         self.uploaded = True
@@ -280,9 +278,7 @@ class Probe:
         if os.path.exists(target):
             os.remove(target)
         token_file = (
-            self.session.setup_token_file(self.read_ns)
-            if setup
-            else self.session.token_file(self.read_ns)
+            self.session.setup_token_file(self.read_ns) if setup else self.session.token_file(self.read_ns)
         )
         token = [] if self.read_ns == "public" else ["--token", token_file]
         code, out, err = self.session.pelican_cmd(
@@ -385,8 +381,7 @@ def ready(probe: Probe) -> tuple[str, str]:
             return FAIL, f"{probe.read_ns}: {why} (served with a WLCG token)"
         if n == 1 and tries > 1:
             print(
-                f"Waiting for the federation to serve {probe.fed.url}/{probe.read_ns}/"
-                + f"{probe.rel} ..."
+                f"Waiting for the federation to serve {probe.fed.url}/{probe.read_ns}/" + f"{probe.rel} ..."
             )
         if n < tries:
             time.sleep(INTERVAL)
@@ -546,9 +541,7 @@ def directors(probe: Probe) -> tuple[str, str]:
                 if route == "object" and cacheless:
                     named = [h for h in origin_hosts if answer.names(h)]
                     if direct and (answer.status != 307 or not named):
-                        found.append(
-                            f"{what} should fall back to an origin (307): {answer.describe()}"
-                        )
+                        found.append(f"{what} should fall back to an origin (307): {answer.describe()}")
                     elif not direct and (answer.status != 404 or named):
                         found.append(f"{what} should find no cache (404): {answer.describe()}")
         return found
@@ -562,9 +555,7 @@ def directors(probe: Probe) -> tuple[str, str]:
     if not common.wait_for(all_named, DIRECTORS_WAIT, interval=5):
         return FAIL, f"after {DIRECTORS_WAIT}s, {common.first(missing)}"
     direct_reads = (
-        f"{len(fed.origins)} for direct reads"
-        if direct
-        else "none for direct reads (no direct clients)"
+        f"{len(fed.origins)} for direct reads" if direct else "none for direct reads (no direct clients)"
     )
     caches_named = f"{len(fed.federated_caches)} cache(s)"
     if cacheless:
@@ -763,9 +754,7 @@ def hints(probe: Probe) -> tuple[str, str]:
                     sent = answer.header("X-Pelican-Namespace")
                     problems.append(f"{what}: X-Pelican-Namespace '{sent}' does not name /{ns}")
                 elif found.require_token != ("PublicReads" not in caps):
-                    problems.append(
-                        f"{what}: X-Pelican-Namespace says require-token={found.require_token}"
-                    )
+                    problems.append(f"{what}: X-Pelican-Namespace says require-token={found.require_token}")
                 if issuer and found.issuers != (issuer,):
                     problems.append(
                         f"{what}: X-Pelican-Authorization names {list(found.issuers)}, not {issuer}"
@@ -776,9 +765,7 @@ def hints(probe: Probe) -> tuple[str, str]:
                         + f" though /{ns} has no issuer"
                     )
                 if found.generation_issuer and found.generation_issuer != issuer:
-                    problems.append(
-                        f"{what}: X-Pelican-Token-Generation names {found.generation_issuer}"
-                    )
+                    problems.append(f"{what}: X-Pelican-Token-Generation names {found.generation_issuer}")
     if problems:
         return FAIL, common.first(problems)
     return (
@@ -893,9 +880,7 @@ def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[s
     payload = os.urandom(4096)
     writes = "Writes" in caps
     put_token = probe.session.token(namespace) if writes else token
-    answer = web.request(
-        "PUT", f"{director_url}/{namespace}/{rel}", token=put_token, upload=payload
-    )
+    answer = web.request("PUT", f"{director_url}/{namespace}/{rel}", token=put_token, upload=payload)
     what = f"{name}: PUT /{namespace}/{rel}"
     if writes and answer.status != 307:
         problems.append(f"{what}: {answer.describe()}, not 307")
@@ -913,9 +898,7 @@ def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[s
     if writes and common.digest(payload) not in held:
         problems.append(f"{what}: no origin holds what was put")
     elif not writes and any(held):
-        problems.append(
-            f"{what}: an origin holds what was put, though /{namespace} takes no writes"
-        )
+        problems.append(f"{what}: an origin holds what was put, though /{namespace} takes no writes")
     return problems
 
 
@@ -1027,9 +1010,7 @@ def presence(probe: Probe) -> tuple[str, str]:
 
     def routed() -> bool:
         found[:] = [
-            p
-            for ns, data in objects.items()
-            for p in presence_problems(probe, holder, ns, rel, data)
+            p for ns, data in objects.items() for p in presence_problems(probe, holder, ns, rel, data)
         ]
         return not found
 
@@ -1196,8 +1177,6 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         # Linux host they are root's, and beyond init-data.py's reach; a
         # pstore origin's only it can remove.
         tokens = session.setup_tokens() if any(o.pstore for o in fed.origins) else {}
-        errors = stores.empty_tree_everywhere(
-            fed.origins, fed.exports, "data/federation", tokens
-        )
+        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/federation", tokens)
         if errors:
             common.warn(f"could not remove the run's objects: {common.first(errors)}")

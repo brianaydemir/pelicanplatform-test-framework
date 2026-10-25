@@ -68,9 +68,7 @@ def delete(api: Api, cid: str) -> Answer:
     return api.call("DELETE", f"{COLLECTIONS}/{cid}")
 
 
-def grant(
-    api: Api, cid: str, target: str, role: str, expires_at: Optional[str] = None
-) -> Answer:
+def grant(api: Api, cid: str, target: str, role: str, expires_at: Optional[str] = None) -> Answer:
     """Grant role on a collection to target, until expires_at if given.
 
     Args:
@@ -102,12 +100,9 @@ def grants(api: Api, cid: str) -> set[tuple[str, str]]:
     Raises:
         ApiError: The ACL could not be listed.
     """
-    rows = common.objects(
-        must(api.call("GET", f"{COLLECTIONS}/{cid}/acl"), "listing the ACL").array
-    )
+    rows = common.objects(must(api.call("GET", f"{COLLECTIONS}/{cid}/acl"), "listing the ACL").array)
     return {
-        (str(row.get("subjectName", "")).removeprefix("user-"), str(row.get("role", "")))
-        for row in rows
+        (str(row.get("subjectName", "")).removeprefix("user-"), str(row.get("role", ""))) for row in rows
     }
 
 
@@ -130,6 +125,4 @@ def share(api: Api, cid: str, name: str, namespace: str) -> Answer:
         name: The new collection's name.
         namespace: The part to share, within the collection's own.
     """
-    return api.call(
-        "POST", f"{COLLECTIONS}/{cid}/shares", {"name": name, "namespace": namespace}
-    )
+    return api.call("POST", f"{COLLECTIONS}/{cid}/shares", {"name": name, "namespace": namespace})

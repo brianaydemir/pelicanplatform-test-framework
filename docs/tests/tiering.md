@@ -65,8 +65,7 @@ a token, so each runs in both passes.
   for the range with no token, must answer likewise. rclone, which
   serves the bucket, answers a range with 200 and the range's bytes
   alone, which counts, but leaves the row inconclusive.
-- `client-get`: of the same object, `pelican object get --cache
-  <cache>` with the token (`--token`), which follows wherever the cache
+- `client-get`: of the same object, `pelican object get --cache <cache>` with the token (`--token`), which follows wherever the cache
   sends it, must exit 0 and write the object; and, where the cache is
   the only one the directors know of, so must the same without
   `--cache`, through the director; elsewhere, the note says it was not
@@ -83,8 +82,7 @@ a token, so each runs in both passes.
   changed in the bucket
   (`openTierStream` in `local_cache/tier_serve.go`). Through a
   redirecting cache, the bytes reach the client from the bucket, and
-  the redirect's `Digest` belies them: `pelican object get --cache
-  <cache>` must not keep them, and must either write the object, or
+  the redirect's `Digest` belies them: `pelican object get --cache <cache>` must not keep them, and must either write the object, or
   fail and leave no file.
 - `overwritten`: a tiered object of its own, overwritten at every
   origin with another of its size. A whole read through the cache must

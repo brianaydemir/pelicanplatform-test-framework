@@ -416,9 +416,7 @@ def multipart_case(test: Test, case: str) -> Row:
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
         if not answer.ok:
-            found.problems.append(
-                f"{origin.svc}: the PUT got {answer.describe()} ({snippet(answer.body)})"
-            )
+            found.problems.append(f"{origin.svc}: the PUT got {answer.describe()} ({snippet(answer.body)})")
             continue
         got = web.request("GET", url, token=test.token)
         if got.status != 200:
@@ -463,10 +461,7 @@ def multipart_put(test: Test) -> dict[str, Row]:
         )
     if why:
         return {row: (SKIP, why) for row in rows}
-    return {
-        row: attempt(partial(multipart_case, test, case))
-        for case, row in zip(MULTIPART_CASES, rows)
-    }
+    return {row: attempt(partial(multipart_case, test, case)) for case, row in zip(MULTIPART_CASES, rows)}
 
 
 # --------------------------------------------------------------------------
@@ -612,8 +607,7 @@ def tpc_body(test: Test) -> dict[str, Row]:
             )
         if said.markers and said.markers[-1] != SOURCE_SIZE:
             found.problems.append(
-                f"{origin.svc}: the last marker counts {said.markers[-1]} bytes,"
-                + f" not {SOURCE_SIZE}"
+                f"{origin.svc}: the last marker counts {said.markers[-1]} bytes," + f" not {SOURCE_SIZE}"
             )
         problem = test.stored(origin, NAMESPACE, rel, data, "the destination")
         if problem:
@@ -671,9 +665,7 @@ def source_error(test: Test, found: Findings) -> None:
                 )
             problem = test.stored(origin, NAMESPACE, rel, None, "the destination")
             if problem:
-                found.problems.append(
-                    f"{origin.svc}: from a source that answers {code}, {problem}"
-                )
+                found.problems.append(f"{origin.svc}: from a source that answers {code}, {problem}")
 
 
 def missing_source(test: Test, found: Findings) -> None:
@@ -689,9 +681,7 @@ def missing_source(test: Test, found: Findings) -> None:
     for origin in test.fed.origins:
         source_url, source_name = source_of(test, origin)
         rel = test.rel(origin, "missing-source")
-        answer = test.copy(
-            origin, NAMESPACE, rel, f"{source_url}/{NAMESPACE}/{quote(missing)}", test.token
-        )
+        answer = test.copy(origin, NAMESPACE, rel, f"{source_url}/{NAMESPACE}/{quote(missing)}", test.token)
         why = failed(answer)
         if why:
             found.problems.append(f"{origin.svc}: a COPY of a missing object: {why}")
@@ -715,9 +705,7 @@ def missing_source(test: Test, found: Findings) -> None:
     else:
         found.notes.append(f"`pelican object copy`: exit {code}, {last_line(err or out)}")
     for origin in stores.unique(test.fed.origins):
-        problem = test.stored(
-            origin, NAMESPACE, rel, None, "`pelican object copy`'s destination"
-        )
+        problem = test.stored(origin, NAMESPACE, rel, None, "`pelican object copy`'s destination")
         if problem:
             found.problems.append(f"{origin.svc}: {problem}")
 
@@ -757,18 +745,14 @@ def mid_stream(test: Test, found: Findings) -> None:
             continue
         why = failed(answer)
         if why:
-            found.problems.append(
-                f"{origin.svc}: a COPY from a source that fails partway: {why}"
-            )
+            found.problems.append(f"{origin.svc}: a COPY from a source that fails partway: {why}")
         have = stores.held(origin, NAMESPACE, rel, test.setup)
         staged = test.fed.posc or origin.pstore
         if have == common.digest(before):
             kept.append(f"/{NAMESPACE}/{rel}")
             found.notes.append(f"{origin.svc} kept X")
         elif have is not None:
-            found.problems.append(
-                f"{origin.svc}: the object it was to replace holds other bytes"
-            )
+            found.problems.append(f"{origin.svc}: the object it was to replace holds other bytes")
         elif staged:
             found.problems.append(
                 f"{origin.svc}: the object it was to replace is gone, though uploads are staged"
@@ -812,10 +796,7 @@ def tpc_failures(test: Test) -> dict[str, Row]:
     why = test.native() or test.writable()
     if why:
         return {row: (SKIP, why) for row in rows}
-    return {
-        row: attempt(partial(failure_case, test, case))
-        for case, row in zip(FAILURE_CASES, rows)
-    }
+    return {row: attempt(partial(failure_case, test, case)) for case, row in zip(FAILURE_CASES, rows)}
 
 
 # --------------------------------------------------------------------------
@@ -846,8 +827,7 @@ def copies_to_public(test: Test) -> Row:
         answer = test.copy(origin, "public", rel, source, test.token)
         if answer.status not in PUBLIC_COPY_REFUSED:
             found.problems.append(
-                f"{origin.svc}: a COPY to /public got {answer.describe()}, not 401, 403, 404,"
-                + " or 405"
+                f"{origin.svc}: a COPY to /public got {answer.describe()}, not 401, 403, 404," + " or 405"
             )
         problem = test.stored(origin, "public", rel, None, "the destination in /public")
         if problem:
@@ -883,9 +863,7 @@ def unrestartable(test: Test) -> Optional[str]:
     """
     fed = test.fed
     if not fed.native_origins:
-        return (
-            f"XRootD serves the origins ({fed.origin_variant}); this is Pelican's native origin"
-        )
+        return f"XRootD serves the origins ({fed.origin_variant}); this is Pelican's native origin"
     if "DirectReads" not in fed.exports[NAMESPACE]:
         return (
             "the origins take no direct clients (Origin.DisableDirectClients), with which Pelican"
@@ -935,9 +913,7 @@ def restate(text: str, caps: Mapping[str, Sequence[str]]) -> str:
         lines.append(line)
     missing = sorted(set(caps) - changed)
     if missing:
-        raise SetupError(
-            f"fed.sh's Origin.Exports has no Capabilities for {', '.join(missing)}"
-        )
+        raise SetupError(f"fed.sh's Origin.Exports has no Capabilities for {', '.join(missing)}")
     return "\n".join(lines) + "\n"
 
 
@@ -1015,9 +991,7 @@ def seed_restart(test: Test, layout: Layout) -> dict[str, bytes]:
 
 
 @contextlib.contextmanager
-def restarted(
-    test: Test, files: Mapping[str, Mapping[str, str]]
-) -> Generator[None, None, None]:
+def restarted(test: Test, files: Mapping[str, Mapping[str, str]]) -> Generator[None, None, None]:
     """Restart every origin with its files, and afterward, as it was.
 
     files maps each origin's service name to its files: YAML text, by
@@ -1154,9 +1128,7 @@ def listings_capability(test: Test, layout: Layout, data: Mapping[str, bytes]) -
                     f"{origin.svc}: PROPFIND of Depth 1 in /{NAMESPACE}, which keeps Listings,"
                     + f" got {control_listing.describe()}"
                 )
-        found.notes.append(
-            f"{origin.svc}: Depth 1 {listing.describe()}, HTML {page.describe()}"
-        )
+        found.notes.append(f"{origin.svc}: Depth 1 {listing.describe()}, HTML {page.describe()}")
     return found.row(f"/{namespace} without Listings")
 
 
@@ -1185,9 +1157,7 @@ def direct_reads_capability(test: Test, layout: Layout, data: Mapping[str, bytes
             )
         if want in answer.body:
             found.problems.append(f"{origin.svc}: a GET straight to it got the object's bytes")
-        probe = web.request(
-            "GET", stores.url(origin, NAMESPACE, f"{test.base}/{PROBE}"), token=test.token
-        )
+        probe = web.request("GET", stores.url(origin, NAMESPACE, f"{test.base}/{PROBE}"), token=test.token)
         if probe.status != 200:
             found.problems.append(
                 f"{origin.svc}: a GET in /{NAMESPACE}, which keeps DirectReads, got"
@@ -1385,16 +1355,12 @@ def unregister(test: Test, prefix: str) -> Optional[str]:
     return f"DELETE of {prefix}'s registration got {answer.describe()}"
 
 
-def nested_get(
-    test: Test, origin: common.Origin, name: str, token: Optional[str]
-) -> web.Response:
+def nested_get(test: Test, origin: common.Origin, name: str, token: Optional[str]) -> web.Response:
     """GET object name of the nested export's collection at origin, in /public."""
     return web.request("GET", stores.url(origin, "public", f"{test.base}/{name}"), token=token)
 
 
-def nested_served(
-    test: Test, prefix: str, data: Mapping[str, bytes], _token: str, _wrong: str
-) -> Row:
+def nested_served(test: Test, prefix: str, data: Mapping[str, bytes], _token: str, _wrong: str) -> Row:
     """Check that each origin serves OPEN, beside the nested export, to anyone.
 
     /public is as it was, so a GET with no token must get the object.
@@ -1403,19 +1369,13 @@ def nested_served(
     for origin in test.fed.origins:
         answer = nested_get(test, origin, OPEN, None)
         if answer.status != 200:
-            found.problems.append(
-                f"{origin.svc}: a GET of {OPEN} with no token got {answer.describe()}"
-            )
+            found.problems.append(f"{origin.svc}: a GET of {OPEN} with no token got {answer.describe()}")
         elif answer.body != data[OPEN]:
-            found.problems.append(
-                f"{origin.svc}: a GET of {OPEN} with no token got other bytes"
-            )
+            found.problems.append(f"{origin.svc}: a GET of {OPEN} with no token got other bytes")
     return found.row(f"/public beside {prefix}, at {len(test.fed.origins)} origin(s)")
 
 
-def nested_with_token(
-    test: Test, prefix: str, data: Mapping[str, bytes], token: str, _wrong: str
-) -> Row:
+def nested_with_token(test: Test, prefix: str, data: Mapping[str, bytes], token: str, _wrong: str) -> Row:
     """Check that each origin serves the nested export's object to its token.
 
     A GET of NESTED/obj with a read token for the export, from its
@@ -1425,19 +1385,13 @@ def nested_with_token(
     for origin in test.fed.origins:
         answer = nested_get(test, origin, f"{NESTED}/obj", token)
         if answer.status != 200:
-            found.problems.append(
-                f"{origin.svc}: a GET with the export's token got {answer.describe()}"
-            )
+            found.problems.append(f"{origin.svc}: a GET with the export's token got {answer.describe()}")
         elif answer.body != data[f"{NESTED}/obj"]:
-            found.problems.append(
-                f"{origin.svc}: a GET with the export's token got other bytes"
-            )
+            found.problems.append(f"{origin.svc}: a GET with the export's token got other bytes")
     return found.row(f"{prefix}, with its token, at {len(test.fed.origins)} origin(s)")
 
 
-def nested_refused(
-    test: Test, token: Optional[str], data: Mapping[str, bytes], how: str
-) -> Findings:
+def nested_refused(test: Test, token: Optional[str], data: Mapping[str, bytes], how: str) -> Findings:
     """Return what is wrong with each origin's answer to a GET it must refuse.
 
     A GET of NESTED/obj with token (how says what it is) must be refused
@@ -1447,27 +1401,19 @@ def nested_refused(
     for origin in test.fed.origins:
         answer = nested_get(test, origin, f"{NESTED}/obj", token)
         if answer.status not in REFUSED:
-            found.problems.append(
-                f"{origin.svc}: a GET {how} got {answer.describe()}, not 401 or 403"
-            )
+            found.problems.append(f"{origin.svc}: a GET {how} got {answer.describe()}, not 401 or 403")
         if data[f"{NESTED}/obj"] in answer.body:
             found.problems.append(f"{origin.svc}: a GET {how} got the object's bytes")
     return found
 
 
-def nested_wrong_scope(
-    test: Test, prefix: str, data: Mapping[str, bytes], _token: str, wrong: str
-) -> Row:
+def nested_wrong_scope(test: Test, prefix: str, data: Mapping[str, bytes], _token: str, wrong: str) -> Row:
     """Check that a token of the export's issuer scoped elsewhere is refused."""
     found = nested_refused(test, wrong, data, "with a token for /elsewhere/ in the export")
-    return found.row(
-        f"{prefix}, with a token scoped elsewhere, at {len(test.fed.origins)} origin(s)"
-    )
+    return found.row(f"{prefix}, with a token scoped elsewhere, at {len(test.fed.origins)} origin(s)")
 
 
-def nested_protected(
-    test: Test, prefix: str, data: Mapping[str, bytes], _token: str, _wrong: str
-) -> Row:
+def nested_protected(test: Test, prefix: str, data: Mapping[str, bytes], _token: str, _wrong: str) -> Row:
     """Check that no origin serves the nested export's object to no token.
 
     The export takes a token, though it is nested in /public, which
@@ -1522,10 +1468,7 @@ def nested_export(test: Test) -> dict[str, Row]:
     rows = ROWS["nested-export"]
     why = unnestable(test)
     if why:
-        return {
-            row: (SKIP, f"needs the origins restarted with a nested export, but {why}")
-            for row in rows
-        }
+        return {row: (SKIP, f"needs the origins restarted with a nested export, but {why}") for row in rows}
     fed = test.fed
     prefix = f"/public/{test.base}/{NESTED}"
     caps = sorted(fed.exports[NAMESPACE])
@@ -1555,9 +1498,7 @@ def nested_export(test: Test) -> dict[str, Row]:
     except control.ControlError as e:
         # Restarting, or restoring, failed: what is left unrun fails.
         for row in rows:
-            found.setdefault(
-                row, (FAIL, f"restarting the origins with {prefix} nested in /public: {e}")
-            )
+            found.setdefault(row, (FAIL, f"restarting the origins with {prefix} nested in /public: {e}"))
         warn(f"restarting the origins with {prefix} nested in /public: {e}")
     why = settle(test)
     if why:
@@ -1679,9 +1620,7 @@ def gated_exercise(test: Test, origin: common.Origin, mode: str) -> tuple[list[s
     if answer.status != 200 or answer.body != data[declared]:
         problems.append(f"GET {declared}: {answer.describe()}, {len(answer.body)} bytes")
     first_byte, last_byte = GATED_RANGE
-    answer = web.request(
-        "GET", url, token=test.token, headers={"Range": f"bytes={first_byte}-{last_byte}"}
-    )
+    answer = web.request("GET", url, token=test.token, headers={"Range": f"bytes={first_byte}-{last_byte}"})
     if answer.status != 206 or answer.body != data[declared][first_byte : last_byte + 1]:
         problems.append(f"GET of a range of {declared}: {answer.describe()}")
     answer = web.request("HEAD", url, token=test.token)
@@ -1697,9 +1636,7 @@ def gated_exercise(test: Test, origin: common.Origin, mode: str) -> tuple[list[s
     except ValueError as e:
         problems.append(f"PROPFIND Depth 1 of {collection}: {e}")
     else:
-        missing = [
-            os.path.basename(p) for p in (declared, chunked) if os.path.basename(p) not in names
-        ]
+        missing = [os.path.basename(p) for p in (declared, chunked) if os.path.basename(p) not in names]
         if missing:
             problems.append(f"PROPFIND Depth 1 of {collection} lists no {', '.join(missing)}")
     if test.fed.native_origins:
@@ -1716,18 +1653,13 @@ def gated_exercise(test: Test, origin: common.Origin, mode: str) -> tuple[list[s
         )
         if answer.status not in (201, 204):
             problems.append(f"MOVE {chunked} to {moved}: {answer.describe()}, not 201 or 204")
-        problems.append(
-            test.stored(origin, NAMESPACE, moved, data[chunked], f"on disk, {moved}") or ""
-        )
-        problems.append(
-            test.stored(origin, NAMESPACE, chunked, None, "on disk, the MOVE's source") or ""
-        )
+        problems.append(test.stored(origin, NAMESPACE, moved, data[chunked], f"on disk, {moved}") or "")
+        problems.append(test.stored(origin, NAMESPACE, chunked, None, "on disk, the MOVE's source") or "")
         answer = web.request("DELETE", stores.url(origin, NAMESPACE, moved), token=test.token)
         if not answer.ok:
             problems.append(f"DELETE {moved}: {answer.describe()}")
         problems.append(
-            test.stored(origin, NAMESPACE, moved, None, f"on disk, {moved} after its DELETE")
-            or ""
+            test.stored(origin, NAMESPACE, moved, None, f"on disk, {moved} after its DELETE") or ""
         )
         paths += [made, moved]
     return [f"{origin.svc}: {p}" for p in problems if p], paths
@@ -1771,9 +1703,7 @@ def gated_clients(test: Test, mode: str) -> tuple[list[str], str]:
         "object", "put", "--token", test.token_file, source, f"{fed.url}/{NAMESPACE}/{uploaded}"
     )
     if code != 0:
-        problems.append(
-            f"`pelican object put` of {uploaded}: exit {code}: {last_line(err or out)}"
-        )
+        problems.append(f"`pelican object put` of {uploaded}: exit {code}: {last_line(err or out)}")
     elif common.digest(data) not in stores.held_anywhere(
         fed.origins, NAMESPACE, uploaded, {NAMESPACE: test.setup}
     ):
@@ -1801,9 +1731,7 @@ def log_problems(
     """
     client = test.token
     if not entries:
-        return [
-            "the gate logged no request: the origins did not reach their backend through it"
-        ], ""
+        return ["the gate logged no request: the origins did not reach their backend through it"], ""
     problems: list[str] = []
     if passthrough:
         asked = {f"/{NAMESPACE}/{p}" for p in direct}
@@ -2029,9 +1957,7 @@ def sentinel_missing(test: Test, origin: common.Origin, text: str) -> Row:
     """
     name = f"sentinel-{test.session.run}-missing"
     try:
-        with control.restart_with(
-            origin.svc, {SENTINEL_FILE: with_sentinel(text, name)}, serves=False
-        ):
+        with control.restart_with(origin.svc, {SENTINEL_FILE: with_sentinel(text, name)}, serves=False):
             started = time.monotonic()
             if common.wait_for(
                 lambda: control.state(origin.svc) not in ("running", "restarting"),
@@ -2161,9 +2087,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 warn(test.stub_down)
             if not test.writable():
                 for origin in fed.origins:
-                    errors = stores.make_dirs(
-                        [origin], NAMESPACE, f"{test.base}/{origin.svc}", test.setup
-                    )
+                    errors = stores.make_dirs([origin], NAMESPACE, f"{test.base}/{origin.svc}", test.setup)
                     if errors:
                         die(f"could not make the run's collection: {errors[0]}")
                 errors = stores.put_everywhere(
@@ -2198,9 +2122,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                     record(name, gated(test, name == "backend-passthrough"))
             if "sentinel" in selected:
                 print("  sentinel ...")
-                for row, result in attempt_all(
-                    ROWS["sentinel"], partial(sentinel, test)
-                ).items():
+                for row, result in attempt_all(ROWS["sentinel"], partial(sentinel, test)).items():
                     record(row, result)
     finally:
         clean("after the run")

@@ -92,8 +92,7 @@ SCENARIOS = {
     ),
     "stat": "an object no origin holds: 404 where the director asks the origins, else 307",
     "redirect": (
-        "Location carries the token, timeout, and parameters, and serves alone; Link carries"
-        " no token"
+        "Location carries the token, timeout, and parameters, and serves alone; Link carries" " no token"
     ),
     "expired-401": "a token about to expire gets 401 and WWW-Authenticate; an unreadable one 307",
     "status-codes": "unknown namespaces, unwritable writes, bad parameters, old clients, OPTIONS",
@@ -226,9 +225,7 @@ class Test:
             "warm": os.urandom(8192),
             "permitted": os.urandom(4096),
         }
-        self.objects = {
-            name: f"{self.base}/{name}" for name in ("probe", "warm", "missing", "permitted")
-        }
+        self.objects = {name: f"{self.base}/{name}" for name in ("probe", "warm", "missing", "permitted")}
         self.caches = [Server(c.svc, c.url, c.kind) for c in self.fed.federated_caches]
         self.origins = [Server(o.svc, o.url, "origin") for o in self.fed.origins]
 
@@ -403,9 +400,7 @@ def order_problems(
         if answer.status != 307:
             problems.append(f"{what}: {answer.describe()}, not 307")
         elif director.host(answer.header("Location")) != want[0]:
-            problems.append(
-                f"{what}: Location is at {answer.header('Location')}, not {want[0]}"
-            )
+            problems.append(f"{what}: Location is at {answer.header('Location')}, not {want[0]}")
         elif listed != want:
             problems.append(f"{what}: Link lists {listed}, not {want}")
     return problems
@@ -450,9 +445,7 @@ def debug_problems(
             got = weight(entry, "distanceWeight")
             want = distance_weight(client, GEO[server.svc])
             if not math.isclose(got, want, rel_tol=1e-6, abs_tol=1e-12):
-                problems.append(
-                    f"{what}: {server.svc}'s distanceWeight is {got}, not {want:.6g}"
-                )
+                problems.append(f"{what}: {server.svc}'s distanceWeight is {got}, not {want:.6g}")
     return problems
 
 
@@ -501,14 +494,8 @@ def distance(test: Test) -> list[Row]:
             why = f"no location is declared for {', '.join(unplaced)}"
             rows += [(kind, FAIL, why), (f"{kind}-debug", FAIL, why)]
             continue
-        problems = [
-            p
-            for c in (NEAR_MADRID, NEAR_MADISON)
-            for p in order_problems(test, route, servers, c)
-        ]
-        near = ", ".join(
-            f"{c}: {expected_order(servers, c)[0].svc}" for c in (NEAR_MADRID, NEAR_MADISON)
-        )
+        problems = [p for c in (NEAR_MADRID, NEAR_MADISON) for p in order_problems(test, route, servers, c)]
+        near = ", ".join(f"{c}: {expected_order(servers, c)[0].svc}" for c in (NEAR_MADRID, NEAR_MADISON))
         rows.append((kind, *outcome(problems, near)))
         problems = debug_problems(test, route, servers, NEAR_MADRID)
         rows.append((f"{kind}-debug", *outcome(problems, f"{len(servers)} weighed")))
@@ -555,8 +542,7 @@ def stat_problems(
                 answer = ask(target, token, method=method)
                 what = f"{director.host(url)}: {method} /{ns}{'?' + query if query else ''}"
                 redirected = (
-                    answer.status == 307
-                    and where(answer.header("Location"), test.origins) is not None
+                    answer.status == 307 and where(answer.header("Location"), test.origins) is not None
                 )
                 if found or (answer.status == 307 and unasked(test, ns)):
                     if not redirected:
@@ -661,8 +647,7 @@ class Redirects:
         location = answer.header("Location")
         at_origin = where(location, test.origins) is not None
         allowed = (
-            credentials.decide(credentials.ALLOW, test.caps, "get", direct=at_origin)
-            == credentials.ALLOW
+            credentials.decide(credentials.ALLOW, test.caps, "get", direct=at_origin) == credentials.ALLOW
         )
         served = web.request("GET", location)
         if not allowed:
@@ -722,9 +707,7 @@ class Redirects:
         # X-Pelican-Timeout, and the query parameters, pass through.
         found = self.redirect("timeout", ask(self.target, token, {"X-Pelican-Timeout": "5s"}))
         if found is not None and found.get("pelican.timeout") != ["5s"]:
-            self.note(
-                "timeout", f"Location's pelican.timeout is {found.get('pelican.timeout')}"
-            )
+            self.note("timeout", f"Location's pelican.timeout is {found.get('pelican.timeout')}")
         query = f"skipstat&{EXTRA_PARAM}={quote(EXTRA_VALUE, safe='')}"
         found = self.redirect("params", ask(f"{self.target}?{query}", token))
         if found is not None:
@@ -742,9 +725,7 @@ class Redirects:
         sent = str(uuid.uuid4())
         answer = ask(self.target, token, {"X-Pelican-JobId": sent})
         if answer.header("X-Pelican-JobId") != sent:
-            self.note(
-                "job-id", f"X-Pelican-JobId {answer.header('X-Pelican-JobId')!r}, not {sent}"
-            )
+            self.note("job-id", f"X-Pelican-JobId {answer.header('X-Pelican-JobId')!r}, not {sent}")
         answer = ask(self.target, token, {"X-Pelican-JobId": "not-a-uuid"})
         got = answer.header("X-Pelican-JobId")
         try:
@@ -907,9 +888,7 @@ def unknown_namespace(test: Test) -> tuple[str, str]:
         else:
             want = (404, 429)
         if answer.status not in want:
-            problems.append(
-                f"{what}, started {after:.0f}s ago: {answer.describe()}, not {want}"
-            )
+            problems.append(f"{what}, started {after:.0f}s ago: {answer.describe()}, not {want}")
     if problems:
         return FAIL, first(problems)
     if unsure:
@@ -1130,9 +1109,7 @@ def random_order(test: Test) -> tuple[str, str]:
     return outcome(problems, f"each cache first, in {RANDOM_ASKS} asks per director")
 
 
-def availability(
-    test: Test, token: Optional[str]
-) -> tuple[list[str], dict[str, dict[str, float]]]:
+def availability(test: Test, token: Optional[str]) -> tuple[list[str], dict[str, dict[str, float]]]:
     """Read each director's adaptive sort of the caches for `warm`.
 
     Each is asked presenting token, and explains its sort with
@@ -1156,9 +1133,7 @@ def availability(
             problems.append(f"{name}: directorSortMethod is {info.get('directorSortMethod')!r}")
             continue
         servers = servers_info(info)
-        weights = {
-            c.host: weight(servers.get(c.host, {}), "availabilityWeight") for c in test.caches
-        }
+        weights = {c.host: weight(servers.get(c.host, {}), "availabilityWeight") for c in test.caches}
         missing = [h for h, w in weights.items() if math.isnan(w)]
         if missing:
             problems.append(f"{name}: no availabilityWeight for {missing}: {sorted(servers)}")
@@ -1254,10 +1229,7 @@ def cache_name(test: Test, cache: Server) -> Optional[str]:
     except ValueError:
         return None
     for row in (common.as_object(r) or {} for r in rows):
-        if (
-            row.get("type") == "Cache"
-            and director.host(str(row.get("webUrl", ""))) == cache.host
-        ):
+        if row.get("type") == "Cache" and director.host(str(row.get("webUrl", ""))) == cache.host:
             return str(row.get("name") or "") or None
     return None
 
@@ -1327,10 +1299,7 @@ def filtered_listing(test: Test, name: Optional[str]) -> tuple[str, str]:
         what = director.host(url)
         if not mine:
             problems.append(f"{what}: {SERVERS} ({answer.describe()}) does not list {name!r}")
-        elif (
-            mine[0].get("filtered") is not True
-            or mine[0].get("filteredType") != director.PERM_FILTERED
-        ):
+        elif mine[0].get("filtered") is not True or mine[0].get("filteredType") != director.PERM_FILTERED:
             shown = {k: mine[0].get(k) for k in ("filtered", "filteredType")}
             problems.append(f"{what}: lists {name!r} with {shown}")
     return outcome(problems, f"{name!r}: permFiltered")
@@ -1437,9 +1406,7 @@ def phases(selected: Sequence[str], name: Optional[str]) -> list[Phase]:
     if "response-hostnames" in selected:
         for header, case in (("Host", "host"), ("X-Forwarded-Host", "forwarded")):
             for hostname, kind in ((ORIGIN_HOSTNAME, "origin"), (CACHE_HOSTNAME, "cache")):
-                check = functools.partial(
-                    response_hostname, header=header, hostname=hostname, kind=kind
-                )
+                check = functools.partial(response_hostname, header=header, hostname=hostname, kind=kind)
                 checks.append(("response-hostnames", f"{case}-{kind}", check))
     if checks:
         found.append(Phase("combined", combined_text(name), tuple(checks)))
@@ -1459,9 +1426,7 @@ def checked(check: Callable[[Test], tuple[str, str]], test: Test) -> tuple[str, 
     return rows[0][1], rows[0][2]
 
 
-def restarted(
-    test: Test, selected: Sequence[str], add: Callable[[str, str, str, str], None]
-) -> None:
+def restarted(test: Test, selected: Sequence[str], add: Callable[[str, str, str, str], None]) -> None:
     """Restart the directors for each phase the selected scenarios need.
 
     For each, run its checks, and restore the directors; then wait until
@@ -1520,9 +1485,7 @@ def permitted_namespace(test: Test) -> Optional[str]:
     /public is the suite's own).
     """
     others = [
-        ns
-        for ns in ("public", *credentials.PROTECTED)
-        if ns in test.fed.exports and ns != test.namespace
+        ns for ns in ("public", *credentials.PROTECTED) if ns in test.fed.exports and ns != test.namespace
     ]
     return others[0] if others else None
 
@@ -1582,19 +1545,14 @@ def permitted_listing(test: Test, permitted: str, restricted: Server) -> tuple[s
         mine = [
             r
             for r in (common.as_object(r) or {} for r in rows)
-            if r.get("type") == "Cache"
-            and director.host(str(r.get("webUrl", ""))) == restricted.host
+            if r.get("type") == "Cache" and director.host(str(r.get("webUrl", ""))) == restricted.host
         ]
         if not mine:
-            problems.append(
-                f"{what}: {SERVERS} ({answer.describe()}) does not list {restricted.svc}"
-            )
+            problems.append(f"{what}: {SERVERS} ({answer.describe()}) does not list {restricted.svc}")
             continue
         prefixes = [str(p) for p in common.as_array(mine[0].get("namespacePrefixes")) or []]
         wrong = [
-            p
-            for p in prefixes
-            if p.rstrip("/") != f"/{permitted}" and not p.startswith(f"/{permitted}/")
+            p for p in prefixes if p.rstrip("/") != f"/{permitted}" and not p.startswith(f"/{permitted}/")
         ]
         if wrong or not prefixes:
             problems.append(f"{what} lists {restricted.svc} with namespacePrefixes {prefixes}")
@@ -1693,15 +1651,15 @@ def permitted_namespaces(test: Test, add: Callable[[str, str, str, str], None]) 
                     if problem:
                         problems.append(problem)
                         break
-                note = f"{restricted.svc} named for /{permitted} alone, in {PERMITTED_ASKS} asks per director"
+                note = (
+                    f"{restricted.svc} named for /{permitted} alone, in {PERMITTED_ASKS} asks per director"
+                )
                 add(scenario, "routing", *outcome(problems, note))
             add(
                 scenario,
                 "listing",
                 *checked(
-                    functools.partial(
-                        permitted_listing, permitted=permitted, restricted=restricted
-                    ),
+                    functools.partial(permitted_listing, permitted=permitted, restricted=restricted),
                     test,
                 ),
             )
@@ -1709,9 +1667,7 @@ def permitted_namespaces(test: Test, add: Callable[[str, str, str, str], None]) 
                 scenario,
                 "direct",
                 *checked(
-                    functools.partial(
-                        permitted_direct, permitted=permitted, restricted=restricted
-                    ),
+                    functools.partial(permitted_direct, permitted=permitted, restricted=restricted),
                     test,
                 ),
             )

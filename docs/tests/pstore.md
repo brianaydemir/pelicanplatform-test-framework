@@ -21,8 +21,7 @@ API what its catalog holds instead: [names](names.md) its names and
 checksums, and [listings](listings.md) and
 [client commands](client-commands.md) its modification times.
 
-- `storage-api`: each pstore origin serves, on its web port, `GET
-  /api/v1.0/origin/storage/pstore/ls/<path>`, `stat/<path>`,
+- `storage-api`: each pstore origin serves, on its web port, `GET /api/v1.0/origin/storage/pstore/ls/<path>`, `stat/<path>`,
   `digest/<path>`, and `usage`, for its admin alone
   (`origin_serve/storage_api.go`). A path is in the store's catalog,
   under the export's `StoragePrefix` (`/protected-a/...`). At each
@@ -135,6 +134,7 @@ otherwise the three scenarios skip, and say why. `scheduled-passes` and
   past its bound, a write gets 507 until something is deleted
   (`pstore/capacity.go`). Each refusal must count once in
   `pelican_pstore_write_failures_total{reason="no_space"}`.
+
   - `fill`: objects of up to 960 KiB, each written whole, with its
     length, below pstore's 1 MiB spill threshold, so that each takes
     its bytes and a tag per block, until 512 KiB are left. The store's
@@ -145,9 +145,7 @@ otherwise the three scenarios skip, and say why. `scheduled-passes` and
     before any of the body comes. It checks a declared length against
     the store before it reads (`checkBackendCapacity` in
     `origin_serve/handlers.go`).
-  - `expect`: the same, with `Expect: 100-continue`: 507, with no `100
-    Continue` first. Python's `http.client` passes over a `100
-    Continue`, and sends a body whole, so these two send a request of
+  - `expect`: the same, with `Expect: 100-continue`: 507, with no `100 Continue` first. Python's `http.client` passes over a `100 Continue`, and sends a body whole, so these two send a request of
     their own (`web.statuses_before_body()`).
   - `chunked`: a PUT in chunks, with no length, of 128 KiB more than is
     left, which the origin can refuse only once it has read what is
@@ -165,10 +163,12 @@ otherwise the three scenarios skip, and say why. `scheduled-passes` and
   - `gauges`: `pelican_pstore_limit_bytes` must be the bound, and with
     `pelican_pstore_used_bytes`, within 45 seconds, say what the storage
     API's `usage` says.
+
 - `backups`: the origin backs up its catalog at startup, then an
   interval after each backup, to `pstore-metadata-<UTC>.pmb`, through a
   `.partial` file that it renames, and prunes all but the newest it
   keeps (`snapshotOnce` in `pstore/backup.go`).
+
   - `startup`: within 60 seconds of the restart, a backup must appear,
     written within an interval of when the origin started
     (`process_start_time_seconds`), with its pass counted
@@ -183,11 +183,13 @@ otherwise the three scenarios skip, and say why. `scheduled-passes` and
     (`pstore/backup_crypto.go`), and no `.partial` file, nor anything
     else; and `pelican_pstore_metadata_backup_last_size_bytes` must be
     the newest one's size.
+
 - `restore`, with the origin still backing up its catalog so: a backup
   is only as good as what comes back out of it, and nothing but the
   origin can read the store, so the scenario checks a restore through
   the offline CLI, which reads the store on its own
   (`pelican-server origin pstore`; `pstore/backup.go` and `recover.go`).
+
   - `objects`: five objects of 100 bytes to 1 MiB and 5, held in the
     catalog and in block files, written straight to the origin; the
     first backup taken after them, copied out of its directory; and

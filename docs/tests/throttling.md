@@ -73,8 +73,7 @@ named `<scenario> <case>`.
   `Retry-After`, and has no other cache to try, so the test, as a
   retrier outside it would, tries it again once the reads are done, 2
   seconds apart, up to five times, and it must then get the object. A
-  client that was never shed leaves its row inconclusive. `pelican
-  object get` first asks for one byte (`Range: bytes=0-0`), which a V2
+  client that was never shed leaves its row inconclusive. `pelican object get` first asks for one byte (`Range: bytes=0-0`), which a V2
   cache serves by fetching only the blocks it reads, and those after it
   has answered; so whether it sheds that request with a 429 is less
   plain from the code than for the plugin's whole read: on
@@ -109,8 +108,7 @@ named `<scenario> <case>`.
   With `PELICAN_CLIENT_MINIMUMDOWNLOADSPEED=1048576`,
   `PELICAN_CLIENT_SLOWTRANSFERRAMPUPTIME=2s`, and
   `PELICAN_CLIENT_SLOWTRANSFERWINDOW=5s`, four times the origins' rate,
-  a 4 MiB object, which would take about 15 seconds: `direct`, `pelican
-  object get --direct` must fail with 6002, exit 11, and leave nothing;
+  a 4 MiB object, which would take about 15 seconds: `direct`, `pelican object get --direct` must fail with 6002, exit 11, and leave nothing;
   `plugin-direct`, `stash_plugin` with `?directread` likewise, its ad
   saying `TransferSuccess = false`, `TransferRetryable = true`, and an
   error of `ErrorType = "Transfer"` whose `PelicanErrorCode` is 6002.

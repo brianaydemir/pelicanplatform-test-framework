@@ -202,9 +202,7 @@ class Test:
 
         It asks now, for everything they might have.
         """
-        tok = issuer.token(
-            self.client("device"), User(token=self.web_token(username)), issuer.DATA_SCOPES
-        )
+        tok = issuer.token(self.client("device"), User(token=self.web_token(username)), issuer.DATA_SCOPES)
         return issuer.data_scopes(tok)
 
     def path(self, name: str) -> str:
@@ -289,10 +287,7 @@ def sweep(test: Test, this_run: bool) -> None:
     directory = f"/{test.namespace}/data/accounts/"
     for row in objects(admin.call("GET", collections.COLLECTIONS).array):
         namespace = str(row.get("namespace", ""))
-        if (
-            namespace.startswith(directory)
-            and namespace.startswith(test.prefix + "/") == this_run
-        ):
+        if namespace.startswith(directory) and namespace.startswith(test.prefix + "/") == this_run:
             gone = delete(admin, str(row.get("id")))
             if not gone.ok:
                 warn(f"could not remove collection {row.get('name')}: {gone.describe()}")
@@ -373,13 +368,9 @@ def web_problems(test: Test, username: str, cookie: str, allowed: bool) -> list[
     want = "200" if allowed else "401"
     answer = web.request("GET", test.web + accounts.ME, headers={"Cookie": f"login={cookie}"})
     if answer.status != (200 if allowed else 401):
-        problems.append(
-            f"GET {accounts.ME} with the login cookie: {answer.describe()}, not {want}"
-        )
+        problems.append(f"GET {accounts.ME} with the login cookie: {answer.describe()}, not {want}")
     elif not allowed and not cleared(answer):
-        problems.append(
-            f"GET {accounts.ME} with the login cookie: 401, but the cookie not cleared"
-        )
+        problems.append(f"GET {accounts.ME} with the login cookie: 401, but the cookie not cleared")
     answer = accounts.try_login(test.web, username, test.passwords[username])
     if answer.status != (200 if allowed else 401):
         problems.append(f"logging in again: {answer.describe()}, not {want}")
@@ -460,9 +451,7 @@ def user_status(test: Test) -> list[Row]:
     user = User(cookie=cookie)
     held = issuer.device_tokens(test.client("device"), user, REFRESHABLE)
     if not held.refresh:
-        return [
-            ("", FAIL, "the device flow, asked for offline_access, issued no refresh token")
-        ]
+        return [("", FAIL, "the device flow, asked for offline_access, issued no refresh token")]
     refresh = held.refresh
     rows: list[Row] = []
 
@@ -687,18 +676,14 @@ def scope_grants(test: Test) -> list[Row]:
         try:
             answer = create(api, "by-token", test.path("by-token"))
             if answer.status != 201:
-                problems.append(
-                    f"creating a collection with the admin's token: {answer.describe()}"
-                )
+                problems.append(f"creating a collection with the admin's token: {answer.describe()}")
             else:
                 must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
         finally:
             drop(admin_cookie, token_id)
         answer = create(api, "by-token", test.path("by-token"))
         if answer.status not in (401, 403):
-            problems.append(
-                f"creating a collection with the token once deleted: {answer.describe()}"
-            )
+            problems.append(f"creating a collection with the token once deleted: {answer.describe()}")
             if answer.status == 201:
                 must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
         return outcome(
@@ -781,9 +766,7 @@ def authority_groups(test: Test) -> list[Row]:
             cookie = log_in(test, username, user_id)
             answer = create(Api(test.web, None, cookie), "by-group", test.path("by-group"))
             if answer.status != status:
-                problems.append(
-                    f"creating a collection {when}: {answer.describe()}, not {status}"
-                )
+                problems.append(f"creating a collection {when}: {answer.describe()}, not {status}")
             if answer.ok:
                 must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
 
@@ -904,9 +887,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
             problems.append("the new group of the name is the collection's admin group")
         if read in test.data_scopes(member):
             problems.append(f"a member of the new group of the name gets {read}")
-        return outcome(
-            problems, "its grant and admin role gone; a new group of its name, nothing"
-        )
+        return outcome(problems, "its grant and admin role gone; a new group of its name, nothing")
 
     def user_deleted() -> Row:
         username = test.name("former")
@@ -980,9 +961,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
         if read in test.data_scopes(old_user):
             problems.append(f"a new user of the user's old name gets {read}")
         if grants(admin, cid) != wanted:
-            problems.append(
-                f"with the old names taken, the ACL lists {sorted(grants(admin, cid))}"
-            )
+            problems.append(f"with the old names taken, the ACL lists {sorted(grants(admin, cid))}")
         return outcome(problems, "the renamed keep their grant; their old names, nothing")
 
     checked(rows, "group-deleted", group_deleted)
@@ -1011,9 +990,7 @@ def group_invites(test: Test) -> list[Row]:
 
     def invite(single: bool) -> str:
         made = must(
-            test.api(owner).call(
-                "POST", f"{accounts.GROUPS}/{gid}/invites", {"isSingleUse": single}
-            ),
+            test.api(owner).call("POST", f"{accounts.GROUPS}/{gid}/invites", {"isSingleUse": single}),
             "making an invite link",
         )
         token = str(made.object.get("inviteToken", ""))
@@ -1115,9 +1092,7 @@ def aup(test: Test) -> list[Row]:
             problems.append(f"as the admin, {why}")
         public = Api(test.web, None).call("GET", accounts.AUP)
         if public.status != 200 or public.object.get("version") != new:
-            problems.append(
-                f"GET {accounts.AUP} with no token: {public.describe()}, not the new"
-            )
+            problems.append(f"GET {accounts.AUP} with no token: {public.describe()}, not the new")
         said = admin.call("GET", accounts.WHOAMI).object
         if said.get("requires_aup") is not True or said.get("aup_version") != new:
             problems.append(f"/whoami says requires_aup {said.get('requires_aup')!r}")
@@ -1133,9 +1108,7 @@ def aup(test: Test) -> list[Row]:
 
     def again() -> Row:
         new = put_up(2)
-        why = gated(admin, accounts.USERS, new) or gated(
-            test.api(signer), accounts.MY_GROUPS, new
-        )
+        why = gated(admin, accounts.USERS, new) or gated(test.api(signer), accounts.MY_GROUPS, new)
         return ("", FAIL, why) if why else ("", PASS, "the admin and a user refused again")
 
     def restored() -> Row:

@@ -208,9 +208,7 @@ def approve_device(issuer: str, user_code: str, user: IdpUser) -> web.Response:
         The provider's answer.
     """
     form = {"user_code": user_code, "username": user.username, "password": user.password}
-    return web.request(
-        "POST", f"{issuer}/device", upload=urlencode(form).encode(), headers=FORM
-    )
+    return web.request("POST", f"{issuer}/device", upload=urlencode(form).encode(), headers=FORM)
 
 
 def user_code_in(line: str) -> Optional[str]:

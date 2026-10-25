@@ -289,9 +289,7 @@ def enabled(test: Test) -> list[Row]:
             )
         if not query.get("state"):
             problems.append("the login carries no state")
-        rows.append(
-            row(server.name, problems, f"{', '.join(sorted(server.roles))}: to the provider")
-        )
+        rows.append(row(server.name, problems, f"{', '.join(sorted(server.roles))}: to the provider"))
     return rows
 
 
@@ -341,9 +339,7 @@ def login(test: Test) -> list[Row]:
             problems.append(str(e))
             records = []
         if len(records) != 1:
-            problems.append(
-                f"{server.name} has {len(records)} users named {member.preferred_username}"
-            )
+            problems.append(f"{server.name} has {len(records)} users named {member.preferred_username}")
         elif records[0].get("sub") != member.sub or records[0].get("issuer") != test.issuer:
             problems.append(
                 f"the user's record links to {records[0].get('sub')!r} at"
@@ -565,32 +561,22 @@ def registry_identity(test: Test) -> list[Row]:
     else:
         if registry.thumbprints(found.get("pubkey")) != registry.key_thumbprints([key]):
             problems.append(f"{prefix} is not registered with the client's key")
-        identity = (
-            common.as_object(registry.parse(str(found.get("identity", "")).encode())) or {}
-        )
+        identity = common.as_object(registry.parse(str(found.get("identity", "")).encode())) or {}
         if identity.get("sub") != member.sub:
-            problems.append(
-                f"the registration's identity is {found.get('identity')!r}, not {MEMBER}'s"
-            )
+            problems.append(f"the registration's identity is {found.get('identity')!r}, not {MEMBER}'s")
         elif identity.get("preferred_username") != member.preferred_username:
             problems.append(f"the registration's identity names no {member.preferred_username}")
         owner = str(registry.admin_metadata(found).get("user_id") or "")
         known = test.registry_ids.get(MEMBER)
         if known and owner != known:
-            problems.append(
-                f"the registration's owner is {owner!r}, not the registry's {MEMBER}"
-            )
-    code, out, err = test.session.pelican_cmd(
-        "namespace", "delete", "--prefix", prefix, env=env
-    )
+            problems.append(f"the registration's owner is {owner!r}, not the registry's {MEMBER}")
+    code, out, err = test.session.pelican_cmd("namespace", "delete", "--prefix", prefix, env=env)
     if code != 0:
         problems.append(f"delete: exit {code}: {last_line(err or out)}")
     elif web.request("GET", f"{fed.registry_url}{registry.REGISTRY}{prefix}").status == 200:
         problems.append(f"{prefix} is still registered after delete")
     note = f"{prefix}: registered as {MEMBER}" + (
-        ", owned by the registry's user of that identity"
-        if test.registry_ids.get(MEMBER)
-        else ""
+        ", owned by the registry's user of that identity" if test.registry_ids.get(MEMBER) else ""
     )
     return [row("", problems, note)]
 
@@ -618,10 +604,7 @@ def no_issuer(test: Test) -> Optional[str]:
         return "the origins' embedded issuer is off (ORIGIN_ENABLE_ISSUER=false)"
     if test.namespace is None:
         return "no protected namespace is exported"
-    if (
-        "Writes" not in fed.exports[test.namespace]
-        or "DirectReads" not in fed.exports[test.namespace]
-    ):
+    if "Writes" not in fed.exports[test.namespace] or "DirectReads" not in fed.exports[test.namespace]:
         return f"/{test.namespace} takes no writes from direct clients"
     return None
 
@@ -648,9 +631,7 @@ def settle(test: Test, rel: str) -> Optional[str]:
         for url in test.fed.directors:
             where = director.ask(url, "origin", path, token=token)
             if not where.names(director.host(test.origin.url)):
-                return (
-                    f"{director.host(url)} does not name {test.origin.svc}: {where.describe()}"
-                )
+                return f"{director.host(url)} does not name {test.origin.svc}: {where.describe()}"
         for cache in test.fed.federated_caches:
             answer = web.request("HEAD", f"{cache.url}{path}", token=token)
             if answer.status != 200:
@@ -797,9 +778,7 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
         if got != want:
             problems.append(f"granted {sorted(got)}, not {sorted(want)}")
         if group not in issuer.groups(granted.access):
-            problems.append(
-                f"the token's wlcg.groups {sorted(issuer.groups(granted.access))} lack {group}"
-            )
+            problems.append(f"the token's wlcg.groups {sorted(issuer.groups(granted.access))} lack {group}")
         rows.append(row(name, problems, f"{group}: {len(want)} scopes"))
     problems = []
     try:
@@ -825,9 +804,7 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
     rel_b, _ = made.objects[PROJECT_B]
     answer = web.request("GET", stores.url(test.origin, namespace, rel_a), token=tok)
     if answer.status != 200 or answer.body != data_a:
-        problems.append(
-            f"GET of {PROJECT_A}'s object at {test.origin.svc}: {answer.describe()}"
-        )
+        problems.append(f"GET of {PROJECT_A}'s object at {test.origin.svc}: {answer.describe()}")
     answer = web.request("GET", stores.url(test.origin, namespace, rel_b), token=tok)
     if answer.status not in (401, 403):
         problems.append(
@@ -841,9 +818,7 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
         "object", "get", "--token", token_file, f"{test.fed.url}/{namespace}/{rel_a}", target
     )
     if code != 0:
-        problems.append(
-            f"`pelican object get` with the token: exit {code}: {last_line(err or out)}"
-        )
+        problems.append(f"`pelican object get` with the token: exit {code}: {last_line(err or out)}")
     elif common.sha256(target) != common.digest(data_a):
         problems.append("`pelican object get` with the token: the file is not the object")
     rows.append(row("data", problems, f"{PROJECT_A}'s object read, {PROJECT_B}'s refused"))
@@ -887,9 +862,7 @@ def client_rows(test: Test, made: Restarted) -> list[Row]:
     return [row("", problems, f"{done.approvals} flow(s) approved as {MEMBER}")]
 
 
-def run_restarted(
-    test: Test, selected: Sequence[str], record: Callable[[str, Row], None]
-) -> None:
+def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Row], None]) -> None:
     """Run the selected restart scenarios, with origin-0 restarted.
 
     origin-0 is restarted with RESTART_CONFIG, and afterward restored.
@@ -954,9 +927,7 @@ def run_restarted(
             warn(f"with {test.origin.svc} restored, {why}")
         if made.client is not None:
             admin_token = test.admin(test.server_at(test.web)).token or ""
-            error = issuer.delete_client(
-                test.web, f"/{test.namespace}", admin_token, made.client.client_id
-            )
+            error = issuer.delete_client(test.web, f"/{test.namespace}", admin_token, made.client.client_id)
             if error:
                 warn(error)
         unseed(test, made)

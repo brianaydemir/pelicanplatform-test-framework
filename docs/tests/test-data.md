@@ -17,18 +17,17 @@ The `transfers` suite makes its batches each time it runs, in
 client invocation. `<ns>` is each namespace, and `<cred>` each of the
 eleven [credentials](authorization.md) that applies to it:
 
-| Scenario          | Transfers                                                 |
-| ----------------- | --------------------------------------------------------- |
-| `exist`           | get `/public/data/0.<n>`, with no token                   |
-| `dne`             | get `/public/data/9.<n>` (never created): not found; where `/public` isn't exported, from the first exported protected namespace instead, with its `server` token |
+| Scenario          | Transfers                                                                                                                                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `exist`           | get `/public/data/0.<n>`, with no token                                                                                                                                                                |
+| `dne`             | get `/public/data/9.<n>` (never created): not found; where `/public` isn't exported, from the first exported protected namespace instead, with its `server` token                                      |
 | `get-<ns>-<cred>` | get `/<ns>/data/0.<n>`, presenting `<cred>` (`get-public-none` is `exist`); `get-public-<cred>` checks that a configured, possibly bad, token doesn't break a public read, since the client sends none |
-| `put-<ns>-<cred>` | put `/<ns>/data/put/put-<ns>-<cred>/<x>.<z>`, presenting `<cred>` |
+| `put-<ns>-<cred>` | put `/<ns>/data/put/put-<ns>-<cred>/<x>.<z>`, presenting `<cred>`                                                                                                                                      |
 
 These run through `pelican object get` and `put`. Each get also has a
 direct twin, `direct-<scenario>`, which asks the director for an origin
 instead of a cache (`pelican object get --direct`), and a named twin,
-`cache-<scenario>`, which names the first federated cache (`pelican
-object get --cache`) and takes the objects from it, asking the director
+`cache-<scenario>`, which names the first federated cache (`pelican object get --cache`) and takes the objects from it, asking the director
 only what the namespace wants: the three ways a client reaches an
 object. Every scenario also has a plugin twin, `plugin-<scenario>`
 (e.g. `plugin-direct-exist`), which runs the same batches through
@@ -112,8 +111,7 @@ presence check answers 404 first, which the client reports as not found.
 HTTP twins, which stat nothing. The plain HTTP client's failures are its
 statuses: a 401 from the director (an expired token) is `director`, a
 405 from it (no origin allows the request in the namespace, as for a
-put to `/public`) `unsupported`, a 404 from it or from a server `not
-found`, and a 401 or 403 from the server the redirect led to `server`;
+put to `/public`) `unsupported`, a 404 from it or from a server `not found`, and a 401 or 403 from the server the redirect led to `server`;
 anything else, a redirect that led nowhere included, is `other`, and so
 unexpected. A get that got 200 goes in the batch's directory under the
 object's name, as `curl -o` would put it; nothing else is written. The

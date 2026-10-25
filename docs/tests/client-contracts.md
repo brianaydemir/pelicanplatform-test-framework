@@ -136,8 +136,7 @@ federation's.
   holds; whether that lets `acceptable-wins` through is for a run on
   main to show.
 - `url-forms`: the forms of a URL that the clients take
-  (`pelican_url/parse.go`), of an object in `/protected-a`. By `pelican
-  object get`: a bare path, which needs a federation to be given, as
+  (`pelican_url/parse.go`), of an object in `/protected-a`. By `pelican object get`: a bare path, which needs a federation to be given, as
   the dev container's configuration does (`Federation.DiscoveryUrl`;
   `configured`, which skips for a standalone origin, whose client is
   told of none), as `-f` does (`flag`), and as
@@ -145,8 +144,7 @@ federation's.
   `stash:///` URLs, which take the OSDF's federation unless one is
   given, here by `-f` (`osdf`, `stash`); and `osdf://` with two
   slashes, which the client reads as three (`osdf-two-slashes`). Each
-  must get the object. Where `/protected-a` takes writes, `pelican
-  object put` to an `osdf:///` URL, with `-f`, must land the file at an
+  must get the object. Where `/protected-a` takes writes, `pelican object put` to an `osdf:///` URL, with `-f`, must land the file at an
   origin (`put-osdf`). And stash_plugin, which HTCondor hands
   `osdf:///` URLs, with the federation in its environment, must get the
   object (`plugin-osdf`); a bare path is not tried, since HTCondor
@@ -253,8 +251,7 @@ federation's.
   (`-p topo-multi-origin`), the director finds no origin holding a
   collection ([client commands](client-commands.md)), so both
   `?recursive` gets fail there, on main.
-- `preferred-cache-down`: `pelican object get --cache
-  https://<cache>:1,+`, a preferred cache that answers nothing (no
+- `preferred-cache-down`: `pelican object get --cache https://<cache>:1,+`, a preferred cache that answers nothing (no
   server listens on port 1) and then, with `+`, the director's caches:
   one of them must serve, as the stats show (`plus`). Without `+`, the
   dead cache is the client's only one, and the get must fail to reach
@@ -265,8 +262,7 @@ federation's.
   `client_agent/` in Pelican), and waits for it: the file must be the
   object (`get`). `pelican job status --json` must then report the job
   `completed`, with one transfer and the object's bytes (`status`), and
-  `pelican job list --json` list it (`list`). `pelican object copy
-  --async --wait` of a local file to `/protected-a`, where it takes
+  `pelican job list --json` list it (`list`). `pelican object copy --async --wait` of a local file to `/protected-a`, where it takes
   writes, must land it at an origin (`copy`). `pelican job cancel` of
   the finished job must leave it `completed`, whether it refuses or
   says that it cancelled it (`cancel-finished`). Last, whatever else

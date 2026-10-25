@@ -259,9 +259,7 @@ class Test:
         gets 200. It is asked with the setup token: this is a check of
         the cache's state, not of the pass's tokens.
         """
-        answer = web.request(
-            "HEAD", self.url(cache.url, rel), token=self.setup, headers=ONLY_IF_CACHED
-        )
+        answer = web.request("HEAD", self.url(cache.url, rel), token=self.setup, headers=ONLY_IF_CACHED)
         return answer.status == 200
 
     def wait_held(self, cache: common.Cache, rels: Sequence[str], seconds: float) -> list[str]:
@@ -408,19 +406,13 @@ def burst(test: Test, cache: common.Cache, found: Findings) -> None:
             continue
         why = served(answer, objects[rel])
         if why:
-            found.problems.append(
-                f"{cache.svc}: {leaf(rel)}: {why}, neither the object nor 429"
-            )
+            found.problems.append(f"{cache.svc}: {leaf(rel)}: {why}, neither the object nor 429")
     counts = ", ".join(f"{n} {s}" for s, n in sorted(statuses.items()))
     if absent.status != 404:
         what = f"429 ({shed_reason(absent)})" if absent.status == 429 else absent.describe()
-        found.problems.append(
-            f"{cache.svc}: a missing object, read during the burst, got {what}, not 404"
-        )
+        found.problems.append(f"{cache.svc}: a missing object, read during the burst, got {what}, not 404")
     if not reasons:
-        found.problems.append(
-            f"{cache.svc}: of {BURST} cold reads at once, none shed: {counts}"
-        )
+        found.problems.append(f"{cache.svc}: of {BURST} cold reads at once, none shed: {counts}")
         return
     said = ", ".join(f"{n} {r}" for r, n in sorted(reasons.items()))
     found.notes.append(f"{cache.svc}: {counts} ({said})")
@@ -457,9 +449,7 @@ def answered_in(answer: web.Response, took: float, status: int, within: float) -
     return None
 
 
-def timed(
-    test: Test, cache: common.Cache, rel: str, timeout: str
-) -> tuple[web.Response, float]:
+def timed(test: Test, cache: common.Cache, rel: str, timeout: str) -> tuple[web.Response, float]:
     """GET rel at cache with X-Pelican-Timeout timeout, and time it.
 
     Returns:
@@ -473,8 +463,7 @@ def timed(
 def timeouts(test: Test, cache: common.Cache, found: dict[str, Findings]) -> None:
     """Run timeout-header at one V2 cache (see TIMEOUT_CASES)."""
     slow, queued, held, odd = (
-        test.rel("timeout-header", cache.svc, name)
-        for name in ("slow", "queued", "held", "malformed")
+        test.rel("timeout-header", cache.svc, name) for name in ("slow", "queued", "held", "malformed")
     )
     objects = {slow: os.urandom(SLOW_SIZE)}
     objects.update({rel: os.urandom(SMALL_SIZE) for rel in (queued, held, odd)})
@@ -636,9 +625,7 @@ def range_ahead(test: Test) -> Row:
             found.problems.append(why)
             continue
         with common.pool(1) as pool:
-            whole = pool.submit(
-                web.timed_get, test.url(cache.url, rel), test.token, 64 << 10, timeout=120
-            )
+            whole = pool.submit(web.timed_get, test.url(cache.url, rel), test.token, 64 << 10, timeout=120)
             time.sleep(AHEAD_DELAY)
             asked = time.monotonic()
             ranged = test.ask("GET", cache.url, rel, headers={"Range": f"bytes={AHEAD_START}-"})
@@ -781,9 +768,7 @@ def get_pelican(
     if cache:
         args += ["--cache", cache.url]
     args += [test.object_url(rel), os.path.join(directory, "object")]
-    status, out, err = test.session.pelican_cmd(
-        *args, env=client_env(test, slow), cwd=directory
-    )
+    status, out, err = test.session.pelican_cmd(*args, env=client_env(test, slow), cwd=directory)
     return fetched(directory, status, out + err)
 
 
@@ -913,17 +898,13 @@ def shed_client(test: Test, cache: common.Cache, found: dict[str, Findings]) -> 
         second_read = pool.submit(test.ask, "GET", cache.url, queue)
         time.sleep(OCCUPY_DELAY)
         for client, get in CLIENTS.items():
-            shed[client] = get(
-                test, f"shed-{client}-{cache.svc}", rels[client], False, cache=cache
-            )
+            shed[client] = get(test, f"shed-{client}-{cache.svc}", rels[client], False, cache=cache)
         occupied = [(slot, first_read.result()), (queue, second_read.result())]
     for rel, answer in occupied:
         why = served(answer, objects[rel])
         if why:
             for each in found.values():
-                each.doubts.append(
-                    f"{cache.svc}: the read to fill its queue, {leaf(rel)}, got {why}"
-                )
+                each.doubts.append(f"{cache.svc}: the read to fill its queue, {leaf(rel)}, got {why}")
 
     for client, fetch in shed.items():
         if fetch.status == 0:
@@ -998,9 +979,7 @@ def slow_transfer(test: Test) -> dict[str, Row]:
     via = {c.svc: test.rel("slow-transfer", c.svc) for c in test.v2}
     defaults = {c: test.rel("slow-transfer", f"default-{c}") for c in CLIENTS}
     objects = {slow: data}
-    objects.update(
-        {rel: os.urandom(SLOW_TRANSFER_SIZE) for rel in [*via.values(), *defaults.values()]}
-    )
+    objects.update({rel: os.urandom(SLOW_TRANSFER_SIZE) for rel in [*via.values(), *defaults.values()]})
     why = test.put(objects)
     if why:
         return {"": (FAIL, why)}
@@ -1037,9 +1016,7 @@ def slow_transfer(test: Test) -> dict[str, Row]:
         if fetch.status == 0:
             found.problems.append(f"{cache.svc}: it got the object, under the minimum speed")
             continue
-        found.problems += [
-            f"{cache.svc}: {p}" for p in pelican_problems(fetch, {SLOW_TRANSFER})
-        ]
+        found.problems += [f"{cache.svc}: {p}" for p in pelican_problems(fetch, {SLOW_TRANSFER})]
     rows["cache"] = found.row(f"{len(test.v2)} cache(s), error 6002")
     return rows
 
@@ -1083,9 +1060,7 @@ def run_scenario(test: Test, scenario: str, results: common.Results) -> None:
         results.add(row_name(scenario, name), status, note)
 
 
-def run_phase(
-    test: Test, scenarios: list[str], results: common.Results, done: set[str]
-) -> None:
+def run_phase(test: Test, scenarios: list[str], results: common.Results, done: set[str]) -> None:
     """Run scenarios, once the federation serves again, and note each done.
 
     Each fails where it does not serve within SETTLE_WAIT seconds.
@@ -1110,9 +1085,7 @@ def skip(fed: common.Federation) -> Optional[str]:
     if fed.origin_variant != "posixv2":
         return "Origin.TransferRateLimit slows only a posixv2 origin"
     if fed.tiny:
-        return (
-            "the tiny topology's servers are one process, which slowing the origin would slow"
-        )
+        return "the tiny topology's servers are one process, which slowing the origin would slow"
     if NAMESPACE not in fed.exports:
         return "this shape does not export /protected-a"
     if not any(c.kind == "v2" for c in fed.federated_caches):
@@ -1138,9 +1111,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(
-            fed.origins, fed.exports, "data/throttling", tokens
-        )
+        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/throttling", tokens)
         if errors:
             warn(f"emptying data/throttling {when}: {first(errors)}")
 

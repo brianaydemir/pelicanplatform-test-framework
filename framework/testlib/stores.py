@@ -119,9 +119,7 @@ def has_digests(fed: common.Federation, size: int, declared: bool) -> bool:
     return fed.origin_variant != "s3v2" or declared or size <= S3_PART
 
 
-def held(
-    origin: common.Origin, namespace: str, rel: str, token: Optional[str]
-) -> Optional[str]:
+def held(origin: common.Origin, namespace: str, rel: str, token: Optional[str]) -> Optional[str]:
     """Return the SHA-256 of what origin holds at rel in namespace.
 
     Args:
@@ -247,9 +245,7 @@ def written_at(
     return when.timestamp(), ""
 
 
-def storage_namespaces(
-    origin: common.Origin, exports: Mapping[str, AbstractSet[str]]
-) -> list[str]:
+def storage_namespaces(origin: common.Origin, exports: Mapping[str, AbstractSet[str]]) -> list[str]:
     """Return the exported namespaces with storage of their own at origin.
 
     Each of exports, by name, has its own, but on a pstore origin
@@ -257,11 +253,7 @@ def storage_namespaces(
     common.Origin.storage_namespace()). What origin should hold in every
     exported namespace goes in each of them.
     """
-    return [
-        ns
-        for ns in credentials.NAMESPACES
-        if ns in exports and origin.storage_namespace(ns) == ns
-    ]
+    return [ns for ns in credentials.NAMESPACES if ns in exports and origin.storage_namespace(ns) == ns]
 
 
 def held_anywhere(
@@ -405,9 +397,7 @@ def write_file(store: str, rel: str, data: bytes) -> Optional[str]:
     return None
 
 
-def make_dirs(
-    origins: Iterable[common.Origin], namespace: str, rel: str, token: str
-) -> list[str]:
+def make_dirs(origins: Iterable[common.Origin], namespace: str, rel: str, token: str) -> list[str]:
     """Make collection rel, and its parents, in namespace at every origin.
 
     This is so that it exists before a test's uploads. A disk store's are

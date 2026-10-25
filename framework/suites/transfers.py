@@ -60,8 +60,7 @@ SCENARIOS = {s.name: s.description for s in TABLE}
 ONE_PROFILE = tuple(
     s.name
     for s in TABLE
-    if (s.credential is None and not s.missing)
-    or (s.credential is not None and s.credential.key is None)
+    if (s.credential is None and not s.missing) or (s.credential is not None and s.credential.key is None)
 )
 
 # What a route's downloads must be served by, in the served-by-* rows.
@@ -229,9 +228,7 @@ def find_tokens(session: Session, plan: Plan) -> None:
             shutil.copyfile(path, plugin_path)
 
 
-def seed_pstore(
-    origin: common.Origin, exports: transfers.Exports, tokens: dict[str, str]
-) -> None:
+def seed_pstore(origin: common.Origin, exports: transfers.Exports, tokens: dict[str, str]) -> None:
     """Upload the test objects to a pstore origin, since nothing else can.
 
     They come from the plain copy of each namespace with storage of its
@@ -278,9 +275,7 @@ def empty_put_collections(fed: common.Federation, plan: Plan, tokens: dict[str, 
         errors: list[str] = []
         for origin in stores.unique(fed.origins):
             namespace = origin.storage_namespace(scenario.namespace)
-            errors += stores.empty_tree(
-                origin, namespace, scenario.store_dir, tokens.get(namespace, "")
-            )
+            errors += stores.empty_tree(origin, namespace, scenario.store_dir, tokens.get(namespace, ""))
         return errors
 
     with common.pool(8) as pool:
@@ -429,9 +424,7 @@ def http_transfer(session: Session, plan: Plan, batch: Batch) -> None:
             at_director = len(hops) == 1 and not s.named
             category = transfers.http_category(last.status, at_director)
             failures.append(category)
-            log.write(
-                f"Failure {'getting' if s.op == 'get' else 'putting'} {name}: {category}\n"
-            )
+            log.write(f"Failure {'getting' if s.op == 'get' else 'putting'} {name}: {category}\n")
         status = 1 if failures else 0
         log.write(f"\nexit status {status}\n")
     plan.statuses[batch.id] = status
@@ -706,9 +699,7 @@ def served_by(plan: Plan, batch: Batch) -> list[str]:
     return transfers.stats_endpoints(stats)
 
 
-def check_served(
-    fed: common.Federation, plan: Plan, expected: dict[str, Outcome], report: Report
-) -> bool:
+def check_served(fed: common.Federation, plan: Plan, expected: dict[str, Outcome], report: Report) -> bool:
     """Check which servers served the successful downloads.
 
     They are judged by client and route, by transfers.check_served_by():
@@ -729,15 +720,9 @@ def check_served(
     for client in transfers.CLIENTS:
         for route in ("cache", "direct", "named"):
             cacheless = not fed.caches or (
-                client == "http"
-                and route == "cache"
-                and fed.director_default_response == "origin"
+                client == "http" and route == "cache" and fed.director_default_response == "origin"
             )
-            gets = [
-                s
-                for s in plan.scenarios
-                if s.client == client and s.op == "get" and s.route == route
-            ]
+            gets = [s for s in plan.scenarios if s.client == client and s.op == "get" and s.route == route]
             downloads = [s for s in gets if expected[s.name] is Outcome.PASS]
             case = f"served-by-{ROUTE_SERVERS[route]}-{client}"
             if gets and not downloads:

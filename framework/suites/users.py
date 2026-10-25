@@ -237,9 +237,7 @@ def described(path: str) -> str:
         found = os.stat(path)
     except OSError as e:
         return f"framework/var/{path}: {e.strerror}"
-    return (
-        f"framework/var/{path} is uid {found.st_uid}'s, mode {stat.S_IMODE(found.st_mode):04o}"
-    )
+    return f"framework/var/{path} is uid {found.st_uid}'s, mode {stat.S_IMODE(found.st_mode):04o}"
 
 
 def owned(origin: common.Origin, rel: str, token: str, uid: int) -> Row:
@@ -417,9 +415,7 @@ def primary_group(test: Test) -> dict[str, Row]:
             found.problems.append(f"{origin.svc}: framework/var/{path} is missing")
             continue
         if gid != PELICAN_GID:
-            found.problems.append(
-                f"{origin.svc}: framework/var/{path} is in gid {gid}, not {PELICAN_GID}"
-            )
+            found.problems.append(f"{origin.svc}: framework/var/{path} is in gid {gid}, not {PELICAN_GID}")
         else:
             found.notes.append(f"{origin.svc}: gid {gid}")
     return {"primary-group": found.row("in the pelican group")}
@@ -460,9 +456,7 @@ def public_tokenless(test: Test) -> dict[str, Row]:
         collection = f"{origin.url}/public/{test.base}/"
         answer = webdav.propfind(collection, "1")
         if answer.status != 207:
-            listed.problems.append(
-                f"{origin.svc}: PROPFIND with no token got {answer.describe()}, not 207"
-            )
+            listed.problems.append(f"{origin.svc}: PROPFIND with no token got {answer.describe()}, not 207")
             continue
         try:
             entries = webdav.parse(answer.body)
@@ -494,9 +488,7 @@ def hidden(answer: web.Response, what: str, name: str = "", sent: bytes = b"") -
         found.append(f"{what} got {answer.describe()}, not 403 or 404")
     for header in ("ETag", "Last-Modified", "Digest"):
         if answer.header(header):
-            found.append(
-                f"{what} got {answer.describe()} with {header} {answer.header(header)}"
-            )
+            found.append(f"{what} got {answer.describe()} with {header} {answer.header(header)}")
     if name and name.encode() in answer.body:
         found.append(f"{what} got {answer.describe()}, naming {name}")
     if sent and sent in answer.body:
@@ -572,9 +564,7 @@ def bypass(test: Test) -> dict[str, Row]:
             answer, f"{origin.svc}: a GET with If-None-Match: *", sent=data
         )
         answer = web.request("HEAD", file_url, token=other, headers={"Want-Digest": "crc32c"})
-        found["bypass digest"].problems += hidden(
-            answer, f"{origin.svc}: a HEAD with Want-Digest: crc32c"
-        )
+        found["bypass digest"].problems += hidden(answer, f"{origin.svc}: a HEAD with Want-Digest: crc32c")
     result = {row: found[row].row("refused, and shown nothing") for row in rows[:4]}
     result["bypass staging"] = staging_hidden(test)
     return result
@@ -626,13 +616,9 @@ def staging_hidden(test: Test) -> Row:
         other = test.other_token
         answer = web.request("GET", f"{url}/", token=other, headers={"Accept": "text/html"})
         found.problems += hidden(answer, f"{origin.svc}: a GET of it for HTML", name)
-        answer = web.request(
-            "GET", f"{url}/{name}", token=other, headers={"If-None-Match": "*"}
-        )
+        answer = web.request("GET", f"{url}/{name}", token=other, headers={"If-None-Match": "*"})
         found.problems += hidden(answer, f"{origin.svc}: a GET with If-None-Match: *")
-        answer = web.request(
-            "HEAD", f"{url}/{name}", token=other, headers={"Want-Digest": "crc32c"}
-        )
+        answer = web.request("HEAD", f"{url}/{name}", token=other, headers={"Want-Digest": "crc32c"})
         found.problems += hidden(answer, f"{origin.svc}: a HEAD with Want-Digest: crc32c")
     return found.row("refused, and shown nothing")
 
@@ -695,9 +681,7 @@ def staged(test: Test, name: str, token: str, user: str, uid: int) -> Row:
             found.problems.append(f"{origin.svc}: framework/var/{path}: {e.strerror}")
             continue
         if info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o700:
-            found.problems.append(
-                f"{origin.svc}: {described(path)}, not uid {uid}'s, mode 0700"
-            )
+            found.problems.append(f"{origin.svc}: {described(path)}, not uid {uid}'s, mode 0700")
         else:
             found.notes.append(f"{origin.svc}: uid {uid}")
     return found.row("the uploader's, as is its staging directory")
@@ -727,9 +711,7 @@ def read_only_dir(test: Test) -> Row:
         if answer.status != 403:
             found.problems.append(f"{origin.svc}: PUT got {answer.describe()}, not 403")
         if os.path.exists(f"{store}/{rel}"):
-            found.problems.append(
-                f"{origin.svc}: the object landed: {described(f'{store}/{rel}')}"
-            )
+            found.problems.append(f"{origin.svc}: the object landed: {described(f'{store}/{rel}')}")
     return found.row("refused, with nothing landed")
 
 
@@ -909,9 +891,7 @@ def restarted(test: Test) -> Generator[None, None, None]:
     """
     with contextlib.ExitStack() as stack:
         for origin in test.fed.origins:
-            stack.enter_context(
-                control.restart_with(origin.svc, {"90-users.yaml": RESTART_CONFIG})
-            )
+            stack.enter_context(control.restart_with(origin.svc, {"90-users.yaml": RESTART_CONFIG}))
         yield
 
 
@@ -921,9 +901,7 @@ def serving_data(test: Test, token: str) -> Optional[str]:
     A HEAD of the probe may get any answer but a 5xx.
     """
     for origin in test.fed.origins:
-        answer = web.request(
-            "HEAD", stores.url(origin, NAMESPACE, f"{test.base}/{PROBE}"), token
-        )
+        answer = web.request("HEAD", stores.url(origin, NAMESPACE, f"{test.base}/{PROBE}"), token)
         if answer.status is None or answer.status >= 500:
             return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
     return None
@@ -978,18 +956,14 @@ def restarted_rows(test: Test) -> dict[str, Row]:
     """
     why = unrestartable(test)
     if why:
-        why = (
-            f"needs the origins restarted with a username claim and no default user, but {why}"
-        )
+        why = f"needs the origins restarted with a username claim and no default user, but {why}"
         return {row: (SKIP, why) for row in RESTARTED}
     for origin in test.origins:
         error = stores.write_file(
             origin.store_of(NAMESPACE), f"{test.base}/{PROBE}", os.urandom(PROBE_SIZE)
         )
         if error:
-            return {
-                row: (FAIL, f"could not put the probe in place: {error}") for row in RESTARTED
-            }
+            return {row: (FAIL, f"could not put the probe in place: {error}") for row in RESTARTED}
     claim_token = test.mint(CLAIM_SUBJECT, {USERNAME_CLAIM: "pelican"})
     result: dict[str, Row] = {}
     print("\nRestarting the origins with a username claim and no default user")
@@ -1122,9 +1096,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     for origin in origins:
         for namespace in namespaces:
             if not os.path.isdir(f"{origin.store_of(namespace)}/data/users"):
-                die(
-                    f"framework/var/{origin.store_of(namespace)}/data/users is missing; run ./fed.sh init"
-                )
+                die(f"framework/var/{origin.store_of(namespace)}/data/users is missing; run ./fed.sh init")
     clean()
     token = session.token(NAMESPACE)
     setup = session.setup_token(NAMESPACE)
@@ -1137,9 +1109,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             errors = stores.make_dirs(origins, NAMESPACE, directory, setup)
             if errors:
                 die(f"could not make the test collection: {errors[0]}")
-        unshown = [
-            why for why in (shows_owners(o.store_of(NAMESPACE), base) for o in origins) if why
-        ]
+        unshown = [why for why in (shows_owners(o.store_of(NAMESPACE), base) for o in origins) if why]
         test = Test(session, fed, origins, base, token, other_token, setup, unshown)
         for name in selected:
             rows = ROWS[name]

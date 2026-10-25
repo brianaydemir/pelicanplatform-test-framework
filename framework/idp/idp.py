@@ -65,9 +65,7 @@ ISSUER = os.environ.get("IDP_ISSUER", "https://idp:9007")
 PORT = int(os.environ.get("IDP_PORT", "9007"))
 USERS_FILE = os.environ.get("IDP_USERS", "/fed/idp/users.json")
 CLIENT_ID_FILE = os.environ.get("IDP_CLIENT_ID_FILE", "/fed/generated/oidc-client-id")
-CLIENT_SECRET_FILE = os.environ.get(
-    "IDP_CLIENT_SECRET_FILE", "/fed/generated/oidc-client-secret"
-)
+CLIENT_SECRET_FILE = os.environ.get("IDP_CLIENT_SECRET_FILE", "/fed/generated/oidc-client-secret")
 LOG_DIR = os.environ.get("IDP_LOG_DIR", "/var/log/idp")
 CERT_FILE = os.environ.get("IDP_CERT", "/certs/tls.crt")
 KEY_FILE = os.environ.get("IDP_KEY", "/certs/tls.key")
@@ -91,9 +89,7 @@ REFRESH_GRANT = "refresh_token"
 
 # DigestInfo for SHA-256 (RFC 8017, section 9.2, note 1).
 SHA256_PREFIX = bytes.fromhex("3031300d060960864801650304020105000420")
-SMALL_PRIMES = [
-    p for p in range(3, 2000, 2) if all(p % q for q in range(3, int(p**0.5) + 1, 2))
-]
+SMALL_PRIMES = [p for p in range(3, 2000, 2) if all(p % q for q in range(3, int(p**0.5) + 1, 2))]
 
 
 def b64(data: bytes) -> str:
@@ -509,8 +505,7 @@ def login_form(action: str, fields: dict[str, str], error: str = "") -> str:
     Any user_code among fields is shown instead, for the user to edit.
     """
     hidden = "".join(
-        f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">'
-        for k, v in fields.items()
+        f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">' for k, v in fields.items()
     )
     message = f'<p class="error">{html.escape(error)}</p>' if error else ""
     shown = ""
@@ -592,9 +587,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         self.record(status)
 
-    def reply_json(
-        self, status: int, data: Any, headers: Optional[dict[str, str]] = None
-    ) -> None:
+    def reply_json(self, status: int, data: Any, headers: Optional[dict[str, str]] = None) -> None:
         """Send data as JSON."""
         self.reply(status, json.dumps(data).encode(), "application/json", headers)
 
@@ -724,17 +717,13 @@ class Handler(BaseHTTPRequestHandler):
             The parameters (RFC 6749, section 4.1.1); None, having
             answered, if any is wrong.
         """
-        fields = {
-            k: given.get(k, "") for k in ("response_type", "client_id", "redirect_uri", "scope")
-        }
+        fields = {k: given.get(k, "") for k in ("response_type", "client_id", "redirect_uri", "scope")}
         for k in ("state", "nonce"):
             if given.get(k):
                 fields[k] = given[k]
         self.noted["client_id"] = fields["client_id"]
         if not provider().client_ok(fields["client_id"], None):
-            self.reply_json(
-                400, {"error": "invalid_client", "error_description": "unknown client"}
-            )
+            self.reply_json(400, {"error": "invalid_client", "error_description": "unknown client"})
             return None
         if not REDIRECT_URI.fullmatch(fields["redirect_uri"]):
             self.reply_json(
@@ -750,9 +739,7 @@ class Handler(BaseHTTPRequestHandler):
     def redirect_error(self, fields: dict[str, str], error: str) -> None:
         """Send the client's user back with an error."""
         self.noted["error"] = error
-        self.redirect(
-            fields["redirect_uri"], {"error": error, "state": fields.get("state", "")}
-        )
+        self.redirect(fields["redirect_uri"], {"error": error, "state": fields.get("state", "")})
 
     def redirect(self, redirect_uri: str, params: dict[str, str]) -> None:
         """Send the user to redirect_uri with params in its query."""
@@ -775,9 +762,7 @@ class Handler(BaseHTTPRequestHandler):
         user = provider().users.authenticate(form.get("username", ""), form.get("password", ""))
         if user is None:
             self.noted["error"] = "bad login"
-            self.reply_html(
-                401, login_form("/authorize", fields, "Wrong username or password.")
-            )
+            self.reply_html(401, login_form("/authorize", fields, "Wrong username or password."))
             return
         self.noted["user"] = user
         code = provider().issue_code(
@@ -807,15 +792,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.oauth_error(400, "invalid_grant", "unknown, used, or expired code")
                 return
             self.noted["user"] = found["user"]
-            self.reply_json(
-                200, provider().issue_tokens(found["user"], found["scope"], found["nonce"])
-            )
+            self.reply_json(200, provider().issue_tokens(found["user"], found["scope"], found["nonce"]))
         elif grant == DEVICE_GRANT:
             state, found = provider().redeem_device(form.get("device_code", ""))
             if state == "pending":
-                self.oauth_error(
-                    400, "authorization_pending", "the user has not approved it yet"
-                )
+                self.oauth_error(400, "authorization_pending", "the user has not approved it yet")
             elif state == "expired":
                 self.oauth_error(400, "expired_token", "the device code has expired")
             elif found is None:
@@ -826,9 +807,7 @@ class Handler(BaseHTTPRequestHandler):
         elif grant == REFRESH_GRANT:
             found = provider().redeem_refresh(form.get("refresh_token", ""))
             if found is None:
-                self.oauth_error(
-                    400, "invalid_grant", "unknown, used, or expired refresh token"
-                )
+                self.oauth_error(400, "invalid_grant", "unknown, used, or expired refresh token")
                 return
             self.noted["user"] = found["user"]
             self.reply_json(200, provider().issue_tokens(found["user"], found["scope"]))
@@ -882,13 +861,9 @@ class Handler(BaseHTTPRequestHandler):
         self.noted["user"] = user
         if not provider().approve_device(fields["user_code"], user):
             self.noted["error"] = "unknown code"
-            self.reply_html(
-                404, login_form("/device", fields, "No such code, or it has expired.")
-            )
+            self.reply_html(404, login_form("/device", fields, "No such code, or it has expired."))
             return
-        self.reply_html(
-            200, message_page("Approved", f"Approved as {user}. You may close this page.")
-        )
+        self.reply_html(200, message_page("Approved", f"Approved as {user}. You may close this page."))
 
 
 def main() -> None:

@@ -162,9 +162,7 @@ class Test:
                 if errors:
                     return errors[0]
                 self.made.add(parent)
-            errors = stores.seed_everywhere(
-                self.origins, NAMESPACE, rel, data, self.setup, self.caps
-            )
+            errors = stores.seed_everywhere(self.origins, NAMESPACE, rel, data, self.setup, self.caps)
             if errors:
                 return errors[0]
         return None
@@ -182,9 +180,7 @@ class Test:
         Returns:
             Whether it does, or None if the HEAD says neither.
         """
-        answer = web.request(
-            "HEAD", self.url(cache.url, rel), token=self.setup, headers=ONLY_IF_CACHED
-        )
+        answer = web.request("HEAD", self.url(cache.url, rel), token=self.setup, headers=ONLY_IF_CACHED)
         if answer.status == 200:
             return True
         if answer.status == 504:
@@ -286,18 +282,12 @@ def prestage(cache: common.Cache, path: Optional[str], token: Optional[str]) -> 
         token: The token to present, if any.
     """
     query = "" if path is None else "?" + urlencode({"path": path})
-    return web.request(
-        "GET", f"{cache.web_url}{cacheapi.PRESTAGE}{query}", token=token, timeout=120
-    )
+    return web.request("GET", f"{cache.web_url}{cacheapi.PRESTAGE}{query}", token=token, timeout=120)
 
 
 def lines(answer: web.Response) -> list[str]:
     """Return the lines of answer's body that aren't blank."""
-    return [
-        line.strip()
-        for line in answer.body.decode(errors="replace").splitlines()
-        if line.strip()
-    ]
+    return [line.strip() for line in answer.body.decode(errors="replace").splitlines() if line.strip()]
 
 
 def progress_problem(answer: web.Response) -> Optional[str]:
@@ -318,8 +308,7 @@ def progress_problem(answer: web.Response) -> Optional[str]:
         return f"ending '{found[-1] if found else '(nothing)'}', not 'success: ok'"
     for line in found[:-1]:
         if line != "status: queued" and not (
-            line.startswith("status: active,offset=")
-            and line[len("status: active,offset=") :].isdigit()
+            line.startswith("status: active,offset=") and line[len("status: active,offset=") :].isdigit()
         ):
             return f"a line '{line}', which is no status"
     return None
@@ -387,9 +376,7 @@ def prestage_object(test: Test) -> Row:
         rel, data = rels[cache.svc], objects[rels[cache.svc]]
         found = test.held(cache, rel)
         if found is not False:
-            problems.append(
-                f"{cache.svc}: the object is {held_word(found)} before its prestage"
-            )
+            problems.append(f"{cache.svc}: the object is {held_word(found)} before its prestage")
             continue
         why = progress_problem(prestage(cache, test.path(rel), test.read_token))
         if why:
@@ -418,17 +405,13 @@ def prestage_missing(test: Test) -> Row:
     """
     problems: list[str] = []
     for cache in test.v2:
-        answer = prestage(
-            cache, test.path(test.rel("prestage", f"missing-{cache.svc}")), test.read_token
-        )
+        answer = prestage(cache, test.path(test.rel("prestage", f"missing-{cache.svc}")), test.read_token)
         found = lines(answer)
         last = found[-1] if found else "(nothing)"
         if answer.status != 200:
             problems.append(f"{cache.svc}: {answer.describe()}, not 200: {text(answer)}")
         elif not last.startswith("failure: 404"):
-            problems.append(
-                f"{cache.svc}: ending '{last[:200]}', not 'failure: 404(Not Found): ...'"
-            )
+            problems.append(f"{cache.svc}: ending '{last[:200]}', not 'failure: 404(Not Found): ...'")
     if problems:
         return FAIL, first(problems)
     return PASS, f"{len(test.v2)} V2 cache(s)"
@@ -445,9 +428,7 @@ def prestage_name(test: Test) -> Row:
     """
     names = {c.svc: (f"plus+{c.svc}", f"plus {c.svc}") for c in test.v2}
     objects = {
-        test.rel("prestage", name): os.urandom(OBJECT_SIZE)
-        for pair in names.values()
-        for name in pair
+        test.rel("prestage", name): os.urandom(OBJECT_SIZE) for pair in names.values() for name in pair
     }
     why = test.put(objects)
     if why:
@@ -457,9 +438,7 @@ def prestage_name(test: Test) -> Row:
         wanted, decoy = (test.rel("prestage", name) for name in names[cache.svc])
         answer = prestage(cache, test.path(wanted), test.read_token)
         if answer.status != 200:
-            problems.append(
-                f"{cache.svc}: the prestage got {answer.describe()}: {text(answer)}"
-            )
+            problems.append(f"{cache.svc}: the prestage got {answer.describe()}: {text(answer)}")
             continue
         common.wait_for(partial(holds, test, cache, wanted), 10, interval=1)
         for rel, want in ((wanted, True), (decoy, False)):
@@ -561,9 +540,7 @@ def evict(
 ) -> web.Response:
     """Send method to the eviction API of cache for path, with token."""
     query = {"path": path, **({"immediate": "true"} if immediate else {})}
-    return web.request(
-        method, f"{cache.web_url}{cacheapi.EVICT}?{urlencode(query)}", token=token
-    )
+    return web.request(method, f"{cache.web_url}{cacheapi.EVICT}?{urlencode(query)}", token=token)
 
 
 def evicted_message(path: str, count: int, immediate: bool) -> str:
@@ -573,9 +550,7 @@ def evicted_message(path: str, count: int, immediate: bool) -> str:
     return f"Marked {count} objects for priority eviction under {path}"
 
 
-def fill_all(
-    test: Test, objects: Mapping[str, bytes], caches: Sequence[common.Cache]
-) -> Optional[str]:
+def fill_all(test: Test, objects: Mapping[str, bytes], caches: Sequence[common.Cache]) -> Optional[str]:
     """Put objects at every origin, and have each of caches hold every one.
 
     Returns:
@@ -631,19 +606,13 @@ def evict_refused(test: Test) -> Row:
             for what, token in (("no token", None), ("/protected-a's token", test.token)):
                 answer = evict(cache, path, token)
                 if answer.status != 403:
-                    problems.append(
-                        f"{cache.svc}, {path} with {what}: {answer.describe()}, not 403"
-                    )
+                    problems.append(f"{cache.svc}, {path} with {what}: {answer.describe()}, not 403")
             answer = web.request("HEAD", f"{cache.url}{quote(path)}", headers=ONLY_IF_CACHED)
             if answer.status != 200:
-                problems.append(
-                    f"{cache.svc}: only-if-cached of {path} got {answer.describe()}"
-                )
+                problems.append(f"{cache.svc}: only-if-cached of {path} got {answer.describe()}")
     if problems:
         return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)" + (
-        f"; no /public object: {no_public}" if no_public else ""
-    )
+    return PASS, f"{len(test.v2)} V2 cache(s)" + (f"; no /public object: {no_public}" if no_public else "")
 
 
 def public_object(test: Test) -> tuple[Optional[tuple[str, bytes]], str]:
@@ -679,11 +648,7 @@ def evict_immediate(test: Test) -> Row:
     which the cache must not hold it, and a GET must fetch it again.
     """
     methods = ("GET", "POST", "DELETE")
-    rels = {
-        (c.svc, m): test.rel("evict", f"now-{m.lower()}-{c.svc}")
-        for c in test.v2
-        for m in methods
-    }
+    rels = {(c.svc, m): test.rel("evict", f"now-{m.lower()}-{c.svc}") for c in test.v2 for m in methods}
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
     problems: list[str] = []
     for cache in test.v2:
@@ -701,9 +666,7 @@ def evict_immediate(test: Test) -> Row:
                 )
             found = test.held(cache, rel)
             if found is not False:
-                problems.append(
-                    f"{cache.svc}, {method}: the object is {held_word(found)} afterward"
-                )
+                problems.append(f"{cache.svc}, {method}: the object is {held_word(found)} afterward")
             answer = test.get(cache, rel)
             if answer.status != 200 or answer.body != objects[rel]:
                 problems.append(
@@ -732,9 +695,7 @@ def evict_marked(test: Test) -> Row:
         answer = evict(cache, test.path(rel), test.token, immediate=False)
         want = evicted_message(test.path(rel), 1, False)
         if answer.status != 200 or text(answer) != want:
-            problems.append(
-                f"{cache.svc}: {answer.describe()} '{text(answer)}', not 200 '{want}'"
-            )
+            problems.append(f"{cache.svc}: {answer.describe()} '{text(answer)}', not 200 '{want}'")
         found = test.held(cache, rel)
         if found is not True:
             problems.append(f"{cache.svc}: the object is {held_word(found)} afterward")
@@ -772,9 +733,7 @@ def evict_prefix(test: Test) -> Row:
         answer = evict(cache, test.path(f"{base}/foo"), test.token)
         want = evicted_message(test.path(f"{base}/foo"), 2, True)
         if answer.status != 200 or text(answer) != want:
-            problems.append(
-                f"{cache.svc}: {answer.describe()} '{text(answer)}', not 200 '{want}'"
-            )
+            problems.append(f"{cache.svc}: {answer.describe()} '{text(answer)}', not 200 '{want}'")
         for name, want_held in (("foo/a", False), ("foo/b", False), ("foobar", True)):
             found = test.held(cache, f"{base}/{name}")
             if found is not want_held:
@@ -793,9 +752,7 @@ def evict_name(test: Test) -> Row:
     """
     problems: list[str] = []
     for cache in test.v2:
-        wanted, decoy = (
-            test.rel("evict", n) for n in (f"plus+{cache.svc}", f"plus {cache.svc}")
-        )
+        wanted, decoy = (test.rel("evict", n) for n in (f"plus+{cache.svc}", f"plus {cache.svc}"))
         objects = {wanted: os.urandom(OBJECT_SIZE), decoy: os.urandom(OBJECT_SIZE)}
         why = fill_all(test, objects, [cache])
         if why:
@@ -854,9 +811,7 @@ def evict_client(test: Test) -> Row:
             continue
         gone = [c.svc for c in test.v2 if test.held(c, rel) is False]
         if immediate and len(gone) != 1:
-            problems.append(
-                f"{flag}: {len(gone)} cache(s) lack it afterward ({', '.join(gone)}), not 1"
-            )
+            problems.append(f"{flag}: {len(gone)} cache(s) lack it afterward ({', '.join(gone)}), not 1")
         elif not immediate and gone:
             problems.append(f"{flag}: {', '.join(gone)} lack(s) it afterward")
         if not immediate:
@@ -928,9 +883,7 @@ ADMIN_ROUTES: tuple[AdminRoute, ...] = (
 def send(route: AdminRoute, url: str, token: Optional[str]) -> web.Response:
     """Send route's request to url, with token."""
     _, method, _, body, _, _ = route
-    return web.request(
-        method, url, token=token, upload=body, headers=cacheapi.JSON if body else None
-    )
+    return web.request(method, url, token=token, upload=body, headers=cacheapi.JSON if body else None)
 
 
 def admin_authz(test: Test, results: common.Results) -> None:
@@ -958,9 +911,7 @@ def admin_authz(test: Test, results: common.Results) -> None:
             url = cache.web_url + path.format(url=nowhere)
 
             if name == "chaos" and send(route, url, test.admin(cache)).status == 404:
-                results.add(
-                    row, SKIP, "no chaos API (Cache.EnableChaosAPI; Pelican v7.27.0 on)"
-                )
+                results.add(row, SKIP, "no chaos API (Cache.EnableChaosAPI; Pelican v7.27.0 on)")
                 continue
             tries: list[tuple[str, Optional[str], tuple[int, ...]]] = [
                 ("no token", None, (401,)),
@@ -1030,9 +981,7 @@ def charged(cache: common.Cache) -> Optional[int]:
     if not dirs or usage is None:
         return None
     return sum(
-        value
-        for key, value in usage.items()
-        if isinstance(value, int) and key.split(":", 1)[0][1:] in dirs
+        value for key, value in usage.items() if isinstance(value, int) and key.split(":", 1)[0][1:] in dirs
     )
 
 
@@ -1088,9 +1037,7 @@ def purge_to_target(test: Test) -> Row:
     problems: list[str] = []
     notes: list[str] = []
     for cache in test.v2:
-        objects = {
-            test.rel("purge", f"target-{cache.svc}", n): os.urandom(OBJECT_SIZE) for n in "abc"
-        }
+        objects = {test.rel("purge", f"target-{cache.svc}", n): os.urandom(OBJECT_SIZE) for n in "abc"}
         why = fill_all(test, objects, [cache])
         if why:
             return FAIL, why
@@ -1106,9 +1053,7 @@ def purge_to_target(test: Test) -> Row:
         said = common.as_object(cacheapi.decoded(answer)) or {}
         freed = said.get("freed_bytes")
         if answer.status != 200 or not isinstance(freed, int) or freed <= 0:
-            problems.append(
-                f"{cache.svc}, a target of {target}: {answer.describe()} {text(answer)}"
-            )
+            problems.append(f"{cache.svc}, a target of {target}: {answer.describe()} {text(answer)}")
             continue
         evicted = said.get("evicted_objects")
         if storage_dirs(cache) == 1 and evicted != 1:
@@ -1183,9 +1128,7 @@ def purge_marked(test: Test, cache: common.Cache, marked: str) -> tuple[Optional
         usage = charged(cache)
         if not usage:
             return "its stats give no usage of its storage", n
-        answer = purge_request(
-            test, cache, cacheapi.PURGE_TO_TARGET, {"target_bytes": usage - 1}
-        )
+        answer = purge_request(test, cache, cacheapi.PURGE_TO_TARGET, {"target_bytes": usage - 1})
         if answer.status != 200:
             return f"the purge got {answer.describe()} {text(answer)}", n
         if test.held(cache, marked) is not True:
@@ -1211,9 +1154,7 @@ def purge_all(test: Test) -> Row:
         if cache.svc in test.fed.eviction:
             low = test.fed.eviction[cache.svc][1]
             if usage is None or usage > low:
-                problems.append(
-                    f"{cache.svc} holds {usage} bytes, above its low water mark of {low}"
-                )
+                problems.append(f"{cache.svc} holds {usage} bytes, above its low water mark of {low}")
                 continue
         notes.append(f"{cache.svc} holds {usage} bytes")
     if problems:
@@ -1318,9 +1259,7 @@ def namespace_usage(test: Test, cache: common.Cache) -> tuple[Optional[int], str
     if found is None:
         return None, "its stats answered no JSON object"
     answer = cacheapi.introspect(cache, test.admin(cache), "GET", "stats")
-    names = common.as_object(
-        (common.as_object(cacheapi.decoded(answer)) or {}).get("namespace_names")
-    )
+    names = common.as_object((common.as_object(cacheapi.decoded(answer)) or {}).get("namespace_names"))
     if answer.status != 200 or names is None:
         return None, f"introspect/stats answered {answer.describe()}, with no namespace_names"
     ids = {str(n) for n, prefix in names.items() if prefix == f"/{NAMESPACE}"}
@@ -1362,10 +1301,7 @@ def usage_accounting(test: Test) -> Row:
     problems: list[str] = []
     notes: list[str] = []
     for cache in test.v2:
-        objects = {
-            test.rel("usage", cache.svc, str(n)): os.urandom(USAGE_SIZE)
-            for n in range(USAGE_COUNT)
-        }
+        objects = {test.rel("usage", cache.svc, str(n)): os.urandom(USAGE_SIZE) for n in range(USAGE_COUNT)}
         why = test.put(objects)
         if why:
             return FAIL, why
@@ -1390,9 +1326,7 @@ def usage_accounting(test: Test) -> Row:
             problems.append(f"{cache.svc}: {why or 'its stats give no TotalUsage'}")
             continue
         if ns_after - ns_before != want:
-            problems.append(
-                f"{cache.svc}: /{NAMESPACE}'s usage grew by {ns_after - ns_before}, not {want}"
-            )
+            problems.append(f"{cache.svc}: /{NAMESPACE}'s usage grew by {ns_after - ns_before}, not {want}")
         if total_after - total_before < want:
             problems.append(
                 f"{cache.svc}: TotalUsage grew by {total_after - total_before}, less than {want}"
@@ -1401,9 +1335,7 @@ def usage_accounting(test: Test) -> Row:
             notes.append(f"{cache.svc}: no store of object files to measure")
             continue
         if abs(disk_after - disk_before - want) > USAGE_SLACK:
-            problems.append(
-                f"{cache.svc}'s object files grew by {disk_after - disk_before}, not {want}"
-            )
+            problems.append(f"{cache.svc}'s object files grew by {disk_after - disk_before}, not {want}")
         measured = disk_usage(test, cache)
         if measured is None:
             problems.append(f"{cache.svc}: introspect/disk-usage gave no total_bytes_on_disk")
@@ -1461,9 +1393,7 @@ def consistency_check(
     if answer.status != 200:
         return None, f"{answer.describe()} {text(answer)}"
     for event in answer.body.decode(errors="replace").split("\n\n"):
-        fields = dict(
-            line.split(": ", 1) for line in event.strip().splitlines() if ": " in line
-        )
+        fields = dict(line.split(": ", 1) for line in event.strip().splitlines() if ": " in line)
         if fields.get("event") == "done":
             try:
                 found = common.as_object(json.loads(fields.get("data", "")))
@@ -1568,9 +1498,7 @@ def corrupted(test: Test) -> dict[str, Row]:
         if not isinstance(mismatches, int) or not isinstance(counted, int):
             counts.problems.append(f"{cache.svc}: no count of mismatches before and after")
         elif counted <= mismatches:
-            counts.problems.append(
-                f"{cache.svc}: the data scan counts {counted} mismatches, as before it"
-            )
+            counts.problems.append(f"{cache.svc}: the data scan counts {counted} mismatches, as before it")
         after = scan_metric(cache)
         if metric is None or after is None:
             counts.notes.append(f"{cache.svc}: no {INCONSISTENT} to read")
@@ -1578,14 +1506,10 @@ def corrupted(test: Test) -> dict[str, Row]:
             counts.problems.append(f"{cache.svc}: {INCONSISTENT} stayed at {after}")
         held = test.held(cache, rel)
         if held is not False:
-            drops.problems.append(
-                f"{cache.svc}: the object is {held_word(held)} after the scan"
-            )
+            drops.problems.append(f"{cache.svc}: the object is {held_word(held)} after the scan")
         answer = test.get(cache, rel)
         if answer.status != 200 or answer.body != data:
-            drops.problems.append(
-                f"{cache.svc}: a GET after the scan got {served(answer, data)}"
-            )
+            drops.problems.append(f"{cache.svc}: a GET after the scan got {served(answer, data)}")
     return {case: found[case].row(f"{len(test.v2)} V2 cache(s)") for case in CORRUPTED_CASES}
 
 
@@ -1670,9 +1594,7 @@ def orphan(test: Test) -> Row:
                 continue
             counted = done.get("orphaned_files")
             if os.path.exists(path):
-                problems.append(
-                    f"{cache.svc}: framework/var/{path} is still there after the scan"
-                )
+                problems.append(f"{cache.svc}: framework/var/{path} is still there after the scan")
             if not isinstance(before, int) or not isinstance(counted, int) or counted <= before:
                 problems.append(
                     f"{cache.svc}: the scan counts {counted} orphaned files, as before ({before})"
@@ -1766,9 +1688,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(
-            fed.origins, fed.exports, "data/cache-api", tokens
-        )
+        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/cache-api", tokens)
         if errors:
             warn(f"emptying data/cache-api {when}: {first(errors)}")
 

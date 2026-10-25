@@ -8,33 +8,30 @@ docstring is its reference; this page says where to look.
 The Python targets 3.9 and its standard library alone, which is what
 the dev container (AlmaLinux 9) and macOS ship.
 
-
 ## Layout
 
-| Path                     | Holds                                                                       |
-| ------------------------ | --------------------------------------------------------------------------- |
-| `fed.sh`                 | the shape: knobs, presets, generated configuration, and Docker Compose      |
-| `test.py`                | the runner: selects suites and scenarios, runs them under a watchdog, and sums up |
-| `framework/suites/`      | the suites; `__init__.py` gives their contract, and the order they run in   |
-| `framework/testlib/`     | what the suites share; `__init__.py` indexes its modules                    |
-| `framework/control.py`   | the helper on the host that restarts, stops, and pauses services for the tests ([service control](../README.md#service-control)) |
-| `framework/report.py`    | merges results and converts them to JUnit XML and Markdown ([Results](ci.md#results)) |
-| `framework/matrix.py`    | the choices the presets make, and the shapes that `smoke.sh` runs: it writes them and checks them ([below](#the-smoke-matrix)) |
-| `framework/smoke-shapes.tsv` | the shapes that `smoke.sh` runs, which `framework/matrix.py` writes |
-| `framework/init-data.py`, `framework/init-certs.sh` | the test objects and the certificates, which `./fed.sh init` makes |
-| `framework/presets/`     | one file per preset; `default.sh` declares every knob                       |
-| `framework/config.d/`    | Pelican configuration, by layer ([Configuration](configuration.md#pelican-configuration)) |
-| `framework/etc/`         | static files the services mount, among them `pelican.yaml`, which names the layers |
-| `framework/idp/`, `framework/metadata-server/`, `framework/lab-server/` | the helper services beside the federation: the identity provider, the metadata recorder, and the SSH host |
-| `framework/docker-compose.yaml`, `framework/docker-compose.tiny.yaml` | the services, by topology |
-
+| Path                                                                    | Holds                                                                                                                            |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `fed.sh`                                                                | the shape: knobs, presets, generated configuration, and Docker Compose                                                           |
+| `test.py`                                                               | the runner: selects suites and scenarios, runs them under a watchdog, and sums up                                                |
+| `framework/suites/`                                                     | the suites; `__init__.py` gives their contract, and the order they run in                                                        |
+| `framework/testlib/`                                                    | what the suites share; `__init__.py` indexes its modules                                                                         |
+| `framework/control.py`                                                  | the helper on the host that restarts, stops, and pauses services for the tests ([service control](../README.md#service-control)) |
+| `framework/report.py`                                                   | merges results and converts them to JUnit XML and Markdown ([Results](ci.md#results))                                            |
+| `framework/matrix.py`                                                   | the choices the presets make, and the shapes that `smoke.sh` runs: it writes them and checks them ([below](#the-smoke-matrix))   |
+| `framework/smoke-shapes.tsv`                                            | the shapes that `smoke.sh` runs, which `framework/matrix.py` writes                                                              |
+| `framework/init-data.py`, `framework/init-certs.sh`                     | the test objects and the certificates, which `./fed.sh init` makes                                                               |
+| `framework/presets/`                                                    | one file per preset; `default.sh` declares every knob                                                                            |
+| `framework/config.d/`                                                   | Pelican configuration, by layer ([Configuration](configuration.md#pelican-configuration))                                        |
+| `framework/etc/`                                                        | static files the services mount, among them `pelican.yaml`, which names the layers                                               |
+| `framework/idp/`, `framework/metadata-server/`, `framework/lab-server/` | the helper services beside the federation: the identity provider, the metadata recorder, and the SSH host                        |
+| `framework/docker-compose.yaml`, `framework/docker-compose.tiny.yaml`   | the services, by topology                                                                                                        |
 
 ## Suites
 
 A suite is a module in `framework/suites/` with `SCENARIOS`, its
 scenarios' names and descriptions in the order they run; `skip(fed)`,
-why it can test nothing in a shape, or `None`; and `run(session,
-selected, results)`. It may name `REQUIRED` scenarios, which run
+why it can test nothing in a shape, or `None`; and `run(session, selected, results)`. It may name `REQUIRED` scenarios, which run
 whatever `test.py` is asked for. A suite imports only `testlib`, never
 another suite: what two suites share lives there. The docstring of
 `framework/suites/__init__.py` gives the contract in full, and why the
@@ -78,7 +75,6 @@ than a pass. Each suite's page under
 which rows are expected to fail on Pelican as it is; a change to a suite
 is a change to its page.
 
-
 ## Service control from a test
 
 `framework/testlib/control.py` has a function for each action the
@@ -96,7 +92,6 @@ under `framework/var/control/` by which the tests and the helper talk.
 A scenario should put back whatever it stops, pauses, kills, freezes,
 or configures, even if it fails; the helper puts back what is left only
 when it stops serving, and the next one to start only the configuration.
-
 
 ## The smoke matrix
 
@@ -128,18 +123,15 @@ shapes there that still pass, adds shapes greedily until every pair is
 covered, then makes each as simple as it can be, and drops any that
 adds nothing. With `--fresh`, it starts from none, which may find fewer
 shapes, but changes more of them. A shape's name spells out its
-choices, e.g. `xrootd-v2-multi-cache-no-direct`. `framework/matrix.py
-check` reads the shapes from `smoke.sh --table`, and reports any shape
+choices, e.g. `xrootd-v2-multi-cache-no-direct`. `framework/matrix.py check` reads the shapes from `smoke.sh --table`, and reports any shape
 that `fed.sh` would refuse, that breaks a rule above, or that is
 misnamed; any preset no shape runs; and any pair no shape covers.
 
 So a new preset goes in `framework/presets/`, the tables in
 `framework/matrix.py`, and the preset tables in the
-[README](../README.md#presets); then run `framework/matrix.py
-generate`, and commit the shapes it writes. `./fed.sh -p ... check`
+[README](../README.md#presets); then run `framework/matrix.py generate`, and commit the shapes it writes. `./fed.sh -p ... check`
 asks `fed.sh` whether it accepts a set of presets, without starting
 anything.
-
 
 ## Refusals, skips, and smoke limits
 
@@ -186,7 +178,6 @@ The exceptions:
   limit, not a refusal: rotating keys is a step of `smoke.sh`'s, not a
   preset, so `fed.sh` never sees it. `./fed.sh keys add` and `rotate`
   refuse instead, once the keys are no longer the host's to write.
-
 
 ## Linters
 

@@ -12,6 +12,7 @@ standalone origin, which has no director. Each case is a row, named
 
 - `servers`: `/api/v1.0/director_ui/servers` (`listServers` in
   `director/director_ui.go`).
+
   - `listing`: every origin, another owner's included, and every
     federated cache, once, and nothing else; a site-local cache is not
     listed. Each with its web URL; its data URL on its host; its
@@ -41,7 +42,9 @@ standalone origin, which has no director. Each case is a row, named
     (`Director.SupportContactEmail` and `SupportContactUrl`).
   - `directors`: `/api/v1.0/director/directors` must list every
     director, by the URL it takes ads at.
+
 - `namespaces`:
+
   - `v2`: `/api/v2.0/director/listNamespaces` must list each export,
     once per origin that exports it, with its capabilities and its
     issuer, none for one without (`has_issuer`), and
@@ -56,6 +59,7 @@ standalone origin, which has no director. Each case is a row, named
     in no namespace gets 404; and under `-p topo-multi-owner`,
     `/public/other/x`'s is `/public/other`, but `/public/others-x`'s is
     `/public`, since a prefix matches whole segments of a path.
+
 - `health`: a director tests each origin and cache it hears from every
   15 seconds (`Director.OriginCacheHealthTestInterval`): at an origin,
   it puts a file under `/pelican/monitoring/directorTest/`, reads it,
@@ -65,6 +69,7 @@ standalone origin, which has no director. Each case is a row, named
   origin whose storage can't take the file: only `posix`, `posixv2`,
   and `pstore` can (`SupportsSelfTest`), so not `s3v2`, `httpsv2`,
   `ssh`, `https`, or `s3`.
+
   - `status`: within 150 seconds, each director must list each server
     it tests with `healthStatus` `OK`, and each it doesn't with
     `Health Test Disabled`. The wait ends sooner once no test is still
@@ -98,6 +103,7 @@ standalone origin, which has no director. Each case is a row, named
   (400, "Failed to verify provided token"), on v26.0.0-rc.3 and main
   alike. So the `status`, `test-runs`, and `component` rows of
   origin-0 fail there too, at an XRootD origin as well.
+
 - `health-test-file`: the test file a director serves the caches
   (`/api/v1.0/director/healthTest/pelican/monitoring/directorTest/director-test-<RFC 3339 time>.txt`;
   `getHealthTestFile` in `director/director.go`). A GET must get the
@@ -108,6 +114,7 @@ standalone origin, which has no director. Each case is a row, named
   (`escaped`). Pelican escapes the path, but then writes it as it was,
   so its XML is malformed, and the `escaped` row fails, on
   v26.0.0-rc.3 and main alike.
+
 - `origin-stat`: which origins hold an object, as a director asks
   them (`/api/v1.0/director_ui/servers/origins/stat/<path>`;
   `queryOrigins` in `director/director_ui.go`). It takes the token it
@@ -124,9 +131,11 @@ standalone origin, which has no director. Each case is a row, named
   Pelican writes that answer and goes on, asks no origin, and writes
   another, so the body is two JSON documents, and the
   `unknown-namespace` row fails, on v26.0.0-rc.3 and main alike.
+
 - `metrics`: what each director counts (`metrics/director.go`). Other
   traffic moves these counters too, so each row counts only what is the
   run's own, or what only rises.
+
   - `redirects`: 5 GETs of the object route, each from a client whose
     `User-Agent` names a version of the run's own
     (`pelican-client/7.99.<n>`), must raise
@@ -141,14 +150,14 @@ standalone origin, which has no director. Each case is a row, named
   - `server-count`: `pelican_director_server_count` must count each
     origin and federated cache once, of its type, and none from the
     OSDF topology, and as many of each type as the shape has.
+
 - `metadata-hosting`: `framework/config.d/director/default/` turns
   `Director.EnableFederationMetadataHosting` off, since the discovery
   service serves the federation's metadata. So each director's
   `/.well-known/pelican-configuration` must get 410, but at the
   discovery host, 200 (`discovery`): in `tiny`, whose director it is,
   and under `-p director-discovery`, where `fed.sh` turns the setting
-  on for director-0 alone, so that another director (`-p
-  topo-multi-director`) still answers 410, unless the directors share
+  on for director-0 alone, so that another director (`-p topo-multi-director`) still answers 410, unless the directors share
   one name (`-p director-ha`), at which any may answer, so every
   director then serves it. Its comparison of the
   metadata it was given with the discovery host's
@@ -161,6 +170,7 @@ standalone origin, which has no director. Each case is a row, named
   host serves where it is a Pelican server: each field of the document
   as `fed.sh` has it, and a `jwks_uri` that serves the server's own
   keys.
+
 - `forwarding`, under `-p topo-multi-director`: a director forwards
   each ad a server posts to it to every director it knows that has not
   yet seen it (`forwardServiceAd` in `director/director_advertise.go`).
@@ -173,6 +183,7 @@ standalone origin, which has no director. Each case is a row, named
   cache's own ad has reached the other, so that the cache's next is
   about 30 seconds away. If it comes sooner, and could explain what the
   other director shows, the row is inconclusive.
+
   - `forwarded`: the ad, posted to the first director, saying a status
     the cache doesn't (`warning`, or `degraded`), must reach the
     second within 10 seconds.

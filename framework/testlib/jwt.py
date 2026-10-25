@@ -168,9 +168,7 @@ def _ecdsa(der: bytes) -> bytes:
     writes.
     """
     r, s = _pair(der)
-    return int.from_bytes(r, "big").to_bytes(32, "big") + int.from_bytes(s, "big").to_bytes(
-        32, "big"
-    )
+    return int.from_bytes(r, "big").to_bytes(32, "big") + int.from_bytes(s, "big").to_bytes(32, "big")
 
 
 def encode(

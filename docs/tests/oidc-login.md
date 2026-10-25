@@ -29,8 +29,7 @@ record of them, and sets its login cookie (`handleOAuthCallback`). The
 callback is on `OIDC.ClientRedirectHostname`, `localhost` and the
 server's published port, for a browser on the host; the suite follows it
 to the server's own host instead. The suite skips without the provider.
-A scenario with several cases records a row per case, named `<scenario>
-<case>`; the first two ask every server of the shape, by web URL.
+A scenario with several cases records a row per case, named `<scenario> <case>`; the first two ask every server of the shape, by web URL.
 
 - `enabled`: each server's `/api/v1.0/auth/oauth` must list each module
   it runs (`listOIDCEnabledServersHandler`), and its login route answer
@@ -93,8 +92,7 @@ A scenario with several cases records a row per case, named `<scenario>
     name the group (`wlcg.groups`). `idp-admin`, in `test-project-b`,
     likewise for that group alone; `idp-outsider`, in no group, must be
     granted no data scope, or refused. Then `idp-member`'s token must
-    read `test-project-a`'s object straight at origin-0 and by `pelican
-    object get` through the federation, and be refused
+    read `test-project-a`'s object straight at origin-0 and by `pelican object get` through the federation, and be refused
     `test-project-b`'s.
   - `client`: `pelican object get` of `test-project-a`'s object with no
     token: the client registers itself with the issuer and starts a

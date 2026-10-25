@@ -10,8 +10,7 @@ what a director refuses. It skips a standalone origin, which has no
 director. It asks about objects it puts at every origin, in the first
 protected namespace, under `data/routing/<run>/`, and removes them
 afterward: `probe`; `warm`, which only `random-and-adaptive` reads; and
-`missing`, which it never puts. Each case is a row, named `<scenario>
-<case>`, and covers every director.
+`missing`, which it never puts. Each case is a row, named `<scenario> <case>`, and covers every director.
 
 Each server's own layer (`framework/config.d/instance/`) declares where
 it is (`GeoLocation`): cache-0 and origin-0 in Madison, and cache-1 and
@@ -82,8 +81,7 @@ them anyway.
   - `no-redirect`: `?redirect=false` must get 200, with no `Location`,
     but the same `X-Pelican-Namespace`, and a `Link` of the same servers.
 - `expired-401`: a director refuses a token that will expire before the
-  client could follow the redirect, with 401 and `WWW-Authenticate:
-  Bearer error="invalid_token", error_description="token has expired"`,
+  client could follow the redirect, with 401 and `WWW-Authenticate: Bearer error="invalid_token", error_description="token has expired"`,
   so that a client such as rclone fetches a new one
   (`validateClientToken`). It reads the token's times without checking
   its signature, and allows 10 seconds of grace, or half the token's
@@ -108,8 +106,7 @@ them anyway.
     namespace's origins, and none that supports the method
     (`noOriginsForReqErr`); `federation`'s `redirects` takes any refusal.
   - `bad-requests`: `?directread&prefercached`, which conflict, must get
-    400, and so must a client older than 7.0.0 (`User-Agent:
-    pelican-client/6.9.0`), while a 7.0.0 client is redirected.
+    400, and so must a client older than 7.0.0 (`User-Agent: pelican-client/6.9.0`), while a 7.0.0 client is redirected.
   - `options`: a bare OPTIONS must get 200, with `Allow` and CORS
     headers.
   - `server` and `server-once`: every answer of the scenario must carry

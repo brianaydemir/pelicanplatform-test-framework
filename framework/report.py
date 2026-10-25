@@ -152,9 +152,7 @@ def junit(rows: Sequence[dict[str, str]]) -> str:
     for key, value in totals.items():
         top.set(key, f"{value:.1f}" if key == "time" else str(value))
     ET.indent(top)
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(top, encoding="unicode") + "\n"
-    )
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(top, encoding="unicode") + "\n"
 
 
 def cell(text: str) -> str:
@@ -182,9 +180,7 @@ def markdown(rows: Sequence[dict[str, str]]) -> str:
     if failures:
         lines += ["", "### Failures", ""]
         for row in failures:
-            where = " / ".join(
-                x for x in (row.get("shape"), row.get("suite"), row.get("case")) if x
-            )
+            where = " / ".join(x for x in (row.get("shape"), row.get("suite"), row.get("case")) if x)
             lines.append(f"- **{cell(where)}**: {cell(row.get('note', ''))}")
     return "\n".join(lines) + "\n"
 

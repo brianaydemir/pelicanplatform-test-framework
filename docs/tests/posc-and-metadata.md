@@ -62,6 +62,7 @@ judges it by the staging that the shape has, or by the store alone.
     before the restart, under the default timeout. The row needs a
     control helper and a topology other than `tiny`; elsewhere, it
     skips, and says why.
+
 - **XRootD's POSC** (`-p origin-atomic-uploads`): `Origin.EnableAtomicUploads`
   stages each upload in `Origin.UploadTempLocation`, which Pelican
   requires on the exports' filesystem but in none of them, so `fed.sh`
@@ -71,12 +72,14 @@ judges it by the staging that the shape has, or by the store alone.
   store. `hidden` skips, since nothing is staged inside an export, as
   does `posc-expiry`, since XRootD reaps its own staging; and `stalled`
   checks no metric, which only the native POSC has.
+
 - **pstore** (`-p origin-pstore`) commits a new version of an object only
   when its upload completes, so the `posc` suite runs there too: the same
   interruptions, judged by what the origins serve, once
   `pstore/objects` has grown to show the upload under way (`chunked`
   sends just over pstore's 1 MiB spill threshold for this). `stalled`,
   `hidden`, and `posc-expiry`, which are about POSC's staging, skip.
+
 - **Without staging** (every other origin: `posixv2` without POSC,
   XRootD's `posix` without atomic uploads, `httpsv2`, `s3v2`, `ssh`,
   `https`, and `s3`), the `posc` suite runs the same interruptions, and
@@ -112,6 +115,7 @@ judges it by the staging that the shape has, or by the store alone.
   an object whole, or not at all, so there every row should pass. An
   `ssh` origin answers a PUT of an empty object with 405, which
   `commit`'s 1 MiB upload does not meet.
+
 - **Metadata** (`-p origin-metadata`): the origins send an event for every
   object committed, overwritten, or deleted to the `metadata` recorder. It
   saves each request in `framework/var/data/metadata/` (listed in
@@ -145,6 +149,7 @@ judges it by the staging that the shape has, or by the store alone.
     the event; one through the manage URL must cancel it (200); then
     both URLs must answer 404, and for 20 seconds, though a retry was
     due within 10, the recorder must get no delivery of it.
+
   - `catalog`: the events of changes to the store other than an upload,
     each awaited for 30 seconds. `move`: a MOVE of an object must send
     `object.committed` (or `object.updated`) for its new path, and
@@ -184,6 +189,7 @@ judges it by the staging that the shape has, or by the store alone.
     at every sweep, and every object that the origin has served but not
     written is published, as if it had. The rows run in eventual mode
     only.
+
   - `object-metadata-cli`: the first origin's record of objects
     (`Origin.Metadata.TrackAccess`, which the metadata presets turn on).
     `api`: after an upload, each of its admin routes,
@@ -199,6 +205,7 @@ judges it by the staging that the shape has, or by the store alone.
     ([client binary](../../README.md#client-binary)), and skips without
     one. The upload is the setup token's, so the scenario, presenting
     only the origin's web API tokens, runs in the WLCG pass alone.
+
   - `queue-admin`: the publish queue's admin routes,
     `/api/v1.0/origin_ui/metadata_queue` (its list and `/_health`, and an
     event's GET, DELETE, and `/retry`), with an event held queued: the
@@ -218,6 +225,7 @@ judges it by the staging that the shape has, or by the store alone.
     row, `off`: the list must refuse no credentials (401), and answer
     the admin, as `/_health` must, 503. Like `object-metadata-cli`, it
     deletes with the setup token, and runs in the WLCG pass alone.
+
   - `backpressure` (eventual mode): the namespace's queue capped, at two
     rows more than it has pending when the suite asks
     (`Origin.Metadata.MaxQueuedPerNamespace`), and at 4096 bytes of
@@ -251,6 +259,7 @@ judges it by the staging that the shape has, or by the store alone.
   Afterward, the suite deletes through the origin the objects whose
   events the recorder always fails, so that the origin records them
   gone, and then removes the run's rows from the queue.
+
 - **Transactional mode** (`-p origin-metadata-tx`): an upload should fail
   with a 5xx if its event can't be delivered, and its object should be
   removed, as Pelican's `docs/metadata-publish-design.md` says.

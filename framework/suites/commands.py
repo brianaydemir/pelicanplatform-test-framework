@@ -65,16 +65,12 @@ SCENARIOS = {
     "delete-nonempty": "`delete` of a non-empty collection without -r: refused, nothing removed",
     "delete-missing": "`delete` of a missing object: not found",
     "delete-read-only": "`delete` with a read-only token: refused, nothing removed",
-    "delete-no-token": (
-        "`delete` with no token: the client refuses (Error code 4010), nothing removed"
-    ),
+    "delete-no-token": ("`delete` with no token: the client refuses (Error code 4010), nothing removed"),
     "delete-public": (
         "`delete` in /public: refused, nothing removed; or, where it takes writes"
         " (`-p origin-public-writes`), removed"
     ),
-    "get-existing-file": (
-        "`get` over a larger local file leaves only the object; a failed one, the file"
-    ),
+    "get-existing-file": ("`get` over a larger local file leaves only the object; a failed one, the file"),
     "get-collection": "`get` of a collection without -r: refused, and nothing written (G4)",
     "get-recursive": "`get -r` lays the tree out flat, in an existing directory or a new one",
     "put-exists": "with overwrites off, `put` to an existing object: refused, nothing changed",
@@ -88,8 +84,7 @@ SCENARIOS = {
     "copy-tpc-public": "`copy` from /public to /protected-a: a third-party copy",
     "copy-tpc-direct": "`copy --direct`: a third-party copy from an origin",
     "copy-to-public": (
-        "`copy` to /public: refused; or, where it takes writes (`-p origin-public-writes`),"
-        " stored"
+        "`copy` to /public: refused; or, where it takes writes (`-p origin-public-writes`)," " stored"
     ),
     "sync-upload": "`sync` of a local tree to a new collection",
     "sync-unchanged": "`sync --dry-run` of a tree the origins already hold lists nothing",
@@ -97,8 +92,7 @@ SCENARIOS = {
     "sync-download": "`sync` of a collection to a local directory",
     "sync-tpc": "`sync` of a collection to another: third-party copies",
     "du-protected-a": (
-        "`du --json`, and `du --count`'s text: bytes, objects, and collections"
-        " per collection"
+        "`du --json`, and `du --count`'s text: bytes, objects, and collections" " per collection"
     ),
     "du-public": "the same in /public, with no token",
     "du-summarize": "`du -s` gives only the total",
@@ -263,9 +257,7 @@ class Test:
         os.makedirs(self.tmp)
         self.run = session.run
         self.base = f"data/cmd/{self.run}"
-        self.namespaces: list[str] = [
-            ns for ns in ("public", "protected-a") if ns in session.fed.exports
-        ]
+        self.namespaces: list[str] = [ns for ns in ("public", "protected-a") if ns in session.fed.exports]
         self.lacks: frozenset[str] = frozenset()
         self.token_files = {ns: session.token_file(ns) for ns in self.namespaces}
         self.tokens = {ns: session.setup_token(ns) for ns in self.namespaces}
@@ -275,9 +267,7 @@ class Test:
         # On a pstore origin, /public's tree is /protected-a's, whose
         # storage it reads.
         own = {
-            self.fed.storage_namespace(ns): {
-                path: os.urandom(size) for path, size in TREE.items()
-            }
+            self.fed.storage_namespace(ns): {path: os.urandom(size) for path, size in TREE.items()}
             for ns in self.namespaces
         }
         self.trees = {ns: own[self.fed.storage_namespace(ns)] for ns in self.namespaces}
@@ -329,9 +319,7 @@ class Test:
         token = self.tokens[target]
         parent = rel.rsplit("/", 1)[0]
         errors = stores.make_dirs(self.origins, target, parent, token)
-        errors += stores.seed_everywhere(
-            self.origins, target, rel, data, token, self.fed.exports[target]
-        )
+        errors += stores.seed_everywhere(self.origins, target, rel, data, token, self.fed.exports[target])
         if errors:
             die("could not put the test objects in place: " + "; ".join(errors))
 
@@ -343,9 +331,7 @@ class Test:
 
     def seed_tree(self) -> None:
         """Put each namespace's tree in place at every origin."""
-        for namespace in dict.fromkeys(
-            self.fed.storage_namespace(ns) for ns in self.namespaces
-        ):
+        for namespace in dict.fromkeys(self.fed.storage_namespace(ns) for ns in self.namespaces):
             for path, data in self.trees[namespace].items():
                 self.seed(namespace, f"{self.base}/tree/{path}", data)
 
@@ -445,9 +431,7 @@ def tree_objects(entries: Iterable[dict[str, Any]], root: str) -> Counter[tuple[
         The count of each (path in the tree at root, size), so that
         nesting and duplicates count.
     """
-    return Counter(
-        (tree_rel(e["Name"], root), e.get("Size")) for e in entries if not e.get("IsCollection")
-    )
+    return Counter((tree_rel(e["Name"], root), e.get("Size")) for e in entries if not e.get("IsCollection"))
 
 
 def unchanged(test: Test, objects: dict[str, bytes]) -> Optional[str]:
@@ -455,9 +439,7 @@ def unchanged(test: Test, objects: dict[str, bytes]) -> Optional[str]:
 
     objects maps each rel in /protected-a to its bytes.
     """
-    changed = [
-        rel for rel, data in objects.items() if not test.everywhere("protected-a", rel, data)
-    ]
+    changed = [rel for rel, data in objects.items() if not test.everywhere("protected-a", rel, data)]
     if changed:
         return f"refused, but an origin no longer holds {', '.join(changed)}"
     return None
@@ -550,9 +532,7 @@ def ls_missing(test: Test) -> tuple[str, str]:
 
 def ls_no_token(test: Test) -> tuple[str, str]:
     """Check that `ls` of /protected-a with no token is refused."""
-    code, out, err = test.pelican_cmd(
-        "object", "ls", test.url("protected-a", f"{test.base}/tree")
-    )
+    code, out, err = test.pelican_cmd("object", "ls", test.url("protected-a", f"{test.base}/tree"))
     why = no_token_refusal(code, out, err, test.fed.standalone)
     if why:
         return FAIL, why
@@ -730,9 +710,7 @@ def delete_nonempty(test: Test) -> tuple[str, str]:
         test.url("protected-a", f"{test.base}/del/full"),
     )
     if test.lacks:
-        return test.outcome(
-            code, out, err, lambda: (PASS, ""), lambda: unchanged(test, {rel: data})
-        )
+        return test.outcome(code, out, err, lambda: (PASS, ""), lambda: unchanged(test, {rel: data}))
     if code == 0:
         return FAIL, "succeeded, but the collection is not empty"
     if "non-empty collection" not in out + err:
@@ -1086,9 +1064,7 @@ def put_recursive(test: Test) -> tuple[str, str]:
         if code != 0:
             return FAIL, f"to {label}: exit {code}: {last_line(err or out)}"
         missing = [
-            p
-            for p, data in files.items()
-            if not test.somewhere("protected-a", f"{remote}/{p}", data)
+            p for p, data in files.items() if not test.somewhere("protected-a", f"{remote}/{p}", data)
         ]
         if missing:
             nested = [f"{remote}/put-recursive/{p}" for p in missing]
@@ -1137,9 +1113,7 @@ def copy_download(test: Test) -> tuple[str, str]:
     return PASS, ""
 
 
-def copy_tpc(
-    test: Test, name: str, source_ns: str, path: str, direct: bool = False
-) -> tuple[str, str]:
+def copy_tpc(test: Test, name: str, source_ns: str, path: str, direct: bool = False) -> tuple[str, str]:
     """Check `copy` from source_ns to /protected-a: a third-party copy.
 
     Args:
@@ -1250,17 +1224,13 @@ def sync_upload(test: Test) -> tuple[str, str]:
 
     def passed() -> tuple[str, str]:
         missing = [
-            p
-            for p, data in files.items()
-            if not test.somewhere("protected-a", f"{remote}/{p}", data)
+            p for p, data in files.items() if not test.somewhere("protected-a", f"{remote}/{p}", data)
         ]
         if missing:
             return FAIL, f"no origin holds {', '.join(missing)}"
         return PASS, f"{len(files)} files"
 
-    return test.outcome(
-        code, out, err, passed, lambda: nowhere(test, [f"{remote}/{p}" for p in files])
-    )
+    return test.outcome(code, out, err, passed, lambda: nowhere(test, [f"{remote}/{p}" for p in files]))
 
 
 def sync_unchanged(test: Test) -> tuple[str, str]:
@@ -1391,9 +1361,7 @@ def sync_tpc(test: Test) -> tuple[str, str]:
             return FAIL, f"no origin holds {', '.join(missing)}"
         return PASS, f"{len(test.trees['protected-a'])} files"
 
-    return test.outcome(
-        code, out, err, passed, lambda: nowhere(test, [f"{remote}/{p}" for p in TREE])
-    )
+    return test.outcome(code, out, err, passed, lambda: nowhere(test, [f"{remote}/{p}" for p in TREE]))
 
 
 # --------------------------------------------------------------------------
@@ -1440,9 +1408,7 @@ def du_text(text: str) -> list[tuple[str, int, int, int]]:
     return rows
 
 
-def du_counts(
-    rows: Iterable[tuple[str, Any, Any, Any]], arg: str
-) -> dict[str, tuple[Any, Any, Any]]:
+def du_counts(rows: Iterable[tuple[str, Any, Any, Any]], arg: str) -> dict[str, tuple[Any, Any, Any]]:
     """Return du's rows by their place in the tree (see du_key()).
 
     Args:
@@ -1559,9 +1525,7 @@ def du_summarize(test: Test) -> tuple[str, str]:
 
 def du_no_token(test: Test) -> tuple[str, str]:
     """Check that `du` of /protected-a with no token is refused."""
-    code, out, err = test.pelican_cmd(
-        "object", "du", test.url("protected-a", f"{test.base}/tree")
-    )
+    code, out, err = test.pelican_cmd("object", "du", test.url("protected-a", f"{test.base}/tree"))
     why = no_token_refusal(code, out, err, test.fed.standalone)
     if why:
         return FAIL, why

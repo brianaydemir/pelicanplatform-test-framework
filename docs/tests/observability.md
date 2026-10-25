@@ -23,6 +23,7 @@ scrapes itself (`framework/testlib/metrics.py`).
 - `health-api`: each server's health report
   (`/api/v1.0/metrics/health`; `GetHealthStatus` in
   `metrics/health.go`).
+
   - `components`: as its admin reads it, the report must say `ok`
     overall, and of each component. It must list `web-ui`; at an
     origin, and a cache that the directors know of, `federation`,
@@ -46,6 +47,7 @@ scrapes itself (`framework/testlib/metrics.py`).
     `Server.HealthMonitoringPublic` is on, which the suite reads from
     the server's configuration, 200 for all. `/api/v1.0/health` must
     answer anyone with 200.
+
 - `health-metrics`: each server's `pelican_component_health_status`
   must agree with its health report. The suite reads the report, then
   `/metrics`, then the report again; each component whose status both
@@ -58,8 +60,10 @@ scrapes itself (`framework/testlib/metrics.py`).
   (`launcher_utils/xrootd_servers.go`), so the gauge stays at 4, and
   the origin's row fails under `-p origin-xrootd`, on v26.0.0-rc.3 and
   main alike. This comes from reading the code, not from a run.
+
 - `metric-authorization`: `promMetricAuthHandler` and
   `promQueryEngineAuthHandler` (`web_ui/authorization.go`).
+
   - `metrics`: at each server, `/metrics` with no token must get 401
     or 403 (Pelican answers 403); with a token of the server's own
     local issuer with scope `monitoring.scrape`, 200, and the
@@ -81,6 +85,7 @@ scrapes itself (`framework/testlib/metrics.py`).
     server's type and web host), which needs the token it mints from
     the federation's issuer (`configDirectorPromScraper`) to pass
     theirs.
+
 - `http-metrics`, at the first origin, where Pelican serves it (not
   XRootD), in the first protected namespace that takes direct writes
   and reads, or, where only `/public` does (`-p origin-public` with
@@ -96,6 +101,7 @@ scrapes itself (`framework/testlib/metrics.py`).
   subject, it uses that one, and the counters must rise by at least
   these. It writes under `data/observability/<run>/`, and removes it
   afterward.
+
   - `put`: the PUT must get 201, and raise
     `pelican_http_requests_total` with `server_type="origin"`,
     `method="PUT"`, and `code="201"` by one, and
@@ -115,9 +121,11 @@ scrapes itself (`framework/testlib/metrics.py`).
   (`posixv2` and `pstore`; `origin_serve/filesystem.go`), `put` must
   also raise `pelican_storage_writes_total`, and `get`
   `pelican_storage_reads_total`, for that `username`.
+
 - `log-level`: each server's log level, which its admin may change for
   a while (`/api/v1.0/logging/level`; `web_ui/logging_api.go` and
   `logging/level_manager.go`).
+
   - `change`: at every server at once, a POST of a more verbose level
     than the server's (`debug`, or `trace` from `debug`) for 20 seconds
     must get 200 and a `changeId`; the level must then be the one asked
@@ -138,14 +146,15 @@ scrapes itself (`framework/testlib/metrics.py`).
     case gets 200, and every server's `refusals` row fails, on
     v26.0.0-rc.3 and main alike. This comes from reading the code, not
     from a run.
-  - `cli`, at the first server: `pelican-server server
-    set-logging-level <level> 20s --server <web URL> --token <file>`,
+  - `cli`, at the first server: `pelican-server server set-logging-level <level> 20s --server <web URL> --token <file>`,
     with the admin's token, must print a change's ID, which the API
     must then list. It skips without a `pelican-server`.
+
 - `log-redaction`: at every origin and cache. A server keeps its newest
   log lines in memory, and serves them to its admin, and to a user
   granted `pelican.log_read` (`/api/v1.0/logs/tail`;
   `web_ui/log_buffer_api.go`).
+
   - `tail-access`: the tail with no credentials must get 401; as
     `test-webapi`, 403; and as the admin, 200.
   - `redaction`: with the server's log level raised to `debug`, the
@@ -160,6 +169,7 @@ scrapes itself (`framework/testlib/metrics.py`).
     note says how often the token appeared, redacted. If a request went
     unanswered, or the tail dropped lines the suite had not read, the
     row is inconclusive.
+
 - `log-level-xrootd`, at the first origin, where XRootD serves the
   origins, and at the first federated XRootD cache: XRootD's own log
   levels (`Logging.Origin.Xrootd` and `Logging.Cache.Xrootd`) take a
@@ -167,6 +177,7 @@ scrapes itself (`framework/testlib/metrics.py`).
   (`handleXrootdLoggingChange` in `xrootd/logging_callback.go`), after
   draining for `Xrootd.ShutdownTimeout`, which the framework sets to 2
   seconds.
+
   - `short`: a change for no longer than the drain must get 400, since
     it would revert before XRootD restarted to take it.
   - `restart`: a change for 5 minutes past the drain must get 200, with

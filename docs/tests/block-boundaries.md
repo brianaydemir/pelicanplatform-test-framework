@@ -21,8 +21,7 @@ byte more than 8 MiB between them. Every server is asked these, not
 only XRootD's.
 
 - Each object goes straight to every origin, with a `Content-Length` or
-  in chunks with none, which is how the client uploads; `pelican object
-  put` and `stash_plugin` upload every size too. On a `pstore` origin,
+  in chunks with none, which is how the client uploads; `pelican object put` and `stash_plugin` upload every size too. On a `pstore` origin,
   `/metrics` must show each upload in the tier its size predicts. Where
   `/protected-a` takes no writes, the objects are put straight in the
   stores instead, and the upload scenarios skip; where it takes no
@@ -164,8 +163,7 @@ only XRootD's.
   cache alone, `pelican object get --cache` must then fail, by
   something other than a refusal, and leave nothing; and so must
   stash_plugin, preferring that cache alone
-  (`Client.PreferredCaches`), whose ad must say `TransferRetryable =
-  true`, since the transfer failed after it began, unless the director
+  (`Client.PreferredCaches`), whose ad must say `TransferRetryable = true`, since the transfer failed after it began, unless the director
   found no origin holding the object. The row's note says how each
   failed. A cache that serves the object intact never read the
   corrupted block, as where it holds it in memory (`-p cache-memory`),
@@ -226,8 +224,7 @@ only XRootD's.
   XRootD origin need send none. A HEAD with `Want-Digest: crc32c, md5`
   must get both from a native origin, in one `Digest` field, since the
   client reads one; an XRootD origin answers with the one it prefers,
-  and must send at least one. A HEAD with `Want-Digest: md5;q=0.5,
-  crc32c;q=1`, as RFC 3230 allows, must get at least one from every
+  and must send at least one. A HEAD with `Want-Digest: md5;q=0.5, crc32c;q=1`, as RFC 3230 allows, must get at least one from every
   origin. Each is asked only of what the origins' storage reports (see
   `digests`), and every digest must be the object's. The row's note
   says what each origin sent. Pelican's native origins take each
@@ -258,8 +255,7 @@ only XRootD's.
   origins' storage holds (`crc32c` and `md5`, but for those it cannot;
   see `digests`), each the object's, whether `Want-Digest` asks for
   `crc32c` or `md5`. A cold GET may come before the cache knows them,
-  and the row's note says whether it carried any. Then `pelican object
-  get --cache` must bring the object, and its transfer statistics
+  and the row's note says whether it carried any. Then `pelican object get --cache` must bring the object, and its transfer statistics
   (`--transfer-stats`: the `serverChecksums` that it asked the cache
   for once the body came) must hold the same digests, each the
   object's, each told by its value alone: the statistics number the

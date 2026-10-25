@@ -231,13 +231,11 @@ def shape_servers(fed: common.Federation) -> list[Server]:
     each.
     """
     exports = tuple(
-        common.Export(f"/{ns}", ns, fed.exports[ns], fed.issuer_of(ns))
-        for ns in credentials.exported(fed)
+        common.Export(f"/{ns}", ns, fed.exports[ns], fed.issuer_of(ns)) for ns in credentials.exported(fed)
     )
     found = [Server("Origin", o.svc, o.url, fed.origin_variant, exports) for o in fed.origins]
     found += [
-        Server("Origin", w.origin.svc, w.origin.url, fed.origin_variant, w.exports)
-        for w in fed.owners
+        Server("Origin", w.origin.svc, w.origin.url, fed.origin_variant, w.exports) for w in fed.owners
     ]
     found += [Server("Cache", c.svc, c.url, CACHE_STORAGE, ()) for c in fed.federated_caches]
     return found
@@ -302,9 +300,7 @@ class Test:
         """
         if url not in self._names:
             rows = listed_servers(web.request("GET", f"{url}{SERVERS}")) or []
-            self._names[url] = {
-                row_key(row): str(row.get("name", "")) for row in rows if row.get("name")
-            }
+            self._names[url] = {row_key(row): str(row.get("name", "")) for row in rows if row.get("name")}
         return self._names[url]
 
 
@@ -566,9 +562,7 @@ def one_problems(test: Test, url: str) -> list[str]:
             problems.append(f"{name}: {SERVERS}/{known}: {answer.describe()}, not a server")
             continue
         if found.get("name") != known or found.get("type") not in kinds[known]:
-            problems.append(
-                f"{name}: {SERVERS}/{known} is {found.get('type')} {found.get('name')!r}"
-            )
+            problems.append(f"{name}: {SERVERS}/{known} is {found.get('type')} {found.get('name')!r}")
         listed = web.request("GET", f"{target}/namespaces")
         paths = namespace_paths(parse(listed)) if listed.status == 200 else None
         if paths is None:
@@ -970,9 +964,7 @@ def health_test_file(test: Test) -> list[Row]:
     name = f"director-test-{stamp}.txt"
     good = f"{TEST_DIR}/{name}"
     escaped = f"{TEST_DIR}/a&b</{name}"
-    cases: dict[str, list[str]] = {
-        c: [] for c in ("get", "head", "propfind", "bad-timestamp", "escaped")
-    }
+    cases: dict[str, list[str]] = {c: [] for c in ("get", "head", "propfind", "bad-timestamp", "escaped")}
     for url in test.fed.directors:
         what = director.host(url)
         base = f"{url}{HEALTH_TEST}"
@@ -1048,9 +1040,7 @@ def put_held(test: Test) -> tuple[Optional[Held], str]:
     error = (
         errors[0]
         if errors
-        else stores.seed(
-            holder, store_ns, rel, b"director-api\n", token, test.fed.exports[store_ns]
-        )
+        else stores.seed(holder, store_ns, rel, b"director-api\n", token, test.fed.exports[store_ns])
     )
     if error:
         return None, f"putting the object at {holder.svc}: {error}"
@@ -1084,9 +1074,7 @@ def stat_admin_problems(test: Test, url: str, held: Held) -> list[str]:
     want = holders(test, held)
     if answer.status != 200 or not hosts or not hosts <= want:
         named = sorted(hosts)
-        return [
-            f"{director.host(url)}: {answer.describe()}, naming {named}, not {sorted(want)}"
-        ]
+        return [f"{director.host(url)}: {answer.describe()}, naming {named}, not {sorted(want)}"]
     return []
 
 
@@ -1102,9 +1090,7 @@ def origin_stat(test: Test) -> list[Row]:
     `unknown-namespace` row fails there.
     """
     held, why = put_held(test)
-    cases: dict[str, list[str]] = {
-        c: [] for c in ("no-auth", "admin", "bad-bounds", "unknown-namespace")
-    }
+    cases: dict[str, list[str]] = {c: [] for c in ("no-auth", "admin", "bad-bounds", "unknown-namespace")}
     # An object in an exported namespace. With ?skipstat, the director
     # finds its origins without asking them, so that only the bounds
     # decide.
@@ -1184,12 +1170,8 @@ def redirect_problems(test: Test, url: str) -> list[str]:
 
     def done() -> bool:
         after = metrics.fetch(url) or metrics.EMPTY
-        counted["redirects"] = metrics.delta(
-            before, after, REDIRECTS, version=version, status_code="307"
-        )
-        counted["requests"] = metrics.delta(
-            before, after, CLIENT_REQUESTS, version=short, service="client"
-        )
+        counted["redirects"] = metrics.delta(before, after, REDIRECTS, version=version, status_code="307")
+        counted["requests"] = metrics.delta(before, after, CLIENT_REQUESTS, version=short, service="client")
         return set(counted.values()) == {float(REDIRECT_ASKS)}
 
     if common.wait_for(done, COUNT_WAIT, interval=1):
@@ -1431,9 +1413,7 @@ def forwarded(f: Forwarding) -> Row:
     answer = f.post(f.first, mark)
     if answer.status != 200:
         return "", FAIL, f"posting to {director.host(f.first)}: {answer.describe()}, not 200"
-    seen = common.wait_for(
-        lambda: f.listed(f.second).get("serverStatus") == mark, FORWARD_WAIT, 0.5
-    )
+    seen = common.wait_for(lambda: f.listed(f.second).get("serverStatus") == mark, FORWARD_WAIT, 0.5)
     second = director.host(f.second)
     if seen:
         return "", PASS, f"{second} lists it `{mark}`"

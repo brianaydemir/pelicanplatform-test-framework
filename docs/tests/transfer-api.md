@@ -73,8 +73,7 @@ cases records a row per case, named `<scenario> <case>`.
   too late (409), and the job must stay `failed`. Pelican counts every
   transfer of a failed job as cancelled, and records the job cancelled,
   so the row fails, on v26.0.0-rc.3 and main alike.
-- `events`: a job's event stream (`GET /jobs/<id>/events` with `Accept:
-  text/event-stream`) must carry `status` events whose data names the
+- `events`: a job's event stream (`GET /jobs/<id>/events` with `Accept: text/event-stream`) must carry `status` events whose data names the
   job, the last of them its terminal status, `completed`, after which
   the stream ends (`StreamJobEvents` in `client_agent/job_events.go`),
   and the job's status must agree; another user's stream of the job is

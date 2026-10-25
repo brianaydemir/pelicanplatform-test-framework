@@ -155,8 +155,7 @@ instead.
   `config.d/base/20-server.yaml`), one from startup on, since a server
   with none makes one as it starts (`LaunchPeriodicBackup` in
   `database/backup.go`). There must be at least one; each must be PEM,
-  never a plain SQLite file; and `pelican-server server database backup
-  verify` must open each, given a copy of the server's keys
+  never a plain SQLite file; and `pelican-server server database backup verify` must open each, given a copy of the server's keys
   (`PELICAN_ISSUERKEYSDIRECTORY`), after the suite's key changes too.
   Without a `pelican-server` ([client binary](../../README.md#client-binary)),
   the backups are checked but not opened.

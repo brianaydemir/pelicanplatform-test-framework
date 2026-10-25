@@ -370,8 +370,6 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     finally:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach.
-        errors = stores.empty_tree_everywhere(
-            fed.origins, fed.exports, "data/sitelocal", tokens
-        )
+        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/sitelocal", tokens)
         if errors:
             common.warn(f"could not remove the run's objects: {first(errors)}")

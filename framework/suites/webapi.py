@@ -264,9 +264,7 @@ def matrix_rows(test: Access, server: Server) -> list[Row]:
         if case == "tokens":
             # API tokens are managed only through a login (token.Cookie in
             # createApiToken and listApiTokens).
-            as_admin = web.request(
-                "GET", url + path, headers=cookie_header(login=test.cookie(server))
-            )
+            as_admin = web.request("GET", url + path, headers=cookie_header(login=test.cookie(server)))
         else:
             as_admin = web.request("GET", url + path, token=admin)
         expects: list[Expect] = [
@@ -410,9 +408,7 @@ def api_tokens(test: Access) -> list[Row]:
     made: list[str] = []
     rows: list[Row] = []
     try:
-        answer = create_token(
-            server, name, datetime.now(timezone.utc) + timedelta(hours=1), cookie
-        )
+        answer = create_token(server, name, datetime.now(timezone.utc) + timedelta(hours=1), cookie)
         token = made_token(answer)
         if token:
             made.append(token[1])
@@ -426,16 +422,12 @@ def api_tokens(test: Access) -> list[Row]:
         if status == PASS:
             note = f"{len(expected_targets(test.fed))} servers"
         rows.append((case, status, note))
-        listed = web.request(
-            "GET", server.web_url + TOKENS, headers=cookie_header(login=cookie)
-        )
+        listed = web.request("GET", server.web_url + TOKENS, headers=cookie_header(login=cookie))
         problems = listed_problems(listed, token_id, name, secret)
         rows.append(("list", FAIL, first(problems)) if problems else ("list", PASS, token_id))
         wrong = f"{token_id}.{os.urandom(32).hex()}"
         bogus = f"{os.urandom(3).hex()[:5]}.{os.urandom(32).hex()}"
-        rows.append(
-            judge("wrong-secret", [("discoverServers", discover(server, wrong), (403,))])
-        )
+        rows.append(judge("wrong-secret", [("discoverServers", discover(server, wrong), (403,))]))
         rows.append(judge("bogus", [("discoverServers", discover(server, bogus), (403,))]))
         deleted = web.request(
             "DELETE",
@@ -507,9 +499,7 @@ def expiring_rows(server: Server, cookie: str, name: str, made: list[str]) -> li
     It must work at once, and be refused (403) two seconds after it expires.
     Its ID goes in made.
     """
-    expires = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(
-        seconds=API_TOKEN_EXPIRY
-    )
+    expires = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=API_TOKEN_EXPIRY)
     answer = create_token(server, name, expires, cookie)
     token = made_token(answer)
     if token is None:
@@ -558,9 +548,7 @@ def cookie_problems(answer: web.Response) -> list[str]:
         return ["it set no login cookie"]
     attributes = found[1]
     problems = [
-        f"the cookie is not {flag}"
-        for flag in ("HttpOnly", "Secure")
-        if flag.lower() not in attributes
+        f"the cookie is not {flag}" for flag in ("HttpOnly", "Secure") if flag.lower() not in attributes
     ]
     wanted = {"samesite": "lax", "path": "/", "max-age": str(COOKIE_MAX_AGE)}
     for attr, value in wanted.items():
@@ -635,12 +623,8 @@ def login_rows(test: Access, server: Server) -> list[Row]:
         rows.append(judge(f"{name} logout", [("logout", out, (200,))], cleared(out)))
         # The cookie a logout cleared must count as none, as if the
         # browser had kept it.
-        replay = web.request(
-            "GET", server.web_url + CONFIG, headers=cookie_header(login=cookie)
-        )
-        rows.append(
-            judge(f"{name} logout-replay", [("the cookie after logout", replay, (401,))])
-        )
+        replay = web.request("GET", server.web_url + CONFIG, headers=cookie_header(login=cookie))
+        rows.append(judge(f"{name} logout-replay", [("the cookie after logout", replay, (401,))]))
     user = whoami(server, token=test.user(server))
     rows.append(whoami_row(f"{name} whoami-user", user, "user", USER))
     # Two logins at once, the second claiming another address, which a
@@ -648,9 +632,7 @@ def login_rows(test: Access, server: Server) -> list[Row]:
     admin = {"user": "admin", "password": ADMIN_PASSWORD}
     one = test.post_login(server, admin, early=True)
     two = test.post_login(server, admin, {"X-Forwarded-For": "203.0.113.7"}, spaced=False)
-    rows.append(
-        judge(f"{name} rate-limit", [("first", one, (200,)), ("second, at once", two, (429,))])
-    )
+    rows.append(judge(f"{name} rate-limit", [("first", one, (200,)), ("second, at once", two, (429,))]))
     return rows
 
 
@@ -817,9 +799,7 @@ def header_row(case: str, answer: web.Response, reported: str) -> Row:
     got = answer.header("Server")
     if answer.status is None:
         return case, FAIL, "no response"
-    return (
-        (case, PASS, got) if got == want else (case, FAIL, f"Server is {got!r}, not {want!r}")
-    )
+    return (case, PASS, got) if got == want else (case, FAIL, f"Server is {got!r}, not {want!r}")
 
 
 def version(test: Access) -> list[Row]:
@@ -842,9 +822,7 @@ def version(test: Access) -> list[Row]:
     expected = test.fed.pelican_version
     seen = ", ".join(f"{name} {v}" for name, v in versions.items())
     if expected is not None:
-        problems += [
-            f"{n} reports {v}, not {expected}" for n, v in versions.items() if v != expected
-        ]
+        problems += [f"{n} reports {v}, not {expected}" for n, v in versions.items() if v != expected]
     rows: list[Row] = []
     if problems:
         rows.append(("servers", FAIL, first(problems)))
@@ -896,8 +874,7 @@ def listing_row(
         count += 1
         if entry.get("version") != versions[name]:
             problems.append(
-                f"it lists {entry.get('name')} at {entry.get('version')!r},"
-                + f" not {versions[name]!r}"
+                f"it lists {entry.get('name')} at {entry.get('version')!r}," + f" not {versions[name]!r}"
             )
     if count == 0:
         problems.append("it lists none of the shape's servers")

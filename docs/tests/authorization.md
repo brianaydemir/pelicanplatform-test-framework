@@ -10,19 +10,19 @@ credentials that need neither its own key or issuer nor another
 namespace's. The "other namespace" of `/protected-a` is `/protected-b`,
 and the reverse:
 
-| Credential   | Token                                                                  |
-| ------------ | ---------------------------------------------------------------------- |
-| `server`     | signed by the origins' issuer key                                      |
-| `jwks`       | signed by `test-keys/jwks.pem`, whose public key the origins list only in `Server.IssuerJwks` |
+| Credential   | Token                                                                                                               |
+| ------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `server`     | signed by the origins' issuer key                                                                                   |
+| `jwks`       | signed by `test-keys/jwks.pem`, whose public key the origins list only in `Server.IssuerJwks`                       |
 | `ns-jwks`    | signed by `test-keys/ns-<ns>.pem`, whose public key the origins list only in the `IssuerJwks` of the `/<ns>` export |
-| `none`       | none                                                                   |
-| `unknown`    | signed by `test-keys/unknown.pem`, which no server knows               |
-| `ns-other`   | signed by the other namespace's `ns-<ns>.pem`                          |
-| `wrong-op`   | the origins' key, but read-only for a put, or create and modify for a get |
-| `wrong-path` | the origins' key, scoped to `/elsewhere/`                              |
-| `wrong-iss`  | the origins' key, but the other namespace's issuer                     |
-| `ns-cross`   | the other namespace's `ns-<ns>.pem` and issuer: a token only it accepts |
-| `expired`    | the origins' key, expired                                              |
+| `none`       | none                                                                                                                |
+| `unknown`    | signed by `test-keys/unknown.pem`, which no server knows                                                            |
+| `ns-other`   | signed by the other namespace's `ns-<ns>.pem`                                                                       |
+| `wrong-op`   | the origins' key, but read-only for a put, or create and modify for a get                                           |
+| `wrong-path` | the origins' key, scoped to `/elsewhere/`                                                                           |
+| `wrong-iss`  | the origins' key, but the other namespace's issuer                                                                  |
+| `ns-cross`   | the other namespace's `ns-<ns>.pem` and issuer: a token only it accepts                                             |
+| `expired`    | the origins' key, expired                                                                                           |
 
 Otherwise each token has read, create, and modify on the whole namespace, is
 issued by that namespace's issuer, and lasts four hours, so that each tests

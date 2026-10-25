@@ -203,9 +203,7 @@ class Test:
                 if errors:
                     return errors[0]
                 self.made.add(parent)
-            errors = stores.seed_everywhere(
-                self.origins, NAMESPACE, rel, data, self.setup, self.caps
-            )
+            errors = stores.seed_everywhere(self.origins, NAMESPACE, rel, data, self.setup, self.caps)
             if errors:
                 return errors[0]
         return None
@@ -301,9 +299,7 @@ def sleep_until(moment: float) -> None:
     time.sleep(max(0.0, moment - time.time()))
 
 
-def poll(
-    problem: Callable[[], Optional[str]], seconds: float, interval: float
-) -> Optional[str]:
+def poll(problem: Callable[[], Optional[str]], seconds: float, interval: float) -> Optional[str]:
     """Ask problem() what is wrong until it finds nothing, or seconds pass.
 
     It is asked at once, and then every interval seconds.
@@ -596,9 +592,7 @@ def only_if_cached(test: Test, _value: str) -> Row:
             why = served(test.ask(method, cache.url, rel, headers), data)
             if why:
                 asked = ", ".join(f"{k}: {v}" for k, v in headers.items())
-                problems.append(
-                    f"{cache.svc}: {method} with {asked} of what it holds got {why}"
-                )
+                problems.append(f"{cache.svc}: {method} with {asked} of what it holds got {why}")
         answer = test.ask("HEAD", cache.url, rel, ONLY_IF_CACHED)
         if answer.status != 200 or answer.header("Content-Length") != str(HELD_SIZE):
             problems.append(
@@ -625,9 +619,7 @@ def bare_get(url: str, test: Test, rel: str) -> tuple[web.Response, str]:
     return answer, director.host(url)
 
 
-def not_back(
-    test: Test, target: Union[common.Cache, str], rel: str, data: bytes
-) -> Optional[str]:
+def not_back(test: Test, target: Union[common.Cache, str], rel: str, data: bytes) -> Optional[str]:
     """Return why a GET of rel at target does not get data, or None.
 
     target is a cache, or the URL of a director, whose bare path is asked
@@ -727,9 +719,7 @@ def downstream_problems(answer: web.Response, value: str, filled: float) -> list
     remaining = int(found["max-age"])
     least = DEFAULT_MIN_AGE - (time.time() - filled) - AGE_SLACK
     if not least <= remaining <= DEFAULT_MAX_AGE:
-        return [
-            f"Cache-Control '{sent}', not max-age between {least:.0f} and {DEFAULT_MAX_AGE}"
-        ]
+        return [f"Cache-Control '{sent}', not max-age between {least:.0f} and {DEFAULT_MAX_AGE}"]
     return []
 
 
@@ -760,9 +750,7 @@ def downstream(test: Test, value: str) -> Row:
         if why:
             problems.append(f"{cache.svc}: the cold GET got {why}")
             continue
-        problems += [
-            f"{cache.svc} (fill): {p}" for p in downstream_problems(fill, value, filled)
-        ]
+        problems += [f"{cache.svc} (fill): {p}" for p in downstream_problems(fill, value, filled)]
         found = age(fill)
         if found is not None and found > AGE_SLACK:
             problems.append(f"{cache.svc} (fill): Age {found}, for what it just fetched")
@@ -781,9 +769,7 @@ def downstream(test: Test, value: str) -> Row:
                 problems.append(f"{cache.svc} (hit {n}): {why or 'no Age'}")
                 continue
             ages.append(found)
-            problems += [
-                f"{cache.svc} (hit {n}): {p}" for p in downstream_problems(hit, value, filled)
-            ]
+            problems += [f"{cache.svc} (hit {n}): {p}" for p in downstream_problems(hit, value, filled)]
             if found > when - filled + AGE_SLACK:
                 problems.append(
                     f"{cache.svc} (hit {n}): Age {found}, but it fetched the object"
@@ -792,22 +778,16 @@ def downstream(test: Test, value: str) -> Row:
         if len(ages) == 2:
             between = hits[1][0] - hits[0][0]
             if abs((ages[1] - ages[0]) - between) > AGE_SLACK:
-                problems.append(
-                    f"{cache.svc}: Age went from {ages[0]} to {ages[1]} in {between:.0f}s"
-                )
+                problems.append(f"{cache.svc}: Age went from {ages[0]} to {ages[1]} in {between:.0f}s")
         etag = hits[-1][1].header("ETag")
         if not etag:
             notes.append(f"{cache.svc} sent no ETag, so no 304 was asked for")
             continue
         answer = test.ask("GET", cache.url, rel, {"If-None-Match": etag})
         if answer.status != 304:
-            problems.append(
-                f"{cache.svc}: If-None-Match its ETag got {answer.describe()}, not 304"
-            )
+            problems.append(f"{cache.svc}: If-None-Match its ETag got {answer.describe()}, not 304")
         else:
-            problems += [
-                f"{cache.svc} (304): {p}" for p in downstream_problems(answer, value, filled)
-            ]
+            problems += [f"{cache.svc} (304): {p}" for p in downstream_problems(answer, value, filled)]
     if problems:
         return FAIL, first(problems)
     return PASS, "; ".join([f"{len(test.v2)} cache(s)"] + notes)
@@ -868,8 +848,7 @@ def propfind_empty(test: Test, _value: str) -> Row:
         return FAIL, first(problems)
     if unheld:
         return INCONCLUSIVE, (
-            f"{', '.join(unheld)} never said it held the object (no Age), so an origin may"
-            " have answered"
+            f"{', '.join(unheld)} never said it held the object (no Age), so an origin may" " have answered"
         )
     return PASS, f"{len(test.v2)} cache(s)"
 
@@ -945,9 +924,7 @@ def propfind_overwrite(test: Test, value: str) -> Row:
         rel = rels[cache.svc]
         etags = origin_etags(test, rel)
         sleep_until(filled[cache.svc] + fresh + 1)
-        check = partial(
-            not_current, test, cache, rel, len(versions.v2[rel]), old[cache.svc], etags
-        )
+        check = partial(not_current, test, cache, rel, len(versions.v2[rel]), old[cache.svc], etags)
         why = poll(check, STALE_SLACK, 3)
         waited = time.time() - filled[cache.svc]
         if why:
@@ -1031,9 +1008,7 @@ def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> Row:
             answer = test.ask("GET", cache.url, rel, timeout=180)
             why = served(answer, objects[rel])
             if why and stale_ok:
-                problems.append(
-                    f"{cache.svc}: its stale copy, with every origin down, got {why}"
-                )
+                problems.append(f"{cache.svc}: its stale copy, with every origin down, got {why}")
             elif answer.ok and not stale_ok:
                 problems.append(
                     f"{cache.svc}: its stale copy, with every origin down, came back"
@@ -1139,9 +1114,7 @@ def immediate(test: Test, value: str) -> Row:
     return PASS, "new version " + ", ".join(notes)
 
 
-def ranged(
-    data: bytes, request: blocks.Request, answer: web.Response
-) -> tuple[Optional[str], bool]:
+def ranged(data: bytes, request: blocks.Request, answer: web.Response) -> tuple[Optional[str], bool]:
     """Return what is wrong with answer to request, and if it was whole.
 
     Returns:
@@ -1214,9 +1187,7 @@ def not_stored(test: Test, value: str) -> Row:
             if why:
                 problems.append(f"{cache.svc} (GET {n}): {why}")
             elif value not in directives(sent):
-                problems.append(
-                    f"{cache.svc} (GET {n}): Cache-Control '{sent}', without {value}"
-                )
+                problems.append(f"{cache.svc} (GET {n}): Cache-Control '{sent}', without {value}")
             elif age(answer) is not None:
                 problems.append(f"{cache.svc} (GET {n}): Age {age(answer)}, as if it held it")
         requests = blocks.requests(len(data))
@@ -1269,9 +1240,7 @@ def s_maxage(test: Test, value: str) -> Row:
     """
     shared, private = seconds_of(value, "s-maxage"), seconds_of(value, "max-age")
     rels = {c.svc: test.rel("s-maxage", c.svc) for c in test.v2}
-    versions = Versions(
-        {rel: (OVERWRITE_SIZE, OVERWRITE_SIZE + OVERWRITE_CHANGE) for rel in rels.values()}
-    )
+    versions = Versions({rel: (OVERWRITE_SIZE, OVERWRITE_SIZE + OVERWRITE_CHANGE) for rel in rels.values()})
     why = versions.put_v1(test)
     if why:
         return FAIL, why
@@ -1382,9 +1351,7 @@ def run_phase(test: Test, value: str, cases: Sequence[Case], results: common.Res
             results.add(case.row, SKIP, f"needs origins sending '{value}', but {why}")
         return
     if value == test.sent:
-        print(
-            f"\nThe origins send {repr(value) if value else 'no Cache-Control'}, as the shape is"
-        )
+        print(f"\nThe origins send {repr(value) if value else 'no Cache-Control'}, as the shape is")
         for case in ready:
             run_case(test, case, value, results)
         return
@@ -1433,9 +1400,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(
-            fed.origins, fed.exports, "data/freshness", tokens
-        )
+        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/freshness", tokens)
         if errors:
             warn(f"emptying data/freshness {when}: {first(errors)}")
 
@@ -1449,11 +1414,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         cases = [c for c in CASES if c.scenario in selected]
         values = [test.sent] + [c.control for c in cases if c.control is not None]
         for value in dict.fromkeys(values):
-            here = [
-                c
-                for c in cases
-                if c.control == value or (c.control is None and value == test.sent)
-            ]
+            here = [c for c in cases if c.control == value or (c.control is None and value == test.sent)]
             if here:
                 run_phase(test, value, here, results)
     finally:

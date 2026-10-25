@@ -192,9 +192,7 @@ class Test:
         for origin in self.origins:
             for ns in stores.storage_namespaces(origin, self.fed.exports):
                 for rel in ("tree/sub/deeper", "probe"):
-                    errors += stores.make_dirs(
-                        [origin], ns, f"{self.base}/{rel}", self.setup[ns]
-                    )
+                    errors += stores.make_dirs([origin], ns, f"{self.base}/{rel}", self.setup[ns])
                 if errors:
                     return errors
                 objects = {f"tree/{p}": size for p, size in TREE.items()}
@@ -444,9 +442,7 @@ def director(test: Test) -> tuple[str, str]:
                 if not may_list(test.caps(ns), depth, "director"):
                     answer = webdav.propfind(f"{director_url}{target}", depth, test.tokens[ns])
                     if answer.status not in REFUSALS:
-                        problems.append(
-                            f"{where}: {answer.describe()}, not a refusal (401, 403, or 405)"
-                        )
+                        problems.append(f"{where}: {answer.describe()}, not a refusal (401, 403, or 405)")
                     continue
                 answer = webdav.propfind(f"{director_url}{target}", depth, test.tokens[ns])
                 location = answer.header("Location")
@@ -567,15 +563,9 @@ def cache_infinity(test: Test) -> tuple[str, str]:
         path = test.path("protected-a")
         url = f"{cache.url}{path}/"
         if may_list(caps, "infinity", "cache"):
-            why, note = infinity(
-                test, url, "protected-a", test.tokens["protected-a"], refused is not False
-            )
+            why, note = infinity(test, url, "protected-a", test.tokens["protected-a"], refused is not False)
             if note == "refused (403)":
-                note += (
-                    ", as an origin does"
-                    if refused
-                    else ", which no origin could be asked to confirm"
-                )
+                note += ", as an origin does" if refused else ", which no origin could be asked to confirm"
         else:
             why, note = test.refusal(url, "infinity", test.tokens["protected-a"]), "refused"
         if why:
@@ -602,9 +592,7 @@ def cache_body(test: Test) -> tuple[str, str]:
             if why := test.refusal(url, "1", test.tokens["protected-a"]):
                 problems.append(f"{cache.svc}: {why}")
             continue
-        answer, got, why = test.listing(
-            url, "1", path, test.tokens["protected-a"], webdav.PROPFIND_BODY
-        )
+        answer, got, why = test.listing(url, "1", path, test.tokens["protected-a"], webdav.PROPFIND_BODY)
         if answer.status is not None and 300 <= answer.status < 400:
             problems.append(
                 f"{cache.svc}: answered with the director's {answer.status}, to"
@@ -621,9 +609,7 @@ def cache_body(test: Test) -> tuple[str, str]:
 
 def servers(test: Test) -> list[tuple[str, str, str]]:
     """Return every origin and cache: its name, data URL, and role."""
-    return [(o.svc, o.url, "origin") for o in test.origins] + [
-        (c.svc, c.url, "cache") for c in test.caches
-    ]
+    return [(o.svc, o.url, "origin") for o in test.origins] + [(c.svc, c.url, "cache") for c in test.caches]
 
 
 def refused_everywhere(test: Test, token: Optional[str]) -> tuple[str, str]:
@@ -710,9 +696,7 @@ def new_object(test: Test) -> tuple[str, str]:
         for svc, url, role in servers(test):
             if not may_list(caps, "1", role):
                 continue
-            if why := test.compare(
-                f"{url}{path}/", "1", path, want, test.tokens["protected-a"]
-            ):
+            if why := test.compare(f"{url}{path}/", "1", path, want, test.tokens["protected-a"]):
                 problems.append(f"{svc} {when}: {why}")
         listed, why = test.ls("tree")
         if listed is None:
@@ -742,9 +726,7 @@ def collection_get(test: Test) -> tuple[str, str]:
     caps = test.caps("protected-a")
     token = test.tokens["protected-a"]
     path = test.path("protected-a", "tree/sub")
-    want = stores.held(
-        test.origins[0], "protected-a", f"{test.base}/tree/sub/c", test.setup["protected-a"]
-    )
+    want = stores.held(test.origins[0], "protected-a", f"{test.base}/tree/sub/c", test.setup["protected-a"])
     if want is None:
         return FAIL, f"{test.origins[0].svc}'s store lacks tree/sub/c"
 
@@ -944,9 +926,7 @@ def html_links(test: Test) -> tuple[str, str]:
     for name, data in [*objects.items(), (f"{HTML_SUB}/inner", os.urandom(HTML_INNER))]:
         if errors:
             break
-        errors += stores.seed_everywhere(
-            test.origins, "protected-a", f"{rel}/{name}", data, setup, caps
-        )
+        errors += stores.seed_everywhere(test.origins, "protected-a", f"{rel}/{name}", data, setup, caps)
     if errors:
         return FAIL, errors[0]
     problems: list[str] = []

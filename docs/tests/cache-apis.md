@@ -5,16 +5,14 @@ Part of [What the tests check](README.md).
 Besides the objects it serves, a V2 cache serves APIs of its own on its
 web port (`local_cache/persistent_cache_api.go` and
 `prestage_evict_api.go` in Pelican): prestaging and evicting objects,
-for whoever may read or modify them, which the client's `pelican object
-prestage` and `pelican object evict` call; its usage
+for whoever may read or modify them, which the client's `pelican object prestage` and `pelican object evict` call; its usage
 (`/api/v1.0/cache/stats`), for anyone; and purges and introspection, for
 its admin alone, among them a chaos API that corrupts what it holds
 (`Cache.EnableChaosAPI`, which the framework turns on). The `cache-api`
 suite checks them at each federated V2 cache, with objects of its own
 under `/protected-a/data/cache-api/<run>/`, put at every origin, a set
 per cache, so that each is cold where it is first read. Whether a cache
-holds an object it asks with a HEAD with `Cache-Control:
-only-if-cached`, which gets 200 if it holds all of it, and 504 if not
+holds an object it asks with a HEAD with `Cache-Control: only-if-cached`, which gets 200 if it holds all of it, and 504 if not
 ([cache freshness](cache-freshness.md)). A site-local cache serves the
 same APIs, but no suite asks it
 ([what is not tested](what-is-not-tested.md)). XRootD caches serve none
@@ -33,8 +31,7 @@ of them but prestage, through the xrdhttp-pelican plugin, so only
   token, the progress, ending well, after which the cache must hold the
   object, and serve it; and a second prestage of it must end well too.
   `missing`: of an object no origin holds, 200, since the cache has
-  answered before it knows, and a last line of `failure: 404(Not
-  Found): ...`. Pelican answers `failure: 500(Internal Server Error)`,
+  answered before it knows, and a last line of `failure: 404(Not Found): ...`. Pelican answers `failure: 500(Internal Server Error)`,
   since nothing makes the status that the handler would report for a
   missing object (`statusCodeErr` in `prestage_evict_api.go`), so the
   row fails, on main and v26.0.0-rc.3 alike. `encoded-name`: of an
@@ -64,8 +61,7 @@ of them but prestage, through the xrdhttp-pelican plugin, so only
   `immediate`: by each method, with the `server` token, 200 and
   `Evicted 1 objects under <path>`, after which the cache must not hold
   the object, and a GET must fetch it again. `marked`: without
-  `immediate`, 200 and `Marked 1 objects for priority eviction under
-  <path>`, with the object still held. `prefix`: of `foo`, while the
+  `immediate`, 200 and `Marked 1 objects for priority eviction under <path>`, with the object still held. `prefix`: of `foo`, while the
   cache holds `foo/a`, `foo/b`, and `foobar`, `Evicted 2 objects`, and
   `foobar` still held, since a prefix matches whole path segments.
   `encoded-name`: of `plus+<cache>`, beside a decoy `plus <cache>`, both
@@ -76,8 +72,7 @@ of them but prestage, through the xrdhttp-pelican plugin, so only
   director names, must print `Evicted 1 objects under <path>`, and leave
   one cache without it; without `--immediate`, `Marked 1 objects ...`,
   and every cache holding it. Each object marked is then evicted, which
-  drops its mark too, so that `purge` finds only its own. `pelican cache
-  evict` reads the cache's own configuration and address file, so it
+  drops its mark too, so that `purge` finds only its own. `pelican cache evict` reads the cache's own configuration and address file, so it
   runs only beside the cache, and is not tested.
 - `admin-authz`: a row per cache and admin route: `POST` to
   `/api/v1.0/cache/purge`, `purge_first`, and `purge_to_target`; `GET`

@@ -63,9 +63,7 @@ def new_key(path: str) -> str:
         path.
     """
     if not os.path.exists(path):
-        _openssl(
-            ["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", path]
-        )
+        _openssl(["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", path])
         os.chmod(path, 0o600)
     return path
 

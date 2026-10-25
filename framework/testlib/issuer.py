@@ -213,9 +213,7 @@ def error_of(answer: web.Response) -> str:
 
 def failed(what: str, answer: web.Response) -> IssuerError:
     """Return an error saying how what went."""
-    return IssuerError(
-        f"{what}: {answer.describe()}: {answer.body[:200].decode(errors='replace')}"
-    )
+    return IssuerError(f"{what}: {answer.describe()}: {answer.body[:200].decode(errors='replace')}")
 
 
 def discovery(issuer_url: str) -> dict[str, Any]:
@@ -319,9 +317,7 @@ def create_client(
     }
     if redirect_uris:
         body["redirect_uris"] = list(redirect_uris)
-    made = web.request(
-        "POST", target, token=admin_token, upload=json.dumps(body).encode(), headers=JSON
-    )
+    made = web.request("POST", target, token=admin_token, upload=json.dumps(body).encode(), headers=JSON)
     client = decoded(made)
     if made.status != 201 or not client.get("client_id"):
         raise failed(f"POST {target}", made)
@@ -334,9 +330,7 @@ def create_client(
     )
 
 
-def delete_client(
-    web_url: str, namespace: str, admin_token: str, client_id: str
-) -> Optional[str]:
+def delete_client(web_url: str, namespace: str, admin_token: str, client_id: str) -> Optional[str]:
     """Have the server's admin delete a client of its issuer of namespace.
 
     Returns:
@@ -356,9 +350,7 @@ def post(client: Client, target: str, form: dict[str, str]) -> web.Response:
     body = dict(form)
     if client.public:
         body["client_id"] = client.client_id
-    return web.request(
-        "POST", target, upload=urlencode(body).encode(), headers={**FORM, **client.auth}
-    )
+    return web.request("POST", target, upload=urlencode(body).encode(), headers={**FORM, **client.auth})
 
 
 def tokens_of(answer: web.Response, what: str) -> Tokens:
@@ -390,9 +382,7 @@ def register(issuer_url: str, metadata: dict[str, Any]) -> web.Response:
         The issuer's answer: the client's credentials, metadata, and
         registration access token.
     """
-    return web.request(
-        "POST", f"{issuer_url}/oidc-cm", upload=json.dumps(metadata).encode(), headers=JSON
-    )
+    return web.request("POST", f"{issuer_url}/oidc-cm", upload=json.dumps(metadata).encode(), headers=JSON)
 
 
 def configuration(
@@ -440,9 +430,7 @@ def started(answer: web.Response, client: Client) -> dict[str, Any]:
 
 def poll(client: Client, device_code: str) -> web.Response:
     """Ask client's issuer for the flow's token once."""
-    return post(
-        client, client.token_url, {"grant_type": DEVICE_GRANT, "device_code": device_code}
-    )
+    return post(client, client.token_url, {"grant_type": DEVICE_GRANT, "device_code": device_code})
 
 
 def redeem(client: Client, device_code: str) -> Tokens:
@@ -470,9 +458,7 @@ def consent_page(issuer_url: str, user_code: str, user: User) -> web.Response:
         The page, with what the user is asked to approve, and the CSRF
         cookie the approval needs.
     """
-    return web.request(
-        "GET", f"{issuer_url}/device?user_code={user_code}", headers=user.headers
-    )
+    return web.request("GET", f"{issuer_url}/device?user_code={user_code}", headers=user.headers)
 
 
 # How decide() returns the CSRF token that the verification page set: in
@@ -484,9 +470,7 @@ CSRF_WRONG_COOKIE = "wrong-cookie"
 CSRF_NONE = "none"
 
 
-def decide(
-    issuer_url: str, user_code: str, user: User, action: str, csrf: str = CSRF_SENT
-) -> web.Response:
+def decide(issuer_url: str, user_code: str, user: User, action: str, csrf: str = CSRF_SENT) -> web.Response:
     """Approve or deny the device flow with user_code, as user.
 
     Args:
@@ -599,9 +583,7 @@ def authorize(
     }
     if challenge:
         query.update(code_challenge=challenge, code_challenge_method="S256")
-    return web.request(
-        "GET", f"{client.authorize_url}?{urlencode(query)}", headers=user.headers
-    )
+    return web.request("GET", f"{client.authorize_url}?{urlencode(query)}", headers=user.headers)
 
 
 def redirected(answer: web.Response) -> dict[str, str]:
@@ -654,14 +636,10 @@ def code_flow(client: Client, user: User, wanted: Sequence[str]) -> Tokens:
 
 def refresh(client: Client, refresh_token: str) -> web.Response:
     """Ask client's issuer for new tokens with the refresh token."""
-    return post(
-        client, client.token_url, {"grant_type": REFRESH_GRANT, "refresh_token": refresh_token}
-    )
+    return post(client, client.token_url, {"grant_type": REFRESH_GRANT, "refresh_token": refresh_token})
 
 
-def exchange(
-    client: Client, subject: str, wanted: Sequence[str] = (), audience: str = ""
-) -> web.Response:
+def exchange(client: Client, subject: str, wanted: Sequence[str] = (), audience: str = "") -> web.Response:
     """Ask client's issuer to exchange the access token subject for another.
 
     Args:

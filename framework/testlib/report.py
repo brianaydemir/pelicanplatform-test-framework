@@ -137,9 +137,7 @@ class Report:
         self.rows: list[Row] = []
         self._mark = time.monotonic()
 
-    def add(
-        self, case: str, status: str, note: str = "", seconds: Optional[float] = -1.0
-    ) -> None:
+    def add(self, case: str, status: str, note: str = "", seconds: Optional[float] = -1.0) -> None:
         """Record a case.
 
         By default its duration is the time since the previous case;
@@ -199,9 +197,7 @@ def label(svc: str, role: str) -> str:
     return svc if svc.startswith(f"{role}-") else f"{svc}-{role}"
 
 
-def record(
-    report: Report, heading: str, case: str, answer: web.Response, why: str, note: str = ""
-) -> None:
+def record(report: Report, heading: str, case: str, answer: web.Response, why: str, note: str = "") -> None:
     """Print heading and answer's status as a row, and record case.
 
     It failed because of why, if there is one, or else passed, with

@@ -45,12 +45,8 @@ class OwnerCredential:
 CREDENTIALS = (
     OwnerCredential("owner", "owner", "owner", "the other owner's key and issuer"),
     OwnerCredential("origins", "origins", "origins", "the origins' key and issuer"),
-    OwnerCredential(
-        "owner-key", "owner", "origins", "the other owner's key, naming the origins' issuer"
-    ),
-    OwnerCredential(
-        "origins-key", "origins", "owner", "the origins' key, naming the other owner's issuer"
-    ),
+    OwnerCredential("owner-key", "owner", "origins", "the other owner's key, naming the origins' issuer"),
+    OwnerCredential("origins-key", "origins", "owner", "the origins' key, naming the other owner's issuer"),
     OwnerCredential(
         "jwks",
         "jwks",

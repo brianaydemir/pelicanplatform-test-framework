@@ -251,14 +251,10 @@ class Test:
         notes: list[str] = []
         for origin in self.origins:
             for set_name in names:
-                errors = stores.make_dirs(
-                    [origin], "protected-a", f"{self.base}/{set_name}", self.setup
-                )
+                errors = stores.make_dirs([origin], "protected-a", f"{self.base}/{set_name}", self.setup)
                 if errors:
                     return FAIL, "; ".join(errors)
-            before = (
-                (self.tiers(origin) or dict.fromkeys(TIERS, 0.0)) if origin.pstore else None
-            )
+            before = (self.tiers(origin) or dict.fromkeys(TIERS, 0.0)) if origin.pstore else None
             for set_name in names:
                 for size in blocks.SIZES:
                     error = stores.put(
@@ -275,9 +271,7 @@ class Test:
                 for size in blocks.SIZES:
                     want = common.digest(self.data[(set_name, size)])
                     try:
-                        got = stores.held(
-                            origin, "protected-a", self.rel(set_name, size), self.setup
-                        )
+                        got = stores.held(origin, "protected-a", self.rel(set_name, size), self.setup)
                     except stores.Unreadable as e:
                         return FAIL, str(e)
                     if got != want:
@@ -325,9 +319,7 @@ class Test:
         return None
 
     @staticmethod
-    def judge(
-        answer: web.Response, data: bytes, request: Optional[blocks.Request]
-    ) -> Optional[str]:
+    def judge(answer: web.Response, data: bytes, request: Optional[blocks.Request]) -> Optional[str]:
         """Return what is wrong with answer to a GET of data, or None.
 
         Args:
@@ -344,9 +336,7 @@ class Test:
             return None
         return blocks.check(data, request, answer)
 
-    def get(
-        self, base_url: str, rel: str, data: bytes, request: Optional[blocks.Request]
-    ) -> Optional[str]:
+    def get(self, base_url: str, rel: str, data: bytes, request: Optional[blocks.Request]) -> Optional[str]:
         """Read rel in /protected-a, or a range of it, from base_url.
 
         Returns:
@@ -658,9 +648,7 @@ def put_checksum(test: Test) -> tuple[str, str]:
         return FAIL, "; ".join(errors)
     directory, files = local_sizes(test, "put-checksum")
     verifiable = {
-        size: data
-        for size, data in files.items()
-        if stores.has_digests(test.fed, size, declared=False)
+        size: data for size, data in files.items() if stores.has_digests(test.fed, size, declared=False)
     }
     notes: list[str] = []
     for sizes, verified in ((verifiable, True), (set(files) - set(verifiable), False)):
@@ -685,10 +673,7 @@ def put_checksum(test: Test) -> tuple[str, str]:
                 return FAIL, why
             notes.append(f"{len(sizes)} objects verified by {test.digests[0]}")
             continue
-        why = (
-            test.no_digests
-            or f"the storage holds no digest of an object over {stores.S3_PART} bytes"
-        )
+        why = test.no_digests or f"the storage holds no digest of an object over {stores.S3_PART} bytes"
         if code == 0:
             return FAIL, f"succeeded, though {why}, so nothing was verified"
         if not re.search(r"checksum", out + err, re.I):
@@ -707,9 +692,7 @@ def origin_read(test: Test) -> tuple[str, str]:
     for origin in test.origins:
         for set_name in ("whole", "ranged"):
             problems += [
-                p
-                for p in (test.read(origin.url, set_name, size, None) for size in blocks.SIZES)
-                if p
+                p for p in (test.read(origin.url, set_name, size, None) for size in blocks.SIZES) if p
             ]
             problems += test.read_all(origin.url, set_name)
     if problems:
@@ -807,9 +790,7 @@ def client_get(test: Test) -> tuple[str, str]:
         ("direct", "direct", ["--direct"], None),
     ]
     for named in named_caches(test):
-        ways.append(
-            (f"named-{named.svc}", f"named ({named.svc})", ["--cache", named.url], named)
-        )
+        ways.append((f"named-{named.svc}", f"named ({named.svc})", ["--cache", named.url], named))
     for key, label, flags, cache in ways:
         target = os.path.join(test.tmp, f"client-get-{key}")
         os.makedirs(target)
@@ -873,13 +854,8 @@ def plugin_get(test: Test) -> tuple[str, str]:
         name = f"plugin-get-{key}"
         directory = os.path.join(test.tmp, name)
         os.makedirs(directory)
-        urls = [
-            f"{test.fed.url}/protected-a/{test.rel('plugin', size)}{query}"
-            for size in blocks.SIZES
-        ]
-        passed, said = plugin(
-            test, name, urls, directory, upload=False, cache=cache.url if cache else None
-        )
+        urls = [f"{test.fed.url}/protected-a/{test.rel('plugin', size)}{query}" for size in blocks.SIZES]
+        passed, said = plugin(test, name, urls, directory, upload=False, cache=cache.url if cache else None)
         if query and not test.direct:
             if passed:
                 return FAIL, f"{label}: succeeded, but /protected-a takes no direct clients"
@@ -938,9 +914,7 @@ def director_read(test: Test) -> tuple[str, str]:
         name = director.host(url)
         problems += [
             f"{name}: {p}"
-            for p in (
-                test.read(url, "whole", size, None, through=True) for size in blocks.SIZES
-            )
+            for p in (test.read(url, "whole", size, None, through=True) for size in blocks.SIZES)
             if p
         ]
         problems += [f"{name}: {p}" for p in test.read_all(url, "whole", through=True)]
@@ -998,9 +972,7 @@ def cache_stored(test: Test) -> tuple[str, str]:
         for set_name in ("whole", "ranged"):
             for size in blocks.SIZES:
                 rel = test.rel(set_name, size)
-                count, wrong, why = blocks.xrootd_stored(
-                    cache, rel, test.data[(set_name, size)]
-                )
+                count, wrong, why = blocks.xrootd_stored(cache, rel, test.data[(set_name, size)])
                 problems += [f"{cache.svc}: {set_name}/{size}: {w}" for w in wrong]
                 if why:
                     missing.append(why)
@@ -1050,18 +1022,13 @@ def cache_overlap(test: Test) -> tuple[str, str]:
             for n, request in enumerate(requests, 1):
                 why = test.get(cache.url, f"{base}/{name}", objects[name], request)
                 if why:
-                    problems.append(
-                        f"{cache.svc}: {plan}, read {n} ({blocks.header(request)}): {why}"
-                    )
+                    problems.append(f"{cache.svc}: {plan}, read {n} ({blocks.header(request)}): {why}")
             why = test.get(cache.url, f"{base}/{name}", objects[name], None)
             if why:
                 problems.append(f"{cache.svc}: {plan}, the whole object afterward: {why}")
         name = f"{cache.svc}-concurrent"
         found = at_once(
-            [
-                functools.partial(test.get, cache.url, f"{base}/{name}", objects[name], r)
-                for r in reads
-            ]
+            [functools.partial(test.get, cache.url, f"{base}/{name}", objects[name], r) for r in reads]
         )
         for read, why in zip(reads, found):
             if why:
@@ -1225,8 +1192,7 @@ def assemble(test: Test, cache: common.Cache, rel: str, data: bytes, found: Find
             found.doubt(f"{cache.svc}: after the first range, {why}")
         elif not 0 < cinfo.count < cinfo.blocks:
             found.doubt(
-                f"{cache.svc}: {cinfo.count} of {cinfo.blocks} blocks after the first range,"
-                + " not some"
+                f"{cache.svc}: {cinfo.count} of {cinfo.blocks} blocks after the first range," + " not some"
             )
     for request in ranges[1:]:
         why = test.get(cache.url, rel, data, request)
@@ -1252,9 +1218,7 @@ def assemble(test: Test, cache: common.Cache, rel: str, data: bytes, found: Find
     else:
         cinfo, why = wait_cinfo(cache, rel, lambda c: c.complete, 60)
         if cinfo is None and seen:
-            found.fail(
-                f"{cache.svc}: after every range, {why}, though it was readable after the first"
-            )
+            found.fail(f"{cache.svc}: after every range, {why}, though it was readable after the first")
         elif cinfo is None:
             found.doubt(f"{cache.svc}: after every range, {why}")
         elif not cinfo.complete:
@@ -1348,10 +1312,7 @@ def read_at_once(test: Test, cache: common.Cache, rel: str, data: bytes) -> Opti
         The first thing wrong, or None if nothing is.
     """
     found = at_once(
-        [
-            functools.partial(test.get, cache.url, rel, data, None)
-            for _ in range(COALESCE_READERS)
-        ]
+        [functools.partial(test.get, cache.url, rel, data, None) for _ in range(COALESCE_READERS)]
     )
     wrong = [why for why in found if why]
     return first(wrong) if wrong else None
@@ -1497,9 +1458,7 @@ def cache_abandoned(test: Test) -> tuple[str, str]:
     return PASS, "; ".join([f"{len(test.caches)} cache(s)"] + notes)
 
 
-def abandoned_blocks(
-    test: Test, cache: common.Cache, rel: str, notes: list[str]
-) -> Optional[str]:
+def abandoned_blocks(test: Test, cache: common.Cache, rel: str, notes: list[str]) -> Optional[str]:
     """Check what a V2 cache holds of rel once its client has given up.
 
     Add to notes what its introspection says it holds: the cache may go
@@ -1542,14 +1501,10 @@ def admin_token(test: Test, cache: common.Cache) -> str:
     web_url = origin_root(cache.url)
     issuer = credentials.local_issuer(test.fed, web_url)
     key = common.signing_key(f"issuer-keys/{cache.svc}")
-    return credentials.mint_admin(
-        test.fed, test.session.path(f"tokens/admin.{cache.svc}"), issuer, key
-    )
+    return credentials.mint_admin(test.fed, test.session.path(f"tokens/admin.{cache.svc}"), issuer, key)
 
 
-def spoil(
-    test: Test, cache: common.Cache, token: str, rel: str, op: str, **params: str
-) -> None:
+def spoil(test: Test, cache: common.Cache, token: str, rel: str, op: str, **params: str) -> None:
     """Have cache spoil its copy of rel in /protected-a.
 
     The cache keys an object by its URL at the director (normalizePath in
@@ -1570,9 +1525,7 @@ def spoil(
     """
     director_host = urlsplit(str(test.fed.discovery["director_endpoint"])).netloc
     query = {"op": op, "url": f"pelican://{director_host}/protected-a/{rel}", **params}
-    answer = web.request(
-        "POST", f"{origin_root(cache.url)}{CHAOS_PATH}?{urlencode(query)}", token=token
-    )
+    answer = web.request("POST", f"{origin_root(cache.url)}{CHAOS_PATH}?{urlencode(query)}", token=token)
     if answer.status == 404:
         raise NoChaos(f"{cache.svc} has no chaos API ({answer.describe()})")
     if answer.status in (401, 403):
@@ -1670,9 +1623,7 @@ def cache_corrupted(test: Test) -> tuple[str, str]:
             if why:
                 problems.append(f"{cache.svc}: {name}, before spoiling: {why}")
                 continue
-            if not common.wait_for(
-                functools.partial(holds_all, test, cache, rel), 10, interval=1
-            ):
+            if not common.wait_for(functools.partial(holds_all, test, cache, rel), 10, interval=1):
                 problems.append(
                     f"{cache.svc}: {name}: no Age after a whole read, so it does not hold it all"
                 )
@@ -1749,9 +1700,7 @@ def read_status(
     headers = dict(ASK_STATUS) if ask else {}
     if request:
         headers["Range"] = blocks.header(request)
-    answer = web.request(
-        "GET", f"{url}/protected-a/{rel}", token=test.token, headers=headers, timeout=120
-    )
+    answer = web.request("GET", f"{url}/protected-a/{rel}", token=test.token, headers=headers, timeout=120)
     if request:
         why = blocks.check(data, request, answer)
     elif answer.status != 200:
@@ -1792,9 +1741,7 @@ def transfer_status(test: Test) -> tuple[str, str]:
         return SKIP, "this shape has no federated cache"
     base = f"{test.base}/transfer-status"
     objects = {
-        f"{c.svc}-{name}": os.urandom(size)
-        for c in caches
-        for name, (size, _) in STATUS_READS.items()
+        f"{c.svc}-{name}": os.urandom(size) for c in caches for name, (size, _) in STATUS_READS.items()
     }
     errors = upload_each(test, base, objects)
     if errors:
@@ -1870,9 +1817,7 @@ def origin_transfer_status(test: Test) -> tuple[str, str]:
     return PASS, f"{len(test.origins)} origin(s): '{STATUS_OK}'"
 
 
-def client_failed(
-    test: Test, cache: common.Cache, rel: str, name: str
-) -> tuple[Optional[str], str]:
+def client_failed(test: Test, cache: common.Cache, rel: str, name: str) -> tuple[Optional[str], str]:
     """Check that `pelican object get --cache` of rel through cache fails.
 
     The client reads rel in /protected-a through cache alone, into a
@@ -1905,9 +1850,7 @@ def client_failed(
     return None, f"Error code {found.group(1)}" if found else f"exit {code}"
 
 
-def plugin_failed(
-    test: Test, cache: common.Cache, rel: str, name: str
-) -> tuple[Optional[str], str]:
+def plugin_failed(test: Test, cache: common.Cache, rel: str, name: str) -> tuple[Optional[str], str]:
     """Check that stash_plugin's download of rel through cache fails.
 
     The plugin reads rel in /protected-a through cache alone, into a
@@ -1929,9 +1872,7 @@ def plugin_failed(
         return f"stash_plugin wrote no ad of the failure: {last_line(said)}", ""
     if os.listdir(directory):
         return f"stash_plugin failed, but left {sorted(os.listdir(directory))}", ""
-    kind = transfers.combine(
-        transfers.classify(line) for line in transfers.failure_lines("plugin", said)
-    )
+    kind = transfers.combine(transfers.classify(line) for line in transfers.failure_lines("plugin", said))
     if kind == "not found":
         return None, "not found"
     if not re.search(r"TransferRetryable\s*=\s*true", said):
@@ -1957,9 +1898,7 @@ def unrepairable(
         found.fail(f"{cache.svc}: no Age after a whole read, so it does not hold it all")
         return
     try:
-        spoil(
-            test, cache, token, rel, "corrupt", block=str(FAILED_BLOCK), bytes=str(blocks.TAG)
-        )
+        spoil(test, cache, token, rel, "corrupt", block=str(FAILED_BLOCK), bytes=str(blocks.TAG))
     except ValueError as e:
         found.fail(str(e))
         return
@@ -2003,9 +1942,7 @@ def unrepairable(
     if why:
         found.fail(f"{cache.svc}: {why}")
         return
-    found.note(
-        f"{cache.svc}: {how}; the client failed ({client}), the plugin too ({plugin_kind})"
-    )
+    found.note(f"{cache.svc}: {how}; the client failed ({client}), the plugin too ({plugin_kind})")
 
 
 def transfer_status_failure(test: Test) -> tuple[str, str]:
@@ -2091,9 +2028,7 @@ def reported(
     return problems, right
 
 
-def server_digests(
-    test: Test, url: str, origin: bool, relays: bool = False
-) -> tuple[list[str], set[str]]:
+def server_digests(test: Test, url: str, origin: bool, relays: bool = False) -> tuple[list[str], set[str]]:
     """Check the digests that url's server reports of the sets' objects.
 
     The objects are those of DIGEST_SIZES in the `whole` and `ranged`
@@ -2135,9 +2070,7 @@ def server_digests(
                 timeout=120,
             )
             if answer.status != 200 or answer.body != data:
-                problems.append(
-                    f"{set_name}/{size}: GET: {answer.describe()}, or not the object"
-                )
+                problems.append(f"{set_name}/{size}: GET: {answer.describe()}, or not the object")
                 continue
             wrong, found = digests.check(answer.header("Digest"), data)
             problems += [f"{set_name}/{size}: GET: {w}" for w in wrong]
@@ -2180,9 +2113,7 @@ def digests_scenario(test: Test) -> tuple[str, str]:
     return PASS, "; ".join(notes)
 
 
-def write_version(
-    test: Test, origin: common.Origin, rel: str, how: str, data: bytes
-) -> Optional[str]:
+def write_version(test: Test, origin: common.Origin, rel: str, how: str, data: bytes) -> Optional[str]:
     """Put data at rel in /protected-a at origin, as how says.
 
     Args:
@@ -2309,9 +2240,7 @@ def relay_problem(test: Test, url: str, data: bytes, method: str) -> Optional[st
     relayed()), and a GET must bring the object.
     """
     for algorithm in stores.ORIGIN_DIGESTS:
-        answer = web.request(
-            method, url, token=test.token, headers={"Want-Digest": algorithm}, timeout=120
-        )
+        answer = web.request(method, url, token=test.token, headers={"Want-Digest": algorithm}, timeout=120)
         why = relayed(answer, data, test.digests)
         if not why and method == "GET" and answer.body != data:
             why = f"{len(answer.body)} bytes, not the object"
@@ -2410,9 +2339,7 @@ def client_digests(test: Test, cache: common.Cache, rel: str, data: bytes) -> Op
     return None
 
 
-def relayed_at(
-    test: Test, cache: common.Cache, rel: str, data: bytes
-) -> tuple[Optional[str], str]:
+def relayed_at(test: Test, cache: common.Cache, rel: str, data: bytes) -> tuple[Optional[str], str]:
     """Run digest_relay at one V2 cache, of rel, which holds data.
 
     Returns:
@@ -2521,9 +2448,7 @@ def digest_range_first(test: Test) -> tuple[str, str]:
             problems.append(f"{cache.svc}: the whole object: {why}")
             continue
         if not common.wait_for(functools.partial(holds_all, test, cache, rel), 10, interval=1):
-            problems.append(
-                f"{cache.svc}: no Age after a whole read, so it does not hold it all"
-            )
+            problems.append(f"{cache.svc}: no Age after a whole read, so it does not hold it all")
             continue
         why = relayed_soon(test, url, data)
         if why:
@@ -2580,9 +2505,7 @@ def stale_trap(
         origin keeps no digest in the store, or noticed), each or None.
     """
     target = stores.url(origin, "protected-a", rel)
-    answer = web.request(
-        "HEAD", target, token=test.token, headers={"Want-Digest": EVERY_DIGEST}
-    )
+    answer = web.request("HEAD", target, token=test.token, headers={"Want-Digest": EVERY_DIGEST})
     if answer.status != 200:
         return f"{origin.svc}: a HEAD with Want-Digest: {answer.describe()}", None
     path = f"{origin.store_of('protected-a')}/{rel}"
@@ -2602,9 +2525,7 @@ def stale_trap(
         os.utime(path, ns=(was.st_atime_ns, was.st_mtime_ns))
     except OSError as e:
         return f"restoring framework/var/{path}'s modification time: {e.strerror}", None
-    answer = web.request(
-        "HEAD", target, token=test.token, headers={"Want-Digest": EVERY_DIGEST}
-    )
+    answer = web.request("HEAD", target, token=test.token, headers={"Want-Digest": EVERY_DIGEST})
     _, stale = digests.check(answer.header("Digest"), a)
     if not stale:
         return None, (
@@ -2645,9 +2566,7 @@ def stale_digest(test: Test, cache: common.Cache, rel: str, a: bytes, found: Fin
     last: list[Optional[int]] = [None]
 
     def dropped() -> bool:
-        probe = web.request(
-            "GET", url, token=test.token, headers={"Cache-Control": "only-if-cached"}
-        )
+        probe = web.request("GET", url, token=test.token, headers={"Cache-Control": "only-if-cached"})
         last[0] = probe.status
         return probe.status == 504
 
@@ -2743,9 +2662,7 @@ def digest_fields(answer: web.Response) -> list[str]:
     return [v for k, v in answer.headers if k.lower() == "digest"]
 
 
-def defaults_at(
-    test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings
-) -> None:
+def defaults_at(test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings) -> None:
     """Send digest_defaults's HEADs of rel in /protected-a at origin.
 
     rel holds data. Each HEAD asks for digests in its own way: with no
@@ -2788,9 +2705,7 @@ def defaults_at(
     found.note(f"{origin.svc}: {', '.join(said)}")
 
 
-def kept_digests(
-    test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings
-) -> bool:
+def kept_digests(test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings) -> bool:
     """Check that a posixv2 origin keeps rel's digests in its xattrs.
 
     rel is in /protected-a, and holds data. Once the origin has reported
@@ -2824,9 +2739,7 @@ def kept_digests(
     return True
 
 
-def digests_rewritten(
-    test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings
-) -> None:
+def digests_rewritten(test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings) -> None:
     """Overwrite rel in a posixv2 origin's store, and check its digests.
 
     rel is in /protected-a, holds data, and the origin has recorded its
@@ -2868,9 +2781,7 @@ def digests_rewritten(
         found.fail(f"{what}, it reports digests of neither version ({answer.header('Digest')})")
 
 
-def xattrs_at(
-    test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings
-) -> None:
+def xattrs_at(test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings) -> None:
     """Check the extended attributes of rel at a posixv2 origin.
 
     For digest_defaults, rel is in /protected-a, holds data, and the
@@ -3011,13 +2922,9 @@ def empty(test: Test) -> tuple[str, str]:
                     FAIL,
                     f"{svc}: {set_name}/0: {answer.describe()}, {len(answer.body)} bytes",
                 )
-            answer = web.request(
-                "GET", target, token=test.token, headers={"Range": "bytes=0-0"}
-            )
+            answer = web.request("GET", target, token=test.token, headers={"Range": "bytes=0-0"})
             if answer.status not in (200, 416):
-                return FAIL, (
-                    f"{svc}: a range of {set_name}/0 got {answer.describe()}, not 200 or 416"
-                )
+                return FAIL, (f"{svc}: a range of {set_name}/0 got {answer.describe()}, not 200 or 416")
             # A 416's body explains it; a success's must be empty.
             if answer.status == 200 and answer.body:
                 return FAIL, (
@@ -3221,9 +3128,7 @@ def huge_through_director(test: Test, director_url: str, rel: str) -> list[str]:
         where = answer.header("Location")
         if method == "HEAD":
             return web.request("HEAD", where, token=test.token, timeout=HUGE_TIMEOUT)
-        return web.read_part(
-            where, test.token, HUGE_READ, timeout=HUGE_TIMEOUT, headers=headers
-        )
+        return web.read_part(where, test.token, HUGE_READ, timeout=HUGE_TIMEOUT, headers=headers)
 
     return huge_at(
         test,
@@ -3242,9 +3147,7 @@ def huge_client_sizes(test: Test, rel: str) -> list[str]:
     """
     problems: list[str] = []
     url = f"{test.fed.url}/protected-a/{rel}"
-    code, out, err = test.session.pelican_cmd(
-        "object", "stat", "--json", "--token", test.token_file, url
-    )
+    code, out, err = test.session.pelican_cmd("object", "stat", "--json", "--token", test.token_file, url)
     if code != 0:
         problems.append(f"`object stat`: exit {code}: {last_line(err or out)}")
     else:
@@ -3284,9 +3187,7 @@ def huge_evict(test: Test, rel: str) -> list[str]:
         if cache.kind != "v2":
             continue
         query = urlencode({"path": path, "immediate": "true"})
-        answer = web.request(
-            "DELETE", f"{cache.web_url}{cacheapi.EVICT}?{query}", token=test.setup
-        )
+        answer = web.request("DELETE", f"{cache.web_url}{cacheapi.EVICT}?{query}", token=test.setup)
         if answer.status != 200:
             problems.append(f"evicting it from {cache.svc}: {answer.describe()}")
     return problems
@@ -3407,9 +3308,7 @@ def conditional_problems(
     if answer.status != 200 or answer.body != data:
         return [f"{svc}: {rel}: {answer.describe()}, or not the object"], set(), set()
     etag, modified = answer.header("ETag"), answer.header("Last-Modified")
-    unsent = {
-        name for name, value in (("ETag", etag), ("Last-Modified", modified)) if not value
-    }
+    unsent = {name for name, value in (("ETag", etag), ("Last-Modified", modified)) if not value}
     problems: list[str] = []
     honored: set[str] = set()
     for header, value, holds in conditions(etag, modified):
@@ -3490,9 +3389,7 @@ def cas_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str]
     v1, v2, v3 = (os.urandom(4096) for _ in range(3))
     problems: list[str] = []
 
-    def check(
-        what: str, answer: web.Response, allowed: bool, where: str, want: Optional[bytes]
-    ) -> None:
+    def check(what: str, answer: web.Response, allowed: bool, where: str, want: Optional[bytes]) -> None:
         """Check that the write what succeeded if allowed, or else got 412.
 
         Either way the store must then hold want at where (None: nothing).
@@ -3524,9 +3421,7 @@ def cas_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str]
         v1,
     )
     current = v1
-    etag = web.request("HEAD", stores.url(origin, "protected-a", rel), token=test.token).header(
-        "ETag"
-    )
+    etag = web.request("HEAD", stores.url(origin, "protected-a", rel), token=test.token).header("ETag")
     if etag:
         replaced = cas_put(test, origin, rel, v2, "If-Match", etag)
         check("a PUT with If-Match naming its ETag", replaced, True, rel, v2)
@@ -3705,9 +3600,7 @@ def etag_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str
     tags.update(method_etags(test, target, data, problems))
     sent = {method: tag for method, tag in tags.items() if tag}
     if len({unweakened(tag) for tag in sent.values()}) > 1:
-        problems.append(
-            "one version, several ETags: " + ", ".join(f"{m} {t}" for m, t in sent.items())
-        )
+        problems.append("one version, several ETags: " + ", ".join(f"{m} {t}" for m, t in sent.items()))
     # Each source's ETag of the version there when it is tried: GET's of
     # the object as written, then the latest PUT's. If-Match and If-Range
     # compare ETags strongly, so a weak one never holds, and is not tried.
@@ -3845,13 +3738,9 @@ def edge_problems(test: Test, origin: common.Origin, base: str) -> tuple[list[st
     junk = '*, "junk"'
     answer = cas_put(test, origin, rel, os.urandom(4096), "If-None-Match", junk)
     if answer.status != 412:
-        problems.append(
-            f"a PUT with If-None-Match: {junk} over it: {answer.describe()}, not 412"
-        )
+        problems.append(f"a PUT with If-None-Match: {junk} over it: {answer.describe()}, not 412")
     if stores.held(origin, "protected-a", rel, test.setup) != common.digest(data):
-        problems.append(
-            f"after a PUT with If-None-Match: {junk}, the store holds another object"
-        )
+        problems.append(f"after a PUT with If-None-Match: {junk}, the store holds another object")
     problems += race(test, origin, f"{base}/raced")
     return problems, "GETs and PUTs"
 
@@ -3909,9 +3798,7 @@ def mixed_version(test: Test) -> tuple[str, str]:
     rel = f"{test.base}/mixed"
     v1, v2 = os.urandom(size), os.urandom(size)
     errors = stores.make_dirs(test.origins, "protected-a", test.base, test.setup)
-    errors += stores.seed_everywhere(
-        test.origins, "protected-a", rel, v1, test.setup, test.caps
-    )
+    errors += stores.seed_everywhere(test.origins, "protected-a", rel, v1, test.setup, test.caps)
     if errors:
         return FAIL, "; ".join(errors)
 
@@ -3969,8 +3856,7 @@ def mixed_version(test: Test) -> tuple[str, str]:
         range_version = "v1" if part == v1[start:end] else "v2"
         if range_version != version:
             return FAIL, (
-                f"{cache.svc}: {later} came back as {range_version},"
-                f" the whole object as {version}"
+                f"{cache.svc}: {later} came back as {range_version}," f" the whole object as {version}"
             )
         notes.append(f"{cache.svc} served {version}")
     return PASS, ", ".join(notes)
@@ -4126,9 +4012,7 @@ def overwrite(test: Test, range_first: bool) -> tuple[str, str]:
                     return FAIL, f"{cache.svc}: {n} before the overwrite: {why}"
     for key, data in versions.v2.items():
         rel = f"{versions.base}/{key}"
-        errors = stores.seed_everywhere(
-            test.origins, "protected-a", rel, data, test.setup, test.caps
-        )
+        errors = stores.seed_everywhere(test.origins, "protected-a", rel, data, test.setup, test.caps)
         if errors:
             return FAIL, errors[0]
 
@@ -4261,9 +4145,7 @@ def refused_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> Opt
         "PUT", f"{cache.url}/protected-a/{rel}", token=test.token, upload=os.urandom(len(v1))
     )
     if answer.status is None or not 400 <= answer.status < 500:
-        return (
-            f"a PUT: {answer.describe()}, not a refusal, though an XRootD cache takes no writes"
-        )
+        return f"a PUT: {answer.describe()}, not a refusal, though an XRootD cache takes no writes"
     if not held_everywhere(test, rel, v1):
         return "a PUT, refused, changed an origin"
     return None
@@ -4424,9 +4306,7 @@ def lru_order(
     )
 
 
-def evicted(
-    test: Test, cache: common.Cache, base: str, count: int
-) -> tuple[Optional[str], str]:
+def evicted(test: Test, cache: common.Cache, base: str, count: int) -> tuple[Optional[str], str]:
     """Run cache_evicted at one cache, whose store is bounded.
 
     Its bounds are in test.fed.eviction.

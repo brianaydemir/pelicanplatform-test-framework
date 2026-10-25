@@ -107,9 +107,7 @@ class Api:
             sent.update(JSON)
         if self.cookie is not None:
             sent["Cookie"] = f"login={self.cookie}"
-        answer = web.request(
-            method, self.url + path, token=self.token, upload=upload, headers=sent
-        )
+        answer = web.request(method, self.url + path, token=self.token, upload=upload, headers=sent)
         data: Any = None
         if answer.body:
             try:

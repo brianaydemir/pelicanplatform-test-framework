@@ -5,7 +5,6 @@ How `fed.sh` configures the federation, in more depth than the
 files layer, the knobs that `fed.sh` reads, writing presets of your own,
 and managing issuer keys.
 
-
 ## Pelican configuration
 
 Each service merges these directories, and later ones win. Within a
@@ -151,16 +150,15 @@ EOF
   it starts, and `test-user-admin` in `Server.UserAdminUsers`
   ([accounts](tests/accounts.md)).
 
-
 ## Knobs
 
 Knobs are shell variables. Later sources win:
 
 1. `framework/environment.cfg`
-2. `local/environment.cfg`
-3. `framework/presets/default.sh`
-4. the `-p` presets, in order
-5. your environment, e.g. `PELICAN_LOG_LEVEL=debug ./fed.sh up`
+1. `local/environment.cfg`
+1. `framework/presets/default.sh`
+1. the `-p` presets, in order
+1. your environment, e.g. `PELICAN_LOG_LEVEL=debug ./fed.sh up`
 
 The table lists the knobs you set. The rest shape the federation, so
 only presets set them, and `fed.sh` ignores them in your environment.
@@ -184,7 +182,6 @@ memory limits in your environment, or in a preset of your own.
 | `TZ_SERVICES`       | `UTC`                              | central services' timezone                                                              |
 | `TZ_STORAGE`        | `America/Chicago`                  | origins' and caches' timezone                                                           |
 | `<SERVICE>_MEM`     | see `framework/presets/default.sh` | memory limits                                                                           |
-
 
 ## Presets
 
@@ -228,7 +225,6 @@ name. It can set any knob in `framework/presets/default.sh`, or call
   preset makes, and why, are in
   [What is not tested](tests/what-is-not-tested.md); those that a suite
   makes itself, for a while, are [above](#pelican-configuration).
-
 
 ## Issuer keys
 

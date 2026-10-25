@@ -136,9 +136,7 @@ def servers(fed: common.Federation) -> list[Server]:
     """
     found = [Server(o.svc, "origin", o.web_url, f"issuer-keys/{o.svc}") for o in fed.origins]
     found += [Server(o.origin.svc, "origin", o.web_url, o.key_dir) for o in fed.owners]
-    found += [
-        Server(c.svc, "cache", c.web_url, f"issuer-keys/{c.svc}") for c in fed.federated_caches
-    ]
+    found += [Server(c.svc, "cache", c.web_url, f"issuer-keys/{c.svc}") for c in fed.federated_caches]
     return found
 
 
@@ -201,9 +199,7 @@ class Test:
         # origin-0's with a key of its own.
         self.chaining = not self.fed.owners
         self.servers = servers(self.fed)
-        self.protected = next(
-            (ns for ns in credentials.PROTECTED if ns in self.fed.exports), None
-        )
+        self.protected = next((ns for ns in credentials.PROTECTED if ns in self.fed.exports), None)
         self._admin: Optional[accounts.Api] = None
         self._csrf: dict[str, str] = {}
         self._user: Optional[tuple[accounts.Api, str]] = None
@@ -551,9 +547,7 @@ def like_decoys(test: Test, k1: str, k2: str) -> list[Row]:
     ):
         first_answer = test.register(decoy, k1)
         if first_answer.status != 201:
-            rows.append(
-                (case, FAIL, f"registering {decoy}: {first_answer.describe()}, not 201")
-            )
+            rows.append((case, FAIL, f"registering {decoy}: {first_answer.describe()}, not 201"))
             continue
         answer = test.register(victim, k2)
         rows.append(
@@ -590,9 +584,7 @@ def again(test: Test, k2: str) -> Row:
     problems: list[str] = []
     message = str((common.as_object(registry.parse(answer.body)) or {}).get("message", ""))
     if answer.status != 200 or "already registered" not in message:
-        problems.append(
-            f"{answer.describe()} ({message or 'no message'}), not 200, already registered"
-        )
+        problems.append(f"{answer.describe()} ({message or 'no message'}), not 200, already registered")
     after = test.stored(export)
     if after is None or after.get("pubkey") != before.get("pubkey"):
         problems.append(f"{export}'s registered keys changed")
@@ -675,9 +667,7 @@ def approval(test: Test, key: str) -> Row:
     if served.status != 200 or registry.thumbprints(registry.parse(served.body)) != want:
         problems.append(f"its JWKS: {served.describe()}, not 200 with its key")
     if test.fed.registry_approval:
-        return row(
-            "approval", problems, f"{prefix}: Incomplete, 403 until approved, then its key"
-        )
+        return row("approval", problems, f"{prefix}: Incomplete, 403 until approved, then its key")
     return row("approval", problems, f"{prefix}: Incomplete, and its key served at once")
 
 
@@ -719,16 +709,12 @@ def cli(test: Test, k1: str, k2: str) -> list[Row]:
     rows: list[Row] = []
     prefix = test.prefix("cli")
     env = cli_env(test, key_dir_of(test, "cli", [k1]))
-    code, out, err = test.session.pelican_cmd(
-        "namespace", "register", "--prefix", prefix, env=env
-    )
+    code, out, err = test.session.pelican_cmd("namespace", "register", "--prefix", prefix, env=env)
     problems = [] if code == 0 else [f"register: exit {code}: {last_line(err or out)}"]
     if not problems and test.stored_keys(prefix) != registry.key_thumbprints([k1]):
         problems.append(f"{prefix} is not registered with the configured key alone")
     if not problems:
-        code, out, err = test.session.pelican_cmd(
-            "namespace", "delete", "--prefix", prefix, env=env
-        )
+        code, out, err = test.session.pelican_cmd("namespace", "delete", "--prefix", prefix, env=env)
         if code != 0:
             problems.append(f"delete: exit {code}: {last_line(err or out)}")
         elif test.stored(prefix) is not None:
@@ -778,9 +764,7 @@ def jwks(test: Test) -> list[Row]:
     problems: list[str] = []
     for prefix, server in exports.items():
         problems += served_problems(test, prefix, server, exact=True)
-    rows.append(
-        row("exports", problems, f"{len(exports)} export(s): their origin's own keys, exactly")
-    )
+    rows.append(row("exports", problems, f"{len(exports)} export(s): their origin's own keys, exactly"))
     problems = []
     for server in test.servers:
         # A cache never tells the registry of a key it adds since it
@@ -925,9 +909,7 @@ def private_keys(test: Test, prefixes: Sequence[str]) -> Row:
         prefix, reg_id = str(entry.get("prefix", "")), entry.get("id")
         documents[f"{prefix}, as listed"] = entry.get("pubkey")
         documents[f"{prefix}, as served"] = (
-            common.as_object(
-                fetch(f"{prefix}'s registration", test.registry + REGISTRY + path_of(prefix))
-            )
+            common.as_object(fetch(f"{prefix}'s registration", test.registry + REGISTRY + path_of(prefix)))
             or {}
         ).get("pubkey")
         answer = test.admin().call("GET", f"{REGISTRATIONS}/{reg_id}/pubkey")
@@ -938,18 +920,13 @@ def private_keys(test: Test, prefixes: Sequence[str]) -> Row:
         found = common.as_object(server) or {}
         for reg in common.as_array(found.get("registration")) or []:
             entry = common.as_object(reg) or {}
-            documents[f"server {found.get('name')}'s {entry.get('prefix')}"] = entry.get(
-                "pubkey"
-            )
+            documents[f"server {found.get('name')}'s {entry.get('prefix')}"] = entry.get("pubkey")
     for name, document in documents.items():
         if document is None:
             continue
         if registry.as_jwks(document) is None:
             problems.append(f"{name} is no JWKS")
-        problems += [
-            f"{name} holds private key material: {p}"
-            for p in registry.private_members(document)
-        ]
+        problems += [f"{name} holds private key material: {p}" for p in registry.private_members(document)]
     read = sum(1 for d in documents.values() if d is not None)
     note = f"{read} JWKS documents, none with private key material"
     if absent:
@@ -1028,9 +1005,7 @@ def public_listing(test: Test, listed: str, unlisted: str) -> Row:
     answer = test.get(REGISTRATIONS)
     if answer.status != 200:
         return ("list-public", FAIL, f"{answer.describe()}, not 200")
-    entries = [
-        common.as_object(e) or {} for e in common.as_array(registry.parse(answer.body)) or []
-    ]
+    entries = [common.as_object(e) or {} for e in common.as_array(registry.parse(answer.body)) or []]
     problems: list[str] = []
     for entry in entries:
         prefix, status = entry.get("prefix"), registry.admin_metadata(entry).get("status")
@@ -1051,9 +1026,7 @@ def bad_status(test: Test) -> Row:
 
     Pelican writes that and goes on, and writes the list too.
     """
-    answer = web.request(
-        "GET", f"{test.registry}{REGISTRATIONS}?status=Bogus", token=test.admin().token
-    )
+    answer = web.request("GET", f"{test.registry}{REGISTRATIONS}?status=Bogus", token=test.admin().token)
     problems = [] if answer.status == 400 else [f"{answer.describe()}, not 400"]
     count = registry.documents(answer.body)
     if count != 1:
@@ -1092,9 +1065,7 @@ def unknown_id(test: Test) -> Row:
     unknown = max(ids, default=0) + 100000
     problems: list[str] = []
     for action in ("approve", "deny"):
-        answer = test.admin().call(
-            "PATCH", f"{REGISTRATIONS}/{unknown}/{action}", headers=test.csrf()
-        )
+        answer = test.admin().call("PATCH", f"{REGISTRATIONS}/{unknown}/{action}", headers=test.csrf())
         if answer.status != 404:
             problems.append(f"{action}: {answer.describe()}, not 404")
     return row("unknown-id", problems, f"approve and deny of registration {unknown}: 404")
@@ -1131,9 +1102,7 @@ def server_list(test: Test) -> list[Row]:
     answer = test.get(SERVERS)
     if answer.status != 200:
         return [("servers", FAIL, f"{SERVERS}: {answer.describe()}")]
-    listed = [
-        common.as_object(s) or {} for s in common.as_array(registry.parse(answer.body)) or []
-    ]
+    listed = [common.as_object(s) or {} for s in common.as_array(registry.parse(answer.body)) or []]
     problems: list[str] = []
     prefixes: dict[str, list[str]] = {}
     for entry in listed:
@@ -1144,18 +1113,10 @@ def server_list(test: Test) -> list[Row]:
     for prefix in wanted:
         holders = prefixes.get(prefix, [])
         if len(holders) != 1:
-            problems.append(
-                f"{prefix} is a registration of {len(holders)} listed servers, not 1"
-            )
+            problems.append(f"{prefix} is a registration of {len(holders)} listed servers, not 1")
     names = [str(e.get("name", "")) for e in listed]
-    problems += [
-        f"{n} is listed {names.count(n)} times"
-        for n in sorted(set(names))
-        if names.count(n) > 1
-    ]
-    rows = [
-        row("servers", problems, f"{len(wanted)} server prefix(es), each of one server, once")
-    ]
+    problems += [f"{n} is listed {names.count(n)} times" for n in sorted(set(names)) if names.count(n) > 1]
+    rows = [row("servers", problems, f"{len(wanted)} server prefix(es), each of one server, once")]
     problems = []
     for prefix in wanted:
         for server_id in prefixes.get(prefix, [])[:1]:
@@ -1193,9 +1154,7 @@ def completeness(test: Test) -> list[Row]:
     prefix = f"/origins/{test.tag}.invalid"
     made = test.register(prefix, key, server_id=uuid.uuid4().hex[:7])
     if made.status != 201:
-        return rows + [
-            ("incomplete", FAIL, f"registering {prefix}: {made.describe()}, not 201")
-        ]
+        return rows + [("incomplete", FAIL, f"registering {prefix}: {made.describe()}, not 201")]
     stored = test.stored(prefix) or {}
     reg_id = int(stored.get("id", 0))
     meta = registry.admin_metadata(stored)
@@ -1230,9 +1189,7 @@ def completeness(test: Test) -> list[Row]:
     problems = [] if answer.status == 403 else [f"{answer.describe()}, not 403"]
     after = registry.admin_metadata(test.registration(reg_id))
     if after.get("status") != "Incomplete" or after.get("user_id"):
-        problems.append(
-            f"it is now {after.get('status')}, owned by {after.get('user_id') or 'no one'}"
-        )
+        problems.append(f"it is now {after.get('status')}, owned by {after.get('user_id') or 'no one'}")
     rows.append(row("foreign-token", problems, f"as {USER}, with another key's token: 403"))
     answer = put(key)
     problems = [] if answer.ok else [f"{answer.describe()}, not 200"]
@@ -1279,9 +1236,7 @@ def shape_completeness(test: Test) -> Row:
     return row("check-status", problems, f"{len(prefixes)} server registration(s): incomplete")
 
 
-def check_problems(
-    test: Test, prefixes: Mapping[str, int], complete: bool, page: str
-) -> list[str]:
+def check_problems(test: Test, prefixes: Mapping[str, int], complete: bool, page: str) -> list[str]:
     """Return what is wrong with the completeness check of prefixes.
 
     Each must have the URL of a page of the registry's for its
@@ -1302,10 +1257,7 @@ def check_problems(
     )
     if answer.status != 200:
         return [f"the completeness check: {answer.describe()}"]
-    results = (
-        common.as_object((common.as_object(registry.parse(answer.body)) or {}).get("results"))
-        or {}
-    )
+    results = common.as_object((common.as_object(registry.parse(answer.body)) or {}).get("results")) or {}
     problems: list[str] = []
     for prefix, reg_id in prefixes.items():
         found = common.as_object(results.get(prefix)) or {}
@@ -1380,9 +1332,7 @@ def ownership(test: Test) -> list[Row]:
         if signer:
             tok = registry.token(signer, registry.EDIT_REGISTRATION, "admin", issuer)
             query = f"?access_token={tok}"
-        return apis[who].call(
-            "POST", f"{REGISTRATIONS}/{reg_id}/claim{query}", None, headers[who]
-        )
+        return apis[who].call("POST", f"{REGISTRATIONS}/{reg_id}/claim{query}", None, headers[who])
 
     def edit(
         who: str, text: str, site_name: Optional[str] = None, pubkey: Optional[str] = None
@@ -1407,9 +1357,7 @@ def ownership(test: Test) -> list[Row]:
         return apis[who].call("PUT", f"{REGISTRATIONS}/{reg_id}", body, headers[who])
 
     def invite(who: str, body: Optional[dict[str, Any]]) -> accounts.Answer:
-        return apis[who].call(
-            "POST", f"{REGISTRATIONS}/{reg_id}/{OWNERSHIP_INVITES}", body, headers[who]
-        )
+        return apis[who].call("POST", f"{REGISTRATIONS}/{reg_id}/{OWNERSHIP_INVITES}", body, headers[who])
 
     # claim
     problems: list[str] = []
@@ -1478,8 +1426,7 @@ def ownership(test: Test) -> list[Row]:
         row(
             "owner-edit",
             problems,
-            "approved: the owner's description; its site name, prefix, and key kept; "
-            + f"{HEIR} 403",
+            "approved: the owner's description; its site name, prefix, and key kept; " + f"{HEIR} 403",
         )
     )
 
@@ -1495,9 +1442,7 @@ def ownership(test: Test) -> list[Row]:
         problems.append(f"after the owner's edit its status is {status()}, not Pending")
     if owned_by() != owner_id:
         problems.append(f"after the owner's edit it is {owned_by() or 'no one'}'s")
-    rows.append(
-        row("deny-resubmit", problems, "denied; the owner's edit resubmits it: Pending")
-    )
+    rows.append(row("deny-resubmit", problems, "denied; the owner's edit resubmits it: Pending"))
 
     # invite-refusals
     problems = []
@@ -1528,9 +1473,7 @@ def ownership(test: Test) -> list[Row]:
     answer = invite(USER, {"expiresIn": "1h"})
     token = str(answer.object.get("inviteToken") or "")
     if answer.status != 201 or not token:
-        rows.append(
-            ("invite-transfer", FAIL, f"the owner's invite: {answer.describe()}, with no token")
-        )
+        rows.append(("invite-transfer", FAIL, f"the owner's invite: {answer.describe()}, with no token"))
         return rows
     problems = []
     if answer.object.get("isSingleUse") is not True:
@@ -1608,9 +1551,7 @@ def identity(test: Test) -> list[Row]:
             )
     rows = [row("lookup", problems, f"{len(test.servers)} server(s): the same ID at both")]
     answer = test.get(SERVERS)
-    listed = [
-        common.as_object(s) or {} for s in common.as_array(registry.parse(answer.body)) or []
-    ]
+    listed = [common.as_object(s) or {} for s in common.as_array(registry.parse(answer.body)) or []]
     problems = [] if answer.status == 200 else [f"{SERVERS}: {answer.describe()}"]
     for server_id, server in ids.items():
         count = sum(1 for e in listed if e.get("id") == server_id)
@@ -1816,16 +1757,9 @@ def director_names(test: Test, cache: Server) -> dict[str, str]:
     found: dict[str, str] = {}
     for url in test.fed.directors:
         answer = web.request("GET", url + DIRECTOR_SERVERS)
-        entries = [
-            common.as_object(e) or {}
-            for e in common.as_array(registry.parse(answer.body)) or []
-        ]
+        entries = [common.as_object(e) or {} for e in common.as_array(registry.parse(answer.body)) or []]
         found[url] = next(
-            (
-                str(e.get("name", ""))
-                for e in entries
-                if director.host(str(e.get("url", ""))) == cache.host
-            ),
+            (str(e.get("name", "")) for e in entries if director.host(str(e.get("url", ""))) == cache.host),
             "",
         )
     return found
@@ -1837,13 +1771,9 @@ def filtered_at(test: Test, cache: Server) -> list[str]:
     for url in test.fed.directors:
         answer = web.request("GET", url + DIRECTOR_SERVERS)
         for entry in (
-            common.as_object(e) or {}
-            for e in common.as_array(registry.parse(answer.body)) or []
+            common.as_object(e) or {} for e in common.as_array(registry.parse(answer.body)) or []
         ):
-            if (
-                director.host(str(entry.get("url", ""))) == cache.host
-                and entry.get("filtered") is True
-            ):
+            if director.host(str(entry.get("url", ""))) == cache.host and entry.get("filtered") is True:
                 found.append(director.host(url))
     return found
 
@@ -1896,9 +1826,7 @@ def admin_current(test: Test, cache: Server, cache_id: str, cache_name: str) -> 
         ended = test.admin().call("DELETE", f"{DOWNTIME}/{downtime_id}")
     if not ended.ok:
         problems.append(f"ending it as the admin: {ended.describe()}")
-    elif not common.wait_for(
-        lambda: len(named()) == len(fed.directors), DOWNTIME_WAIT, interval=5
-    ):
+    elif not common.wait_for(lambda: len(named()) == len(fed.directors), DOWNTIME_WAIT, interval=5):
         problems.append(f"{DOWNTIME_WAIT}s after it ended, only {named()} named {cache.svc}")
     return row(
         "admin-current",
@@ -1907,9 +1835,7 @@ def admin_current(test: Test, cache: Server, cache_id: str, cache_name: str) -> 
     )
 
 
-def future(
-    test: Test, cache: Server, cache_id: str, cache_name: str, later: tuple[int, int]
-) -> Row:
+def future(test: Test, cache: Server, cache_id: str, cache_name: str, later: tuple[int, int]) -> Row:
     """Check that a downtime that begins tomorrow is listed, not applied.
 
     A downtime of the cache's that begins tomorrow (later, in milliseconds),
@@ -1942,8 +1868,7 @@ def future(
             ):
                 answer = web.request("GET", url + route)
                 entries = [
-                    common.as_object(e) or {}
-                    for e in common.as_array(registry.parse(answer.body)) or []
+                    common.as_object(e) or {} for e in common.as_array(registry.parse(answer.body)) or []
                 ]
                 match = [e for e in entries if e.get("id") == downtime_id]
                 if not match:
@@ -2030,13 +1955,9 @@ def sweep(test: Test) -> list[str]:
             answer = api.call("GET", f"{DOWNTIME}?status=all")
             for entry in (common.as_object(e) or {} for e in answer.array):
                 if MARKER in str(entry.get("description", "")):
-                    gone = api.call(
-                        "DELETE", f"{DOWNTIME}/{entry.get('id')}", headers=accounts.csrf(api)
-                    )
+                    gone = api.call("DELETE", f"{DOWNTIME}/{entry.get('id')}", headers=accounts.csrf(api))
                     if not gone.ok and gone.status != 404:
-                        problems.append(
-                            f"downtime {entry.get('id')} at {server.svc}: {gone.describe()}"
-                        )
+                        problems.append(f"downtime {entry.get('id')} at {server.svc}: {gone.describe()}")
         except accounts.ApiError as e:
             problems.append(f"{server.svc}'s downtimes: {e}")
     listed = accounts.Api(test.registry, None).call("GET", f"{DOWNTIME}?status=all")

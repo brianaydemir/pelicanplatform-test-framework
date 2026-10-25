@@ -242,12 +242,8 @@ def namespace_ad(listed: Mapping[str, Any]) -> dict[str, Any]:
     Returns:
         The namespace (a server_structs.NamespaceAd).
     """
-    generations = [
-        common.as_object(g) or {} for g in common.as_array(listed.get("tokenGeneration")) or []
-    ]
-    issuers = [
-        common.as_object(i) or {} for i in common.as_array(listed.get("tokenIssuer")) or []
-    ]
+    generations = [common.as_object(g) or {} for g in common.as_array(listed.get("tokenGeneration")) or []]
+    issuers = [common.as_object(i) or {} for i in common.as_array(listed.get("tokenIssuer")) or []]
     return {
         "Caps": listed.get("capabilities") or {},
         "path": listed.get("path", ""),
@@ -293,8 +289,7 @@ def ad(server: Server, **changes: Any) -> dict[str, Any]:
         "web-url": detail.get("webUrl", ""),
         "capabilities": detail.get("capabilities") or {},
         "namespaces": [
-            namespace_ad(common.as_object(n) or {})
-            for n in common.as_array(detail.get("namespaces")) or []
+            namespace_ad(common.as_object(n) or {}) for n in common.as_array(detail.get("namespaces")) or []
         ],
         "token-issuer": [],
         "storageType": detail.get("storageType", ""),

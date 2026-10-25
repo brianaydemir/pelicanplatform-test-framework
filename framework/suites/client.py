@@ -118,16 +118,14 @@ SCENARIOS = {
     ),
     "director-decision": "the plugin records the director's decision when asked",
     "skipstat-failover": (
-        "a direct read with ?skipstat of an object one origin alone holds comes back"
-        " (several origins)"
+        "a direct read with ?skipstat of an object one origin alone holds comes back" " (several origins)"
     ),
     "multi-source": (
         "`get` and `put` with several sources: a directory, a collection, or refused"
         " (G8-G10, P8-P10); and ?recursive, by the client and the plugin"
     ),
     "preferred-cache-down": (
-        "a preferred cache that is down: with `+`, a director's cache serves; without, a"
-        " contact error"
+        "a preferred cache that is down: with `+`, a director's cache serves; without, a" " contact error"
     ),
     "async-job": (
         "`get --async` and `copy --async` through the client agent: the bytes, `job status`"
@@ -547,9 +545,7 @@ class Test:
 
         The server is at server_url; the request presents the token.
         """
-        return web.request(
-            method, f"{server_url}{self.path(name)}", token=self.token, timeout=120
-        )
+        return web.request(method, f"{server_url}{self.path(name)}", token=self.token, timeout=120)
 
     def age(self, cache: common.Cache, name: str) -> Optional[int]:
         """Return the Age with which a V2 cache says it holds all of name.
@@ -574,9 +570,7 @@ class Test:
         Returns:
             What went wrong, or None.
         """
-        answer = web.request(
-            "GET", f"{cache.url}{self.path(name)}", token=self.setup, timeout=120
-        )
+        answer = web.request("GET", f"{cache.url}{self.path(name)}", token=self.setup, timeout=120)
         if answer.status != 200 or answer.body != self.objects[self.rel(name)]:
             return f"{cache.svc}: a GET of {name} got {answer.describe()}"
         if cache.kind == "v2" and not common.wait_for(
@@ -652,9 +646,7 @@ def ad_problems(ad: Ad, url: str, data: bytes, kind: str = "download") -> list[s
     problems: list[str] = []
     name = transfers.local_name(url)
     if ad.get_ci("TransferSuccess") is not True:
-        return [
-            f"{name}: TransferSuccess {ad.get_ci('TransferSuccess')!r}: {ad.get_ci('TransferError')}"
-        ]
+        return [f"{name}: TransferSuccess {ad.get_ci('TransferSuccess')!r}: {ad.get_ci('TransferError')}"]
     for attr, want in (
         ("TransferFileBytes", len(data)),
         ("TransferTotalBytes", len(data)),
@@ -679,17 +671,12 @@ def ad_problems(ad: Ad, url: str, data: bytes, kind: str = "download") -> list[s
 def last_attempt(ad: Ad) -> int:
     """Return the number of the last attempt in an ad's DeveloperData."""
     numbers = [
-        int(m.group(1))
-        for key in developer_data(ad)
-        for m in [re.fullmatch(r"Endpoint(\d+)", key)]
-        if m
+        int(m.group(1)) for key in developer_data(ad) for m in [re.fullmatch(r"Endpoint(\d+)", key)] if m
     ]
     return max(numbers, default=0)
 
 
-def checksum_problems(
-    fed: common.Federation, ad: Ad, data: bytes, cache: Optional[str]
-) -> list[str]:
+def checksum_problems(fed: common.Federation, ad: Ad, data: bytes, cache: Optional[str]) -> list[str]:
     """Return what is wrong with an ad's ServerChecksums.
 
     Whichever digests it reports must be the object's, and after a whole
@@ -882,16 +869,10 @@ def plugin_ads(test: Test) -> list[Row]:
             problems.append(f"left {fetch.files()}")
         return (case, *outcome(problems, f"{want_type}, exit {fetch.status}")[1:])
 
+    rows.append(failed_row("dne", test.plugin("ads-dne", [test.url("dne")], env), "Specification", 5011))
+    unknown_env = test.creds_env(test.creds("plugin-ads-refused", {"scitokens.use": unknown_token(test)}))
     rows.append(
-        failed_row("dne", test.plugin("ads-dne", [test.url("dne")], env), "Specification", 5011)
-    )
-    unknown_env = test.creds_env(
-        test.creds("plugin-ads-refused", {"scitokens.use": unknown_token(test)})
-    )
-    rows.append(
-        failed_row(
-            "refused", test.plugin("ads-refused", [urls[0]], unknown_env), "Authorization", None
-        )
+        failed_row("refused", test.plugin("ads-refused", [urls[0]], unknown_env), "Authorization", None)
     )
     # A failed download ends a batch: the plugin writes the ads of what
     # finished before it, then the failure's, and no more (cmd/plugin.go).
@@ -908,13 +889,9 @@ def plugin_ads(test: Test) -> list[Row]:
         else:
             last = ads[-1]
             if last.get_ci("TransferUrl") != missing:
-                problems.append(
-                    f"the last ad is of {last.get_ci('TransferUrl')!r}, not {missing!r}"
-                )
+                problems.append(f"the last ad is of {last.get_ci('TransferUrl')!r}, not {missing!r}")
             elif last.get_ci("TransferSuccess") is not False:
-                problems.append(
-                    f"the missing object's TransferSuccess {last.get_ci('TransferSuccess')!r}"
-                )
+                problems.append(f"the missing object's TransferSuccess {last.get_ci('TransferSuccess')!r}")
             for ad in ads[:-1]:
                 problems += ad_problems(ad, urls[0], test.objects[test.rel(names[0])])
         why = exit_problem(fetch, ads)
@@ -928,9 +905,7 @@ def plugin_ads(test: Test) -> list[Row]:
     return rows
 
 
-def upload_ads(
-    test: Test, failed_row: Callable[[str, Fetched, str, Optional[int]], Row]
-) -> list[Row]:
+def upload_ads(test: Test, failed_row: Callable[[str, Fetched, str, Optional[int]], Row]) -> list[Row]:
     """Return the rows of stash_plugin's ads of an upload (`-upload`).
 
     Of a batch of two files to /protected-a (`upload`): each ad must say
@@ -980,15 +955,9 @@ def upload_ads(
     )
     name = "ads-up-refused"
     source = test.local(f"ads-up/{name}", os.urandom(OBJECT_SIZE // 4))
-    fetch = test.plugin(
-        "ads-upload-refused", [test.url(name)], unknown_env, upload=True, sources=[source]
-    )
+    fetch = test.plugin("ads-upload-refused", [test.url(name)], unknown_env, upload=True, sources=[source])
     row = failed_row("upload-refused", fetch, "Authorization", None)
-    if any(
-        stores.held_anywhere(
-            test.fed.origins, NAMESPACE, test.rel(name), {NAMESPACE: test.setup}
-        )
-    ):
+    if any(stores.held_anywhere(test.fed.origins, NAMESPACE, test.rel(name), {NAMESPACE: test.setup})):
         row = (
             "upload-refused",
             FAIL,
@@ -1069,9 +1038,7 @@ def failover(test: Test) -> list[Row]:
     feds = test.fed.federated_caches
     v2 = [c for c in feds if c.kind == "v2"]
     if not v2 or len(feds) < 2:
-        return [
-            ("", SKIP, "no federated V2 cache beside another cache ('-p topo-multi-cache')")
-        ]
+        return [("", SKIP, "no federated V2 cache beside another cache ('-p topo-multi-cache')")]
     if test.fed.sent_cache_control:
         return [
             (
@@ -1086,8 +1053,7 @@ def failover(test: Test) -> list[Row]:
             (
                 "",
                 SKIP,
-                "several origins, which the director asks for the object, and which no longer"
-                + " hold it",
+                "several origins, which the director asks for the object, and which no longer" + " hold it",
             )
         ]
     first_cache = v2[0]
@@ -1127,13 +1093,9 @@ def failover(test: Test) -> list[Row]:
             )
             problems = get_failover_problems(fetch, data, first_cache, second)
         else:
-            env = test.creds_env(
-                test.server_creds(name), PELICAN_CLIENT_PREFERREDCACHES=preferred
-            )
+            env = test.creds_env(test.server_creds(name), PELICAN_CLIENT_PREFERREDCACHES=preferred)
             fetch = test.plugin(name, [test.url(name)], env)
-            problems = plugin_failover_problems(
-                fetch, test.url(name), data, first_cache, second
-            )
+            problems = plugin_failover_problems(fetch, test.url(name), data, first_cache, second)
         rows.append(
             (
                 case,
@@ -1155,9 +1117,7 @@ def get_failover_problems(
     results = stats_of(os.path.join(fetch.directory, "stats.json"))
     attempts = attempts_of(results[0]) if results else []
     if len(attempts) < 2:
-        return problems + [
-            f"{len(attempts)} attempt(s) in the stats, not a failure and a resume"
-        ]
+        return problems + [f"{len(attempts)} attempt(s) in the stats, not a failure and a resume"]
     hosts = [endpoint_host(a) for a in attempts]
     failed = [a for a in attempts if attempt_failed(a)]
     if not failed or endpoint_host(failed[0]) != first_cache.svc:
@@ -1197,8 +1157,7 @@ def plugin_failover_problems(
         problems.append("the file is not the object")
     found = developer_data(ad)
     endpoints = {
-        n: str(found.get_ci(f"Endpoint{n}") or "").partition(":")[0]
-        for n in range(last_attempt(ad) + 1)
+        n: str(found.get_ci(f"Endpoint{n}") or "").partition(":")[0] for n in range(last_attempt(ad) + 1)
     }
     if endpoints.get(0) != first_cache.svc or not found.get_ci("TransferError0"):
         problems.append(f"no failed first attempt at {first_cache.svc}: {endpoints}")
@@ -1289,7 +1248,9 @@ def etag_agreement(test: Test) -> tuple[str, str]:
     if distinct > 1:
         note += f"; the origins' copies have {distinct} ETags, so a cache filled from one cannot resume at a cache filled from another"
     if silent:
-        note += f"; {', '.join(silent)} sent no ETag, so a client resuming there cannot tell a changed object"
+        note += (
+            f"; {', '.join(silent)} sent no ETag, so a client resuming there cannot tell a changed object"
+        )
     return PASS, note
 
 
@@ -1388,9 +1349,7 @@ def token_discovery(test: Test) -> list[Row]:
     test.put(name, data)
     url = test.url(name)
     base = dict(test.session.env)
-    wrong_path = test.session.credential_token(
-        credentials.BY_NAME["wrong-path"], NAMESPACE, "get"
-    )
+    wrong_path = test.session.credential_token(credentials.BY_NAME["wrong-path"], NAMESPACE, "get")
     unknown = unknown_token(test)
     good_creds = test.server_creds("discovery-good")
     rows: list[Row] = []
@@ -1400,9 +1359,7 @@ def token_discovery(test: Test) -> list[Row]:
             return (client + case, FAIL, why) if why else (client + case, PASS, passed)
 
         env = {**base, "BEARER_TOKEN": test.token}
-        rows.append(
-            row("bearer-token", got_named(get(test, f"{prefix}bearer-token", url, env), data))
-        )
+        rows.append(row("bearer-token", got_named(get(test, f"{prefix}bearer-token", url, env), data)))
         env = {**base, "BEARER_TOKEN_FILE": test.token_file}
         rows.append(
             row(
@@ -1411,9 +1368,7 @@ def token_discovery(test: Test) -> list[Row]:
             )
         )
         env = {**base, "_CONDOR_CREDS": good_creds}
-        rows.append(
-            row("condor-creds", got_named(get(test, f"{prefix}condor-creds", url, env), data))
-        )
+        rows.append(row("condor-creds", got_named(get(test, f"{prefix}condor-creds", url, env), data)))
         env = {**base, "BEARER_TOKEN": wrong_path or "", "_CONDOR_CREDS": good_creds}
         rows.append(
             row(
@@ -1490,9 +1445,7 @@ def url_forms(test: Test) -> list[Row]:
         return (case, FAIL, why) if why else (case, PASS, note)
 
     if test.fed.standalone:
-        rows.append(
-            ("configured", SKIP, "a standalone origin's client is told of no federation")
-        )
+        rows.append(("configured", SKIP, "a standalone origin's client is told of no federation"))
     else:
         rows.append(get("configured", [*token, path], base, "the configured federation"))
     rows.append(get("flag", ["-f", discovery, *token, path], base, f"-f {discovery}"))
@@ -1510,9 +1463,7 @@ def url_forms(test: Test) -> list[Row]:
         upload = os.urandom(OBJECT_SIZE // 2)
         source = test.local("forms-up", upload)
         url = f"osdf://{test.path('forms-up')}"
-        fetch = test.pelican(
-            "put-osdf", ["object", "put", "-f", discovery, *token, source, url]
-        )
+        fetch = test.pelican("put-osdf", ["object", "put", "-f", discovery, *token, source, url])
         problems: list[str] = []
         if fetch.status != 0:
             problems.append(f"exit {fetch.status}: {last_line(fetch.said)}")
@@ -1583,9 +1534,7 @@ def token_create_discovery(test: Test) -> list[Row]:
     collection = test.url("token-create") + "/"
     read = credentials.SCOPES[test.session.profile]["read"]
     want_scope = f"{read}:/{test.rel('token-create')}"
-    claims, token, fetch = create_token(
-        test, "create-origin-key", collection, test.fed.origin_key
-    )
+    claims, token, fetch = create_token(test, "create-origin-key", collection, test.fed.origin_key)
     if claims is None:
         rows.append(("origin-key", FAIL, f"exit {fetch.status}: {last_line(fetch.said)}"))
     else:
@@ -1612,13 +1561,9 @@ def token_create_discovery(test: Test) -> list[Row]:
             credentials.keys(test.fed)[f"ns-{NAMESPACE}"],
         )
         if claims is None:
-            rows.append(
-                ("namespace-key", FAIL, f"exit {fetch.status}: {last_line(fetch.said)}")
-            )
+            rows.append(("namespace-key", FAIL, f"exit {fetch.status}: {last_line(fetch.said)}"))
         elif claims.get("iss") != test.fed.issuer_of(NAMESPACE):
-            rows.append(
-                ("namespace-key", FAIL, f"iss {claims.get('iss')!r}, not /{NAMESPACE}'s issuer")
-            )
+            rows.append(("namespace-key", FAIL, f"iss {claims.get('iss')!r}, not /{NAMESPACE}'s issuer"))
         else:
             rows.append(("namespace-key", PASS, "found through the export's own JWKS"))
     else:
@@ -1629,9 +1574,7 @@ def token_create_discovery(test: Test) -> list[Row]:
     if claims is not None:
         rows.append(("unknown-key", FAIL, f"minted a token of issuer {claims.get('iss')!r}"))
     elif "matches your signing key" not in fetch.said:
-        rows.append(
-            ("unknown-key", FAIL, f"failed, but not for the key: {last_line(fetch.said)}")
-        )
+        rows.append(("unknown-key", FAIL, f"failed, but not for the key: {last_line(fetch.said)}"))
     else:
         rows.append(("unknown-key", PASS, "no issuer matches the key"))
     if "public" not in test.fed.exports:
@@ -1644,9 +1587,7 @@ def token_create_discovery(test: Test) -> list[Row]:
         if claims is None:
             rows.append(("public", FAIL, f"exit {fetch.status}: {last_line(fetch.said)}"))
         elif claims.get("iss") != want_issuer:
-            rows.append(
-                ("public", FAIL, f"issuer {claims.get('iss')!r}, not /public's {want_issuer!r}")
-            )
+            rows.append(("public", FAIL, f"issuer {claims.get('iss')!r}, not /public's {want_issuer!r}"))
         else:
             rows.append(("public", PASS, "/public takes writes, so its issuer is found"))
     else:
@@ -1656,9 +1597,7 @@ def token_create_discovery(test: Test) -> list[Row]:
         if claims is not None:
             rows.append(("public", FAIL, f"minted a token of issuer {claims.get('iss')!r}"))
         elif "Are you sure you need a token" not in fetch.said:
-            rows.append(
-                ("public", FAIL, f"failed, but not with the hint: {last_line(fetch.said)}")
-            )
+            rows.append(("public", FAIL, f"failed, but not with the hint: {last_line(fetch.said)}"))
         else:
             rows.append(("public", PASS, "asks whether a token is needed"))
     owners = [o for o in test.fed.owners if any(e.prefix == "/other" for e in o.exports)]
@@ -1753,9 +1692,7 @@ def share_url(test: Test) -> list[Row]:
             time.sleep(REGISTRATION_WAIT)
             done = share_once(test, flags, collection, store, approver)
         if done.status != 0 or done.problems:
-            why = (
-                first(done.problems) if done.problems else last_line(done.stderr or done.stdout)
-            )
+            why = first(done.problems) if done.problems else last_line(done.stderr or done.stdout)
             rows.append((case, FAIL, f"exit {done.status}: {why}"))
             continue
         printed = done.stdout.strip().splitlines()[-1].strip() if done.stdout.strip() else ""
@@ -1771,14 +1708,10 @@ def share_url(test: Test) -> list[Row]:
                 scopes = set(str(jwt.decode(token)[1].get("scope", "")).split())
             except ValueError:
                 pass
-            if not want <= scopes or not scopes <= want | {
-                f"storage.read:/{test.rel('share')}"
-            }:
+            if not want <= scopes or not scopes <= want | {f"storage.read:/{test.rel('share')}"}:
                 problems.append(f"the token's scopes are {sorted(scopes)}, not {sorted(want)}")
             tokens[case] = token
-        rows.append(
-            (case, *outcome(problems, f"{collection}?authz=<token of {sorted(want)}>")[1:])
-        )
+        rows.append((case, *outcome(problems, f"{collection}?authz=<token of {sorted(want)}>")[1:]))
     if "url" not in tokens:
         return rows
     token = tokens["url"]
@@ -1791,10 +1724,7 @@ def share_url(test: Test) -> list[Row]:
             problems.append(f"{host}: {answer.describe()}, not 307")
             continue
         location = answer.header("Location")
-        if (
-            f"authz={token}" not in location
-            and f"authz={quote(token, safe='')}" not in location
-        ):
+        if f"authz={token}" not in location and f"authz={quote(token, safe='')}" not in location:
             problems.append(f"{host}: Location carries no authz: {location[:80]}")
         if token in answer.header("Link"):
             problems.append(f"{host}: Link carries the token")
@@ -1802,9 +1732,7 @@ def share_url(test: Test) -> list[Row]:
         if served.status != 200 or served.body != data:
             problems.append(f"{host}: following Location got {served.describe()}")
     rows.append(("curl", *outcome(problems, f"{len(test.fed.directors)} director(s)")[1:]))
-    fetch = test.pelican(
-        "share-get", ["object", "get", f"{test.url(name)}?authz={token}", "object"]
-    )
+    fetch = test.pelican("share-get", ["object", "get", f"{test.url(name)}?authz={token}", "object"])
     wrong = got(fetch, data)
     if wrong and f"Error code {NO_TOKEN}" in fetch.said:
         rows.append(("get", FAIL, f"the client found no token in the URL: {wrong}"))
@@ -1835,9 +1763,7 @@ def director_decision(test: Test) -> tuple[str, str]:
     name = "decision"
     data = os.urandom(OBJECT_SIZE)
     test.put(name, data)
-    env = test.creds_env(
-        test.server_creds("decision"), PELICAN_PLUGIN_DIRECTORDECISIONPERCENTAGE="100"
-    )
+    env = test.creds_env(test.server_creds("decision"), PELICAN_PLUGIN_DIRECTORDECISIONPERCENTAGE="100")
     fetch = test.plugin("decision", [test.url(name)], env)
     try:
         ads = parse_ads(fetch.said)
@@ -1904,11 +1830,7 @@ def skipstat_failover(test: Test) -> tuple[str, str]:
             return FAIL, why
         results = stats_of(os.path.join(fetch.directory, "stats.json"))
         attempts = attempts_of(results[0]) if results else []
-        if (
-            attempts
-            and endpoint_host(attempts[0]) != holder.svc
-            and attempt_failed(attempts[0])
-        ):
+        if attempts and endpoint_host(attempts[0]) != holder.svc and attempt_failed(attempts[0]):
             tried_first = True
             break
     if tried_first:
@@ -1940,9 +1862,7 @@ def multi_source(test: Test) -> list[Row]:
     if fetch.status != 0:
         problems.append(f"exit {fetch.status}: {last_line(fetch.said)}")
     for name in names:
-        if common.sha256(os.path.join(directory, name)) != common.digest(
-            test.objects[test.rel(name)]
-        ):
+        if common.sha256(os.path.join(directory, name)) != common.digest(test.objects[test.rel(name)]):
             problems.append(f"{name} is missing or wrong in the directory")
     rows.append(("get-directory", *outcome(problems, "each landed by its name (G8)")[1:]))
     for case, target, message in (
@@ -1953,9 +1873,7 @@ def multi_source(test: Test) -> list[Row]:
         if fetch.status == 0:
             rows.append((case, FAIL, "succeeded"))
         elif message not in fetch.said:
-            rows.append(
-                (case, FAIL, f"failed, but not saying {message!r}: {last_line(fetch.said)}")
-            )
+            rows.append((case, FAIL, f"failed, but not saying {message!r}: {last_line(fetch.said)}"))
         else:
             rows.append((case, PASS, message))
     if not test.writes:
@@ -1966,9 +1884,7 @@ def multi_source(test: Test) -> list[Row]:
     origins = test.fed.origins
 
     def landed(rel: str, data: bytes) -> bool:
-        return common.digest(data) in stores.held_anywhere(
-            origins, NAMESPACE, rel, {NAMESPACE: test.setup}
-        )
+        return common.digest(data) in stores.held_anywhere(origins, NAMESPACE, rel, {NAMESPACE: test.setup})
 
     for case, collection, make in (
         ("put-collection", "multi-into", True),
@@ -1989,9 +1905,7 @@ def multi_source(test: Test) -> list[Row]:
         for name, data in files.items():
             if not landed(f"{rel}/{name}", data):
                 problems.append(f"no origin holds {collection}/{name}")
-        rows.append(
-            (case, *outcome(problems, "each landed under the collection by its name")[1:])
-        )
+        rows.append((case, *outcome(problems, "each landed under the collection by its name")[1:]))
     old = os.urandom(500)
     test.put("multi-object", old)
     fetch = test.pelican(
@@ -2029,9 +1943,7 @@ def multi_source(test: Test) -> list[Row]:
     for path, data in tree.items():
         if not landed(f"{test.rel('multi-recursive')}/{path}", data):
             problems.append(f"no origin holds multi-recursive/{path}")
-    rows.append(
-        ("put-recursive-query", *outcome(problems, "the tree landed flat (P6, ?recursive)")[1:])
-    )
+    rows.append(("put-recursive-query", *outcome(problems, "the tree landed flat (P6, ?recursive)")[1:]))
     # stash_plugin, which HTCondor hands a URL with ?recursive for a tree,
     # uploads it to a collection of its own.
     plugin_env = test.creds_env(test.server_creds("multi-plugin"))
@@ -2077,9 +1989,7 @@ def multi_source(test: Test) -> list[Row]:
     for path, data in tree.items():
         if common.sha256(os.path.join(directory, path)) != common.digest(data):
             problems.append(f"{path} is missing or wrong")
-    rows.append(
-        ("get-recursive-query", *outcome(problems, "the tree came back (G5, ?recursive)")[1:])
-    )
+    rows.append(("get-recursive-query", *outcome(problems, "the tree came back (G5, ?recursive)")[1:]))
     # The plugin's download of the tree, to its directory (`.`): the
     # plugin lands a download whose destination is a directory under the
     # object's name in it (parseDestination in cmd/plugin.go), so the
@@ -2099,8 +2009,7 @@ def multi_source(test: Test) -> list[Row]:
             d
             for d in (fetch.directory, os.path.join(fetch.directory, "multi-recursive"))
             if all(
-                common.sha256(os.path.join(d, path)) == common.digest(data)
-                for path, data in tree.items()
+                common.sha256(os.path.join(d, path)) == common.digest(data) for path, data in tree.items()
             )
         ),
         None,
@@ -2157,9 +2066,7 @@ def preferred_cache_down(test: Test) -> list[Row]:
         results = stats_of(os.path.join(fetch.directory, "stats.json"))
         served = [endpoint_host(attempts_of(r)[-1]) for r in results if attempts_of(r)]
         if not served or served[0] not in {c.svc for c in caches}:
-            rows.append(
-                ("plus", FAIL, f"served by {served or 'no host recorded'}, not a cache")
-            )
+            rows.append(("plus", FAIL, f"served by {served or 'no host recorded'}, not a cache"))
         else:
             rows.append(("plus", PASS, f"served by {served[0]}"))
     fetch = test.pelican(
@@ -2178,9 +2085,7 @@ def preferred_cache_down(test: Test) -> list[Row]:
     if fetch.status == 0:
         rows.append(("alone", FAIL, "succeeded, though its only cache is down"))
     elif transfers.refused(fetch.said):
-        rows.append(
-            ("alone", FAIL, f"failed by refusal, not by contact: {last_line(fetch.said)}")
-        )
+        rows.append(("alone", FAIL, f"failed by refusal, not by contact: {last_line(fetch.said)}"))
     else:
         rows.append(("alone", PASS, f"failed to reach the cache: {last_line(fetch.said)[:80]}"))
     return rows
@@ -2391,10 +2296,7 @@ def async_job(test: Test) -> list[Row]:
             else:
                 ids = [
                     str(j.get("job_id"))
-                    for j in (
-                        common.as_object(j) or {}
-                        for j in common.as_array(listed.get("jobs")) or []
-                    )
+                    for j in (common.as_object(j) or {} for j in common.as_array(listed.get("jobs")) or [])
                 ]
                 if job and job not in ids:
                     rows.append(("list", FAIL, f"lists {ids}, not {job}"))
@@ -2418,9 +2320,7 @@ def async_job(test: Test) -> list[Row]:
                 test.url("async-copy"),
                 cwd=os.path.dirname(local),
             )
-            held = stores.held_anywhere(
-                test.fed.origins, NAMESPACE, rel, {NAMESPACE: test.setup}
-            )
+            held = stores.held_anywhere(test.fed.origins, NAMESPACE, rel, {NAMESPACE: test.setup})
             if code != 0:
                 rows.append(("copy", FAIL, f"exit {code}: {last_line(err or out)}"))
             elif common.digest(upload) not in held:

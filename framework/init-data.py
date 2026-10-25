@@ -82,9 +82,7 @@ def shape(exports: transfers.Exports) -> str:
     That includes the code that decides it. Other profiles, e.g.
     `multi-cache` and `monitoring`, do not change it.
     """
-    used = (
-        ",".join(p for p in ("lab", "multi-origin", "multi-owner") if p in profiles) or "none"
-    )
+    used = ",".join(p for p in ("lab", "multi-origin", "multi-owner") if p in profiles) or "none"
     lib = os.path.join(common.FRAMEWORK, "testlib")
     code = b""
     for path in (
@@ -95,9 +93,7 @@ def shape(exports: transfers.Exports) -> str:
     ):
         with open(path, "rb") as f:
             code += f.read()
-    exported = ";".join(
-        f"{ns}:{','.join(sorted(caps))}" for ns, caps in sorted(exports.items())
-    )
+    exported = ";".join(f"{ns}:{','.join(sorted(caps))}" for ns, caps in sorted(exports.items()))
     return (
         f"origin={origin_variant} profiles={used} federation={federation_url()}"
         f" exports={exported} objects={OBJECTS} script={zlib.crc32(code)}"
@@ -192,9 +188,7 @@ def main() -> None:
     # suite uploads; and there, /public reads /protected-a's storage.
     # origin-2, another owner (`topo-multi-owner`), has objects of its own.
     pstore = origin_variant == "pstore"
-    namespaces = list(
-        dict.fromkeys(common.storage_namespace(ns, pstore) for ns in credentials.NAMESPACES)
-    )
+    namespaces = list(dict.fromkeys(common.storage_namespace(ns, pstore) for ns in credentials.NAMESPACES))
     prime_origin_0 = origin_variant != "ssh"
     prime_origin_1 = prime_origin_0 and "multi-origin" in profiles
     prime_origin_2 = prime_origin_0 and "multi-owner" in profiles
@@ -214,9 +208,7 @@ def main() -> None:
         # also gets origin-0's objects.
         for namespace in namespaces:
             directory = f"{common.storage_dir(namespace)}/data"
-            shutil.copytree(
-                f"data/origin/0/{directory}", f"data/origin/1/{directory}", dirs_exist_ok=True
-            )
+            shutil.copytree(f"data/origin/0/{directory}", f"data/origin/1/{directory}", dirs_exist_ok=True)
     elif "multi-origin" in profiles:
         print(f"Skipping origin-1: {skip_reason}.")
 

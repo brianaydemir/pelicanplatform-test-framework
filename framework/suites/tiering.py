@@ -196,9 +196,7 @@ class Test:
         data = os.urandom(size)
         caps = self.fed.exports["protected-a"]
         rel = self.rel(cache, name)
-        errors = stores.seed_everywhere(
-            self.fed.origins, "protected-a", rel, data, self.setup, caps
-        )
+        errors = stores.seed_everywhere(self.fed.origins, "protected-a", rel, data, self.setup, caps)
         if errors:
             die(f"could not put {rel} in place: {first(errors)}")
         return data
@@ -208,9 +206,7 @@ class Test:
 
         A redirect is followed without the token.
         """
-        answer = web.request(
-            "GET", f"{cache.url}/protected-a/{self.rel(cache, name)}", token=self.token
-        )
+        answer = web.request("GET", f"{cache.url}/protected-a/{self.rel(cache, name)}", token=self.token)
         if answer.status == 307:
             answer = web.request("GET", answer.header("Location"))
         return answer
@@ -283,9 +279,7 @@ class Test:
         work = os.path.join(self.tmp, f"plugin-{cache.svc}-{name}")
         creds = os.path.join(work, "creds")
         os.makedirs(creds)
-        shutil.copyfile(
-            self.session.token_file("protected-a"), os.path.join(creds, "server.use")
-        )
+        shutil.copyfile(self.session.token_file("protected-a"), os.path.join(creds, "server.use"))
         url = f"{self.fed.url}/protected-a/{self.rel(cache, name)}"
         infile, outfile = (os.path.join(work, f"plugin.{ext}") for ext in ("in", "ad"))
         with open(infile, "w", encoding="utf-8") as f:
@@ -297,9 +291,7 @@ class Test:
         _, out, err, ads = self.session.plugin_cmd(infile, outfile, env=env, cwd=work)
         return transfers.plugin_passed(ads), target, ads or err or out
 
-    def get_tiered(
-        self, cache: common.Cache, name: str, headers: dict[str, str]
-    ) -> web.Response:
+    def get_tiered(self, cache: common.Cache, name: str, headers: dict[str, str]) -> web.Response:
         """GET cache's tiered object name through cache.
 
         A cache serves a stale object itself while it revalidates it,
@@ -379,9 +371,7 @@ def threshold(test: Test) -> tuple[str, str]:
     return each_cache(test, check)
 
 
-def redirect_problem(
-    test: Test, cache: common.Cache, data: bytes, answer: web.Response
-) -> Optional[str]:
+def redirect_problem(test: Test, cache: common.Cache, data: bytes, answer: web.Response) -> Optional[str]:
     """Return why answer is not right for a tiered object, or None.
 
     answer is a cache's answer to a GET of a tiered object whose bytes

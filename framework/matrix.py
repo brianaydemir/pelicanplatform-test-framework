@@ -322,8 +322,7 @@ REFUSED: list[Rule] = [
         and (s["topology"] != "full" or "on" in (s["multi_origin"], s["multi_owner"])),
     ),
     (
-        "a firewalled origin is reached only through the broker, which only an XRootD cache"
-        + " can use",
+        "a firewalled origin is reached only through the broker, which only an XRootD cache" + " can use",
         lambda s: s["broker"] == "firewalled" and s["cache"] != "xrootd",
     ),
     (
@@ -333,9 +332,7 @@ REFUSED: list[Rule] = [
     (
         "a firewalled origin's own issuer is out of the caches' reach, so the exports must"
         + " trust an issuer they can reach, or take no token",
-        lambda s: s["broker"] == "firewalled"
-        and s["issuer"] != "external"
-        and s["namespaces"] != "public",
+        lambda s: s["broker"] == "firewalled" and s["issuer"] != "external" and s["namespaces"] != "public",
     ),
     (
         "mixed kinds of cache put XRootD at cache-1, which needs topo-multi-cache",
@@ -351,13 +348,11 @@ REFUSED: list[Rule] = [
     ),
     (
         "a standalone origin has no cache to give a memory cache or to bound",
-        lambda s: (s["memory_cache"] == "on" or s["store"] == "bounded")
-        and s["topology"] == "standalone",
+        lambda s: (s["memory_cache"] == "on" or s["store"] == "bounded") and s["topology"] == "standalone",
     ),
     (
         "short tokens and export templates are the origins' issuer's, which is off",
-        lambda s: s["issuer"] != "own"
-        and (s["tokens"] == "short" or s["templates"] == "export"),
+        lambda s: s["issuer"] != "own" and (s["tokens"] == "short" or s["templates"] == "export"),
     ),
     (
         "per-export templates go on /protected-b, which the shape does not export",
@@ -382,9 +377,7 @@ REFUSED: list[Rule] = [
     (
         "another owner's /public/secret takes a token beside its public exports, which Pelican"
         + " refuses once the origins serve only caches",
-        lambda s: s["namespaces"] == "public"
-        and s["multi_owner"] == "on"
-        and s["direct"] == "no",
+        lambda s: s["namespaces"] == "public" and s["multi_owner"] == "on" and s["direct"] == "no",
     ),
     (
         "a load balancer balances two directors",
@@ -420,8 +413,7 @@ SMOKE_LIMITS: list[Rule] = [
     (
         "a transfer API runs only where /protected-a takes writes: without them, the"
         + " transfer-api suite has nowhere to copy to, and skips",
-        lambda s: s["transfer_api"] != "off"
-        and (s["direct"] == "no" or s["namespaces"] == "public"),
+        lambda s: s["transfer_api"] != "off" and (s["direct"] == "no" or s["namespaces"] == "public"),
     ),
     (
         "once the servers drop privileges, the host may not write their keys",
@@ -461,9 +453,7 @@ SMOKE_LIMITS: list[Rule] = [
 ]
 
 
-def shape_of(
-    presets: Iterable[str], rotated: bool = False
-) -> tuple[Optional[Shape], list[str]]:
+def shape_of(presets: Iterable[str], rotated: bool = False) -> tuple[Optional[Shape], list[str]]:
     """Return the shape that presets make, and what is wrong with them.
 
     Args:
@@ -683,9 +673,7 @@ def presets_of(shape: Shape) -> list[str]:
     """
     by_choice = {choice: preset for preset, choice in PRESETS.items()}
     order = [*NAMED_FIRST, *(f for f in FACTORS if f not in NAMED_FIRST)]
-    return [
-        by_choice[(f, shape[f])] for f in order if f != "keys" and shape[f] != FACTORS[f][0]
-    ]
+    return [by_choice[(f, shape[f])] for f in order if f != "keys" and shape[f] != FACTORS[f][0]]
 
 
 def name_of(shape: Shape) -> str:
@@ -800,9 +788,7 @@ def check(shapes: Sequence[SmokeShape]) -> list[str]:
         if smoke.name in BASELINES:
             continue
         if shape.choices() > MAX_CHOICES:
-            found.append(
-                f"{smoke.name}: makes {shape.choices()} choices, more than {MAX_CHOICES}"
-            )
+            found.append(f"{smoke.name}: makes {shape.choices()} choices, more than {MAX_CHOICES}")
         if smoke.name != name_of(shape):
             found.append(f"{smoke.name}: should be named {name_of(shape)}")
         trial = simpler(shape, counts, valid)

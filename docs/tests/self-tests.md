@@ -17,8 +17,7 @@ origin, reads it, and removes it.
   keeps the trailers that Python's `http.client` throws away. A GET of
   the object at each federated V2 cache, so asked, must get them; one
   not so asked must get none. XRootD caches are passed over.
-- `jwt`: `framework/testlib/jwt.py` makes tokens that `pelican token
-  create` cannot: any claim present or absent and of any JSON type, any
+- `jwt`: `framework/testlib/jwt.py` makes tokens that `pelican token create` cannot: any claim present or absent and of any JSON type, any
   `kid` or none, and signatures by ES256 or RS256 (with the `openssl`
   command), HS256 (with any bytes as the secret), or `none`. Its token
   with the claims and header of the `server` token, signed with the

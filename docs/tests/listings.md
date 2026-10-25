@@ -75,8 +75,7 @@ only the first is asked.
   name. One to an object must bring its bytes, never a decoy's or a
   404; one to the collection, or to the parent (`..`), if there is one,
   an HTML listing that links to what it holds. Every entry must have a
-  link. A native origin's listing must also carry `Cache-Control:
-  no-store`, so that no cache keeps it, as Pelican sends it. Pelican's
+  link. A native origin's listing must also carry `Cache-Control: no-store`, so that no cache keeps it, as Pelican sends it. Pelican's
   native origin writes each link as the entry's path in the export,
   without the namespace, HTML-escaped but not percent-encoded
   (`streamDirectoryListing` in `origin_serve/handlers.go`), so no link
@@ -93,8 +92,7 @@ only the first is asked.
   no collection, must answer as Depth 0 would (RFC 4918, section 9.1):
   207, listing the object alone, with its size. Every origin and
   federated cache is asked so of `tree/b` in `/protected-a`, and must
-  answer so, or refuse where it may not list. Then `pelican object ls -l
-  --json` of it must list the object alone, where `/protected-a` has
+  answer so, or refuse where it may not list. Then `pelican object ls -l --json` of it must list the object alone, where `/protected-a` has
   `Listings` (Pelican's `TestListPlainObjectPosixV2`).
 - XRootD falls short of some of this (XRootD 5.9.7, in the v26.0.0-rc.3
   images), so where it serves the origins or the caches

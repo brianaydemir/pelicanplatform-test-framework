@@ -87,9 +87,7 @@ EXPIRED_IN_USE = "expired-in-use"
 
 SCENARIOS = {
     KEYS: "each issuer's discovery document and JWKS, and the server-wide JWKS",
-    EXPIRED_IN_USE: (
-        "a token in use as it expires: taken before, refused from 70s past its expiry on"
-    ),
+    EXPIRED_IN_USE: ("a token in use as it expires: taken before, refused from 70s past its expiry on"),
 }
 SCENARIOS.update(
     {
@@ -106,8 +104,7 @@ SCENARIOS.update(
     {
         "create-only": "storage.create alone: it may create an object, not replace or delete one",
         "modify-only": (
-            "storage.modify alone (or write, of SciTokens): it may create, replace, and delete"
-            " an object"
+            "storage.modify alone (or write, of SciTokens): it may create, replace, and delete" " an object"
         ),
     }
 )
@@ -129,14 +126,10 @@ SCENARIOS[TRAVERSAL] = (
 STEPS = ("..", "%2e%2e", "%2E%2E", ".%2e", "%252e%252e")
 
 HINTS = "hints"
-SCENARIOS[HINTS] = (
-    "a V2 cache's refusal of a request with no token names the namespace and its issuer"
-)
+SCENARIOS[HINTS] = "a V2 cache's refusal of a request with no token names the namespace and its issuer"
 
 AUDIENCE = "audience"
-SCENARIOS[AUDIENCE] = (
-    "a token for another audience: every origin refuses it, and stores nothing"
-)
+SCENARIOS[AUDIENCE] = "a token for another audience: every origin refuses it, and stores nothing"
 # An audience that no server here answers to.
 OTHER_AUDIENCE = "https://elsewhere.invalid"
 
@@ -146,40 +139,30 @@ SCENARIOS[QUERY_TOKEN] = (
 )
 
 TOKEN_LISTS = "token-lists"  # nosec B105
-SCENARIOS[TOKEN_LISTS] = (
-    "a native origin tries each token of a request, in its header and query, up to 10"
-)
+SCENARIOS[TOKEN_LISTS] = "a native origin tries each token of a request, in its header and query, up to 10"
 AUDIENCE_SPECIFIC = "audience-specific"
 SCENARIOS[AUDIENCE_SPECIFIC] = (
-    "a token for the first origin's audience is taken there alone; one that lists `any` too,"
-    " everywhere"
+    "a token for the first origin's audience is taken there alone; one that lists `any` too," " everywhere"
 )
 TIME_CLAIMS = "time-claims"
 SCENARIOS[TIME_CLAIMS] = (
-    "nbf or iat ahead by more than 60s of clock skew is refused, by less is not; exp past is"
-    " refused"
+    "nbf or iat ahead by more than 60s of clock skew is refused, by less is not; exp past is" " refused"
 )
 MALFORMED = "malformed-claims"
-SCENARIOS[MALFORMED] = (
-    "no exp, kid, or aud, an unknown kid, or a signature by none or HS256: refused"
-)
+SCENARIOS[MALFORMED] = "no exp, kid, or aud, an unknown kid, or a signature by none or HS256: refused"
 STANDALONE = "standalone-refusals"
 SCENARIOS[STANDALONE] = (
-    "a native origin refuses with 401 or 403 and token hints standalone, with 401 and none"
-    " federated"
+    "a native origin refuses with 401 or 403 and token hints standalone, with 401 and none" " federated"
 )
 WEB_TOKEN_STRICT = "web-token-strict"  # nosec B105
 SCENARIOS[WEB_TOKEN_STRICT] = (
     "a server's web API refuses its own token 20s before its nbf or 5s past its exp"
 )
 NARROW_CLIMB = "narrow-climb"
-SCENARIOS[NARROW_CLIMB] = (
-    "a token for one collection reaches nothing beside it with `..`, however spelled"
-)
+SCENARIOS[NARROW_CLIMB] = "a token for one collection reaches nothing beside it with `..`, however spelled"
 NESTED = "nested-protected"
 SCENARIOS[NESTED] = (
-    "a protected prefix inside a public one (/public/secret) is served to no one without a"
-    " token"
+    "a protected prefix inside a public one (/public/secret) is served to no one without a" " token"
 )
 
 # The checks that present no storage token, or none of a profile but
@@ -315,9 +298,7 @@ class Test:
             if answer.status != 200:
                 why = "expected 200"
             elif op == "get" and answer.body != data:
-                why = (
-                    f"the body is /{whose}'s object" if whose else "the body is not the object"
-                )
+                why = f"the body is /{whose}'s object" if whose else "the body is not the object"
             elif op == "head" and length != str(len(data)):
                 why = f"Content-Length '{length}', not the object's {len(data)}"
         elif answer.status not in (401, 403):
@@ -326,9 +307,7 @@ class Test:
             why = f"refused, but the body is /{whose}'s object"
         self.row(target, namespace, op, cred.name, answer, why)
 
-    def check_put(
-        self, target: str, origin: common.Origin, namespace: str, cred: Credential
-    ) -> None:
+    def check_put(self, target: str, origin: common.Origin, namespace: str, cred: Credential) -> None:
         """PUT new bytes to origin."""
         name = f"data/auth/{self.run}-{target}-{namespace}-{cred.name}"
         source = os.urandom(4096 + len(name))
@@ -366,23 +345,16 @@ class Test:
                 problems.append("the store holds the object")
         self.row(target, namespace, "put", cred.name, answer, "; ".join(problems))
 
-    def check_delete(
-        self, target: str, origin: common.Origin, namespace: str, cred: Credential
-    ) -> None:
+    def check_delete(self, target: str, origin: common.Origin, namespace: str, cred: Credential) -> None:
         """DELETE an object uploaded to origin for the purpose.
 
         If the DELETE should succeed and the origin's storage cannot
         delete, skip the row instead.
         """
         cannot_delete = stores.cannot(self.session.fed, "delete")
-        if (
-            cannot_delete
-            and credentials.expected(cred, self.caps(namespace), "delete", True) == ALLOW
-        ):
+        if cannot_delete and credentials.expected(cred, self.caps(namespace), "delete", True) == ALLOW:
             heading = f"{target:<10} {namespace:<11} {'delete':<8} {cred.name:<11}"
-            record_skip(
-                self.report, heading, f"{target} {namespace} delete {cred.name}", cannot_delete
-            )
+            record_skip(self.report, heading, f"{target} {namespace} delete {cred.name}", cannot_delete)
             return
         name = f"data/auth/{self.run}-{target}-{namespace}-{cred.name}-delete"
         data = os.urandom(4096 + len(name))
@@ -447,9 +419,7 @@ def file_key_ids(path: str) -> frozenset[str]:
         die(f"framework/var/{path} is not a JWKS; remove it and run ./fed.sh keys init")
 
 
-def get_jwks(
-    url: str, out: str, name: str
-) -> tuple[web.Response, Optional[frozenset[str]], list[str]]:
+def get_jwks(url: str, out: str, name: str) -> tuple[web.Response, Optional[frozenset[str]], list[str]]:
     """GET the JWKS at url, keeping the response as name in out.
 
     Returns:
@@ -526,9 +496,7 @@ def check_keys(fed: common.Federation, report: Report, out: str) -> None:
         answer, kids, problems = get_jwks(jwks_uri, out, f"keys-{ns}-jwks")
         if kids is not None:
             problems = credentials.namespace_jwks_problems(ns, kids, server, own)
-        record(
-            report, f"{ns:<11} {'jwks':<10}", f"{KEYS} {ns} jwks", answer, "; ".join(problems)
-        )
+        record(report, f"{ns:<11} {'jwks':<10}", f"{KEYS} {ns} jwks", answer, "; ".join(problems))
 
     if "public" in fed.exports and credentials.has_issuer(fed.exports["public"]):
         jwks_uri = f"{fed.issuer_of('public')}/.well-known/issuer.jwks"
@@ -631,9 +599,7 @@ def check_scope(test: Test, fed: common.Federation, name: str) -> None:
         for op, method, existing, allowed in tried:
             if method == "DELETE" and allowed and cannot_delete:
                 heading = f"{target:<10} {'protected-a':<11} {op:<8} {name:<11}"
-                record_skip(
-                    test.report, heading, f"{target} protected-a {op} {name}", cannot_delete
-                )
+                record_skip(test.report, heading, f"{target} protected-a {op} {name}", cannot_delete)
                 continue
             rel = f"data/auth/{test.run}-{target}-{name}-{op}"
             answer, why = scope_write(test, origin, rel, method, token, existing, allowed)
@@ -672,9 +638,7 @@ def scope_write(
         if error:
             return web.Response(None), f"could not put the object in place ({error})"
     new = os.urandom(4096) if method == "PUT" else None
-    answer = web.request(
-        method, stores.url(origin, "protected-a", rel), token=token, upload=new
-    )
+    answer = web.request(method, stores.url(origin, "protected-a", rel), token=token, upload=new)
     want = new if allowed else old
     return answer, scope_problem(test, origin, rel, answer, allowed, want)
 
@@ -760,9 +724,7 @@ def traversal_climbs(
 
     The symlink climbs are symlink_climbs()'s.
     """
-    tokens = {
-        ns: None if ns == "public" else test.session.token(ns) for ns in test.session.namespaces
-    }
+    tokens = {ns: None if ns == "public" else test.session.token(ns) for ns in test.session.namespaces}
     keys = signing_keys(fed)
     climbs: dict[str, list[Climb]] = {"namespace": [], "store": [], "filesystem": []}
     for start, token in tokens.items():
@@ -771,14 +733,12 @@ def traversal_climbs(
                 continue
             forbidden = frozenset({test.object_bytes[target]})
             climbs["namespace"] += [
-                (path, token, forbidden)
-                for path in climbing(start, 1, f"{target}/{test.object}")
+                (path, token, forbidden) for path in climbing(start, 1, f"{target}/{test.object}")
             ]
         climbs["store"] += [(path, token, sentinels) for path in climbing(start, 1, sentinel)]
         for name, key in keys.items():
             climbs["filesystem"] += [
-                (path, token, frozenset({key}))
-                for path in climbing(start, 2, f"fed/issuer-keys/{name}")
+                (path, token, frozenset({key})) for path in climbing(start, 2, f"fed/issuer-keys/{name}")
             ]
     return climbs
 
@@ -818,8 +778,7 @@ def symlink_climbs(
             made.append(path)
     token = test.session.token(start)
     climbs: list[Climb] = [
-        (f"/{start}/data/auth/{test.run}-symlink-{name}", token, forbidden)
-        for name, _, forbidden in links
+        (f"/{start}/data/auth/{test.run}-symlink-{name}", token, forbidden) for name, _, forbidden in links
     ]
     return climbs, made
 
@@ -850,15 +809,11 @@ def check_traversal(test: Test, fed: common.Federation) -> None:
                 for path, token, forbidden in kind_climbs:
                     answer = web.request("GET", f"{url}{path}", token=token)
                     if answer.body in forbidden:
-                        leaks.append(
-                            f"GET {path} got {answer.describe()} with what it climbs toward"
-                        )
+                        leaks.append(f"GET {path} got {answer.describe()} with what it climbs toward")
                 heading = f"{target:<10} {kind:<11} {'get':<8} {TRAVERSAL:<11}"
                 case = f"{TRAVERSAL} {target} {kind}"
                 if not kind_climbs:
-                    record_skip(
-                        test.report, heading, case, "nothing to climb toward in this shape"
-                    )
+                    record_skip(test.report, heading, case, "nothing to climb toward in this shape")
                 elif leaks:
                     print(f"{heading}       FAIL  {leaks[0]}")
                     test.report.add(case, FAIL, common.first(leaks))
@@ -917,9 +872,7 @@ def check_hints(test: Test, fed: common.Federation) -> None:
                     f"X-Pelican-Namespace '{sent}' does not say that /{namespace} takes a token"
                 )
             if found.issuers != (issuer,):
-                problems.append(
-                    f"X-Pelican-Authorization names {list(found.issuers)}, not {issuer}"
-                )
+                problems.append(f"X-Pelican-Authorization names {list(found.issuers)}, not {issuer}")
             record(test.report, heading, case, answer, "; ".join(problems))
 
 
@@ -958,9 +911,7 @@ def check_audience(test: Test, fed: common.Federation) -> None:
                 record_skip(test.report, heading, case, "the origin takes no direct clients")
                 continue
             if op == "get":
-                answer = web.request(
-                    "GET", stores.url(origin, "protected-a", test.object), token=token
-                )
+                answer = web.request("GET", stores.url(origin, "protected-a", test.object), token=token)
                 why = ""
                 if answer.status not in (401, 403):
                     why = "expected 401 or 403: the token is for another audience"
@@ -1001,9 +952,7 @@ def check_query_token(test: Test, fed: common.Federation) -> None:
                 token = test.token(cred, "protected-a", "get") or ""
                 query = f"authz={quote(pattern.format(token), safe='')}"
                 answer = web.request("GET", f"{url}/protected-a/{test.object}?{query}")
-                save(
-                    f"{test.out}/responses/{target}-protected-a-get-authz-{form}-{name}", answer
-                )
+                save(f"{test.out}/responses/{target}-protected-a-get-authz-{form}-{name}", answer)
                 allowed = credentials.expected(cred, caps, "get", direct) == ALLOW
                 why = ""
                 if allowed and answer.status != 200:
@@ -1055,9 +1004,7 @@ def raw_token(
     claims.update(extra or {})
     for name in drop:
         claims.pop(name, None)
-    return jwt.encode(
-        test.header if head is None else head, claims, key=fed.origin_key, secret=secret
-    )
+    return jwt.encode(test.header if head is None else head, claims, key=fed.origin_key, secret=secret)
 
 
 def read_problem(answer: web.Response, allowed: bool, data: bytes, why: str = "") -> str:
@@ -1159,9 +1106,7 @@ class InUse:
                 time.sleep(delay)
             for target, url in list(asked):
                 past = int(time.time()) - self.expiry
-                answer = web.request(
-                    "GET", f"{url}/protected-a/{self.test.object}", token=self.token
-                )
+                answer = web.request("GET", f"{url}/protected-a/{self.test.object}", token=self.token)
                 self.answers[target].append((past, answer))
                 if past < 0 and answer.status in (401, 403):
                     asked.remove((target, url))
@@ -1179,9 +1124,7 @@ class InUse:
             if not decides:
                 heading = f"{target:<10} {'protected-a':<11} {'get':<8} {EXPIRED_IN_USE:<11}"
                 case = f"{target} protected-a get {EXPIRED_IN_USE}"
-                record_skip(
-                    self.test.report, heading, case, "the origin takes no direct clients"
-                )
+                record_skip(self.test.report, heading, case, "the origin takes no direct clients")
                 continue
             answers = self.answers[target]
             seen = ", ".join(
@@ -1236,9 +1179,7 @@ def check_time_claims(test: Test, fed: common.Federation) -> None:
             )
             save(f"{test.out}/responses/{target}-protected-a-get-{name}", answer)
             allowed = credentials.decide(ALLOW if takes else DENY, caps, "get", direct) == ALLOW
-            test.row(
-                target, "protected-a", "get", name, answer, read_problem(answer, allowed, data)
-            )
+            test.row(target, "protected-a", "get", name, answer, read_problem(answer, allowed, data))
 
 
 # --------------------------------------------------------------------------
@@ -1259,9 +1200,7 @@ UNDEFINED_VERSIONS = {
 }
 
 
-def malformed_tokens(
-    test: Test, fed: common.Federation
-) -> list[tuple[str, str, Optional[bool]]]:
+def malformed_tokens(test: Test, fed: common.Federation) -> list[tuple[str, str, Optional[bool]]]:
     """Return the malformed-claims check's tokens.
 
     Each is like `server`'s for /protected-a but for one thing.
@@ -1353,9 +1292,7 @@ def check_audience_specific(test: Test, fed: common.Federation) -> None:
         (f"aud-{label(first.svc, 'origin')}", raw_token(test, extra={"aud": [own]}), first),
         (
             "aud-list",
-            raw_token(
-                test, extra={"aud": [credentials.ANY_AUDIENCE[test.profile], OTHER_AUDIENCE]}
-            ),
+            raw_token(test, extra={"aud": [credentials.ANY_AUDIENCE[test.profile], OTHER_AUDIENCE]}),
             None,
         ),
     )
@@ -1367,9 +1304,7 @@ def check_audience_specific(test: Test, fed: common.Federation) -> None:
                 case = f"{target} protected-a get {name}"
                 record_skip(test.report, heading, case, "the origin takes no direct clients")
                 continue
-            answer = web.request(
-                "GET", stores.url(origin, "protected-a", test.object), token=token
-            )
+            answer = web.request("GET", stores.url(origin, "protected-a", test.object), token=token)
             save(f"{test.out}/responses/{target}-protected-a-get-{name}", answer)
             allowed = only is None or origin == only
             why = read_problem(answer, allowed, data, f"the token is for {own} alone")
@@ -1484,8 +1419,7 @@ def hint_problems(answer: web.Response, standalone: bool, issuer: str) -> list[s
         problems.append(f"X-Pelican-Authorization names {list(found.issuers)}, not {issuer}")
     if found.generation_issuer != issuer:
         problems.append(
-            f"X-Pelican-Token-Generation names {found.generation_issuer or 'no issuer'},"
-            + f" not {issuer}"
+            f"X-Pelican-Token-Generation names {found.generation_issuer or 'no issuer'}," + f" not {issuer}"
         )
     return problems
 
@@ -1557,9 +1491,7 @@ def web_servers(fed: common.Federation) -> list[tuple[str, str, str]]:
     """
     found: dict[str, tuple[str, str]] = {}
     for origin in fed.origins:
-        found.setdefault(
-            origin.web_url, (label(origin.svc, "origin"), f"issuer-keys/{origin.svc}")
-        )
+        found.setdefault(origin.web_url, (label(origin.svc, "origin"), f"issuer-keys/{origin.svc}"))
     for cache in fed.caches:
         found.setdefault(cache.web_url, (label(cache.svc, "cache"), f"issuer-keys/{cache.svc}"))
     return [(name, url, keys) for url, (name, keys) in found.items()]
@@ -1576,9 +1508,7 @@ def check_web_token_strict(test: Test, fed: common.Federation) -> None:
     for target, web_url, key_dir in web_servers(fed):
         key = common.signing_key(key_dir)
         issuer = credentials.local_issuer(fed, web_url)
-        fresh = credentials.mint_admin(
-            fed, test.session.path(f"tokens/web.{target}"), issuer, key
-        )
+        fresh = credentials.mint_admin(fed, test.session.path(f"tokens/web.{target}"), issuer, key)
         head, claims = jwt.decode(fresh)
         now = int(time.time())
         early = {**claims, "iat": now, "nbf": now + 20}
@@ -1951,9 +1881,7 @@ def put_test_objects(test: Test, fed: common.Federation, narrow: bool) -> None:
                 die(f"{origin.svc} did not store the test object intact in /{namespace}")
         if narrow:
             token, caps = test.setup_tokens["protected-a"], fed.exports["protected-a"]
-            error = stores.seed(
-                origin, "protected-a", test.sibling, test.sibling_bytes, token, caps
-            )
+            error = stores.seed(origin, "protected-a", test.sibling, test.sibling_bytes, token, caps)
             if error:
                 die(f"could not put the test object's sibling at {origin.svc} ({error})")
 

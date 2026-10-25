@@ -310,9 +310,7 @@ class Test:
         """Return USER's token for origin's web API."""
         return read_token(self.web_token(origin, USER))
 
-    def api(
-        self, origin: common.Origin, path: str, token: Optional[str], **query: Any
-    ) -> web.Response:
+    def api(self, origin: common.Origin, path: str, token: Optional[str], **query: Any) -> web.Response:
         """GET path of origin's storage API, with query, presenting token.
 
         path is e.g. `usage`, or `ls/<path>`.
@@ -374,9 +372,7 @@ def usage(test: Test, origin: common.Origin) -> tuple[Optional[dict[str, Any]], 
     """
     answer = test.api(origin, "usage", test.admin(origin))
     found = common.as_object(decoded(answer)) if answer.status == 200 else None
-    if found is None or not all(
-        isinstance(found.get(k), int) for k in ("usedBytes", "capacityBytes")
-    ):
+    if found is None or not all(isinstance(found.get(k), int) for k in ("usedBytes", "capacityBytes")):
         return None, f"usage answered {answer.describe()}, without its figures"
     return found, ""
 
@@ -423,9 +419,7 @@ def listing_objects(test: Test) -> dict[str, bytes]:
     There is one per LISTED, but `sub`, which holds one.
     """
     found = {
-        test.rel("api", name): os.urandom(100 + 3000 * n)
-        for n, name in enumerate(LISTED)
-        if name != "sub"
+        test.rel("api", name): os.urandom(100 + 3000 * n) for n, name in enumerate(LISTED) if name != "sub"
     }
     found[test.rel("api", "sub", "inner")] = os.urandom(10)
     return found
@@ -459,9 +453,7 @@ def authz(test: Test, origin: common.Origin, _objects: Mapping[str, bytes]) -> R
         for who, token, wanted in tries:
             answer = test.api(origin, path, token)
             if answer.status != wanted:
-                problems.append(
-                    f"{path.split('/', 1)[0]}, as {who}: {answer.describe()}, not {wanted}"
-                )
+                problems.append(f"{path.split('/', 1)[0]}, as {who}: {answer.describe()}, not {wanted}")
     return outcome(problems, f"{len(routes)} routes, {len(tries)} callers")
 
 
@@ -519,9 +511,7 @@ def listing(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> 
         query: dict[str, Any] = {"limit": PAGE}
         if after:
             query["after"] = after
-        page, more = entries(
-            test.api(origin, stores.storage_route("ls", directory), admin, **query)
-        )
+        page, more = entries(test.api(origin, stores.storage_route("ls", directory), admin, **query))
         pages += 1
         if page is None:
             problems.append(f"page {pages} did not answer 200 with a listing")
@@ -540,9 +530,7 @@ def listing(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> 
     for path, wanted in ((f"{directory}/{FILED}", 400), (f"{directory}/nothing", 404)):
         answer = test.api(origin, stores.storage_route("ls", path), admin)
         if answer.status != wanted:
-            problems.append(
-                f"ls of {path.rsplit('/', 1)[-1]}: {answer.describe()}, not {wanted}"
-            )
+            problems.append(f"ls of {path.rsplit('/', 1)[-1]}: {answer.describe()}, not {wanted}")
     return outcome(problems, f"{len(names)} entries, in {pages} pages of {PAGE}")
 
 
@@ -559,9 +547,7 @@ def stat(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row
     for name in (FILED, INLINED):
         rel = test.rel("api", name)
         path = test.catalog(origin, rel)
-        found = common.as_object(
-            decoded(test.api(origin, stores.storage_route("stat", path), admin))
-        )
+        found = common.as_object(decoded(test.api(origin, stores.storage_route("stat", path), admin)))
         if found is None:
             problems.append(f"stat of {name} did not answer 200 with an object")
             continue
@@ -584,14 +570,9 @@ def stat(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row
             if found.get(key) != value:
                 problems.append(f"stat of {name}: {key} {found.get(key)!r}, not {value!r}")
     path = test.catalog(origin, test.rel("api", "sub"))
-    found = (
-        common.as_object(decoded(test.api(origin, stores.storage_route("stat", path), admin)))
-        or {}
-    )
+    found = common.as_object(decoded(test.api(origin, stores.storage_route("stat", path), admin))) or {}
     if found.get("isDir") is not True or found.get("etag"):
-        problems.append(
-            f"stat of sub: isDir {found.get('isDir')!r}, etag {found.get('etag')!r}"
-        )
+        problems.append(f"stat of sub: isDir {found.get('isDir')!r}, etag {found.get('etag')!r}")
     answer = test.api(
         origin, stores.storage_route("stat", test.catalog(origin, test.rel("nothing"))), admin
     )
@@ -613,9 +594,7 @@ def digest(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> R
     data = objects[rel]
     problems: list[str] = []
     found = common.as_object(
-        decoded(
-            test.api(origin, stores.storage_route("digest", test.catalog(origin, rel)), admin)
-        )
+        decoded(test.api(origin, stores.storage_route("digest", test.catalog(origin, rel)), admin))
     )
     header = str((found or {}).get("digest", ""))
     wrong, right = digests.check(header, data)
@@ -637,9 +616,7 @@ def digest(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> R
     return outcome(problems, f"'{header}', as Want-Digest says")
 
 
-def gauges_agree(
-    test: Test, origin: common.Origin, seconds: float
-) -> tuple[Optional[str], str]:
+def gauges_agree(test: Test, origin: common.Origin, seconds: float) -> tuple[Optional[str], str]:
     """Wait until origin's capacity gauges say what its usage says.
 
     The gauges are pelican_pstore_used_bytes and
@@ -845,9 +822,7 @@ def introspect_cli(test: Test) -> dict[str, Row]:
             p
             for p in (
                 cli.compare(["usage"], "usage"),
-                cli.compare(
-                    ["ls", directory], f"{stores.storage_route('ls', directory)}?limit=1000"
-                ),
+                cli.compare(["ls", directory], f"{stores.storage_route('ls', directory)}?limit=1000"),
                 cli.compare(["stat", filed], stores.storage_route("stat", filed)),
                 cli.compare(["digest", filed], stores.storage_route("digest", filed)),
             )
@@ -873,10 +848,7 @@ def introspect_cli(test: Test) -> dict[str, Row]:
 
 def pass_counts(snapshot: metrics.Snapshot) -> dict[str, float]:
     """Return how many times each of PASSES has begun."""
-    return {
-        p: snapshot.value("pelican_pstore_scheduled_passes_total", **{"pass": p})
-        for p in PASSES
-    }
+    return {p: snapshot.value("pelican_pstore_scheduled_passes_total", **{"pass": p}) for p in PASSES}
 
 
 def last_success(snapshot: metrics.Snapshot) -> dict[str, float]:
@@ -885,9 +857,7 @@ def last_success(snapshot: metrics.Snapshot) -> dict[str, float]:
     It is 0 for a pass that never has.
     """
     return {
-        p: snapshot.value(
-            "pelican_pstore_scheduled_pass_last_success_timestamp_seconds", **{"pass": p}
-        )
+        p: snapshot.value("pelican_pstore_scheduled_pass_last_success_timestamp_seconds", **{"pass": p})
         for p in PASSES
     }
 
@@ -973,9 +943,7 @@ def passes_at(test: Test, origin: common.Origin) -> Row:
             + f" the 2 replaced ({2 * RECLAIM_SIZE}); pending: {dict(pending) or 'none'}"
         )
     elif not ok:
-        problems.append(
-            f"no pass of each of {', '.join(PASSES)} succeeded in {NEXT_PASS_WAIT}s"
-        )
+        problems.append(f"no pass of each of {', '.join(PASSES)} succeeded in {NEXT_PASS_WAIT}s")
     for p in PASSES:
         failed = snapshot.value("pelican_pstore_scheduled_pass_failures_total", **{"pass": p})
         if failed:
@@ -1154,9 +1122,7 @@ def serving(test: Test) -> Optional[str]:
             if not where.names(director.host(origin.url)):
                 return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
     for cache in test.fed.federated_caches:
-        answer = web.request(
-            "HEAD", f"{cache.url}/{test.namespace}/{quote(rel)}", token=test.setup
-        )
+        answer = web.request("HEAD", f"{cache.url}/{test.namespace}/{quote(rel)}", token=test.setup)
         if answer.status != 200:
             return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
     return None
@@ -1218,9 +1184,7 @@ class Capacity:
 
     def refusals(self) -> float:
         """Return pelican_pstore_write_failures_total{reason="no_space"}."""
-        return fetch_metrics(self.origin).value(
-            "pelican_pstore_write_failures_total", reason="no_space"
-        )
+        return fetch_metrics(self.origin).value("pelican_pstore_write_failures_total", reason="no_space")
 
     def fill(self) -> Row:
         """Fill the store until ROOM bytes or a little more are left.
@@ -1243,9 +1207,7 @@ class Capacity:
             if not size:
                 break
             rel = self.test.rel("capacity", f"filler-{len(self.fillers)}")
-            answer = web.request(
-                "PUT", self.test.url(self.origin, rel), self.test.setup, os.urandom(size)
-            )
+            answer = web.request("PUT", self.test.url(self.origin, rel), self.test.setup, os.urandom(size))
             if not answer.ok:
                 return FAIL, f"a filler of {size} bytes, with {room} left: {answer.describe()}"
             self.fillers.append(rel)
@@ -1258,9 +1220,7 @@ class Capacity:
                 f"{room} bytes left after {len(self.fillers)} fillers, not about {ROOM}",
             )
         used = self.bound - room
-        freed = metrics.delta(
-            before, fetch_metrics(self.origin), "pelican_pstore_reclaimed_bytes_total"
-        )
+        freed = metrics.delta(before, fetch_metrics(self.origin), "pelican_pstore_reclaimed_bytes_total")
         # Each filler takes its bytes and a tag per block (blocks.stored());
         # allow a block more apiece.
         most = stored + blocks.BLOCK * len(self.fillers)
@@ -1306,9 +1266,7 @@ class Capacity:
             if expect:
                 headers["Expect"] = "100-continue"
             url = self.test.url(self.origin, self.test.rel("capacity", "sized"))
-            got = web.statuses_before_body(
-                "PUT", url, self.test.token, headers, timeout=HEADERS_WAIT
-            )
+            got = web.statuses_before_body("PUT", url, self.test.token, headers, timeout=HEADERS_WAIT)
             if got != (507,):
                 shown = ", then ".join(str(s) for s in got) or "nothing"
                 return f"a PUT's headers alone got {shown}, not just 507", ""
@@ -1352,8 +1310,7 @@ class Capacity:
             return why, ""
         if after["usedBytes"] > found["usedBytes"]:
             return (
-                f"the refused chunked PUT left {after['usedBytes'] - found['usedBytes']} bytes"
-                + " used"
+                f"the refused chunked PUT left {after['usedBytes'] - found['usedBytes']} bytes" + " used"
             ), ""
         return None, f"507 for {room + CHUNKED_OVER} bytes in chunks, nothing left"
 
@@ -1515,9 +1472,7 @@ class Backups:
         written = backup_time(self.first) or 0.0
         snapshot = fetch_metrics(self.origin)
         began = snapshot.value("process_start_time_seconds")
-        passes = snapshot.value(
-            "pelican_pstore_scheduled_passes_total", **{"pass": METADATA_BACKUP}
-        )
+        passes = snapshot.value("pelican_pstore_scheduled_passes_total", **{"pass": METADATA_BACKUP})
         problems: list[str] = []
         if written < int(self.asked) - 1:
             problems.append(f"{self.first} was written before the restart")
@@ -1528,9 +1483,7 @@ class Backups:
             )
         if passes < 1:
             problems.append("no metadata_backup pass counted for it")
-        how = (
-            f"{written - began:.0f}s after the origin started" if began else "after the restart"
-        )
+        how = f"{written - began:.0f}s after the origin started" if began else "after the restart"
         return outcome(problems, f"{self.first}, {how}")
 
     def finished(self) -> dict[str, Row]:
@@ -1551,9 +1504,7 @@ class Backups:
         wait = (BACKUPS_KEPT + 1) * (BACKUP_INTERVAL + INTERVAL_SLACK) + 30
         ok, snapshot = wait_metrics(
             self.origin,
-            lambda s: s.value(
-                "pelican_pstore_scheduled_passes_total", **{"pass": METADATA_BACKUP}
-            )
+            lambda s: s.value("pelican_pstore_scheduled_passes_total", **{"pass": METADATA_BACKUP})
             >= BACKUPS_KEPT + 1,
             wait,
         )
@@ -1566,12 +1517,8 @@ class Backups:
         for earlier, later, name in zip(times, times[1:], kept[1:]):
             gap = later - earlier
             if not BACKUP_INTERVAL - 1 <= gap <= BACKUP_INTERVAL + INTERVAL_SLACK:
-                problems.append(
-                    f"{name} came {gap:.0f}s after the one before, not {BACKUP_INTERVAL}s"
-                )
-        failed = snapshot.value(
-            "pelican_pstore_scheduled_pass_failures_total", **{"pass": METADATA_BACKUP}
-        )
+                problems.append(f"{name} came {gap:.0f}s after the one before, not {BACKUP_INTERVAL}s")
+        failed = snapshot.value("pelican_pstore_scheduled_pass_failures_total", **{"pass": METADATA_BACKUP})
         if failed:
             problems.append(f"{failed:.0f} backup passes failed")
         return {
@@ -1601,9 +1548,7 @@ class Backups:
         size = 0.0
         for _ in range(3):
             newest = self.snapshots()[-1:]
-            size = fetch_metrics(self.origin).value(
-                "pelican_pstore_metadata_backup_last_size_bytes"
-            )
+            size = fetch_metrics(self.origin).value("pelican_pstore_metadata_backup_last_size_bytes")
             if newest == self.snapshots()[-1:]:
                 break
         if not newest:
@@ -1611,9 +1556,7 @@ class Backups:
         else:
             on_disk = os.path.getsize(os.path.join(self.outside, newest[0]))
             if size != on_disk:
-                problems.append(
-                    f"the size gauge says {size:.0f}, {newest[0]} is {on_disk} bytes"
-                )
+                problems.append(f"the size gauge says {size:.0f}, {newest[0]} is {on_disk} bytes")
         return outcome(problems, f"{', '.join(kept)}")
 
     def remove(self) -> None:
@@ -1768,9 +1711,7 @@ class Restore:
         why = self.test.put(self.origin, self.rel(LATE), late)
         if why:
             return FAIL, why
-        answer = web.request(
-            "GET", self.test.url(self.origin, self.rel(LATE)), token=self.test.token
-        )
+        answer = web.request("GET", self.test.url(self.origin, self.rel(LATE)), token=self.test.token)
         if answer.status != 200 or answer.body != late:
             return FAIL, f"{LATE}, written after the backup, {answer.describe()}"
         return PASS, f"{len(RESTORE_SIZES)} objects, backup {name}, then {LATE}"
@@ -1858,16 +1799,12 @@ class Restore:
             return FAIL, f"once the origin started on the restored catalog, {why}"
         problems: list[str] = []
         for name, data in self.data.items():
-            answer = web.request(
-                "GET", self.test.url(self.origin, self.rel(name)), token=self.test.token
-            )
+            answer = web.request("GET", self.test.url(self.origin, self.rel(name)), token=self.test.token)
             if answer.status != 200:
                 problems.append(f"{name}: {answer.describe()}")
             elif answer.body != data:
                 problems.append(f"{name}: not its bytes")
-        answer = web.request(
-            "GET", self.test.url(self.origin, self.rel(LATE)), token=self.test.token
-        )
+        answer = web.request("GET", self.test.url(self.origin, self.rel(LATE)), token=self.test.token)
         if answer.status != 404:
             problems.append(f"{LATE}, written after the backup: {answer.describe()}, not 404")
         return outcome(problems, f"{len(self.data)} objects served; {LATE} gone")
@@ -1973,11 +1910,7 @@ def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], 
             bound = int(found["usedBytes"]) + HEADROOM
     if not wanted:
         return
-    backups = (
-        Backups(test, origin, time.time())
-        if "backups" in wanted or "restore" in wanted
-        else None
-    )
+    backups = Backups(test, origin, time.time()) if "backups" in wanted or "restore" in wanted else None
     text = config_text(bound, backups.inside if backups else None)
     print(f"\nRestarting {origin.svc} with:\n{text}")
     done: set[str] = set()
@@ -2103,9 +2036,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                     (SKIP, f"the origins' store is {fed.origin_variant}, no pstore"),
                 )
         elif later:
-            errors = stores.put_everywhere(
-                fed.origins, namespace, test.rel(PROBE), b"probe", test.setup
-            )
+            errors = stores.put_everywhere(fed.origins, namespace, test.rel(PROBE), b"probe", test.setup)
             if errors:
                 for scenario in later:
                     add(scenario, "", (FAIL, f"putting the probe: {errors[0]}"))

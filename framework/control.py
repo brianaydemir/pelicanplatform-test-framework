@@ -169,11 +169,7 @@ class Helper:
         found: list[str] = []
         for line in output.splitlines():
             svc, state, code = (line.split() + ["", "", ""])[:3]
-            if (
-                svc in self.services
-                and state in ("exited", "dead")
-                and self.undo.get(svc) != "start"
-            ):
+            if svc in self.services and state in ("exited", "dead") and self.undo.get(svc) != "start":
                 found.append(f"{svc} {code}")
         return True, "\n".join(found)
 

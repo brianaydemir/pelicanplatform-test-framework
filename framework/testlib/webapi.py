@@ -91,10 +91,7 @@ def servers(fed: common.Federation) -> list[Server]:
     if fed.registry_url:
         host = director.host(fed.registry_url)
         add(host, fed.registry_url, f"issuer-keys/{host}", "registry")
-    return [
-        Server(name, url, key_dir, frozenset(roles))
-        for url, (name, key_dir, roles) in found.items()
-    ]
+    return [Server(name, url, key_dir, frozenset(roles)) for url, (name, key_dir, roles) in found.items()]
 
 
 class Access:
@@ -235,9 +232,7 @@ def cookie_header(**cookies: str) -> dict[str, str]:
 Expect = tuple[str, web.Response, tuple[int, ...]]
 
 
-def judge(
-    case: str, expects: Sequence[Expect], extra: Sequence[str] = ()
-) -> tuple[str, str, str]:
+def judge(case: str, expects: Sequence[Expect], extra: Sequence[str] = ()) -> tuple[str, str, str]:
     """Return a row for case: whether each answer has a status it may.
 
     Args:

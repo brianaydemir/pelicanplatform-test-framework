@@ -65,8 +65,7 @@ SCENARIOS = {
     "delete": "deleting an object sends object.deleted",
     "status": "the origin answers X-Pelican-Metadata-Status: published",
     "retry": (
-        "a delivery that fails once: queued, then delivered (eventual)"
-        " or rolled back (transactional)"
+        "a delivery that fails once: queued, then delivered (eventual)" " or rolled back (transactional)"
     ),
     "reject": "a delivery rejected with 422: kept (eventual) or rolled back (transactional)",
     "status-urls": "a queued or rejected upload's status URLs: read, cancelled, gone once done",
@@ -263,10 +262,7 @@ class Test:
             answer = self.api("GET", f"{QUEUE}?{query}", self.admin())
             if answer.status != 200:
                 raise Problem(f"listing the publish queue: {answer.describe()}")
-            page = [
-                common.as_object(r) or {}
-                for r in common.as_array(answer.object.get("rows")) or []
-            ]
+            page = [common.as_object(r) or {} for r in common.as_array(answer.object.get("rows")) or []]
             rows += page
             if len(page) < 1000:
                 return rows
@@ -338,9 +334,7 @@ class Test:
             return FAIL, f"{shown(path)} differs from what was uploaded"
         return None
 
-    def await_event(
-        self, path: str, kind: str, seconds: int = 120, after: int = 0
-    ) -> tuple[bool, str]:
+    def await_event(self, path: str, kind: str, seconds: int = 120, after: int = 0) -> tuple[bool, str]:
         """Wait up to seconds for a `kind` event for object path.
 
         Args:
@@ -460,9 +454,7 @@ def go_time(text: Any) -> Optional[float]:
     Returns:
         The time; None if text is none, or no such time.
     """
-    found = re.fullmatch(
-        r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)", str(text)
-    )
+    found = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)", str(text))
     if found is None:
         return None
     zone = "+00:00" if found.group(3) == "Z" else found.group(3)
@@ -644,8 +636,7 @@ def fault(test: Test, scenario: str, name: str, eventual_status: str) -> tuple[s
             )
         if not common.wait_for(lambda: test.object_file(name) is None, 10):
             return FAIL, (
-                f"{answer.describe()}, but {shown(test.object_file(name))} was not"
-                " rolled back"
+                f"{answer.describe()}, but {shown(test.object_file(name))} was not" " rolled back"
             )
         return PASS, f"{answer.describe()} after HTTP {refused} from the recorder"
     left = test.object_file(name)
@@ -709,9 +700,7 @@ def issued(answer: web.Response, name: str, wanted: str) -> tuple[str, str]:
     got = answer.header(STATUS_HEADER)
     if got != wanted:
         stale = got == "published" and name.startswith("fail-always-")
-        hint = (
-            "; the recorder predates fail-always-*: ./fed.sh restart metadata" if stale else ""
-        )
+        hint = "; the recorder predates fail-always-*: ./fed.sh restart metadata" if stale else ""
         raise Problem(f"uploading {name}: {STATUS_HEADER} '{got}', not '{wanted}'{hint}")
     urls = (answer.header(QUERY_URL), answer.header(MANAGE_URL))
     for header, url in zip((QUERY_URL, MANAGE_URL), urls):
@@ -782,9 +771,7 @@ def urls_rejected(test: Test) -> Row:
     name = f"reject-{test.run}-urls"
     path = f"{PREFIX}/{name}"
     test.made.add(name)
-    urls = issued(
-        test.direct_put(os.urandom(4096), name, 'step="status-urls"'), name, "rejected"
-    )
+    urls = issued(test.direct_put(os.urandom(4096), name, 'step="status-urls"'), name, "rejected")
     problems = [p for p in (read_status(url, path, "rejected") for url in urls) if p]
     if problems:
         return FAIL, first(problems)
@@ -810,9 +797,7 @@ def urls_cancel(test: Test) -> Row:
     path = f"{PREFIX}/{name}"
     test.made.add(name)
     test.held.add(name)
-    query, manage = issued(
-        test.direct_put(os.urandom(4096), name, 'step="status-urls"'), name, "queued"
-    )
+    query, manage = issued(test.direct_put(os.urandom(4096), name, 'step="status-urls"'), name, "queued")
     why = read_status(query, path, "pending")
     if why:
         return FAIL, why
@@ -827,9 +812,7 @@ def urls_cancel(test: Test) -> Row:
     cancelled = fetch("DELETE", manage)
     after = time.time_ns()
     if cancelled.status != 200 or cancelled.object.get("cancelled") is not True:
-        problems.append(
-            f"DELETE through the manage URL got {cancelled.describe()}, not a cancel"
-        )
+        problems.append(f"DELETE through the manage URL got {cancelled.describe()}, not a cancel")
     if problems:
         return FAIL, first(problems)
     why = not_gone((query, manage))
@@ -895,9 +878,7 @@ def catalog_move(test: Test) -> Row:
     test.made.add(dst)
     committed(test, src, 'step="move"')
     after = time.time_ns()
-    answer = web.request(
-        "MOVE", test.url(src), token=test.token, headers={"Destination": test.url(dst)}
-    )
+    answer = web.request("MOVE", test.url(src), token=test.token, headers={"Destination": test.url(dst)})
     if answer.status not in (201, 204):
         return FAIL, f"MOVE got {answer.describe()}, not 201"
     if test.object_file(dst) is None:
@@ -910,9 +891,7 @@ def catalog_move(test: Test) -> Row:
         after,
         EVENT_WAIT,
     )
-    return outcome(
-        [f"after the MOVE, no {m}" for m in missing], f"{answer.describe()}; both events"
-    )
+    return outcome([f"after the MOVE, no {m}" for m in missing], f"{answer.describe()}; both events")
 
 
 def catalog_copy(test: Test) -> Row:
@@ -927,14 +906,10 @@ def catalog_copy(test: Test) -> Row:
     custom = {"step": "copy", "experiment": "pelican-testing"}
     committed(test, src, 'step="copy", experiment="pelican-testing"')
     after = time.time_ns()
-    answer = web.request(
-        "COPY", test.url(src), token=test.token, headers={"Destination": test.url(dst)}
-    )
+    answer = web.request("COPY", test.url(src), token=test.token, headers={"Destination": test.url(dst)})
     if answer.status not in (201, 204):
         return FAIL, f"COPY got {answer.describe()}, not 201"
-    arrived, capture = test.await_event(
-        f"{PREFIX}/{dst}", "object.committed", EVENT_WAIT, after
-    )
+    arrived, capture = test.await_event(f"{PREFIX}/{dst}", "object.committed", EVENT_WAIT, after)
     if not arrived:
         return FAIL, f"after the COPY ({answer.describe()}), {capture}"
     where = f"{shown(CAPTURES)}/{capture}.event.json"
@@ -1159,9 +1134,7 @@ def refusals(test: Test, routes: Sequence[tuple[str, str]]) -> list[str]:
         for who, token, wanted in (("no one", None, 401), (USER, user, 403)):
             answer = test.api(method, route, token)
             if answer.status != wanted:
-                problems.append(
-                    f"{method} {route} as {who} got {answer.describe()}, not {wanted}"
-                )
+                problems.append(f"{method} {route} as {who} got {answer.describe()}, not {wanted}")
     return problems
 
 
@@ -1244,9 +1217,7 @@ def objects_api(test: Test, path: str, size: int) -> Row:
     if live.get("object_path") != path or not same(live.get("size"), size):
         found = f"{live.get('object_path')!r} of {live.get('size')!r} bytes"
         problems.append(f"the admin's lookup has {found}, not {path!r} of {size}")
-    history = (
-        common.as_array(test.api("GET", routes["history"], admin).object.get("rows")) or []
-    )
+    history = common.as_array(test.api("GET", routes["history"], admin).object.get("rows")) or []
     kinds = [(common.as_object(r) or {}).get("event_type") for r in history]
     if "commit" not in kinds:
         problems.append(f"the admin's history of {path} has {kinds}, no commit")
@@ -1352,9 +1323,7 @@ def held_event(test: Test) -> tuple[str, str]:
     name = f"fail-always-{test.run}-held"
     path = f"{PREFIX}/{name}"
     test.made.add(name)
-    error = stores.write_file(
-        test.origin.store_of("protected-a"), f"data/metadata/{name}", b"held\n"
-    )
+    error = stores.write_file(test.origin.store_of("protected-a"), f"data/metadata/{name}", b"held\n")
     if error:
         raise Problem(error)
     answer = web.request("DELETE", test.url(name), token=test.setup)
@@ -1412,9 +1381,7 @@ def queue_views(test: Test, event_id: str, path: str) -> Row:
         problems.append(f"the admin's list lacks {event_id}, for {path}")
     health = test.api("GET", f"{QUEUE}/_health", admin)
     state = health.object.get("state")
-    pending = int(
-        (common.as_object(health.object.get("per_namespace")) or {}).get(NAMESPACE) or 0
-    )
+    pending = int((common.as_object(health.object.get("per_namespace")) or {}).get(NAMESPACE) or 0)
     if health.status != 200 or state not in ("healthy", "warning", "error") or pending < 1:
         problems.append(f"the queue's health got {health.describe()}: {health.data}")
     row = test.api("GET", f"{QUEUE}/{quote(event_id)}", admin)
@@ -1423,12 +1390,8 @@ def queue_views(test: Test, event_id: str, path: str) -> Row:
         problems.append(f"the admin's GET of {event_id} got {row.describe()}: {row.data}")
     unknown = test.api("GET", f"{QUEUE}/no-such-event-{test.run}", admin)
     if unknown.status != 404:
-        problems.append(
-            f"the admin's GET of an event that isn't there got {unknown.describe()}"
-        )
-    return outcome(
-        problems, f"listed; health {state}, {pending} pending; tried {attempts} times"
-    )
+        problems.append(f"the admin's GET of an event that isn't there got {unknown.describe()}")
+    return outcome(problems, f"listed; health {state}, {pending} pending; tried {attempts} times")
 
 
 def queue_retry(test: Test, event_id: str) -> Row:
@@ -1495,9 +1458,7 @@ def queue_admin(test: Test, unrestarted: Optional[str]) -> dict[str, Row]:
     return {
         "auth": guarded(lambda: queue_auth(test, event_id)),
         "admin": guarded(lambda: queue_views(test, event_id, path)),
-        "retry": (
-            (SKIP, unrestarted) if unrestarted else guarded(lambda: queue_retry(test, event_id))
-        ),
+        "retry": ((SKIP, unrestarted) if unrestarted else guarded(lambda: queue_retry(test, event_id))),
         "delete": guarded(lambda: queue_delete(test, event_id, path)),
     }
 
@@ -1543,9 +1504,7 @@ def past_cap(test: Test, name: str, limit: str, state: str) -> Row:
     test.made.add(name)
     before = metrics.fetch(test.web) or metrics.EMPTY
     answer = test.direct_put(os.urandom(4096), name, 'step="refused"')
-    counted = metrics.delta(
-        before, metrics.fetch(test.web) or metrics.EMPTY, BACKPRESSURE, limit=limit
-    )
+    counted = metrics.delta(before, metrics.fetch(test.web) or metrics.EMPTY, BACKPRESSURE, limit=limit)
     problems: list[str] = []
     if answer.status is None or answer.status // 100 != 5:
         problems.append(f"with {state}, an upload got {answer.describe()}, not a 5xx")
@@ -1585,9 +1544,7 @@ def cap_rows(test: Test, cap: int, filled: list[str]) -> Row:
         pending = test.pending()
     if pending < cap:
         return FAIL, f"the namespace never had {cap} rows pending, but {pending}"
-    return past_cap(
-        test, f"{test.run}-refused-rows", "rows", f"{pending} rows pending, the cap"
-    )
+    return past_cap(test, f"{test.run}-refused-rows", "rows", f"{pending} rows pending, the cap")
 
 
 def with_blob(boundary: str, metadata: bytes, data: bytes) -> bytes:
@@ -1644,9 +1601,7 @@ def cap_bytes(test: Test, filled: list[str], blobs: list[str]) -> Row:
         issued(answer, name, "queued")
     except Problem as e:
         return FAIL, f"with no blob pending, {e}"
-    return past_cap(
-        test, f"{test.run}-refused-bytes", "bytes", f"{BLOB_CAP} blob bytes pending"
-    )
+    return past_cap(test, f"{test.run}-refused-bytes", "bytes", f"{BLOB_CAP} blob bytes pending")
 
 
 def drained(test: Test, held: Sequence[str]) -> Row:
@@ -1764,9 +1719,7 @@ def restart_for(test: Test, text: str, body: Callable[[], None]) -> Optional[str
     name = f"{test.run}-probe"
     test.made.add(name)
     for origin in stores.unique(test.fed.origins):
-        error = stores.write_file(
-            origin.store_of("protected-a"), f"data/metadata/{name}", b"probe\n"
-        )
+        error = stores.write_file(origin.store_of("protected-a"), f"data/metadata/{name}", b"probe\n")
         if error:
             return f"putting the probe: {error}"
     svc = test.origin.svc
@@ -1830,9 +1783,7 @@ def held_rows(test: Test, wanted: Sequence[str]) -> dict[str, Row]:
     failed = restart_for(test, held_config(cap), body)
     for scenario in wanted:
         for case in CASES[scenario]:
-            rows.setdefault(
-                f"{scenario} {case}", (FAIL, failed or "the restart did not finish")
-            )
+            rows.setdefault(f"{scenario} {case}", (FAIL, failed or "the restart did not finish"))
     return rows
 
 
@@ -1925,8 +1876,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
 
     test = Test(session)
     print(
-        f"Metadata test ({test.mode} mode) against {test.origin.svc},"
-        + f" objects {PREFIX}/{test.run}-*\n"
+        f"Metadata test ({test.mode} mode) against {test.origin.svc}," + f" objects {PREFIX}/{test.run}-*\n"
     )
     try:
         for name in selected:

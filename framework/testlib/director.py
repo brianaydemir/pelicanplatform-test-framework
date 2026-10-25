@@ -122,9 +122,7 @@ def hints(response: web.Response) -> Hints:
     namespace = _fields(response.header("X-Pelican-Namespace"))
     require = namespace.get("require-token")
     issuers = [
-        _fields(v).get("issuer", "")
-        for k, v in response.headers
-        if k.lower() == "x-pelican-authorization"
+        _fields(v).get("issuer", "") for k, v in response.headers if k.lower() == "x-pelican-authorization"
     ]
     return Hints(
         namespace.get("namespace", ""),
@@ -134,9 +132,7 @@ def hints(response: web.Response) -> Hints:
     )
 
 
-def ask(
-    director: str, route: str, path: str, token: Optional[str] = None, query: str = ""
-) -> Answer:
+def ask(director: str, route: str, path: str, token: Optional[str] = None, query: str = "") -> Answer:
     """Return where director would send a GET of path.
 
     Args:
@@ -210,13 +206,9 @@ def listing_problems(fed: common.Federation, listed: Any) -> list[str]:
             continue
         web_url = want[key]
         if labels.get("server_web_url") != web_url:
-            problems.append(
-                f"{key[1]}'s server_web_url is {labels.get('server_web_url')!r}, not {web_url}"
-            )
+            problems.append(f"{key[1]}'s server_web_url is {labels.get('server_web_url')!r}, not {web_url}")
         if host(str(labels.get("server_url", ""))) != host(web_url):
-            problems.append(
-                f"{key[1]}'s server_url {labels.get('server_url')!r} is another host's"
-            )
+            problems.append(f"{key[1]}'s server_url {labels.get('server_url')!r} is another host's")
         if not labels.get("server_name"):
             problems.append(f"{key[1]} has no server_name")
     problems += [f"it lists {k[0]} {k[1]} {n} times" for k, n in seen.items() if n > 1]

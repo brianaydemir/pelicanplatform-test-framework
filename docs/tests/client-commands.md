@@ -68,8 +68,7 @@ lists the scenarios.
   collections URL, the client takes the other path, a plain DELETE,
   and on the origin's 403 dies of a nil pointer ("Unrecoverable error
   (panic) in DoDelete"), which `delete-read-only` reports as a failure
-  that is no refusal (seen with v26.0.0-rc.3, under `-p topo-standalone
-  -p origin-ssh`); nothing is removed there either.
+  that is no refusal (seen with v26.0.0-rc.3, under `-p topo-standalone -p origin-ssh`); nothing is removed there either.
 - `ls -r` must list every object by its path in the tree, once
   (`ls-recursive`).
 - With several origins (`-p topo-multi-origin`), the director asks the

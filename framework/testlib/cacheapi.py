@@ -43,9 +43,7 @@ JSON = {"Content-Type": "application/json"}
 TOKEN_LIFETIME = 3600
 
 
-def admin_token(
-    session: Session, cache: common.Cache, extra_scopes: tuple[str, ...] = ()
-) -> str:
+def admin_token(session: Session, cache: common.Cache, extra_scopes: tuple[str, ...] = ()) -> str:
     """Return a token that cache's web API takes as its admin's.
 
     It is minted as credentials.mint_user() mints one, signed with the
@@ -56,9 +54,7 @@ def admin_token(
     key = common.signing_key(f"issuer-keys/{cache.svc}")
     name = "-".join(("admin", *extra_scopes))
     out = session.path(f"tokens/cacheapi.{cache.svc}.{name}")
-    return credentials.mint_user(
-        session.fed, out, issuer, key, "admin", TOKEN_LIFETIME, extra_scopes
-    )
+    return credentials.mint_user(session.fed, out, issuer, key, "admin", TOKEN_LIFETIME, extra_scopes)
 
 
 def object_url(fed: common.Federation, path: str) -> str:
@@ -93,9 +89,7 @@ def stats(cache: common.Cache) -> Optional[dict[str, Any]]:
     return common.as_object(decoded(answer))
 
 
-def introspect(
-    cache: common.Cache, token: str, method: str, route: str, **query: str
-) -> web.Response:
+def introspect(cache: common.Cache, token: str, method: str, route: str, **query: str) -> web.Response:
     """Call cache's introspection route with method, as the holder of token.
 
     route is e.g. `metadata`, and query the parameters of the URL's

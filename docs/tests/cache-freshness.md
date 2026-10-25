@@ -31,8 +31,7 @@ the value. `ORIGIN_CACHE_CONTROL` reaches Pelican by environment, which
 no file overrides, so the restarts need a shape without it, of native
 origins, with a control helper, and not the `tiny` topology, whose
 origin is the whole federation's process. Elsewhere, the cases that
-need a restart skip, and say why. A case's row is named `<scenario>
-<case>`, e.g. `cc-immediate max-age=0`.
+need a restart skip, and say why. A case's row is named `<scenario> <case>`, e.g. `cc-immediate max-age=0`.
 
 - `only-if-cached`: a client may ask a cache for only what it holds
   (`Cache-Control: only-if-cached`, RFC 9111 section 5.2.1.7, or the
@@ -64,8 +63,7 @@ need a restart skip, and say why. A case's row is named `<scenario>
   sending none (`cc-downstream none`), it must be `max-age` of what
   remains of the cache's own freshness: at most a day, and at least
   21.6 hours less the time since the fill. With the origins sending
-  `max-age=30` (`cc-downstream max-age`), it must be `s-maxage=30,
-  max-age=30`, so that a cache downstream, which is shared, keeps it as
+  `max-age=30` (`cc-downstream max-age`), it must be `s-maxage=30, max-age=30`, so that a cache downstream, which is shared, keeps it as
   long (`ResponseCacheControl` in `local_cache/schema.go`). The fill may
   carry no `Age`, or one of at most 2; each later `Age` must be no more
   than the time since the fill, and the second must exceed the first by
