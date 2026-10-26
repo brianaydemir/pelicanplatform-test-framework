@@ -52,7 +52,7 @@ import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlencode
 
 from testlib import accounts, common, credentials, director, jwt, metrics, stores, web, webapi
@@ -266,7 +266,7 @@ class Test:
             return False
         return bool(self.origins_at(server)) or any(not c.site_local for c in self.caches_at(server))
 
-    def web_token(self, server: Server, scopes: tuple[str, ...], key: Optional[str] = None) -> str:
+    def web_token(self, server: Server, scopes: tuple[str, ...], key: str | None = None) -> str:
         """Return a token of server's own making, with scopes.
 
         The token is the suite's (see credentials.web_token()); with key,
@@ -321,7 +321,7 @@ def guarded(check: Callable[[], list[Row]]) -> list[Row]:
 
 
 def each_server(
-    test: Test, check: Callable[[Server], list[Row]], servers: Optional[Sequence[Server]] = None
+    test: Test, check: Callable[[Server], list[Row]], servers: Sequence[Server] | None = None
 ) -> list[Row]:
     """Return check(server)'s rows for each of servers.
 
@@ -560,7 +560,7 @@ def health_metrics(test: Test) -> list[Row]:
 # and ConfigureEmbeddedPrometheus (web_ui/prometheus.go).
 
 
-def vector(answer: web.Response) -> Optional[list[tuple[dict[str, str], float]]]:
+def vector(answer: web.Response) -> list[tuple[dict[str, str], float]] | None:
     """Return the series of a Prometheus instant query's answer.
 
     Returns:
@@ -582,7 +582,7 @@ def vector(answer: web.Response) -> Optional[list[tuple[dict[str, str], float]]]
     return result
 
 
-def query(server: Server, promql: str, token: Optional[str] = None, **kw: Any) -> web.Response:
+def query(server: Server, promql: str, token: str | None = None, **kw: Any) -> web.Response:
     """Ask server's Prometheus for promql, an instant query."""
     url = f"{server.web_url}{PROMQL}?{urlencode({'query': promql})}"
     return web.request("GET", url, token=token, **kw)
@@ -644,7 +644,7 @@ def promql_access(test: Test, server: Server) -> Row:
     )
 
 
-def self_scrape_problems(found: Optional[list[tuple[dict[str, str], float]]]) -> list[str]:
+def self_scrape_problems(found: list[tuple[dict[str, str], float]] | None) -> list[str]:
     """Return what is wrong with found, a server's `up` for its own scrape.
 
     found is the answer to the server's query of `up` for its scrape of
@@ -660,7 +660,7 @@ def self_scrape_problems(found: Optional[list[tuple[dict[str, str], float]]]) ->
 
 
 def servers_scrape_problems(
-    found: Optional[list[tuple[dict[str, str], float]]], want: Mapping[tuple[str, str], str]
+    found: list[tuple[dict[str, str], float]] | None, want: Mapping[tuple[str, str], str]
 ) -> list[str]:
     """Return what is wrong with found, a director's `up` for the servers.
 
@@ -901,7 +901,7 @@ def active(status: Mapping[str, Any]) -> dict[str, str]:
     return found
 
 
-def raised(level: str) -> Optional[str]:
+def raised(level: str) -> str | None:
     """Return a level more verbose than level: debug, or trace from debug.
 
     Returns:
@@ -919,7 +919,7 @@ def change_level(
     level: str,
     duration: int,
     parameter: str = "",
-    token: Optional[str] = None,
+    token: str | None = None,
 ) -> web.Response:
     """POST a change of server's log level to level, for duration seconds.
 
@@ -990,7 +990,7 @@ class Raised:
     deadline: float
 
 
-def raise_row(test: Test, server: Server) -> tuple[Row, Optional[Raised]]:
+def raise_row(test: Test, server: Server) -> tuple[Row, Raised | None]:
     """Raise server's log level for LEVEL_DURATION seconds.
 
     The POST must get 200 and a change ID, and the level must then be the
@@ -1094,7 +1094,7 @@ def refusal_row(test: Test, server: Server) -> Row:
     an ordinary user (403), and with no token (401).
     """
     user = test.web.user(server)
-    asks: list[tuple[str, str, int, str, Optional[str], tuple[int, ...]]] = [
+    asks: list[tuple[str, str, int, str, str | None, tuple[int, ...]]] = [
         ("bad level", BAD_LEVEL, LEVEL_DURATION, "", None, (400,)),
         ("over 24h", "debug", MAX_DURATION + 1, "", None, (400,)),
         ("no duration", "debug", 0, "", None, (400,)),
@@ -1329,7 +1329,7 @@ class XrootdTarget:
     svc: str
     server: Server
     url: str
-    token: Optional[str]
+    token: str | None
     path: str
     route: str
 
@@ -1380,7 +1380,7 @@ def xrootd_targets(test: Test) -> list[XrootdTarget]:
     return found
 
 
-def seconds_of(value: Any) -> Optional[float]:
+def seconds_of(value: Any) -> float | None:
     """Return a duration from a server's configuration, in seconds.
 
     Go's JSON gives a time.Duration in nanoseconds, and a string may be a
@@ -1423,8 +1423,8 @@ class Watch:
         xrootd_ok: Whether it said ok when last asked.
     """
 
-    down: Optional[float] = None
-    back: Optional[float] = None
+    down: float | None = None
+    back: float | None = None
     xrootd_down: bool = False
     xrootd_ok: bool = False
 
@@ -1439,7 +1439,7 @@ class Watch:
         return self.down is None or self.back is not None
 
 
-def watch_restart(test: Test, target: XrootdTarget, served: Optional[int]) -> Watch:
+def watch_restart(test: Test, target: XrootdTarget, served: int | None) -> Watch:
     """Watch target, up to RESTART_WAIT seconds, as XRootD restarts.
 
     It sees when the object is first not answered as it was before
@@ -1590,7 +1590,7 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 }
 
 
-def skip(_fed: common.Federation) -> Optional[str]:
+def skip(_fed: common.Federation) -> str | None:
     """Return None, as there is always something to test.
 
     Every server reports on itself.

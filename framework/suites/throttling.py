@@ -58,7 +58,6 @@ import time
 import traceback
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Optional
 from urllib.parse import quote
 
 from testlib import common, control, director, stores, transfers, web
@@ -218,7 +217,7 @@ class Test:
         """Return rel's pelican:// URL."""
         return f"{self.fed.url}{self.path(rel)}"
 
-    def put(self, objects: Mapping[str, bytes], everywhere: bool = False) -> Optional[str]:
+    def put(self, objects: Mapping[str, bytes], everywhere: bool = False) -> str | None:
         """Write objects, by rel, straight into origins' stores on disk.
 
         They go into the first origin's store, or with everywhere into
@@ -240,7 +239,7 @@ class Test:
         method: str,
         server_url: str,
         rel: str,
-        headers: Optional[Mapping[str, str]] = None,
+        headers: Mapping[str, str] | None = None,
         timeout: float = 120,
     ) -> web.Response:
         """Send method to rel at server_url's server, with the token."""
@@ -283,7 +282,7 @@ def leaf(rel: str) -> str:
     return rel.rsplit("/", 1)[-1]
 
 
-def served(answer: web.Response, data: bytes) -> Optional[str]:
+def served(answer: web.Response, data: bytes) -> str | None:
     """Return why answer is not a whole object holding data, or None."""
     if answer.status != 200:
         return answer.describe()
@@ -292,7 +291,7 @@ def served(answer: web.Response, data: bytes) -> Optional[str]:
     return None
 
 
-def shed_reason(answer: web.Response) -> Optional[str]:
+def shed_reason(answer: web.Response) -> str | None:
     """Return the `error` of a 429's JSON body, or None if it has none."""
     try:
         found = common.as_object(json.loads(answer.body)) or {}
@@ -302,7 +301,7 @@ def shed_reason(answer: web.Response) -> Optional[str]:
     return reason if isinstance(reason, str) else None
 
 
-def shed_problem(answer: web.Response) -> Optional[str]:
+def shed_problem(answer: web.Response) -> str | None:
     """Return what is wrong with a 429 from a V2 cache, or None.
 
     It must say to come back in RETRY_AFTER seconds, and why, as one of
@@ -321,7 +320,7 @@ def shed_problem(answer: web.Response) -> Optional[str]:
 # The federation, slowed.
 
 
-def serving(test: Test) -> Optional[str]:
+def serving(test: Test) -> str | None:
     """Return why /protected-a is not served as before, or None.
 
     Every director must name every origin for the probe, and every cache
@@ -342,7 +341,7 @@ def serving(test: Test) -> Optional[str]:
     return None
 
 
-def settle(test: Test) -> Optional[str]:
+def settle(test: Test) -> str | None:
     """Wait until the federation serves /protected-a as before.
 
     See serving(). A server that exited on its own ends the wait at once
@@ -437,7 +436,7 @@ def shed_429(test: Test) -> Row:
     return found.row(f"{len(test.v2)} cache(s)")
 
 
-def answered_in(answer: web.Response, took: float, status: int, within: float) -> Optional[str]:
+def answered_in(answer: web.Response, took: float, status: int, within: float) -> str | None:
     """Return why answer is not status within within seconds, or None.
 
     took is how many seconds answer took.
@@ -676,14 +675,14 @@ class Fetched:
     status: int
     said: str
     left: tuple[str, ...]
-    data: Optional[bytes]
+    data: bytes | None
 
     def codes(self) -> set[int]:
         """Return the Pelican error codes it reported."""
         found = re.findall(r"Error code (\d{4})|PelicanErrorCode = (\d+)", self.said)
         return {int(a or b) for a, b in found}
 
-    def leftovers(self) -> Optional[str]:
+    def leftovers(self) -> str | None:
         """Return why a failed download left something behind, or None.
 
         The clients write a temporary file beside the object's, and
@@ -691,7 +690,7 @@ class Fetched:
         """
         return f"it left {list(self.left)}" if self.left else None
 
-    def got(self, data: bytes) -> Optional[str]:
+    def got(self, data: bytes) -> str | None:
         """Return why it did not download data, or None."""
         if self.status != 0:
             return f"exit {self.status}: {last_line(self.said)}"
@@ -739,7 +738,7 @@ def client_env(test: Test, slow: bool) -> dict[str, str]:
 def fetched(directory: str, status: int, said: str) -> Fetched:
     """Return what a client that downloaded into directory did."""
     left = tuple(sorted(os.listdir(directory)))
-    data: Optional[bytes] = None
+    data: bytes | None = None
     path = os.path.join(directory, "object")
     if os.path.isfile(path):
         with open(path, "rb") as f:
@@ -753,7 +752,7 @@ def get_pelican(
     rel: str,
     slow: bool,
     direct: bool = False,
-    cache: Optional[common.Cache] = None,
+    cache: common.Cache | None = None,
 ) -> Fetched:
     """Run `pelican object get` of rel into a directory of its own, name.
 
@@ -778,7 +777,7 @@ def get_plugin(
     rel: str,
     slow: bool,
     direct: bool = False,
-    cache: Optional[common.Cache] = None,
+    cache: common.Cache | None = None,
 ) -> Fetched:
     """Run stash_plugin on rel, into a directory of its own, name.
 
@@ -1076,7 +1075,7 @@ def run_phase(test: Test, scenarios: list[str], results: common.Results, done: s
         done.add(scenario)
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None.
 
     There is nothing with origins that the rate limit does not slow, the

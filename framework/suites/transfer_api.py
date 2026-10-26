@@ -46,7 +46,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime
-from typing import Any, Optional, Union
+from typing import Any
 
 from testlib import (
     accounts,
@@ -175,7 +175,7 @@ RATE_LIMIT = "256KB/s"
 INTERRUPTED = "interrupted by transfer server restart"
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is no API, or nowhere to copy to, or None."""
     if fed.transfer_api is None:
         return "no transfer API runs ('-p origin-transfer-api' or '-p topo-transfer-server')"
@@ -191,7 +191,7 @@ class ApiError(Exception):
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note. A scenario returns its status and note, or its rows.
 Row = tuple[str, str, str]
-Rows = Union[tuple[str, str], list[Row]]
+Rows = tuple[str, str] | list[Row]
 
 
 def outcome(problems: Sequence[str], note: str) -> Row:
@@ -256,7 +256,7 @@ class Test:
         # Past pstore's chunk, so that a copy takes many reads and writes.
         self.data = os.urandom(blocks.CHUNK_UNDECLARED + 4321)
         self.credential_ids: list[tuple[str, str]] = []
-        self._finished_job: Optional[dict[str, Any]] = None
+        self._finished_job: dict[str, Any] | None = None
         self.confined = api.confined
         self.web = self.url
         self.svc = api.svc
@@ -264,8 +264,8 @@ class Test:
         self.origin_web = self.fed.origin_web_url
         self.origin_svc = self.fed.origins[0].svc
         self.origin_key = common.signing_key(f"issuer-keys/{self.origin_svc}")
-        self._admin: Optional[str] = None
-        self._origin_admin: Optional[str] = None
+        self._admin: str | None = None
+        self._origin_admin: str | None = None
         self.issuer_clients: list[tuple[str, str, str, issuer.Client]] = []
         self.user_ids: list[str] = []
         self.group_ids: list[str] = []
@@ -370,9 +370,9 @@ class Test:
         self,
         method: str,
         path: str,
-        token: Optional[str],
-        body: Optional[dict[str, Any]] = None,
-    ) -> tuple[Optional[int], dict[str, Any], bytes]:
+        token: str | None,
+        body: dict[str, Any] | None = None,
+    ) -> tuple[int | None, dict[str, Any], bytes]:
         """Send method to the API's path, with body as JSON if given.
 
         Returns:
@@ -396,7 +396,7 @@ class Test:
         """Return the federation URL of object name of the run."""
         return f"{self.fed.url}/protected-a/{self.rel(name)}"
 
-    def held(self, name: str) -> list[Optional[str]]:
+    def held(self, name: str) -> list[str | None]:
         """Return what each store holds at object name.
 
         See stores.held_anywhere().
@@ -405,7 +405,7 @@ class Test:
             self.fed.origins, "protected-a", self.rel(name), {"protected-a": self.setup}
         )
 
-    def add_credential(self, name: str, token: str, owner: Optional[str] = None) -> str:
+    def add_credential(self, name: str, token: str, owner: str | None = None) -> str:
         """Add a storage credential holding token, and return its ID.
 
         It is the user's, or owner's, a token of another subject.
@@ -421,9 +421,7 @@ class Test:
         self.credential_ids.append((str(found["id"]), owner or self.token))
         return str(found["id"])
 
-    def submit(
-        self, body: dict[str, Any], token: Optional[str] = None
-    ) -> tuple[Optional[int], dict[str, Any]]:
+    def submit(self, body: dict[str, Any], token: str | None = None) -> tuple[int | None, dict[str, Any]]:
         """Submit a job, as the user unless token says otherwise.
 
         Returns:
@@ -432,7 +430,7 @@ class Test:
         status, found, _ = self.call("POST", "/jobs", token or self.token, body)
         return status, found
 
-    def wait(self, job_id: str, token: Optional[str] = None) -> dict[str, Any]:
+    def wait(self, job_id: str, token: str | None = None) -> dict[str, Any]:
         """Wait until the job is finished, and return its status.
 
         It asks as the user, or as token's, and gives up after JOB_WAIT
@@ -445,7 +443,7 @@ class Test:
                 return found
             time.sleep(2)
 
-    def copied(self, name: str, source_id: str, dest_id: str, token: Optional[str] = None) -> Optional[str]:
+    def copied(self, name: str, source_id: str, dest_id: str, token: str | None = None) -> str | None:
         """Copy the source object to object name of the run, through a job.
 
         The job uses the credentials, as the user or as token's, and is
@@ -497,7 +495,7 @@ class Test:
         return self._finished_job
 
 
-def refused(status: Optional[int], found: dict[str, Any]) -> Optional[str]:
+def refused(status: int | None, found: dict[str, Any]) -> str | None:
     """Return why an answer is not a refusal to authenticate, or None."""
     if status not in (401, 403) or found.get("code") != "UNAUTHORIZED":
         return f"HTTP {status}, {found.get('code')}, not 401 or 403 UNAUTHORIZED"
@@ -512,7 +510,7 @@ def ping(test: Test) -> tuple[str, str]:
     return PASS, str(found.get("issuer", ""))
 
 
-def auth_with(test: Test, token: Optional[str]) -> tuple[str, str]:
+def auth_with(test: Test, token: str | None) -> tuple[str, str]:
     """Check that listing jobs with token is refused."""
     status, found, _ = test.call("GET", "/jobs", token)
     why = refused(status, found)
@@ -745,7 +743,7 @@ def cancel(test: Test) -> tuple[str, str]:
 
 
 def confined(
-    test: Test, transfer: dict[str, Any], landed: Callable[[], Optional[str]], expected: str
+    test: Test, transfer: dict[str, Any], landed: Callable[[], str | None], expected: str
 ) -> tuple[str, str]:
     """Check a job of one transfer that leaves the exports.
 
@@ -1133,7 +1131,7 @@ def credential_cli(test: Test) -> tuple[str, str]:
 # the run's own in Transfer.EnabledGroups, and Transfer.EnableOAuth2Clients.
 
 
-def unconfigurable(test: Test) -> Optional[str]:
+def unconfigurable(test: Test) -> str | None:
     """Return why the API's host cannot be restarted, or None if it can.
 
     It is restarted with configuration of the run's own, or while a job
@@ -1155,7 +1153,7 @@ def configured_text(test: Test) -> str:
     return f"Transfer:\n  EnabledGroups: [{group}]\n  EnableOAuth2Clients: true\n"
 
 
-def settle(test: Test) -> Optional[str]:
+def settle(test: Test) -> str | None:
     """Wait until the API answers, and the directors name origin-0 again.
 
     Each director, where there are any, must name it for the source
@@ -1169,7 +1167,7 @@ def settle(test: Test) -> Optional[str]:
     path = f"/protected-a/{test.rel('src')}"
     host = director.host(fed.origins[0].url)
 
-    def unready() -> Optional[str]:
+    def unready() -> str | None:
         status, _, _ = test.call("GET", "/ping", None)
         if status != 200:
             return f"the API's ping got HTTP {status}"
@@ -1310,7 +1308,7 @@ def oauth_clients_disabled(test: Test) -> list[Row]:
     return [("disabled", *outcome(problems, "GET and POST: 403 DISABLED")[1:])]
 
 
-def expiry_of(found: dict[str, Any]) -> Optional[datetime]:
+def expiry_of(found: dict[str, Any]) -> datetime | None:
     """Return a credential's token_expiry, as a time, or None."""
     text = str(found.get("token_expiry") or "")
     text = re.sub(r"(\.\d{6})\d+", r"\1", text)
@@ -1341,8 +1339,8 @@ def oauth_clients(test: Test) -> list[Row]:
     # origin's admin can make no client of it: `crud` registers made-up
     # credentials, and the rest skip.
     external = test.fed.external_issuer or not test.fed.embedded_issuer
-    exchange: Optional[issuer.Client] = None
-    device: Optional[issuer.Client] = None
+    exchange: issuer.Client | None = None
+    device: issuer.Client | None = None
     client_id, client_secret = f"made-up-{test.session.run}", secrets.token_urlsafe(24)
     if not external:
         exchange = test.issuer_client("/protected-a", (issuer.EXCHANGE_GRANT, issuer.REFRESH_GRANT))

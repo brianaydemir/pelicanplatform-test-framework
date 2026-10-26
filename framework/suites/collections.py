@@ -73,7 +73,7 @@ import json
 import os
 import time
 from collections.abc import Sequence
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlsplit
 
 from testlib import accounts, common, credentials, issuer, stores, web
@@ -158,7 +158,7 @@ def personal(role: str) -> str:
     return f"user-{username(role)}"
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     There is nothing without an embedded issuer, or a protected namespace.
@@ -211,7 +211,7 @@ class Test:
         self._clients: dict[str, issuer.Client] = {}
         self._minted = 0
 
-    def web_token(self, role: str, web_url: Optional[str] = None) -> str:
+    def web_token(self, role: str, web_url: str | None = None) -> str:
         """Return a token that an origin's web API takes as role's user.
 
         The origin is the one at web_url, or by default the issuer origin.
@@ -243,7 +243,7 @@ class Test:
             self._clients[namespace] = issuer.create_client(self.web, namespace, self.web_token("admin"))
         return self._clients[namespace]
 
-    def user(self, role: str, web_url: Optional[str] = None) -> issuer.User:
+    def user(self, role: str, web_url: str | None = None) -> issuer.User:
         """Return role's user, as an issuer of an origin knows them.
 
         The origin is the one at web_url, or by default the issuer origin.
@@ -415,7 +415,7 @@ def finish(test: Test) -> None:
 # The clients, acquiring tokens from the issuer themselves.
 
 
-def run_approving(test: Test, args: Sequence[str], role: str, pelican: Optional[str] = None) -> ClientRun:
+def run_approving(test: Test, args: Sequence[str], role: str, pelican: str | None = None) -> ClientRun:
     """Run `pelican <args>` as role's user, approving its device flows.
 
     Approve each device flow it announces on its stderr as that user, at
@@ -1033,7 +1033,7 @@ def ownership(test: Test) -> tuple[str, str]:
     return outcome(problems, "test-owner to test-heir by PATCH, to test-guest by invite")
 
 
-def first_origin(test: Test) -> Optional[str]:
+def first_origin(test: Test) -> str | None:
     """Return the web URL of the origin the CLI will manage, or None.
 
     It is the first the director lists.

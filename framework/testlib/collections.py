@@ -8,7 +8,7 @@ OAuth2 issuer turns into storage scopes. Each call is by an accounts.Api
 of the origin, as one of its users.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 from . import common
 from .accounts import Answer, Api, must
@@ -17,7 +17,7 @@ from .credentials import PROTECTED
 COLLECTIONS = "/api/v1.0/origin_ui/collections"
 
 
-def missing(fed: common.Federation) -> Optional[str]:
+def missing(fed: common.Federation) -> str | None:
     """Return why there are no collections to test, or None if there are.
 
     There are none with no embedded issuer, or no protected namespace.
@@ -68,7 +68,7 @@ def delete(api: Api, cid: str) -> Answer:
     return api.call("DELETE", f"{COLLECTIONS}/{cid}")
 
 
-def grant(api: Api, cid: str, target: str, role: str, expires_at: Optional[str] = None) -> Answer:
+def grant(api: Api, cid: str, target: str, role: str, expires_at: str | None = None) -> Answer:
     """Grant role on a collection to target, until expires_at if given.
 
     Args:

@@ -41,7 +41,6 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Generator, Mapping, Sequence
-from typing import Optional
 
 from . import common, web
 
@@ -121,7 +120,7 @@ def _ask(action: str, service: str, seconds: float = ANSWER_WAIT) -> str:
 
 
 @functools.lru_cache(maxsize=None)
-def unavailable() -> Optional[str]:
+def unavailable() -> str | None:
     """Return why the tests can't control the services, or None if they can.
 
     They can't where no helper serves this run (as when test.py runs by
@@ -196,7 +195,7 @@ def exited() -> dict[str, int]:
     return found
 
 
-def crashed(services: Optional[Sequence[str]] = None) -> Optional[str]:
+def crashed(services: Sequence[str] | None = None) -> str | None:
     """Return which Pelican server exited on its own (exited()), or None.
 
     Only those of services count, if they are given.
@@ -207,7 +206,7 @@ def crashed(services: Optional[Sequence[str]] = None) -> Optional[str]:
     return None
 
 
-def settle(problem: Callable[[], Optional[str]], seconds: float, interval: float = 5) -> Optional[str]:
+def settle(problem: Callable[[], str | None], seconds: float, interval: float = 5) -> str | None:
     """Ask problem() what is wrong until it finds nothing, or seconds pass.
 
     It is asked at once, and then every interval seconds, as the

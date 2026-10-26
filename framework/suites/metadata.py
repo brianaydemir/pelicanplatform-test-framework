@@ -42,7 +42,7 @@ import traceback
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from functools import partial
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 from testlib import accounts, common, control, credentials, director, metrics, stores, web
@@ -207,8 +207,8 @@ class Test:
         self.made: set[str] = set(uploaded(self.run))
         self.held: set[str] = set()
         self.admin_file = session.path("tokens/metadata.admin")
-        self._admin: Optional[str] = None
-        self._user: Optional[str] = None
+        self._admin: str | None = None
+        self._user: str | None = None
 
     def url(self, name: str) -> str:
         """Return object name's URL at the first origin."""
@@ -240,7 +240,7 @@ class Test:
             self._user = token
         return self._user
 
-    def api(self, method: str, route: str, token: Optional[str]) -> accounts.Answer:
+    def api(self, method: str, route: str, token: str | None) -> accounts.Answer:
         """Send method to route of the first origin's web API.
 
         It presents token, if any.
@@ -285,7 +285,7 @@ class Test:
         counts = common.as_object(answer.object.get("per_namespace")) or {}
         return int(counts.get(NAMESPACE) or 0)
 
-    def drop(self, event_id: str) -> Optional[str]:
+    def drop(self, event_id: str) -> str | None:
         """Delete event_id's row from the first origin's publish queue.
 
         Returns:
@@ -305,7 +305,7 @@ class Test:
         doomed = [r for r in self.queue_rows() if r.get("object_path") in paths]
         return [e for e in (self.drop(str(r.get("event_id", ""))) for r in doomed) if e]
 
-    def object_file(self, name: str) -> Optional[str]:
+    def object_file(self, name: str) -> str | None:
         """Return the object's file in the first store with it, if any."""
         for store in self.stores:
             path = f"{store}/data/metadata/{name}"
@@ -321,7 +321,7 @@ class Test:
         with open(path, "rb") as f:
             return f.read() == data
 
-    def check_stored(self, name: str, data: bytes, capture: str) -> Optional[tuple[str, str]]:
+    def check_stored(self, name: str, data: bytes, capture: str) -> tuple[str, str] | None:
         """Return a failure if no store holds object name with exactly data.
 
         Returns:
@@ -383,9 +383,7 @@ class Test:
         common.wait_for(lambda: not missing(), seconds, 1)
         return missing()
 
-    def direct_put(
-        self, data: bytes, name: str, metadata: str, token: Optional[str] = None
-    ) -> web.Response:
+    def direct_put(self, data: bytes, name: str, metadata: str, token: str | None = None) -> web.Response:
         """Upload data as object name straight to the first origin.
 
         Its X-Pelican-Object-Metadata is metadata. It presents token, by
@@ -436,7 +434,7 @@ def web_token(fed: common.Federation, origin: common.Origin, out: str, username:
     )
 
 
-def fetch(method: str, url: str, token: Optional[str] = None) -> accounts.Answer:
+def fetch(method: str, url: str, token: str | None = None) -> accounts.Answer:
     """Send method to url, a whole URL, as accounts.Api.call() does."""
     answer = web.request(method, url, token=token)
     try:
@@ -446,7 +444,7 @@ def fetch(method: str, url: str, token: Optional[str] = None) -> accounts.Answer
     return accounts.Answer(answer.status, data)
 
 
-def go_time(text: Any) -> Optional[float]:
+def go_time(text: Any) -> float | None:
     """Return text, a time as Go's encoding/json writes it, in Unix time.
 
     Go writes RFC 3339, perhaps with nanoseconds.
@@ -713,7 +711,7 @@ def issued(answer: web.Response, name: str, wanted: str) -> tuple[str, str]:
     return urls
 
 
-def read_status(url: str, path: str, state: str) -> Optional[str]:
+def read_status(url: str, path: str, state: str) -> str | None:
     """Return why status URL url does not say path's event is in state.
 
     Returns:
@@ -731,7 +729,7 @@ def read_status(url: str, path: str, state: str) -> Optional[str]:
     return None
 
 
-def not_gone(urls: Sequence[str]) -> Optional[str]:
+def not_gone(urls: Sequence[str]) -> str | None:
     """Return why a GET of each of urls does not answer 404, or None."""
     for url in urls:
         answer = fetch("GET", url)
@@ -1440,7 +1438,7 @@ def queue_delete(test: Test, event_id: str, path: str) -> Row:
     return outcome(problems, f"{answer.describe()}; then 404, and not listed")
 
 
-def queue_admin(test: Test, unrestarted: Optional[str]) -> dict[str, Row]:
+def queue_admin(test: Test, unrestarted: str | None) -> dict[str, Row]:
     """Check the publish queue's admin API, with an event held queued.
 
     Unless the first origin was restarted with its retries put off, the
@@ -1646,7 +1644,7 @@ def backpressure(test: Test, cap: int) -> dict[str, Row]:
 # Restarting the first origin.
 
 
-def unrestartable(test: Test) -> Optional[str]:
+def unrestartable(test: Test) -> str | None:
     """Return why the first origin cannot be restarted, or None if it can.
 
     That is, with configuration of the suite's own.
@@ -1656,7 +1654,7 @@ def unrestartable(test: Test) -> Optional[str]:
     return control.unavailable()
 
 
-def held_config(cap: Optional[int]) -> str:
+def held_config(cap: int | None) -> str:
     """Return `queue-admin`'s and `backpressure`'s restart configuration.
 
     A failed delivery is put off for HELD_BACKOFF, every time; and, given
@@ -1670,7 +1668,7 @@ def held_config(cap: Optional[int]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def serving(test: Test) -> Optional[str]:
+def serving(test: Test) -> str | None:
     """Return why the namespace is not served as before, or None.
 
     Every origin must answer a HEAD of the probe, every director name
@@ -1694,7 +1692,7 @@ def serving(test: Test) -> Optional[str]:
     return None
 
 
-def settle(test: Test) -> Optional[str]:
+def settle(test: Test) -> str | None:
     """Wait until the federation serves the namespace as before.
 
     See serving(). A server that exited on its own ends the wait at once
@@ -1706,7 +1704,7 @@ def settle(test: Test) -> Optional[str]:
     return control.settle(lambda: serving(test), SETTLE_WAIT)
 
 
-def restart_for(test: Test, text: str, body: Callable[[], None]) -> Optional[str]:
+def restart_for(test: Test, text: str, body: Callable[[], None]) -> str | None:
     """Run body with the first origin restarted with text as configuration.
 
     Put the probe in every store; restart the first origin with text as
@@ -1759,7 +1757,7 @@ def held_rows(test: Test, wanted: Sequence[str]) -> dict[str, Row]:
             add("backpressure", {case: (SKIP, why) for case in CASES["backpressure"]})
         return rows
     wanted = list(wanted)
-    cap: Optional[int] = None
+    cap: int | None = None
     if "backpressure" in wanted:
         wanted.remove("backpressure")
         if test.mode != "eventual":
@@ -1798,7 +1796,7 @@ CHECKS: dict[str, Callable[[Test], dict[str, Row]]] = {
 }
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     That is so with publishing, but no writes. With publishing off,

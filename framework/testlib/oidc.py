@@ -23,7 +23,7 @@ import json
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from . import accounts, common, web
@@ -211,7 +211,7 @@ def approve_device(issuer: str, user_code: str, user: IdpUser) -> web.Response:
     return web.request("POST", f"{issuer}/device", upload=urlencode(form).encode(), headers=FORM)
 
 
-def user_code_in(line: str) -> Optional[str]:
+def user_code_in(line: str) -> str | None:
     """Return the user code of the provider's verification URL in line.
 
     The URL is <issuer>/device?user_code=..., and line is one of a

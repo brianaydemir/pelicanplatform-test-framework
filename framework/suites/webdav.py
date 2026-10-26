@@ -61,7 +61,6 @@ import shutil
 import traceback
 import xml.etree.ElementTree as ET  # nosec B405
 from dataclasses import dataclass, field
-from typing import Optional, Union
 
 from testlib import common, credentials, digests, stores, web, webdav
 from testlib.common import first, warn
@@ -165,7 +164,7 @@ class SetupError(Exception):
     """A scenario's failure to put in place what it checks."""
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     There is nothing without /protected-a, or with one that takes no
@@ -221,7 +220,7 @@ class Test:
         """Return origin's collection of the run, in /protected-a."""
         return f"data/webdav/{self.session.run}/{origin.svc}"
 
-    def native(self) -> Optional[str]:
+    def native(self) -> str | None:
         """Return why the origins are not Pelican's native ones, or None."""
         if self.fed.native_origins:
             return None
@@ -241,7 +240,7 @@ class Test:
             raise SetupError(f"{origin.svc}: could not put {rel} in place ({error})")
         return data
 
-    def storage_token(self, origin: common.Origin, namespace: str) -> Optional[str]:
+    def storage_token(self, origin: common.Origin, namespace: str) -> str | None:
         """Return a setup token that reads namespace's storage at origin.
 
         Return None for /public, which has no issuer.
@@ -250,8 +249,8 @@ class Test:
         return None if storage == "public" else self.session.setup_token(storage)
 
     def stored(
-        self, origin: common.Origin, namespace: str, rel: str, want: Optional[bytes], what: str
-    ) -> Optional[str]:
+        self, origin: common.Origin, namespace: str, rel: str, want: bytes | None, what: str
+    ) -> str | None:
         """Return what is wrong with what origin holds at rel in namespace.
 
         It should be want (None: nothing); the answer calls it what.
@@ -268,7 +267,7 @@ class Test:
             return f"{what} holds other bytes"
         return None
 
-    def collection(self, origin: common.Origin, rel: str) -> Optional[bool]:
+    def collection(self, origin: common.Origin, rel: str) -> bool | None:
         """Return whether rel in /protected-a at origin is a collection.
 
         Ask by a PROPFIND of Depth 0, with the setup token.
@@ -294,7 +293,7 @@ class Test:
             raise stores.Unreadable(f"PROPFIND {url}: {e}") from None
         return entries[0].collection
 
-    def made(self, origin: common.Origin, rel: str, want: bool, what: str) -> Optional[str]:
+    def made(self, origin: common.Origin, rel: str, want: bool, what: str) -> str | None:
         """Return what is wrong with what origin holds at rel.
 
         What it holds at rel in /protected-a should be a collection if
@@ -339,13 +338,13 @@ class Findings:
         self.problems: list[str] = []
         self.notes: list[str] = []
 
-    def add(self, server: Union[common.Origin, common.Cache], problem: Optional[str]) -> None:
+    def add(self, server: common.Origin | common.Cache, problem: str | None) -> None:
         """Record problem, if any, at server, and print it."""
         if problem:
             self.problems.append(f"{server.svc}: {problem}")
             print(f"    {server.svc}: {problem}")
 
-    def note(self, server: Union[common.Origin, common.Cache], note: str) -> None:
+    def note(self, server: common.Origin | common.Cache, note: str) -> None:
         """Note what server did."""
         self.notes.append(f"{server.svc}: {note}")
 
@@ -645,7 +644,7 @@ def mkcol(test: Test) -> tuple[str, str]:
 # lock
 
 
-def lock_timeout(body: bytes) -> Optional[str]:
+def lock_timeout(body: bytes) -> str | None:
     """Return the timeout of the lock that a LOCK's answer describes.
 
     That is None if the answer names none.
@@ -658,7 +657,7 @@ def lock_timeout(body: bytes) -> Optional[str]:
     return None if found is None else (found.text or "").strip()
 
 
-def bounded(timeout: Optional[str]) -> bool:
+def bounded(timeout: str | None) -> bool:
     """Return whether a lock's timeout is a number of seconds, more than 0.
 
     x/net writes a lock that never ends as `Second-0`.
@@ -874,7 +873,7 @@ def symlink_writes(test: Test) -> tuple[str, str]:
             if right:
                 found.add(origin, f"HEAD of link-file reports the decoy's {', '.join(right)}")
             # Each request, and whether it may succeed on the link itself.
-            requests: list[tuple[str, str, Optional[bytes], bool]] = [
+            requests: list[tuple[str, str, bytes | None, bool]] = [
                 ("PUT", "link-file", os.urandom(4096), True),
                 ("PUT", f"link-dir/new-{origin.svc}", os.urandom(4096), False),
                 ("MKCOL", f"link-dir/sub-{origin.svc}", None, False),

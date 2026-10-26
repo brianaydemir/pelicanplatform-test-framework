@@ -58,7 +58,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Optional, cast
+from typing import Any, cast, override
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 ISSUER = os.environ.get("IDP_ISSUER", "https://idp:9007")
@@ -230,7 +230,7 @@ class Users:
 
     def __init__(self, path: str):
         self.path = path
-        self.stamp: Optional[float] = None
+        self.stamp: float | None = None
         self.found: dict[str, dict[str, Any]] = {}
 
     def load(self) -> dict[str, dict[str, Any]]:
@@ -250,7 +250,7 @@ class Users:
             self.stamp = stamp
         return self.found
 
-    def authenticate(self, username: str, password: str) -> Optional[str]:
+    def authenticate(self, username: str, password: str) -> str | None:
         """Return username, if password is theirs; None otherwise."""
         user = self.load().get(username)
         if user is None or not password:
@@ -320,7 +320,7 @@ class Provider:
         self.devices: dict[str, dict[str, Any]] = {}
         self.user_codes: dict[str, str] = {}
 
-    def client_ok(self, client_id: str, client_secret: Optional[str]) -> bool:
+    def client_ok(self, client_id: str, client_secret: str | None) -> bool:
         """Return whether client_id and client_secret are the client's.
 
         client_secret is checked only if one is given.
@@ -355,7 +355,7 @@ class Provider:
             }
         return code
 
-    def redeem_code(self, code: str, redirect_uri: str) -> Optional[dict[str, Any]]:
+    def redeem_code(self, code: str, redirect_uri: str) -> dict[str, Any] | None:
         """Return the code's grant, once.
 
         Returns:
@@ -411,13 +411,13 @@ class Provider:
             answer["id_token"] = self.key.jwt(claims)
         return answer
 
-    def redeem_refresh(self, token: str) -> Optional[dict[str, Any]]:
+    def redeem_refresh(self, token: str) -> dict[str, Any] | None:
         """Return the refresh token's grant, once; None if there is none."""
         with self.lock:
             self.sweep()
             return self.refresh.pop(token, None)
 
-    def bearer(self, token: str) -> Optional[dict[str, Any]]:
+    def bearer(self, token: str) -> dict[str, Any] | None:
         """Return the access token's grant; None if there is none."""
         with self.lock:
             self.sweep()
@@ -459,7 +459,7 @@ class Provider:
             self.devices[device_code]["user"] = user
             return True
 
-    def redeem_device(self, device_code: str) -> tuple[str, Optional[dict[str, Any]]]:
+    def redeem_device(self, device_code: str) -> tuple[str, dict[str, Any] | None]:
         """Return the device flow's state, and once approved, its grant.
 
         Returns:
@@ -545,7 +545,8 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "pelican-testing-idp/1"
 
-    def log_message(self, format: str, *args: Any) -> None:  # pylint: disable=redefined-builtin
+    @override
+    def log_message(self, format: str, *args: Any) -> None:
         """Log nothing: record() logs."""
 
     noted: dict[str, Any]
@@ -573,7 +574,7 @@ class Handler(BaseHTTPRequestHandler):
         status: int,
         body: bytes,
         content_type: str,
-        headers: Optional[dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         """Send status and body."""
         self.send_response(status)
@@ -587,7 +588,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         self.record(status)
 
-    def reply_json(self, status: int, data: Any, headers: Optional[dict[str, str]] = None) -> None:
+    def reply_json(self, status: int, data: Any, headers: dict[str, str] | None = None) -> None:
         """Send data as JSON."""
         self.reply(status, json.dumps(data).encode(), "application/json", headers)
 
@@ -610,7 +611,7 @@ class Handler(BaseHTTPRequestHandler):
         """Return the request's query: each field's first value."""
         return {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
 
-    def client_credentials(self, form: dict[str, str]) -> tuple[str, Optional[str]]:
+    def client_credentials(self, form: dict[str, str]) -> tuple[str, str | None]:
         """Return the client's ID and secret (RFC 6749, section 2.3.1).
 
         Returns:
@@ -710,7 +711,7 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
-    def authorize_fields(self, given: dict[str, str]) -> Optional[dict[str, str]]:
+    def authorize_fields(self, given: dict[str, str]) -> dict[str, str] | None:
         """Check and return the authorization request's parameters.
 
         Returns:

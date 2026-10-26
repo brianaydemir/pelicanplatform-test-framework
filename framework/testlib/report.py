@@ -26,7 +26,6 @@ import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional
 
 from . import web
 
@@ -114,7 +113,7 @@ class Row:
 
     case: str
     status: str
-    seconds: Optional[float]
+    seconds: float | None
     note: str
 
 
@@ -137,7 +136,7 @@ class Report:
         self.rows: list[Row] = []
         self._mark = time.monotonic()
 
-    def add(self, case: str, status: str, note: str = "", seconds: Optional[float] = -1.0) -> None:
+    def add(self, case: str, status: str, note: str = "", seconds: float | None = -1.0) -> None:
         """Record a case.
 
         By default its duration is the time since the previous case;
@@ -175,7 +174,7 @@ class Report:
         ]
         return format_table(COLUMNS, rows)
 
-    def write(self, error: Optional[str] = None) -> None:
+    def write(self, error: str | None = None) -> None:
         """Write the file.
 
         error is why the suite stopped early, if it did: it is recorded

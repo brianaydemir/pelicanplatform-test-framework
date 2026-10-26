@@ -57,7 +57,7 @@ import threading
 import traceback
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from testlib import (
@@ -148,7 +148,7 @@ def row(case: str, problems: Sequence[str], note: str) -> Row:
     return (case, FAIL, first(problems)) if problems else (case, PASS, note)
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test (no provider), or None."""
     if fed.oidc_issuer is None:
         return "the servers log in through no identity provider ('-p auth-oidc')"
@@ -172,7 +172,7 @@ class Test:
     users: dict[str, IdpUser]
     servers: list[Server]
     client_id: str
-    namespace: Optional[str]
+    namespace: str | None
     registry_ids: dict[str, str] = field(default_factory=dict[str, str])
     _admins: dict[str, Api] = field(default_factory=dict[str, Api])
 
@@ -585,14 +585,14 @@ def registry_identity(test: Test) -> list[Row]:
 # The restart: admin, groups, and client.
 
 
-def unrestartable(test: Test) -> Optional[str]:
+def unrestartable(test: Test) -> str | None:
     """Return why origin-0 cannot be restarted here, or None if it can."""
     if test.fed.tiny:
         return "the tiny topology's origin is the whole federation's process"
     return control.unavailable()
 
 
-def no_issuer(test: Test) -> Optional[str]:
+def no_issuer(test: Test) -> str | None:
     """Return why the issuer origin's embedded issuer cannot grant anything.
 
     Return None if it can.
@@ -609,7 +609,7 @@ def no_issuer(test: Test) -> Optional[str]:
     return None
 
 
-def settle(test: Test, rel: str) -> Optional[str]:
+def settle(test: Test, rel: str) -> str | None:
     """Wait until the federation serves the issuer origin again.
 
     Wait up to SETTLE_WAIT seconds, until it answers a HEAD of rel in
@@ -624,7 +624,7 @@ def settle(test: Test, rel: str) -> Optional[str]:
     token = test.session.setup_token(namespace)
     path = f"/{namespace}/{rel}"
 
-    def unserved() -> Optional[str]:
+    def unserved() -> str | None:
         answer = web.request("HEAD", stores.url(test.origin, namespace, rel), token=token)
         if answer.status != 200:
             return f"{test.origin.svc}: HEAD of the object got {answer.describe()}"
@@ -652,7 +652,7 @@ class Restarted:
     """
 
     objects: dict[str, tuple[str, bytes]]
-    client: Optional[issuer.Client] = None
+    client: issuer.Client | None = None
 
 
 def seed(test: Test) -> Restarted:
@@ -883,7 +883,7 @@ def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Ro
     wanted = [s for s in wanted if s == "admin" or not lacking]
     if not wanted:
         return
-    made: Optional[Restarted] = None
+    made: Restarted | None = None
     try:
         if not lacking:
             made = seed(test)

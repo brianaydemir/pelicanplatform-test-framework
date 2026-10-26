@@ -16,7 +16,6 @@ import binascii
 import hashlib
 import re
 import zlib
-from typing import Optional
 
 from .blocks import crc32c
 
@@ -70,7 +69,7 @@ def parse(header: str) -> dict[str, str]:
     return found
 
 
-def decode(algorithm: str, value: str) -> Optional[bytes]:
+def decode(algorithm: str, value: str) -> bytes | None:
     """Return the digest that value, as reported for algorithm, stands for.
 
     Returns:

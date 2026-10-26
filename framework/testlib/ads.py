@@ -22,7 +22,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlsplit
 
 from . import common, credentials, director, jwt, web
@@ -318,7 +318,7 @@ def user_agent(kind: str, version: str) -> dict[str, str]:
     return {"User-Agent": f"pelican-{kind.lower()}/{bare}"}
 
 
-def post_ad(url: str, kind: str, body: Mapping[str, Any], token: Optional[str]) -> web.Response:
+def post_ad(url: str, kind: str, body: Mapping[str, Any], token: str | None) -> web.Response:
     """POST ad body to the director at url, as a server of kind does.
 
     It presents token, or no token if token is None.

@@ -50,7 +50,7 @@ import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 from testlib import blocks, cacheapi, common, credentials, jwt, metrics, stores, web
@@ -132,8 +132,8 @@ class Test:
         self.v2 = [c for c in self.caches if c.kind == "v2"]
         self.made: set[str] = set()
         self._admin: dict[tuple[str, tuple[str, ...]], str] = {}
-        self._elsewhere: Optional[str] = None
-        self.corrupted: Optional[dict[str, Row]] = None
+        self._elsewhere: str | None = None
+        self.corrupted: dict[str, Row] | None = None
 
     def rel(self, *parts: str) -> str:
         """Return where parts are, under the run's collection."""
@@ -147,7 +147,7 @@ class Test:
         """Return rel's URL in /protected-a at the server at server_url."""
         return f"{server_url}/{NAMESPACE}/{quote(rel)}"
 
-    def put(self, objects: Mapping[str, bytes]) -> Optional[str]:
+    def put(self, objects: Mapping[str, bytes]) -> str | None:
         """Put objects, by rel, at every origin.
 
         Their collections are made first.
@@ -171,7 +171,7 @@ class Test:
         """GET rel through cache, with the token."""
         return web.request("GET", self.url(cache.url, rel), token=self.token, timeout=120)
 
-    def held(self, cache: common.Cache, rel: str) -> Optional[bool]:
+    def held(self, cache: common.Cache, rel: str) -> bool | None:
         """Return whether a V2 cache holds all of rel.
 
         It asks with a HEAD with only-if-cached, which gets 504 if not,
@@ -187,7 +187,7 @@ class Test:
             return False
         return None
 
-    def fill(self, cache: common.Cache, rel: str, data: bytes) -> Optional[str]:
+    def fill(self, cache: common.Cache, rel: str, data: bytes) -> str | None:
         """Read rel whole through a V2 cache until it says it holds it all.
 
         The cache must serve data. The reads are setup, with the setup
@@ -259,7 +259,7 @@ def text(answer: web.Response) -> str:
     return answer.body[:300].decode(errors="replace").strip()
 
 
-def held_word(found: Optional[bool]) -> str:
+def held_word(found: bool | None) -> str:
     """Return what Test.held() found, for a message."""
     if found is None:
         return "neither held nor not (only-if-cached got no 200 or 504)"
@@ -270,7 +270,7 @@ def held_word(found: Optional[bool]) -> str:
 # prestage
 
 
-def prestage(cache: common.Cache, path: Optional[str], token: Optional[str]) -> web.Response:
+def prestage(cache: common.Cache, path: str | None, token: str | None) -> web.Response:
     """GET the prestage API of cache for path, with token.
 
     The API streams its progress until the object is whole.
@@ -290,7 +290,7 @@ def lines(answer: web.Response) -> list[str]:
     return [line.strip() for line in answer.body.decode(errors="replace").splitlines() if line.strip()]
 
 
-def progress_problem(answer: web.Response) -> Optional[str]:
+def progress_problem(answer: web.Response) -> str | None:
     """Return why answer is not a prestage that went well, or None if it is.
 
     One that went well is 200, chunked text/plain, with `status: queued`
@@ -534,7 +534,7 @@ def prestage_client(test: Test) -> Row:
 def evict(
     cache: common.Cache,
     path: str,
-    token: Optional[str],
+    token: str | None,
     immediate: bool = True,
     method: str = "POST",
 ) -> web.Response:
@@ -550,7 +550,7 @@ def evicted_message(path: str, count: int, immediate: bool) -> str:
     return f"Marked {count} objects for priority eviction under {path}"
 
 
-def fill_all(test: Test, objects: Mapping[str, bytes], caches: Sequence[common.Cache]) -> Optional[str]:
+def fill_all(test: Test, objects: Mapping[str, bytes], caches: Sequence[common.Cache]) -> str | None:
     """Put objects at every origin, and have each of caches hold every one.
 
     Returns:
@@ -615,7 +615,7 @@ def evict_refused(test: Test) -> Row:
     return PASS, f"{len(test.v2)} V2 cache(s)" + (f"; no /public object: {no_public}" if no_public else "")
 
 
-def public_object(test: Test) -> tuple[Optional[tuple[str, bytes]], str]:
+def public_object(test: Test) -> tuple[tuple[str, bytes] | None, str]:
     """Return an object of the run's own in /public, put at every origin.
 
     It is put with /public's own token, where /public takes writes.
@@ -850,7 +850,7 @@ def other_admin(test: Test, cache: common.Cache) -> tuple[str, str]:
 # of an object that no cache holds, {url}), its body, whether it purges,
 # and what its admin must get for that request; None for no request as
 # the admin, for /purge, which `purge` sends.
-AdminRoute = tuple[str, str, str, Optional[bytes], bool, Optional[tuple[int, ...]]]
+AdminRoute = tuple[str, str, str, bytes | None, bool, tuple[int, ...] | None]
 ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     ("purge", "POST", cacheapi.PURGE, None, True, None),
     ("purge-first", "POST", cacheapi.PURGE_FIRST, b"", True, (400,)),
@@ -880,7 +880,7 @@ ADMIN_ROUTES: tuple[AdminRoute, ...] = (
 )
 
 
-def send(route: AdminRoute, url: str, token: Optional[str]) -> web.Response:
+def send(route: AdminRoute, url: str, token: str | None) -> web.Response:
     """Send route's request to url, with token."""
     _, method, _, body, _, _ = route
     return web.request(method, url, token=token, upload=body, headers=cacheapi.JSON if body else None)
@@ -913,7 +913,7 @@ def admin_authz(test: Test, results: common.Results) -> None:
             if name == "chaos" and send(route, url, test.admin(cache)).status == 404:
                 results.add(row, SKIP, "no chaos API (Cache.EnableChaosAPI; Pelican v7.27.0 on)")
                 continue
-            tries: list[tuple[str, Optional[str], tuple[int, ...]]] = [
+            tries: list[tuple[str, str | None, tuple[int, ...]]] = [
                 ("no token", None, (401,)),
                 ("the server token", test.token, REFUSED),
                 (f"{whose} admin token", other, REFUSED),
@@ -953,7 +953,7 @@ PURGE_TRIES, PURGE_INTERVAL = 3, 5
 MARKED_PURGES = 3
 
 
-def total_usage(cache: common.Cache) -> Optional[int]:
+def total_usage(cache: common.Cache) -> int | None:
     """Return how many bytes cache says it holds, or None if it doesn't say.
 
     That is its TotalUsage, from its counters in memory.
@@ -964,7 +964,7 @@ def total_usage(cache: common.Cache) -> Optional[int]:
     return int(found["TotalUsage"])
 
 
-def charged(cache: common.Cache) -> Optional[int]:
+def charged(cache: common.Cache) -> int | None:
     """Return what cache charges its storage directories, in bytes.
 
     The charge is by the usage counters in its database (NamespaceUsage,
@@ -985,7 +985,7 @@ def charged(cache: common.Cache) -> Optional[int]:
     )
 
 
-def storage_dirs(cache: common.Cache) -> Optional[int]:
+def storage_dirs(cache: common.Cache) -> int | None:
     """Return how many storage directories cache's stats name (DirStats).
 
     Returns:
@@ -1114,7 +1114,7 @@ def purge_first(test: Test) -> Row:
     return PASS, "; ".join([f"{len(test.v2)} V2 cache(s)"] + notes)
 
 
-def purge_marked(test: Test, cache: common.Cache, marked: str) -> tuple[Optional[str], int]:
+def purge_marked(test: Test, cache: common.Cache, marked: str) -> tuple[str | None, int]:
     """Purge cache to a byte below what it holds, until marked is gone.
 
     Such a purge evicts an object marked purge-first. It is made up to
@@ -1245,7 +1245,7 @@ def own_federation(test: Test) -> Row:
 # usage
 
 
-def namespace_usage(test: Test, cache: common.Cache) -> tuple[Optional[int], str]:
+def namespace_usage(test: Test, cache: common.Cache) -> tuple[int | None, str]:
     """Return how many bytes cache charges /protected-a.
 
     The count is from its stats' NamespaceUsage (keyed
@@ -1271,7 +1271,7 @@ def namespace_usage(test: Test, cache: common.Cache) -> tuple[Optional[int], str
     return total, ""
 
 
-def disk_usage(test: Test, cache: common.Cache) -> Optional[int]:
+def disk_usage(test: Test, cache: common.Cache) -> int | None:
     """Return how many bytes cache's store's files take, or None.
 
     The count is what its introspection (introspect/disk-usage) says;
@@ -1377,9 +1377,7 @@ def water_marks(test: Test) -> Row:
 # consistency
 
 
-def consistency_check(
-    test: Test, cache: common.Cache, **query: str
-) -> tuple[Optional[dict[str, Any]], str]:
+def consistency_check(test: Test, cache: common.Cache, **query: str) -> tuple[dict[str, Any] | None, str]:
     """Run cache's consistency check with query, and return what it says.
 
     The check (introspect/consistency) is an event stream; what it says
@@ -1411,7 +1409,7 @@ def consistency_stats(cache: common.Cache) -> dict[str, Any]:
 INCONSISTENT = "pelican_cache_data_scan_inconsistent_objects_total"
 
 
-def scan_metric(cache: common.Cache) -> Optional[float]:
+def scan_metric(cache: common.Cache) -> float | None:
     """Return how many objects the cache's data scans found inconsistent.
 
     Returns:
@@ -1529,7 +1527,7 @@ def corrupted_case(case: str) -> Callable[[Test], Row]:
 STRAY_AGE = 3600
 
 
-def plant_stray(cache: common.Cache) -> tuple[Optional[str], str]:
+def plant_stray(cache: common.Cache) -> tuple[str | None, str]:
     """Write a stray file in cache's store of object files.
 
     It is named as an object's would be (64 hex digits, split as
@@ -1668,7 +1666,7 @@ def run_case(
     results.add(row, status, note)
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test: no /protected-a, or no cache."""
     if NAMESPACE not in fed.exports:
         return "this shape does not export /protected-a"

@@ -50,7 +50,6 @@ import shutil
 import time
 import traceback
 from collections.abc import Callable
-from typing import Optional
 from urllib.parse import urlsplit
 
 from testlib import blocks, common, digests, director, metrics, stores, transfers, web
@@ -93,7 +92,7 @@ RANGES: tuple[blocks.Request, ...] = (
 )
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None.
 
     There is nothing where no cache tiers, or where the shape does not
@@ -134,7 +133,7 @@ class NotTiered(Exception):
     """A cache did not tier an object that a scenario needs tiered."""
 
 
-def bucket_file(target: common.TierTarget, data: bytes) -> Optional[str]:
+def bucket_file(target: common.TierTarget, data: bytes) -> str | None:
     """Return the file of the cache's prefix of the bucket that holds data.
 
     Returns:
@@ -211,7 +210,7 @@ class Test:
             answer = web.request("GET", answer.header("Location"))
         return answer
 
-    def read(self, cache: common.Cache, name: str, data: bytes) -> Optional[str]:
+    def read(self, cache: common.Cache, name: str, data: bytes) -> str | None:
         """Read cache's object name, holding data, whole through cache.
 
         A redirect is followed without the token.
@@ -226,7 +225,7 @@ class Test:
             return f"{len(answer.body)} bytes, not the object"
         return None
 
-    def tier(self, cache: common.Cache, name: str, size: int) -> Optional[str]:
+    def tier(self, cache: common.Cache, name: str, size: int) -> str | None:
         """Have cache tier a new object of size, cache's object name.
 
         Read it through cache, cold, wait for it to land in the bucket,
@@ -305,7 +304,7 @@ class Test:
         return answer
 
 
-def each_cache(test: Test, check: Callable[[common.Cache], Optional[str]]) -> tuple[str, str]:
+def each_cache(test: Test, check: Callable[[common.Cache], str | None]) -> tuple[str, str]:
     """Run check() at each tiering cache, and sum up the problems.
 
     check() says what is wrong at a cache, or None; NotTiered, raised,
@@ -334,7 +333,7 @@ def tiered(test: Test) -> tuple[str, str]:
     It must land in the bucket, and the cache count a successful upload.
     """
 
-    def check(cache: common.Cache) -> Optional[str]:
+    def check(cache: common.Cache) -> str | None:
         name = "uploads_total"
         before = counted(cache, f"pelican_cache_tiering_{name}", result="success")
         why = test.tier(cache, "tiered", test.target(cache).threshold + OVER)
@@ -355,7 +354,7 @@ def threshold(test: Test) -> tuple[str, str]:
     been.
     """
 
-    def check(cache: common.Cache) -> Optional[str]:
+    def check(cache: common.Cache) -> str | None:
         size = test.target(cache).threshold
         under = test.put(cache, "under", size - 1)
         why = test.read(cache, "under", under)
@@ -371,7 +370,7 @@ def threshold(test: Test) -> tuple[str, str]:
     return each_cache(test, check)
 
 
-def redirect_problem(test: Test, cache: common.Cache, data: bytes, answer: web.Response) -> Optional[str]:
+def redirect_problem(test: Test, cache: common.Cache, data: bytes, answer: web.Response) -> str | None:
     """Return why answer is not right for a tiered object, or None.
 
     answer is a cache's answer to a GET of a tiered object whose bytes
@@ -423,7 +422,7 @@ def redirect(test: Test) -> tuple[str, str]:
     """
     notes: list[str] = []
 
-    def check(cache: common.Cache) -> Optional[str]:
+    def check(cache: common.Cache) -> str | None:
         name, data = test.tiered_object(cache)
         why = redirect_problem(test, cache, data, test.get_tiered(cache, name, {}))
         if why:
@@ -457,7 +456,7 @@ def ranges(test: Test) -> tuple[str, str]:
     """
     deviations: list[str] = []
 
-    def check(cache: common.Cache) -> Optional[str]:
+    def check(cache: common.Cache) -> str | None:
         name, data = test.tiered_object(cache)
         for request in RANGES:
             headers = {"Range": blocks.header(request)}
@@ -491,7 +490,7 @@ def client_get(test: Test) -> tuple[str, str]:
     """
     notes: list[str] = []
 
-    def check(cache: common.Cache) -> Optional[str]:
+    def check(cache: common.Cache) -> str | None:
         name, data = test.tiered_object(cache)
         url = f"{test.fed.url}/protected-a/{test.rel(cache, name)}"
         ways = [("named", ["--cache", cache.url])]
@@ -552,7 +551,7 @@ def client_get_file(test: Test, cache: common.Cache, name: str) -> tuple[int, st
 
 def proxied_after_tampering(
     test: Test, cache: common.Cache, name: str, data: bytes, other: bytes
-) -> Optional[str]:
+) -> str | None:
     """Return why a proxying cache mishandled its tampered object, or None.
 
     That is, why it served the bucket's substitute (other) for its
@@ -583,7 +582,7 @@ def proxied_after_tampering(
 
 def redirected_after_tampering(
     test: Test, cache: common.Cache, name: str, data: bytes, other: bytes
-) -> Optional[str]:
+) -> str | None:
     """Return why the client kept a tampered object's bytes, or None.
 
     That is, why `pelican object get` through a redirecting cache kept
@@ -613,7 +612,7 @@ def tampered(test: Test) -> tuple[str, str]:
     belies: it must fail, or get the object itself.
     """
 
-    def check(cache: common.Cache) -> Optional[str]:
+    def check(cache: common.Cache) -> str | None:
         name, data = test.tiered_object(cache, "tampered")
         path = bucket_file(test.target(cache), data)
         if path is None:
@@ -651,7 +650,7 @@ def overwritten(test: Test) -> tuple[str, str]:
             return answer.describe()
         return next((v for v, data in versions.items() if answer.body == data), "neither")
 
-    def check(cache: common.Cache) -> Optional[str]:
+    def check(cache: common.Cache) -> str | None:
         name, v1 = test.tiered_object(cache, "overwritten")
         cached_at = time.time()
         v2 = os.urandom(len(v1))

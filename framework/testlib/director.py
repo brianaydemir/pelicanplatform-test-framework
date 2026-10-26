@@ -18,7 +18,7 @@ falls short.
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlsplit
 
 from . import common, web
@@ -65,7 +65,7 @@ class Answer:
             broker, or "".
     """
 
-    status: Optional[int]
+    status: int | None
     location: str
     listed: list[str]
     broker: str
@@ -102,7 +102,7 @@ class Hints:
     """
 
     namespace: str
-    require_token: Optional[bool]
+    require_token: bool | None
     issuers: tuple[str, ...]
     generation_issuer: str
 
@@ -132,7 +132,7 @@ def hints(response: web.Response) -> Hints:
     )
 
 
-def ask(director: str, route: str, path: str, token: Optional[str] = None, query: str = "") -> Answer:
+def ask(director: str, route: str, path: str, token: str | None = None, query: str = "") -> Answer:
     """Return where director would send a GET of path.
 
     Args:

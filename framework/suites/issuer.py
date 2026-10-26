@@ -123,7 +123,7 @@ import secrets
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
 from testlib import accounts, collections, common, credentials, issuer, stores, web
@@ -242,7 +242,7 @@ def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
     return (FAIL, common.first(problems)) if problems else (PASS, note)
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None.
 
     There is nothing without an embedded issuer, or without a protected
@@ -298,7 +298,7 @@ class Test:
         self.share = ""
         self.data: dict[str, bytes] = {}
         self.seeded: list[str] = []
-        self.doomed: Optional[tuple[Tokens, float]] = None
+        self.doomed: tuple[Tokens, float] | None = None
         self._web_tokens: dict[str, str] = {}
         self.clients: dict[tuple[str, str], issuer.Client] = {}
         self._minted = 0
@@ -331,7 +331,7 @@ class Test:
         """
         return self.logins.get(role) or User(token=self.web_token(role))
 
-    def client(self, kind: str, namespace: Optional[str] = None) -> issuer.Client:
+    def client(self, kind: str, namespace: str | None = None) -> issuer.Client:
         """Return the suite's client of kind (see CLIENTS).
 
         The client is of the issuer origin's issuer of namespace (the
@@ -367,7 +367,7 @@ class Test:
         role: str,
         wanted: Sequence[str],
         kind: str = "device",
-        namespace: Optional[str] = None,
+        namespace: str | None = None,
     ) -> Tokens:
         """Return tokens from namespace's issuer, through the device flow.
 
@@ -888,7 +888,7 @@ def code(test: Test) -> tuple[str, str]:
                 + f" sent back with {back or 'nothing'}, not invalid_scope"
             )
 
-    def a_code(challenge: str) -> Optional[str]:
+    def a_code(challenge: str) -> str | None:
         """Return a code for the member's read of the archive, or None."""
         sent = issuer.authorize(client, test.user("member"), (f"{R}:/{ARCHIVE}",), challenge, "x" * 16)
         back = issuer.redirected(sent)
@@ -1158,7 +1158,7 @@ def federation_problems(test: Test, tokens: dict[str, str]) -> list[str]:
     return problems
 
 
-def reads_archive(test: Test, access: str) -> Optional[str]:
+def reads_archive(test: Test, access: str) -> str | None:
     """Return why access does not read archive/obj at the issuer origin.
 
     Return None if it does, and where the origin takes no direct

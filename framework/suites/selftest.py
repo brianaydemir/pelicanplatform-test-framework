@@ -32,7 +32,6 @@ import time
 import traceback
 from concurrent.futures import Future
 from dataclasses import dataclass
-from typing import Optional
 
 from testlib import common, control, credentials, director, jwt, metrics, stores, web
 from testlib.common import die, first, warn
@@ -86,7 +85,7 @@ HELD_WAIT, NAMED_WAIT = 30, 150
 SERVED_WAIT = 300
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test: no /protected-a to read from."""
     if NAMESPACE not in fed.exports:
         return f"this shape does not export /{NAMESPACE}"
@@ -122,7 +121,7 @@ class Test:
         """Return the object's URL at server_url, a server's data URL."""
         return f"{server_url}/{NAMESPACE}/{self.rel}"
 
-    def served(self, answer: web.Response) -> Optional[str]:
+    def served(self, answer: web.Response) -> str | None:
         """Return why answer is not the object, or None if it is."""
         if not answer.ok:
             return answer.describe()
@@ -231,7 +230,7 @@ def jwt_tokens(test: Test) -> tuple[str, str]:
     return PASS, f"{len(stores.unique(fed.origins))} origin(s); kid {head['kid']}"
 
 
-def verify_problem(fed: common.Federation, token: str, kid: str) -> Optional[str]:
+def verify_problem(fed: common.Federation, token: str, kid: str) -> str | None:
     """Return why jwt.verify() is wrong about token, or None if it is not.
 
     It is wrong if it does not find token's key, kid, in the first
@@ -284,7 +283,7 @@ def http_requests(test: Test) -> tuple[str, str]:
     return PASS, ", ".join(notes)
 
 
-def age(answer: web.Response) -> Optional[int]:
+def age(answer: web.Response) -> int | None:
     """Return answer's Age, in seconds, or None if it has none."""
     value = answer.header("Age")
     return int(value) if value.isdigit() else None

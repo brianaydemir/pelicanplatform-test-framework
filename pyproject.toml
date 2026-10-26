@@ -5,7 +5,7 @@ name = "brianaydemir-pelicanplatform-testing-framework"
 version = "0.0.0"
 description = "brianaydemir-pelicanplatform-testing-framework"
 readme = "README.md"
-requires-python = ">=3.11,<3.16"
+requires-python = ">=3.12,<3.16"
 license = "Apache-2.0"
 authors = [{ name = "Brian Aydemir", email = "baydemir@morgridge.org" }]
 dependencies = []
@@ -47,6 +47,9 @@ disable = [
 [tool.pyright]
 typeCheckingMode = "strict"
 
+# test.py puts framework/ on sys.path.
+extraPaths = ["framework"]
+
 # Be more forgiving.
 reportMissingTypeStubs = "none"
 
@@ -58,6 +61,13 @@ reportUnreachable = true
 
 [tool.pytest.ini_options]
 python_files = ["test_*.py"]
+
+[tool.typos.default.extend-words]
+# Test data that does not exist
+dne = "dne"
+# Link header priorities
+pri = "pri"
+pris = "pris"
 
 [tool.uv]
 # Set `package = true` once the project ships a package under src/.

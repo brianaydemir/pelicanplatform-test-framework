@@ -42,7 +42,7 @@ import time
 import traceback
 from collections import Counter
 from collections.abc import Callable, Iterable
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlsplit
 
 from testlib import blocks, common, credentials, stores, transfers
@@ -169,7 +169,7 @@ TREE = {"a": 1000, "b": 5000, "sub/c": 300, "sub/deeper/d": 7000}
 # Checksums, as `stat --checksums` reports them: hex.
 
 
-def digest_bytes(value: str) -> Optional[bytes]:
+def digest_bytes(value: str) -> bytes | None:
     """Return the digest a reported checksum stands for.
 
     Returns:
@@ -207,7 +207,7 @@ def not_found(text: str) -> bool:
     return bool(re.search(r"Error code 5011|\b404\b|does not exist|not found", text, re.I))
 
 
-def no_token_refusal(code: int, out: str, err: str, standalone: bool) -> Optional[str]:
+def no_token_refusal(code: int, out: str, err: str, standalone: bool) -> str | None:
     """Return why the client did not refuse a command run with no token.
 
     The client itself must refuse it, for want of a token (Error code
@@ -286,7 +286,7 @@ class Test:
             f.write(data)
         return path
 
-    def held(self, namespace: str, rel: str) -> list[Optional[str]]:
+    def held(self, namespace: str, rel: str) -> list[str | None]:
         """Return what each store holds at rel in namespace.
 
         See stores.held_anywhere().
@@ -338,7 +338,7 @@ class Test:
     # Running the client.
 
     def pelican_cmd(
-        self, *args: str, env: Optional[dict[str, str]] = None, cwd: Optional[str] = None
+        self, *args: str, env: dict[str, str] | None = None, cwd: str | None = None
     ) -> tuple[int, str, str]:
         """Return `pelican <args>`'s exit status, stdout, and stderr."""
         return self.session.pelican_cmd(*args, env=env or self.env, cwd=cwd or self.tmp)
@@ -347,7 +347,7 @@ class Test:
         """Return the client's arguments for namespace's token."""
         return ["-t", self.token_files[namespace]]
 
-    def expect_refusal(self, code: int, out: str, err: str) -> Optional[str]:
+    def expect_refusal(self, code: int, out: str, err: str) -> str | None:
         """Return why a command was not refused, or None if it was."""
         if code == 0:
             return "succeeded, but should have been refused"
@@ -355,7 +355,7 @@ class Test:
             return f"failed, but not by refusal: {last_line(err or out)}"
         return None
 
-    def expect_not_found(self, code: int, out: str, err: str) -> Optional[str]:
+    def expect_not_found(self, code: int, out: str, err: str) -> str | None:
         """Return why a command that should have found nothing did.
 
         Where the namespace lacks a capability that the command needs
@@ -378,7 +378,7 @@ class Test:
         out: str,
         err: str,
         passed: Callable[[], tuple[str, str]],
-        untouched: Callable[[], Optional[str]] = lambda: None,
+        untouched: Callable[[], str | None] = lambda: None,
     ) -> tuple[str, str]:
         """Return a scenario's verdict on its command.
 
@@ -434,7 +434,7 @@ def tree_objects(entries: Iterable[dict[str, Any]], root: str) -> Counter[tuple[
     return Counter((tree_rel(e["Name"], root), e.get("Size")) for e in entries if not e.get("IsCollection"))
 
 
-def unchanged(test: Test, objects: dict[str, bytes]) -> Optional[str]:
+def unchanged(test: Test, objects: dict[str, bytes]) -> str | None:
     """Return why not every origin still holds objects, or None if all do.
 
     objects maps each rel in /protected-a to its bytes.
@@ -445,7 +445,7 @@ def unchanged(test: Test, objects: dict[str, bytes]) -> Optional[str]:
     return None
 
 
-def nowhere(test: Test, rels: list[str]) -> Optional[str]:
+def nowhere(test: Test, rels: list[str]) -> str | None:
     """Return why some origin holds one of rels in /protected-a, or None."""
     held = [rel for rel in rels if not test.nowhere("protected-a", rel)]
     if held:
@@ -543,7 +543,7 @@ def ls_no_token(test: Test) -> tuple[str, str]:
 # stat
 
 
-def modified_problem(test: Test, namespace: str, info: dict[str, Any]) -> Optional[str]:
+def modified_problem(test: Test, namespace: str, info: dict[str, Any]) -> str | None:
     """Return why `stat`'s ModTime is not when the stores wrote the object.
 
     That is the earliest of the stores' times: a file's modification time,
@@ -1577,7 +1577,7 @@ RUN = {
 }
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test (no /protected-a), or None."""
     if "protected-a" not in fed.exports:
         return "this shape does not export /protected-a"

@@ -91,7 +91,6 @@ import traceback
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
 from testlib import (
@@ -175,7 +174,7 @@ DISCOVERY_FIELDS = (
 )
 
 
-def skip(_fed: common.Federation) -> Optional[str]:
+def skip(_fed: common.Federation) -> str | None:
     """Return None: every shape has a federation to test."""
     return None
 
@@ -243,7 +242,7 @@ class Probe:
         )
         return accounts.Api(web_url, token)
 
-    def upload(self) -> Optional[str]:
+    def upload(self) -> str | None:
         """Put each namespace's probe at every origin, once.
 
         See stores.seed() for how.
@@ -265,7 +264,7 @@ class Probe:
         self.uploaded = True
         return None
 
-    def get(self, setup: bool = False) -> Optional[str]:
+    def get(self, setup: bool = False) -> str | None:
         """Get the object through the federation with `pelican object get`.
 
         With setup, present the setup token, WLCG's, in place of the
@@ -368,7 +367,7 @@ def ready(probe: Probe) -> tuple[str, str]:
     Raises:
         Died: The federation never serves: nothing after it could pass.
     """
-    why: Optional[str] = None
+    why: str | None = None
     tries = 1 if "ready" in SETTLED else TRIES
     for n in range(1, tries + 1):
         if probe.fed.registry_approval:
@@ -394,7 +393,7 @@ def ready(probe: Probe) -> tuple[str, str]:
     )
 
 
-def cache_problem(probe: Probe, cache: common.Cache, answer: web.Response) -> Optional[str]:
+def cache_problem(probe: Probe, cache: common.Cache, answer: web.Response) -> str | None:
     """Return what is wrong with answer, cache's to a GET of the object."""
     if answer.status != 200:
         # What the cache says of its failure, e.g. that its director
@@ -625,7 +624,7 @@ def broker_problems(fed: common.Federation, path: str, namespace: str) -> list[s
     origin = director.host(fed.origins[0].url)
     problems: list[str] = []
 
-    def wrong(advertised: str) -> Optional[str]:
+    def wrong(advertised: str) -> str | None:
         got = urlsplit(advertised)
         query = parse_qs(got.query)
         if (got.scheme, got.netloc, got.path) != (want.scheme, want.netloc, BROKER_PATH):
@@ -667,7 +666,7 @@ BROKER_CONNECTIONS = "pelican_broker_connections_total"
 BROKER_OBJECTS = "pelican_broker_object_requests_total"
 
 
-def brokered(origin: common.Origin) -> tuple[Optional[str], str]:
+def brokered(origin: common.Origin) -> tuple[str | None, str]:
     """Return what is wrong with origin's count of what the broker carried.
 
     Behind a firewall, every fetch of a cache's comes through the broker,
@@ -775,7 +774,7 @@ def hints(probe: Probe) -> tuple[str, str]:
 
 
 def follow(
-    answer: web.Response, method: str, token: Optional[str], upload: Optional[bytes] = None
+    answer: web.Response, method: str, token: str | None, upload: bytes | None = None
 ) -> web.Response:
     """Return the answer to method at answer's Location.
 
@@ -784,7 +783,7 @@ def follow(
     return web.request(method, answer.header("Location"), token=token, upload=upload)
 
 
-def landed(answer: web.Response, servers: Sequence[tuple[str, str]]) -> Optional[str]:
+def landed(answer: web.Response, servers: Sequence[tuple[str, str]]) -> str | None:
     """Return which of servers a redirect sends the client to.
 
     Args:
@@ -1046,7 +1045,7 @@ def routed_to(fed: common.Federation, route: str, path: str, host: str) -> list[
     return director.naming(fed.directors, route, path, host)
 
 
-def down(probe: Probe, svc: str, web_url: str, route: str) -> Optional[str]:
+def down(probe: Probe, svc: str, web_url: str, route: str) -> str | None:
     """Declare server svc down, then up, and check what the directors name.
 
     As its admin, through its web API at web_url, declare it down for the

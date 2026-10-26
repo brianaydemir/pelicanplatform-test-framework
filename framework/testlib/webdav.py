@@ -13,7 +13,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from email.utils import parsedate_to_datetime
-from typing import Optional
 from urllib.parse import unquote, urlsplit
 
 from . import common, web
@@ -43,14 +42,12 @@ class Entry:
 
     path: str
     collection: bool
-    size: Optional[int]
-    modified: Optional[datetime] = None
-    etag: Optional[str] = None
+    size: int | None
+    modified: datetime | None = None
+    etag: str | None = None
 
 
-def propfind(
-    url: str, depth: str, token: Optional[str] = None, body: Optional[bytes] = None
-) -> web.Response:
+def propfind(url: str, depth: str, token: str | None = None, body: bytes | None = None) -> web.Response:
     """PROPFIND url with Depth depth, and body if given.
 
     depth is `0`, `1`, or `infinity`.
@@ -79,7 +76,7 @@ def parse(body: bytes) -> list[Entry]:
         if not href:
             raise ValueError("a response without an href")
         collection, size, modified = False, None, None
-        etag: Optional[str] = None
+        etag: str | None = None
         for propstat in response.findall(f"{DAV}propstat"):
             status = propstat.findtext(f"{DAV}status", "").split()
             if len(status) < 2 or status[1] != "200":
@@ -128,7 +125,7 @@ def relative(entries: list[Entry], base: str) -> dict[str, Entry]:
         raise ValueError(f"{base} is listed {len(prefixes)} times")
     found: dict[str, Entry] = {}
     for entry in entries:
-        prefix: Optional[str]
+        prefix: str | None
         if prefixes:
             prefix = prefixes[0]
         else:
@@ -146,7 +143,7 @@ def relative(entries: list[Entry], base: str) -> dict[str, Entry]:
     return found
 
 
-def problems(want: Mapping[str, Optional[int]], got: Mapping[str, Entry]) -> list[str]:
+def problems(want: Mapping[str, int | None], got: Mapping[str, Entry]) -> list[str]:
     """Return how a listing got differs from want.
 
     The listing's own entry ("") is ignored. Every object must have a
@@ -182,8 +179,8 @@ def copy_or_move(
     method: str,
     url: str,
     token: str,
-    destination: Optional[str],
-    overwrite: Optional[str] = None,
+    destination: str | None,
+    overwrite: str | None = None,
 ) -> web.Response:
     """Send COPY or MOVE (method) of url to destination.
 

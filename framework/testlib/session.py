@@ -24,7 +24,7 @@ import subprocess  # nosec B404
 import threading
 import time
 from collections.abc import Mapping
-from typing import Any, Optional, Union, cast
+from typing import Any, cast
 
 from . import common, credentials, report
 from .credentials import RWM, WLCG, Credential
@@ -40,7 +40,7 @@ def timed_out(seconds: float) -> str:
     return f"timed out after {seconds:.0f}s, and was killed"
 
 
-def _text(output: Union[str, bytes, None]) -> str:
+def _text(output: str | bytes | None) -> str:
     if output is None:
         return ""
     return output.decode(errors="replace") if isinstance(output, bytes) else output
@@ -83,8 +83,8 @@ class Session:
         self,
         tmp: str,
         profile: str = WLCG,
-        fed: Optional[common.Federation] = None,
-        run: Optional[str] = None,
+        fed: common.Federation | None = None,
+        run: str | None = None,
     ):
         """Start a pass.
 
@@ -110,8 +110,8 @@ class Session:
         self.sync_env = credentials.client_env(overwrites=False)
         self.namespaces: list[str] = credentials.exported(self.fed)
         self._server: dict[tuple[str, str, tuple[str, ...]], str] = {}
-        self._credential: dict[tuple[str, str, str], Optional[str]] = {}
-        self.stale_at: Optional[float] = None
+        self._credential: dict[tuple[str, str, str], str | None] = {}
+        self.stale_at: float | None = None
         self.commands_log = f"{self.var_dir('data/commands')}.log"
         with open(self.commands_log, "w", encoding="utf-8"):
             pass
@@ -139,9 +139,7 @@ class Session:
 
     # The server's own tokens.
 
-    def token_file(
-        self, namespace: str, scopes: tuple[str, ...] = RWM, profile: Optional[str] = None
-    ) -> str:
+    def token_file(self, namespace: str, scopes: tuple[str, ...] = RWM, profile: str | None = None) -> str:
         """Return the file of a `server` token for namespace with scopes.
 
         The token is of the session's profile, unless profile names one.
@@ -154,7 +152,7 @@ class Session:
             self._server[key] = path
         return self._server[key]
 
-    def token(self, namespace: str, scopes: tuple[str, ...] = RWM, profile: Optional[str] = None) -> str:
+    def token(self, namespace: str, scopes: tuple[str, ...] = RWM, profile: str | None = None) -> str:
         """Return the same token itself."""
         with open(self.token_file(namespace, scopes, profile), encoding="utf-8") as f:
             return f.read().strip()
@@ -177,7 +175,7 @@ class Session:
 
     # The credential table's tokens.
 
-    def credential_file(self, cred: Credential, namespace: str, op: str) -> Optional[str]:
+    def credential_file(self, cred: Credential, namespace: str, op: str) -> str | None:
         """Return the file of cred's token for op in namespace.
 
         op is `get` or `put`. The token is of the session's profile.
@@ -194,7 +192,7 @@ class Session:
                 self.stale_at = max(self.stale_at or expiry, expiry)
         return self._credential[key]
 
-    def credential_token(self, cred: Credential, namespace: str, op: str) -> Optional[str]:
+    def credential_token(self, cred: Credential, namespace: str, op: str) -> str | None:
         """Return the same token itself, or None."""
         path = self.credential_file(cred, namespace, op)
         if path is None:
@@ -214,8 +212,8 @@ class Session:
     def pelican_cmd(
         self,
         *args: str,
-        env: Optional[dict[str, str]] = None,
-        cwd: Optional[str] = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
         timeout: float = CLIENT_TIMEOUT,
     ) -> tuple[int, str, str]:
         """Run `pelican <args>` with no terminal.
@@ -243,8 +241,8 @@ class Session:
         infile: str,
         outfile: str,
         upload: bool = False,
-        env: Optional[dict[str, str]] = None,
-        cwd: Optional[str] = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
         timeout: float = CLIENT_TIMEOUT,
     ) -> tuple[int, str, str, str]:
         """Run stash_plugin, as HTCondor does, on the transfers in infile.
@@ -276,8 +274,8 @@ class Session:
     def _run(
         self,
         command: list[str],
-        env: Optional[dict[str, str]],
-        cwd: Optional[str],
+        env: dict[str, str] | None,
+        cwd: str | None,
         timeout: float,
     ) -> tuple[int, str, str]:
         """Run command, for pelican_cmd() or plugin_cmd()."""
@@ -305,7 +303,7 @@ class Session:
         status: int,
         out: str,
         err: str,
-        files: Optional[Mapping[str, str]] = None,
+        files: Mapping[str, str] | None = None,
     ) -> None:
         """Append a command, its exit status, and its output to commands_log.
 

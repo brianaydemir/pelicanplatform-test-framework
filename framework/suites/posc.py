@@ -43,7 +43,7 @@ import traceback
 from collections.abc import Callable
 from html.parser import HTMLParser
 from http.client import HTTPException, HTTPSConnection
-from typing import Optional
+from typing import override
 from urllib.parse import unquote, urlsplit
 
 from testlib import blocks, common, control, director, metrics, stores, web, webdav
@@ -134,9 +134,9 @@ def partial_put(
     send: int,
     hold: float,
     token: str,
-    sent: Optional[threading.Event] = None,
-    release: Optional[threading.Event] = None,
-) -> Optional[str]:
+    sent: threading.Event | None = None,
+    release: threading.Event | None = None,
+) -> str | None:
     """Start an upload to url, and cut it short.
 
     Send the headers and `send` bytes, hold the connection for `hold`
@@ -244,12 +244,12 @@ def partial_put(
         sock.close()
 
 
-def http(status: Optional[str]) -> str:
+def http(status: str | None) -> str:
     """Return how partial_put's status reads in a note."""
     return f"HTTP {status}" if status else "no response"
 
 
-def wrong_answer(status: Optional[str]) -> Optional[str]:
+def wrong_answer(status: str | None) -> str | None:
     """Return why partial_put's status is wrong for an upload cut short.
 
     Returns:
@@ -388,12 +388,12 @@ class Test:
         now = self.visible_sizes()
         return any(size > self.before_sizes.get(path, -1) for path, size in now.items())
 
-    def new_staging(self) -> Optional[str]:
+    def new_staging(self) -> str | None:
         """Return a staging file that has appeared since mark(), if any."""
         added = sorted(self.staging() - self.before)
         return added[0] if added else None
 
-    def object_file(self, name: str) -> Optional[str]:
+    def object_file(self, name: str) -> str | None:
         """Return the object's file in the first store with one, if any."""
         for store in self.stores:
             path = f"{store}/data/posc/{name}"
@@ -401,7 +401,7 @@ class Test:
                 return path
         return None
 
-    def found(self, name: str) -> Optional[str]:
+    def found(self, name: str) -> str | None:
         """Return where the object is, if anywhere.
 
         Returns:
@@ -454,9 +454,9 @@ class Test:
         total: int,
         send: int,
         hold: float,
-        sent: Optional[threading.Event] = None,
-        release: Optional[threading.Event] = None,
-    ) -> Optional[str]:
+        sent: threading.Event | None = None,
+        release: threading.Event | None = None,
+    ) -> str | None:
         """Make a partial_put() to object name, with the test's token.
 
         A connection that fails once it is made counts as no response.
@@ -489,8 +489,8 @@ class Upload:
     def __init__(self, test: Test, name: str, mode: str, total: int, send: int, hold: float = 60):
         self.sent = threading.Event()
         self.released = threading.Event()
-        self.status: Optional[str] = None
-        self.error: Optional[str] = None
+        self.status: str | None = None
+        self.error: str | None = None
         self.thread = threading.Thread(
             target=self._put, args=(test, name, mode, total, send, hold), daemon=True
         )
@@ -627,7 +627,7 @@ def stalled(test: Test) -> tuple[str, str]:
     name = f"{test.run}-stalled"
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
-    verdict: Optional[tuple[str, str]] = None
+    verdict: tuple[str, str] | None = None
     try:
         seen = watch(test, upload)
         if seen or blind(test, upload, seen):
@@ -710,7 +710,7 @@ def overwrite(test: Test) -> tuple[str, str]:
         return FAIL, f"the original's upload did not land ({answer.describe()})"
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
-    served: Optional[web.Response] = None
+    served: web.Response | None = None
     try:
         seen = watch(test, upload)
         if seen or blind(test, upload, seen):
@@ -840,7 +840,8 @@ class Links(HTMLParser):
         super().__init__()
         self.names: set[str] = set()
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+    @override
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         href = dict(attrs).get("href")
         if tag == "a" and href:
             self.names.add(unquote(urlsplit(href).path).rstrip("/").rsplit("/", 1)[-1])
@@ -869,8 +870,8 @@ def hidden(test: Test) -> tuple[str, str]:
     url = f"{test.origin.url}/protected-a/"
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
-    answer: Optional[web.Response] = None
-    listed: Optional[web.Response] = None
+    answer: web.Response | None = None
+    listed: web.Response | None = None
     try:
         staged = upload.started() and wait_for(lambda: test.new_staging() is not None, 10)
         there = os.path.isdir(posc_dir)
@@ -1116,7 +1117,7 @@ def expiry_idle(test: Test) -> Row:
     return PASS, f"idled {IDLE}s, past the {FILE_TIMEOUT}s timeout; HTTP {status}, whole"
 
 
-def unrestartable(test: Test) -> Optional[str]:
+def unrestartable(test: Test) -> str | None:
     """Return why the first origin cannot be restarted, or None if it can.
 
     The restart would give it configuration of the suite's own.
@@ -1126,7 +1127,7 @@ def unrestartable(test: Test) -> Optional[str]:
     return control.unavailable()
 
 
-def serving(test: Test) -> Optional[str]:
+def serving(test: Test) -> str | None:
     """Return why the namespace is not served as before, or None if it is.
 
     Every origin must answer a HEAD of the probe, every director name every
@@ -1150,7 +1151,7 @@ def serving(test: Test) -> Optional[str]:
     return None
 
 
-def settle(test: Test) -> Optional[str]:
+def settle(test: Test) -> str | None:
     """Wait until the federation serves the namespace as before.
 
     See serving(). A server that exited on its own ends the wait at once
@@ -1229,7 +1230,7 @@ RUN = {
 }
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     There is nothing without writes.

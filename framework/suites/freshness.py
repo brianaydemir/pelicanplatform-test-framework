@@ -60,7 +60,6 @@ import traceback
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import Optional, Union
 from urllib.parse import quote, urlencode
 
 from testlib import (
@@ -190,7 +189,7 @@ class Test:
         """Return rel's path in the federation."""
         return f"/{NAMESPACE}/{rel}"
 
-    def put(self, objects: Mapping[str, bytes]) -> Optional[str]:
+    def put(self, objects: Mapping[str, bytes]) -> str | None:
         """Put objects, by rel, and their collections, at every origin.
 
         Returns:
@@ -213,7 +212,7 @@ class Test:
         method: str,
         server_url: str,
         rel: str,
-        headers: Optional[Mapping[str, str]] = None,
+        headers: Mapping[str, str] | None = None,
         timeout: float = 120,
     ) -> web.Response:
         """Send method of rel at server_url, with the token."""
@@ -241,7 +240,7 @@ class Test:
 # What the caches answer.
 
 
-def age(answer: web.Response) -> Optional[int]:
+def age(answer: web.Response) -> int | None:
     """Return answer's Age, in seconds, or None if it has none."""
     value = answer.header("Age").strip()
     return int(value) if value.isdigit() else None
@@ -285,7 +284,7 @@ def seconds_of(value: str, name: str) -> int:
     return int(directives(value)[name])
 
 
-def served(answer: web.Response, data: bytes) -> Optional[str]:
+def served(answer: web.Response, data: bytes) -> str | None:
     """Return why answer is not a whole object holding data, or None."""
     if answer.status != 200:
         return answer.describe()
@@ -299,7 +298,7 @@ def sleep_until(moment: float) -> None:
     time.sleep(max(0.0, moment - time.time()))
 
 
-def poll(problem: Callable[[], Optional[str]], seconds: float, interval: float) -> Optional[str]:
+def poll(problem: Callable[[], str | None], seconds: float, interval: float) -> str | None:
     """Ask problem() what is wrong until it finds nothing, or seconds pass.
 
     It is asked at once, and then every interval seconds.
@@ -337,7 +336,7 @@ class Versions:
         self.v2 = {rel: os.urandom(b) for rel, (_, b) in sizes.items()}
         self.written = 0.0
 
-    def put_v1(self, test: Test) -> Optional[str]:
+    def put_v1(self, test: Test) -> str | None:
         """Put v1 of every object at every origin.
 
         Returns:
@@ -347,7 +346,7 @@ class Versions:
         self.written = time.time()
         return why
 
-    def put_v2(self, test: Test) -> Optional[str]:
+    def put_v2(self, test: Test) -> str | None:
         """Put v2 of every object at every origin.
 
         They are put once they will have another ETag.
@@ -359,8 +358,8 @@ class Versions:
         return test.put(self.v2)
 
     def which(
-        self, test: Test, cache: common.Cache, rel: str, request: Optional[blocks.Request]
-    ) -> tuple[Optional[str], str]:
+        self, test: Test, cache: common.Cache, rel: str, request: blocks.Request | None
+    ) -> tuple[str | None, str]:
         """Return which version a read of rel through cache came back as.
 
         request is the range to read, or None for the whole object; a
@@ -409,7 +408,7 @@ class Versions:
 # Phases: the origins sending one Cache-Control.
 
 
-def serving(test: Test) -> Optional[str]:
+def serving(test: Test) -> str | None:
     """Return why /protected-a is not served as before, or None if it is.
 
     Every director must name every origin for the probe, and every cache
@@ -430,7 +429,7 @@ def serving(test: Test) -> Optional[str]:
     return None
 
 
-def settle(test: Test) -> Optional[str]:
+def settle(test: Test) -> str | None:
     """Wait until the federation serves /protected-a as before.
 
     See serving(). A server that exited on its own ends the wait at once
@@ -442,7 +441,7 @@ def settle(test: Test) -> Optional[str]:
     return control.settle(lambda: serving(test), SETTLE_WAIT)
 
 
-def not_sent(test: Test, value: str) -> Optional[str]:
+def not_sent(test: Test, value: str) -> str | None:
     """Return why the origins do not send Cache-Control value, or None.
 
     They are asked directly, where they take direct clients, with the
@@ -465,7 +464,7 @@ def not_sent(test: Test, value: str) -> Optional[str]:
     return None
 
 
-def unreachable(test: Test, value: str) -> Optional[str]:
+def unreachable(test: Test, value: str) -> str | None:
     """Return why the origins can't be made to send Cache-Control value.
 
     Returns:
@@ -522,7 +521,7 @@ def only_if_cached(test: Test, _value: str) -> Row:
     if why:
         return FAIL, why
 
-    def sent_bytes() -> Optional[float]:
+    def sent_bytes() -> float | None:
         if not test.fed.native_origins:
             return None
         total = 0.0
@@ -619,7 +618,7 @@ def bare_get(url: str, test: Test, rel: str) -> tuple[web.Response, str]:
     return answer, director.host(url)
 
 
-def not_back(test: Test, target: Union[common.Cache, str], rel: str, data: bytes) -> Optional[str]:
+def not_back(test: Test, target: common.Cache | str, rel: str, data: bytes) -> str | None:
     """Return why a GET of rel at target does not get data, or None.
 
     target is a cache, or the URL of a director, whose bare path is asked
@@ -682,7 +681,7 @@ def no_negative_cache(test: Test, _value: str) -> Row:
     created = time.time()
     wait = PRESENCE_WAIT if len(test.origins) > 1 else 0
     took: list[float] = []
-    targets: list[Union[common.Cache, str]] = [*test.caches, *directors]
+    targets: list[common.Cache | str] = [*test.caches, *directors]
     for target in targets:
         why = poll(partial(not_back, test, target, rel, data), wait, 3)
         if why:
@@ -793,7 +792,7 @@ def downstream(test: Test, value: str) -> Row:
     return PASS, "; ".join([f"{len(test.v2)} cache(s)"] + notes)
 
 
-def depth_0(test: Test, cache: common.Cache, rel: str) -> tuple[Optional[webdav.Entry], str]:
+def depth_0(test: Test, cache: common.Cache, rel: str) -> tuple[webdav.Entry | None, str]:
     """Return the entry of a cache's Depth 0 PROPFIND of rel.
 
     Returns:
@@ -865,8 +864,8 @@ def origin_etags(test: Test, rel: str) -> set[str]:
 
 
 def not_current(
-    test: Test, cache: common.Cache, rel: str, size: int, old: Optional[str], etags: set[str]
-) -> Optional[str]:
+    test: Test, cache: common.Cache, rel: str, size: int, old: str | None, etags: set[str]
+) -> str | None:
     """Return why a cache's Depth 0 of rel is not current, or None.
 
     It must say the object is size bytes long, with an ETag other than
@@ -898,7 +897,7 @@ def propfind_overwrite(test: Test, value: str) -> Row:
         return FAIL, why
     problems: list[str] = []
     filled: dict[str, float] = {}
-    old: dict[str, Optional[str]] = {}
+    old: dict[str, str | None] = {}
     for cache in test.v2:
         rel = rels[cache.svc]
         filled[cache.svc] = time.time()
@@ -1054,7 +1053,7 @@ def immediate(test: Test, value: str) -> Row:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     changes = {"same": 0, "grown": OVERWRITE_CHANGE, "shrunk": -OVERWRITE_CHANGE}
     # Each object's first read, by its rel: whole, or a range.
-    reads: dict[str, Optional[blocks.Request]] = {}
+    reads: dict[str, blocks.Request | None] = {}
     rels: dict[str, list[str]] = {}
     sizes: dict[str, tuple[int, int]] = {}
     for cache in test.v2:
@@ -1114,7 +1113,7 @@ def immediate(test: Test, value: str) -> Row:
     return PASS, "new version " + ", ".join(notes)
 
 
-def ranged(data: bytes, request: blocks.Request, answer: web.Response) -> tuple[Optional[str], bool]:
+def ranged(data: bytes, request: blocks.Request, answer: web.Response) -> tuple[str | None, bool]:
     """Return what is wrong with answer to request, and if it was whole.
 
     Returns:
@@ -1135,7 +1134,7 @@ def ranged(data: bytes, request: blocks.Request, answer: web.Response) -> tuple[
     return why, False
 
 
-def introspected(test: Test, cache: common.Cache, rel: str) -> tuple[Optional[int], str]:
+def introspected(test: Test, cache: common.Cache, rel: str) -> tuple[int | None, str]:
     """Return how many instances of rel a V2 cache's introspection lists.
 
     It is asked as the cache's admin (`/api/v1.0/cache/introspect/list`,
@@ -1289,7 +1288,7 @@ class Case:
 
     scenario: str
     name: str
-    control: Optional[str]
+    control: str | None
     run: Callable[[Test, str], Row]
     v2: bool = True
 
@@ -1377,7 +1376,7 @@ def run_phase(test: Test, value: str, cases: Sequence[Case], results: common.Res
         warn(f"with the origins restored from Cache-Control '{value}', {why}")
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test: no /protected-a, or no cache."""
     if NAMESPACE not in fed.exports:
         return "this shape does not export /protected-a"

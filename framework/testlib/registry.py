@@ -21,7 +21,7 @@ import subprocess  # nosec B404
 import time
 import uuid
 from collections.abc import Mapping, Sequence
-from typing import Any, Optional
+from typing import Any
 
 from . import common, jwt, web
 
@@ -167,7 +167,7 @@ def token(
     issuer: str,
     audience: str = jwt.ANY_AUDIENCE,
     lifetime: int = 300,
-    jwks_doc: Optional[bytes] = None,
+    jwks_doc: bytes | None = None,
 ) -> str:
     """Return a token, as a server mints those the registry takes.
 
@@ -225,7 +225,7 @@ def documents(body: bytes) -> int:
     return found
 
 
-def as_jwks(document: Any) -> Optional[list[dict[str, Any]]]:
+def as_jwks(document: Any) -> list[dict[str, Any]] | None:
     """Return the keys of a JWKS, or None if document isn't one.
 
     Args:
@@ -262,7 +262,7 @@ def private_members(document: Any) -> list[str]:
 _THUMBPRINT_MEMBERS = {"EC": ("crv", "kty", "x", "y"), "RSA": ("e", "kty", "n")}
 
 
-def thumbprints(document: Any) -> Optional[frozenset[str]]:
+def thumbprints(document: Any) -> frozenset[str] | None:
     """Return the RFC 7638 thumbprint of each public key in a JWKS.
 
     Each is computed from the key's members rather than taken from its

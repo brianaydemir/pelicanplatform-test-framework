@@ -18,7 +18,6 @@ origins' own credentials.
 import glob
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from typing import Optional
 
 from . import common, credentials
 from .credentials import ALLOW, DENY
@@ -37,7 +36,7 @@ class OwnerCredential:
     """
 
     name: str
-    key: Optional[str]
+    key: str | None
     issuer: str
     description: str
 
@@ -160,7 +159,7 @@ def mint(
     side: str,
     out: str,
     profile: str,
-) -> Optional[str]:
+) -> str | None:
     """Write cred's token of profile for side of pair to file out; return it.
 
     Its scopes are for reading and writing the whole namespace, so only

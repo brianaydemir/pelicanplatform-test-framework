@@ -35,7 +35,7 @@ import subprocess  # nosec B404
 import sys
 import time
 from types import FrameType
-from typing import Any, NoReturn, Optional
+from typing import Any, NoReturn
 
 # No __pycache__ in the checkout, where the dev container would leave it
 # root's.
@@ -245,7 +245,7 @@ def serve_requests(helper: Helper, parent: int) -> None:
         time.sleep(POLL)
 
 
-def stopped(_signum: int, _frame: Optional[FrameType]) -> NoReturn:
+def stopped(_signum: int, _frame: FrameType | None) -> NoReturn:
     """Stop serving, putting back what the tests left (see serve())."""
     sys.exit(0)
 

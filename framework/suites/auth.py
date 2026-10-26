@@ -68,7 +68,7 @@ import time
 from collections.abc import Callable, Mapping
 from collections.abc import Set as AbstractSet
 from functools import cached_property
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 from testlib import accounts, common, credentials, director, jwt, stores, web
@@ -142,17 +142,17 @@ TOKEN_LISTS = "token-lists"  # nosec B105
 SCENARIOS[TOKEN_LISTS] = "a native origin tries each token of a request, in its header and query, up to 10"
 AUDIENCE_SPECIFIC = "audience-specific"
 SCENARIOS[AUDIENCE_SPECIFIC] = (
-    "a token for the first origin's audience is taken there alone; one that lists `any` too," " everywhere"
+    "a token for the first origin's audience is taken there alone; one that lists `any` too, everywhere"
 )
 TIME_CLAIMS = "time-claims"
 SCENARIOS[TIME_CLAIMS] = (
-    "nbf or iat ahead by more than 60s of clock skew is refused, by less is not; exp past is" " refused"
+    "nbf or iat ahead by more than 60s of clock skew is refused, by less is not; exp past is refused"
 )
 MALFORMED = "malformed-claims"
 SCENARIOS[MALFORMED] = "no exp, kid, or aud, an unknown kid, or a signature by none or HS256: refused"
 STANDALONE = "standalone-refusals"
 SCENARIOS[STANDALONE] = (
-    "a native origin refuses with 401 or 403 and token hints standalone, with 401 and none" " federated"
+    "a native origin refuses with 401 or 403 and token hints standalone, with 401 and none federated"
 )
 WEB_TOKEN_STRICT = "web-token-strict"  # nosec B105
 SCENARIOS[WEB_TOKEN_STRICT] = (
@@ -162,7 +162,7 @@ NARROW_CLIMB = "narrow-climb"
 SCENARIOS[NARROW_CLIMB] = "a token for one collection reaches nothing beside it with `..`, however spelled"
 NESTED = "nested-protected"
 SCENARIOS[NESTED] = (
-    "a protected prefix inside a public one (/public/secret) is served to no one without a" " token"
+    "a protected prefix inside a public one (/public/secret) is served to no one without a token"
 )
 
 # The checks that present no storage token, or none of a profile but
@@ -216,7 +216,7 @@ class Test:
         self.sibling = f"{self.object}-sibling"
         self.sibling_bytes = os.urandom(65536)
 
-    def token(self, cred: Credential, namespace: str, op: str) -> Optional[str]:
+    def token(self, cred: Credential, namespace: str, op: str) -> str | None:
         """Return cred's token for op (`get` or `put`) in namespace.
 
         The token is of the session's profile.
@@ -245,11 +245,11 @@ class Test:
         """Return namespace's capabilities."""
         return self.exports[namespace]
 
-    def whose(self, body: bytes) -> Optional[str]:
+    def whose(self, body: bytes) -> str | None:
         """Return the namespace whose test object body is, if any."""
         return next((ns for ns, data in self.object_bytes.items() if data == body), None)
 
-    def stored(self, origin: common.Origin, namespace: str, rel: str) -> Optional[str]:
+    def stored(self, origin: common.Origin, namespace: str, rel: str) -> str | None:
         """Return what origin holds at rel in namespace (see stores.held()).
 
         Raises:
@@ -419,7 +419,7 @@ def file_key_ids(path: str) -> frozenset[str]:
         die(f"framework/var/{path} is not a JWKS; remove it and run ./fed.sh keys init")
 
 
-def get_jwks(url: str, out: str, name: str) -> tuple[web.Response, Optional[frozenset[str]], list[str]]:
+def get_jwks(url: str, out: str, name: str) -> tuple[web.Response, frozenset[str] | None, list[str]]:
     """GET the JWKS at url, keeping the response as name in out.
 
     Returns:
@@ -649,7 +649,7 @@ def scope_problem(
     rel: str,
     answer: web.Response,
     allowed: bool,
-    want: Optional[bytes],
+    want: bytes | None,
 ) -> str:
     """Return what is wrong with how origin answered a write of rel.
 
@@ -692,7 +692,7 @@ def climbing(start: str, levels: int, rest: str) -> list[str]:
 
 
 # A climb: a path, the token it presents, and the bytes it must not reach.
-Climb = tuple[str, Optional[str], frozenset[bytes]]
+Climb = tuple[str, str | None, frozenset[bytes]]
 
 
 def signing_keys(fed: common.Federation) -> dict[str, bytes]:
@@ -706,7 +706,7 @@ def signing_keys(fed: common.Federation) -> dict[str, bytes]:
 
 
 def traversal_climbs(
-    test: Test, fed: common.Federation, sentinel: str, sentinels: frozenset[bytes]
+    test: Test, fed: common.Federation, sentinel_file: str, sentinels: frozenset[bytes]
 ) -> dict[str, list[Climb]]:
     """Return the traversal check's climbs, by what they climb toward.
 
@@ -716,7 +716,7 @@ def traversal_climbs(
       namespace   another protected namespace's test object, where its
                   storage is not the start's own (unlike a pstore's
                   /public and /protected-a)
-      store       sentinel, a file in each origin's store beside the
+      store       sentinel_file, a file in each origin's store beside the
                   exports' storage (holding one of sentinels)
       filesystem  the origin's signing key, beside its store, in
                   /fed/issuer-keys, where an origin keeps its store in
@@ -735,7 +735,7 @@ def traversal_climbs(
             climbs["namespace"] += [
                 (path, token, forbidden) for path in climbing(start, 1, f"{target}/{test.object}")
             ]
-        climbs["store"] += [(path, token, sentinels) for path in climbing(start, 1, sentinel)]
+        climbs["store"] += [(path, token, sentinels) for path in climbing(start, 1, sentinel_file)]
         for name, key in keys.items():
             climbs["filesystem"] += [
                 (path, token, frozenset({key})) for path in climbing(start, 2, f"fed/issuer-keys/{name}")
@@ -744,12 +744,12 @@ def traversal_climbs(
 
 
 def symlink_climbs(
-    test: Test, fed: common.Federation, sentinel: str, sentinels: frozenset[bytes]
+    test: Test, fed: common.Federation, sentinel_file: str, sentinels: frozenset[bytes]
 ) -> tuple[list[Climb], list[str]]:
     """Make the traversal check's climbs that are symbolic links.
 
     The links are made in each store on disk, in the first exported
-    protected namespace's storage, under data/auth/: one to sentinel,
+    protected namespace's storage, under data/auth/: one to sentinel_file,
     beside the exports' storage, by a relative path, and one to each
     origin's signing key, by the absolute path its container sees. A
     backend that follows links would serve what they point to (Pelican's
@@ -765,7 +765,7 @@ def symlink_climbs(
     if start is None or not disk:
         return [], []
     # Each link: its name, its target, and what it must not reach.
-    links = [("store", f"../../../{sentinel}", sentinels)]
+    links = [("store", f"../../../{sentinel_file}", sentinels)]
     links += [
         (f"key-{name}", f"/fed/issuer-keys/{name}", frozenset({key}))
         for name, key in signing_keys(fed).items()
@@ -790,19 +790,19 @@ def check_traversal(test: Test, fed: common.Federation) -> None:
     as is (http.client normalizes nothing). Each must not come back with
     the bytes it climbs toward. A row per server and kind of climb.
     """
-    sentinel = f"traversal-{test.run}"
+    sentinel_file = f"traversal-{test.run}"
     written: dict[str, bytes] = {}
     links: list[str] = []
     try:
         for origin in stores.unique(fed.origins):
             data = os.urandom(4096)
-            error = stores.write_file(origin.store, sentinel, data)
+            error = stores.write_file(origin.store, sentinel_file, data)
             if error:
                 die(f"could not write the traversal check's file: {error}")
-            written[f"{origin.store}/{sentinel}"] = data
+            written[f"{origin.store}/{sentinel_file}"] = data
         sentinels = frozenset(written.values())
-        climbs = traversal_climbs(test, fed, sentinel, sentinels)
-        climbs["symlink"], links = symlink_climbs(test, fed, sentinel, sentinels)
+        climbs = traversal_climbs(test, fed, sentinel_file, sentinels)
+        climbs["symlink"], links = symlink_climbs(test, fed, sentinel_file, sentinels)
         for target, url, _ in targets(fed):
             for kind, kind_climbs in climbs.items():
                 leaks: list[str] = []
@@ -973,11 +973,11 @@ def check_query_token(test: Test, fed: common.Federation) -> None:
 
 def raw_token(
     test: Test,
-    times: Optional[Mapping[str, int]] = None,
+    times: Mapping[str, int] | None = None,
     drop: tuple[str, ...] = (),
-    extra: Optional[Mapping[str, Any]] = None,
-    head: Optional[Mapping[str, Any]] = None,
-    secret: Optional[bytes] = None,
+    extra: Mapping[str, Any] | None = None,
+    head: Mapping[str, Any] | None = None,
+    secret: bytes | None = None,
 ) -> str:
     """Return a token like `server`'s for /protected-a, but altered.
 
@@ -1200,7 +1200,7 @@ UNDEFINED_VERSIONS = {
 }
 
 
-def malformed_tokens(test: Test, fed: common.Federation) -> list[tuple[str, str, Optional[bool]]]:
+def malformed_tokens(test: Test, fed: common.Federation) -> list[tuple[str, str, bool | None]]:
     """Return the malformed-claims check's tokens.
 
     Each is like `server`'s for /protected-a but for one thing.
@@ -1605,7 +1605,7 @@ def climb(
     test: Test,
     target: str,
     url: str,
-    origin: Optional[common.Origin],
+    origin: common.Origin | None,
     op: str,
     scope: str,
     token: str,
@@ -1675,7 +1675,7 @@ def climb(
 NESTED_TRIES, NESTED_INTERVAL = 8, 15
 
 
-def nested_export(fed: common.Federation) -> Optional[tuple[common.Owner, common.Export]]:
+def nested_export(fed: common.Federation) -> tuple[common.Owner, common.Export] | None:
     """Return another owner's export that a token protects, and its owner.
 
     The export is inside a namespace of the origins that anyone may read.
@@ -1817,7 +1817,7 @@ def nested_token(
         return f.read().strip()
 
 
-def skip(_fed: common.Federation) -> Optional[str]:
+def skip(_fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     There is always something: every shape exports a namespace, where

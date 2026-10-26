@@ -26,7 +26,7 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Optional, cast
+from typing import Any, cast, override
 
 UPSTREAM = os.environ.get("RECORDER_UPSTREAM", "http://metadata-verifier:9999/events")
 DIR = os.environ.get("RECORDER_DIR", "/captures")
@@ -70,7 +70,7 @@ def parse_multipart(content_type: str, body: bytes) -> list[tuple[dict[str, str]
     return parts
 
 
-def split_event(content_type: str, body: bytes) -> tuple[bytes, Optional[bytes]]:
+def split_event(content_type: str, body: bytes) -> tuple[bytes, bytes | None]:
     """Return the event's JSON bytes and the blob (or None).
 
     Raises:
@@ -78,8 +78,8 @@ def split_event(content_type: str, body: bytes) -> tuple[bytes, Optional[bytes]]
     """
     if not content_type.lower().startswith("multipart/"):
         return body, None
-    event: Optional[bytes] = None
-    blob: Optional[bytes] = None
+    event: bytes | None = None
+    blob: bytes | None = None
     for headers, payload in parse_multipart(content_type, body):
         if event is None and "json" in headers.get("content-type", ""):
             event = payload
@@ -113,7 +113,8 @@ class Handler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, format: str, *args: Any) -> None:  # pylint: disable=redefined-builtin
+    @override
+    def log_message(self, format: str, *args: Any) -> None:
         """Log nothing: do_POST prints a line per event instead."""
 
     def reply(self, status: int, data: bytes) -> None:
@@ -190,7 +191,7 @@ class Handler(BaseHTTPRequestHandler):
         )
 
         name = opath.rsplit("/", 1)[-1]
-        fault: Optional[str] = None
+        fault: str | None = None
         with lock:
             fail_once = name.startswith("fail-once-") and eid not in failed_once
             if fail_once:

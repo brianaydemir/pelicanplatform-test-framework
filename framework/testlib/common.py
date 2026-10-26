@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import cached_property
-from typing import Any, NoReturn, Optional, cast
+from typing import Any, NoReturn, cast
 from urllib.parse import urlsplit
 
 from . import report as report_module
@@ -117,12 +117,12 @@ def select(args: Sequence[str], suites: Mapping[str, Sequence[str]]) -> dict[str
 # framework/var and the Pelican binaries in it.
 
 
-def as_object(value: Any) -> Optional[dict[str, Any]]:
+def as_object(value: Any) -> dict[str, Any] | None:
     """Return value, a parsed JSON value, if it is an object; else None."""
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
 
 
-def as_array(value: Any) -> Optional[list[Any]]:
+def as_array(value: Any) -> list[Any] | None:
     """Return value, a parsed JSON value, if it is an array; else None."""
     if not isinstance(value, list):
         return None
@@ -153,7 +153,7 @@ def binary(name: str) -> str:
     return path
 
 
-def server_binary() -> Optional[str]:
+def server_binary() -> str | None:
     """Return the pelican-server to run server-only commands with.
 
     The client lacks those commands.
@@ -175,7 +175,7 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def sha256(path: str) -> Optional[str]:
+def sha256(path: str) -> str | None:
     """Return the file's SHA-256, or None if there is no such file."""
     found = hashlib.sha256()
     try:
@@ -220,7 +220,7 @@ def wait_for(condition: Callable[[], bool], seconds: float, interval: float = 0.
     return True
 
 
-def shown(path: Optional[str]) -> str:
+def shown(path: str | None) -> str:
     """Return how a message names path: one under framework/var, or a URL.
 
     Returns:
@@ -283,7 +283,7 @@ def timestamp(when: datetime) -> str:
     return when.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def parse_rfc3339(value: str) -> Optional[datetime]:
+def parse_rfc3339(value: str) -> datetime | None:
     """Return the time an RFC 3339 string stands for, or None if not one.
 
     Go writes a time.Time in JSON as one, with as many fractional digits
@@ -843,7 +843,7 @@ class Federation:
         return self._line("origin-firewalled") == "true"
 
     @cached_property
-    def transfer_api(self) -> Optional[TransferApi]:
+    def transfer_api(self) -> TransferApi | None:
         """Where the transfer API is served, if it is (see TransferApi).
 
         `<URL> <issuer> <key dir> <service> <exports|none>`, or `off`.
@@ -883,7 +883,7 @@ class Federation:
         return found
 
     @cached_property
-    def oidc_issuer(self) -> Optional[str]:
+    def oidc_issuer(self) -> str | None:
         """The OIDC issuer URL of the identity provider (`-p auth-oidc`).
 
         The servers send their users to log in through it. It is None if
@@ -893,7 +893,7 @@ class Federation:
         return None if found == "off" else found
 
     @cached_property
-    def pelican_version(self) -> Optional[str]:
+    def pelican_version(self) -> str | None:
         """The version that every server should report.
 
         It is PELICAN_TAG's, without the `v`; None if the shape runs images

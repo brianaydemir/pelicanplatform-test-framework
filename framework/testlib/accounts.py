@@ -17,7 +17,7 @@ import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlencode
 
 from . import common, web
@@ -53,7 +53,7 @@ class Answer:
         data: The decoded JSON body, or None.
     """
 
-    status: Optional[int]
+    status: int | None
     data: Any
 
     @property
@@ -90,15 +90,15 @@ class Api:
     """
 
     url: str
-    token: Optional[str]
-    cookie: Optional[str] = None
+    token: str | None
+    cookie: str | None = None
 
     def call(
         self,
         method: str,
         path: str,
         body: Any = None,
-        headers: Optional[Mapping[str, str]] = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Answer:
         """Send method to path, with body as JSON if given, and headers."""
         upload = None if body is None else json.dumps(body).encode()
@@ -170,7 +170,7 @@ def agree_to_aup(api: Api) -> None:
     must(api.call("POST", MY_AUP, {"version": version}), f"agreeing to AUP {version}")
 
 
-def find_user(api: Api, username: str) -> Optional[str]:
+def find_user(api: Api, username: str) -> str | None:
     """Return the ID of the user named username, if there is one.
 
     Raises:
@@ -203,7 +203,7 @@ def set_status(api: Api, user_id: str, status: str) -> Answer:
     return api.call("PUT", f"{USERS}/{user_id}/status", {"status": status})
 
 
-def delete_user(api: Api, user_id: str) -> Optional[str]:
+def delete_user(api: Api, user_id: str) -> str | None:
     """Delete the user, as a user administrator.
 
     The server keeps the record, marked deleted, and frees its name.
@@ -215,7 +215,7 @@ def delete_user(api: Api, user_id: str) -> Optional[str]:
     return None if answer.ok else f"deleting user {user_id}: {answer.describe()}"
 
 
-def find_group(api: Api, name: str) -> Optional[str]:
+def find_group(api: Api, name: str) -> str | None:
     """Return the ID of the group named name, if api's user may see one.
 
     Raises:
@@ -287,7 +287,7 @@ def remove_member(api: Api, group_id: str, user_id: str) -> None:
     )
 
 
-def delete_group(api: Api, group_id: str) -> Optional[str]:
+def delete_group(api: Api, group_id: str) -> str | None:
     """Delete the group, as its owner or an administrator.
 
     Returns:

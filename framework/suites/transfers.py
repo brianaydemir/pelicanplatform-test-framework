@@ -40,7 +40,6 @@ import sys
 import time
 from collections import Counter
 from concurrent.futures import as_completed
-from typing import Optional
 from urllib.parse import urljoin, urlsplit
 
 from testlib import common, credentials, stores, transfers, web
@@ -67,7 +66,7 @@ ONE_PROFILE = tuple(
 ROUTE_SERVERS = {"cache": "cache", "direct": "origin", "named": "named-cache"}
 
 
-def skip(_fed: common.Federation) -> Optional[str]:
+def skip(_fed: common.Federation) -> str | None:
     """Return None, as there is always something to test.
 
     Every shape exports a namespace that some scenario uses.
@@ -75,7 +74,7 @@ def skip(_fed: common.Federation) -> Optional[str]:
     return None
 
 
-def token_path(scenario: Scenario) -> Optional[str]:
+def token_path(scenario: Scenario) -> str | None:
     """Return where the plugin finds the scenario's token, or None if none.
 
     The plugin chooses among every file in its credentials directory, so
@@ -126,7 +125,7 @@ class Plan:
         self.out = out
         self.scenarios = scenarios
         self.batches = batches
-        self.token_files: dict[str, Optional[str]] = {}
+        self.token_files: dict[str, str | None] = {}
         self.statuses: dict[str, int] = {}
         self.killed: set[str] = set()
         self.http_failures: dict[str, str] = {}
@@ -155,7 +154,7 @@ def runnable(fed: common.Federation, selected: list[str], report: Report) -> lis
     scenarios: list[Scenario] = []
     moot: dict[str, str] = {}
     for scenario in (transfers.placed(transfers.BY_NAME[n], fed.exports) for n in selected):
-        why: Optional[str] = None
+        why: str | None = None
         if not transfers.exported(scenario, fed.exports):
             why = f"this shape does not export /{scenario.namespace}"
         elif scenario.named and not fed.federated_caches:
@@ -237,7 +236,7 @@ def seed_pstore(origin: common.Origin, exports: transfers.Exports, tokens: dict[
     Objects it already holds, byte for byte, are skipped.
     """
 
-    def seed_one(job: tuple[str, str]) -> Optional[str]:
+    def seed_one(job: tuple[str, str]) -> str | None:
         namespace, rel = job
         with open(f"{origin.store_of(namespace)}/{rel}", "rb") as f:
             data = f.read()
@@ -342,7 +341,7 @@ def redact(url: str) -> str:
 
 
 def http_fetch(
-    method: str, url: str, token: Optional[str], upload: Optional[str] = None
+    method: str, url: str, token: str | None, upload: str | None = None
 ) -> list[tuple[str, web.Response]]:
     """Send method to url, and follow its redirects, as `curl -L` does.
 
@@ -393,7 +392,7 @@ def http_transfer(session: Session, plan: Plan, batch: Batch) -> None:
     """
     s = batch.scenario
     fed = session.fed
-    token: Optional[str] = None
+    token: str | None = None
     token_file = plan.token_files[s.name]
     if token_file:
         with open(token_file, encoding="utf-8") as f:
@@ -576,7 +575,7 @@ def uploaded_hashes(
         for url in batch.urls
     ]
 
-    def read_back(job: tuple[common.Origin, str, str]) -> tuple[Optional[str], str]:
+    def read_back(job: tuple[common.Origin, str, str]) -> tuple[str | None, str]:
         origin, namespace, rel = job
         try:
             return stores.held(origin, namespace, rel, tokens[namespace]), ""

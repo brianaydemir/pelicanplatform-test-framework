@@ -57,7 +57,6 @@ import subprocess  # nosec B404
 import time
 import traceback
 from collections.abc import Callable, Sequence
-from typing import Optional, Union
 from urllib.parse import urlsplit
 
 from testlib import (
@@ -108,7 +107,7 @@ ONE_PROFILE = tuple(SCENARIOS)
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note. A scenario returns its status and note, or its rows.
 Row = tuple[str, str, str]
-Rows = Union[tuple[str, str], list[Row]]
+Rows = tuple[str, str] | list[Row]
 
 # How long the registry and a server's JWKS may take to show a key added
 # or removed: the servers reread their key directories every minute
@@ -144,7 +143,7 @@ SQLITE_MAGIC = b"SQLite format 3"
 OBJECT_SIZE = 200_000
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None.
 
     There is nothing where the host may not write the servers' keys, in
@@ -238,7 +237,7 @@ def demote_key(dirs: Sequence[str], name: str) -> str:
     return new_name
 
 
-def key_ids_at(url: str) -> Optional[frozenset[str]]:
+def key_ids_at(url: str) -> frozenset[str] | None:
     """Return the kids in the JWKS at url, or None if it serves none."""
     answer = web.request("GET", url)
     if answer.status != 200:
@@ -285,7 +284,7 @@ class Test:
         self.cache_key = common.signing_key(f"issuer-keys/{self.cache.svc}") if self.cache else ""
         self.added: list[tuple[list[str], str]] = []
         self.rotated: list[tuple[list[str], str]] = []
-        self._cache_name: Optional[str] = None
+        self._cache_name: str | None = None
 
     def put_probe(self) -> None:
         """Put the probe object at every origin, once."""
@@ -349,7 +348,7 @@ class Test:
         """
         return director.naming(self.fed.directors, route, self.path, host)
 
-    def wait_named(self, route: str, host: str, seconds: float = NAMED_WAIT) -> Optional[str]:
+    def wait_named(self, route: str, host: str, seconds: float = NAMED_WAIT) -> str | None:
         """Wait until every director names host for the probe.
 
         A server that exited on its own ends the wait at once
@@ -359,7 +358,7 @@ class Test:
             Why they did not all within seconds, or None if they did.
         """
 
-        def unnamed() -> Optional[str]:
+        def unnamed() -> str | None:
             named = self.named(route, host)
             if len(named) == len(self.fed.directors):
                 return None
@@ -457,7 +456,7 @@ def hot_add(test: Test) -> list[Row]:
     host = test.origin_host()
     rows: list[Row] = []
     seen: dict[str, float] = {}
-    dropped: Optional[float] = None
+    dropped: float | None = None
     started = time.monotonic()
     while time.monotonic() - started < KEY_WAIT and len(seen) < len(sources):
         for case, url in sources.items():
@@ -530,7 +529,7 @@ def hot_rotate(test: Test) -> list[Row]:
     test.put_probe()
     cache_name = test.cache_name()
     old_tokens = {p: test.signed_with(test.origin_key, p) for p in credentials.PROFILES}
-    client: Optional[issuer.Client] = None
+    client: issuer.Client | None = None
     admin_web = ""
     if fed.embedded_issuer and not fed.external_issuer:
         admin_web = credentials.mint_admin(
@@ -569,7 +568,7 @@ def hot_rotate(test: Test) -> list[Row]:
     refused_old: dict[tuple[str, str], float] = {}
     # The first answer to an old key's token that was neither.
     unanswered_old: dict[tuple[str, str], tuple[float, str]] = {}
-    issuer_kid_at: Optional[float] = None
+    issuer_kid_at: float | None = None
     registry_at: dict[str, float] = {}
     started = time.monotonic()
     while True:
@@ -708,7 +707,7 @@ def hot_rotate(test: Test) -> list[Row]:
 # master-key
 
 
-def sealed_with(path: str) -> Optional[frozenset[str]]:
+def sealed_with(path: str) -> frozenset[str] | None:
     """Return the kids with which the master key file at path is sealed.
 
     path is under framework/var. The file seals the master key once for
@@ -784,7 +783,7 @@ def set_aside(test: Test, svc: str, retired: Sequence[str], key_file: str) -> st
 
 def put_keys_back(
     svc: str, dirs: Sequence[str], kept: str, retired: Sequence[str], key_file: str
-) -> Optional[str]:
+) -> str | None:
     """Put svc's retired keys and master key file back, and start it again.
 
     It is stopped first.
@@ -818,7 +817,7 @@ def put_keys_back(
     return None
 
 
-def held_with_age(test: Test, cache: common.Cache) -> Optional[int]:
+def held_with_age(test: Test, cache: common.Cache) -> int | None:
     """Return the Age with which cache serves the probe.
 
     Returns:
@@ -831,7 +830,7 @@ def held_with_age(test: Test, cache: common.Cache) -> Optional[int]:
     return int(age) if age.isdigit() else None
 
 
-def hold_probe(test: Test, cache: common.Cache) -> Optional[str]:
+def hold_probe(test: Test, cache: common.Cache) -> str | None:
     """Have cache hold the probe, by reading it whole.
 
     The cache may refuse it for up to PROBE_WAIT seconds, as after
@@ -940,7 +939,7 @@ def master_key(test: Test) -> list[Row]:
 
 def restore_cache(
     test: Test, cache: common.Cache, dirs: Sequence[str], kept: str, retired: Sequence[str]
-) -> Optional[str]:
+) -> str | None:
     """Put cache's retired keys and master key file back, and restart it.
 
     That is put_keys_back(); then every director must name it again.
@@ -966,7 +965,7 @@ def restore_cache(
 # pstore-master-key
 
 
-def stored_probe(test: Test, origin: common.Origin, key: Optional[str] = None) -> Optional[str]:
+def stored_probe(test: Test, origin: common.Origin, key: str | None = None) -> str | None:
     """Return why a pstore origin's storage API does not stat the probe.
 
     Its admin asks, by a token signed with key, or with the origin's
@@ -1073,7 +1072,7 @@ def pstore_master_key(test: Test) -> list[Row]:
     return rows
 
 
-def sent_bytes(fed: common.Federation) -> Optional[float]:
+def sent_bytes(fed: common.Federation) -> float | None:
     """Return how many bytes the native origins have sent for GETs.
 
     Returns:

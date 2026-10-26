@@ -17,7 +17,7 @@ as `url`.
 
 import json
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 from . import common, credentials, web
@@ -75,7 +75,7 @@ def decoded(answer: web.Response) -> Any:
         return None
 
 
-def stats(cache: common.Cache) -> Optional[dict[str, Any]]:
+def stats(cache: common.Cache) -> dict[str, Any] | None:
     """Return what cache's /api/v1.0/cache/stats says.
 
     Returns:
@@ -127,7 +127,7 @@ class Blocks:
         return f"{self.held} of {self.total} blocks"
 
 
-def blocks_held(cache: common.Cache, token: str, url: str) -> tuple[Optional[Blocks], str]:
+def blocks_held(cache: common.Cache, token: str, url: str) -> tuple[Blocks | None, str]:
     """Return which blocks of the object that cache keys by url it holds.
 
     url is as object_url() makes it. The cache's admin, the holder of
@@ -156,7 +156,7 @@ def blocks_held(cache: common.Cache, token: str, url: str) -> tuple[Optional[Blo
     )
 
 
-def held_inline(cache: common.Cache, token: str, url: str) -> tuple[Optional[bool], str]:
+def held_inline(cache: common.Cache, token: str, url: str) -> tuple[bool | None, str]:
     """Return whether cache holds the object it keys by url inline.
 
     That is in its database, rather than in a file of blocks: a V2 cache

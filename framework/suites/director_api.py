@@ -52,7 +52,7 @@ import traceback
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlsplit
 
 from testlib import ads, common, credentials, director, metrics, stores, web, webdav
@@ -324,7 +324,7 @@ def objects(value: Any) -> list[dict[str, Any]]:
     return [common.as_object(v) or {} for v in common.as_array(value) or []]
 
 
-def listed_servers(answer: web.Response) -> Optional[list[dict[str, Any]]]:
+def listed_servers(answer: web.Response) -> list[dict[str, Any]] | None:
     """Return answer's list of servers, or None if it is not one."""
     found = common.as_array(parse(answer)) if answer.status == 200 else None
     return None if found is None else objects(found)
@@ -358,7 +358,7 @@ def caps_json(caps: frozenset[str]) -> dict[str, bool]:
     return found
 
 
-def issuer_of(export: common.Export) -> Optional[str]:
+def issuer_of(export: common.Export) -> str | None:
     """Return the issuer a director should name for export, if any."""
     return export.issuer if credentials.has_issuer(export.caps) else None
 
@@ -384,7 +384,7 @@ def utc_stamp() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def started_ago(url: str) -> Optional[float]:
+def started_ago(url: str) -> float | None:
     """Return how long ago the director at url started, in seconds.
 
     Return None if it won't say (process_start_time_seconds).
@@ -523,7 +523,7 @@ def by_type_case_problems(test: Test, url: str) -> list[str]:
     return problems
 
 
-def namespace_paths(value: Any) -> Optional[set[str]]:
+def namespace_paths(value: Any) -> set[str] | None:
     """Return the namespaces' paths in value, or None if it is no list.
 
     A director answers null for none.
@@ -732,7 +732,7 @@ def v1_problems(url: str) -> list[str]:
     return []
 
 
-def prefix_cases(test: Test) -> list[tuple[str, Optional[str]]]:
+def prefix_cases(test: Test) -> list[tuple[str, str | None]]:
     """Return the paths whose namespace the suite asks for.
 
     A namespace's prefix matches whole segments of a path.
@@ -741,7 +741,7 @@ def prefix_cases(test: Test) -> list[tuple[str, Optional[str]]]:
         Each path, and the namespace it must get, or None for 404.
     """
     ns = test.namespace
-    cases: list[tuple[str, Optional[str]]] = [
+    cases: list[tuple[str, str | None]] = [
         (f"/{ns}/data/x", f"/{ns}"),
         (f"/director-api-nowhere-{test.run}/x", None),
     ]
@@ -848,8 +848,8 @@ def component_problems(test: Test) -> tuple[list[str], bool]:
 
 def run_problems(
     test: Test,
-    before: Mapping[str, Optional[metrics.Snapshot]],
-    after: Mapping[str, Optional[metrics.Snapshot]],
+    before: Mapping[str, metrics.Snapshot | None],
+    after: Mapping[str, metrics.Snapshot | None],
 ) -> list[str]:
     """Return what is wrong with how each director's test runs rose.
 
@@ -1020,7 +1020,7 @@ class Held:
     rel: str
 
 
-def put_held(test: Test) -> tuple[Optional[Held], str]:
+def put_held(test: Test) -> tuple[Held | None, str]:
     """Put an object in /public at the last origin, and no other.
 
     The origin is the last of those with stores of their own. Where
@@ -1346,7 +1346,7 @@ class Forwarding:
         answer = web.request("GET", f"{url}{SERVERS}/{quote(self.cache.name, safe='')}")
         return common.as_object(parse(answer)) or {}
 
-    def ads_seen(self, url: str) -> Optional[float]:
+    def ads_seen(self, url: str) -> float | None:
         """Return how many of the cache's ads the director at url has taken.
 
         Each of its namespaces' series counts every ad, once for each
@@ -1545,7 +1545,7 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 }
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there are directors.
 
     A standalone origin has no director.

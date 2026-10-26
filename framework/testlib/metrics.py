@@ -19,7 +19,6 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Optional
 from urllib.parse import urlsplit
 
 from . import common, credentials, web
@@ -142,7 +141,7 @@ def scrape_token(url: str) -> str:
     return token
 
 
-def fetch(url: str, token: Optional[str] = None) -> Optional[Snapshot]:
+def fetch(url: str, token: str | None = None) -> Snapshot | None:
     """Return the metrics of the server at web URL url.
 
     url is e.g. a common.Origin's web_url. Present token, or if none is

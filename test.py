@@ -51,7 +51,7 @@ import threading
 import time
 import traceback
 from collections.abc import Generator
-from typing import Any, Optional, TextIO
+from typing import Any, TextIO
 
 # No __pycache__ in the checkout, where the dev container would leave it
 # root's.
@@ -195,7 +195,7 @@ def lingering() -> list[threading.Thread]:
     ]
 
 
-def current_shape() -> Optional[common.Federation]:
+def current_shape() -> common.Federation | None:
     """Return the federation's shape, if fed.sh has written it, or None."""
     if not os.path.isfile(os.path.join(common.VAR, "generated", "origins")):
         return None
@@ -203,7 +203,7 @@ def current_shape() -> Optional[common.Federation]:
     return common.Federation()
 
 
-def skip_reason(name: str, fed: common.Federation) -> Optional[str]:
+def skip_reason(name: str, fed: common.Federation) -> str | None:
     """Return why suite name skips in fed's shape, or None if it doesn't.
 
     None too if the suite's skip() dies.
@@ -294,7 +294,7 @@ def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report,
     report = Report(suite_name(name, session.profile), RESULTS)
     results = common.Results(list(module.SCENARIOS), report)
     print(f"\n==> {report.suite}\n")
-    error: Optional[str] = None
+    error: str | None = None
     try:
         why = module.skip(session.fed)
         if why:

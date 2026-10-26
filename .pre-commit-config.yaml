@@ -69,11 +69,8 @@ repos:
       - id: pytest
         name: pytest
         language: system
-        entry: |
-          # pytest exits 5 when it collects no tests
-          bash -c '
-            uv run --frozen pytest || [ $? -eq 5 ]
-          '
+        # pytest exits 5 when it collects no tests
+        entry: bash -c 'uv run --frozen pytest || [ $? -eq 5 ]'
         pass_filenames: false
         types: [python]
   #

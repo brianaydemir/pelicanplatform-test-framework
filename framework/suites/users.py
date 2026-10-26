@@ -67,7 +67,7 @@ import traceback
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
 from testlib import common, control, credentials, director, jwt, stores, web, webdav
@@ -185,7 +185,7 @@ REFUSED = (403, 404)
 UNAUTHORIZED = (401, 403)
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     There is nothing if the origins neither switch users nor drop
@@ -203,7 +203,7 @@ def skip(fed: common.Federation) -> Optional[str]:
     return None
 
 
-def shows_owners(store: str, base: str) -> Optional[str]:
+def shows_owners(store: str, base: str) -> str | None:
     """Return why store does not show a file's owner, or None if it does.
 
     Args:
@@ -259,7 +259,7 @@ def owned(origin: common.Origin, rel: str, token: str, uid: int) -> Row:
     return PASS, f"{origin.svc}: uid {uid}"
 
 
-def unmapped(origin: common.Origin, rel: str, token: str) -> Optional[str]:
+def unmapped(origin: common.Origin, rel: str, token: str) -> str | None:
     """PUT a new object with a token that a mapfile rule does not map.
 
     This is a control for the rule. The PUT, at rel in /protected-a, goes
@@ -279,7 +279,7 @@ def unmapped(origin: common.Origin, rel: str, token: str) -> Optional[str]:
     return None
 
 
-def made_private(path: str, mode: int) -> Optional[str]:
+def made_private(path: str, mode: int) -> str | None:
     """Give path to the pelican user, with mode.
 
     Returns:
@@ -343,7 +343,7 @@ class Test:
         """Return the path in /protected-a of origin's object named name."""
         return f"{self.base}/{name}-{origin.svc}"
 
-    def mint(self, subject: str, extra: Optional[Mapping[str, Any]] = None) -> str:
+    def mint(self, subject: str, extra: Mapping[str, Any] | None = None) -> str:
         """Return a token like the tests' for /protected-a, but for subject.
 
         It also has the claims in extra. Each call's is new, since an origin
@@ -357,7 +357,7 @@ class Test:
         claims.update(extra or {})
         return jwt.encode(jwt.decode(self.token)[0], claims, key=self.fed.origin_key)
 
-    def multiuser(self) -> Optional[str]:
+    def multiuser(self) -> str | None:
         """Return why the origins do not switch users; None if they do."""
         if not self.fed.multiuser:
             return "only under multiuser ('-p origin-multiuser')"
@@ -872,7 +872,7 @@ def edited(test: Test) -> Row:
     return PASS, f"the pelican user's within {time.time() - start:.0f}s of the edit"
 
 
-def unrestartable(test: Test) -> Optional[str]:
+def unrestartable(test: Test) -> str | None:
     """Return why the origins cannot be restarted, or None if they can.
 
     The restart would be with a username claim and no default user.
@@ -895,7 +895,7 @@ def restarted(test: Test) -> Generator[None, None, None]:
         yield
 
 
-def serving_data(test: Test, token: str) -> Optional[str]:
+def serving_data(test: Test, token: str) -> str | None:
     """Return why an origin does not yet answer the probe; None if all do.
 
     A HEAD of the probe may get any answer but a 5xx.
@@ -907,7 +907,7 @@ def serving_data(test: Test, token: str) -> Optional[str]:
     return None
 
 
-def serving(test: Test) -> Optional[str]:
+def serving(test: Test) -> str | None:
     """Return why /protected-a is not served as before, or None if it is.
 
     Every origin must answer a HEAD of the probe, every director name every
@@ -932,7 +932,7 @@ def serving(test: Test) -> Optional[str]:
     return None
 
 
-def wait(problem: Callable[[], Optional[str]], seconds: float) -> Optional[str]:
+def wait(problem: Callable[[], str | None], seconds: float) -> str | None:
     """Ask problem() what is wrong, every 5 seconds, until it finds nothing.
 
     Stop asking once seconds have passed.

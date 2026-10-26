@@ -85,7 +85,6 @@ import traceback
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import Optional
 from urllib.parse import quote
 
 from testlib import common, control, credentials, director, jwt, registry, stores, web, webdav
@@ -268,7 +267,7 @@ class Test:
     token: str
     token_file: str
     setup: str
-    stub_down: Optional[str] = None
+    stub_down: str | None = None
 
     @property
     def fed(self) -> common.Federation:
@@ -287,13 +286,13 @@ class Test:
         """
         return f"{self.base}/{origin.svc}/{name}"
 
-    def native(self) -> Optional[str]:
+    def native(self) -> str | None:
         """Return why the origins are not Pelican's native ones, or None."""
         if self.fed.native_origins:
             return None
         return f"XRootD serves the origins ({self.fed.origin_variant}), not Pelican"
 
-    def writable(self) -> Optional[str]:
+    def writable(self) -> str | None:
         """Return why direct clients cannot write /protected-a, or None."""
         caps = self.fed.exports[NAMESPACE]
         if "DirectReads" not in caps:
@@ -317,9 +316,9 @@ class Test:
         origin: common.Origin,
         namespace: str,
         rel: str,
-        want: Optional[bytes],
+        want: bytes | None,
         what: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Return what is wrong with what origin holds at rel in namespace.
 
         origin should hold want there (None: nothing); the answer calls
@@ -345,7 +344,7 @@ class Test:
         namespace: str,
         rel: str,
         source: str,
-        source_token: Optional[str] = None,
+        source_token: str | None = None,
     ) -> web.Response:
         """Send a third-party COPY to rel in namespace at origin.
 
@@ -528,7 +527,7 @@ def progress(body: bytes) -> Progress:
     return Progress(markers, lines[-1] if lines else "", problems)
 
 
-def failed(answer: web.Response) -> Optional[str]:
+def failed(answer: web.Response) -> str | None:
     """Return why a COPY's answer does not report a failure, or None.
 
     It reports one by an error status, or a 2xx whose last line is
@@ -852,11 +851,11 @@ class Layout:
     """
 
     listless: str
-    directless: Optional[str]
+    directless: str | None
     caps: dict[str, list[str]]
 
 
-def unrestartable(test: Test) -> Optional[str]:
+def unrestartable(test: Test) -> str | None:
     """Return why the origins cannot be restarted with other exports.
 
     Return None if they can.
@@ -1007,7 +1006,7 @@ def restarted(test: Test, files: Mapping[str, Mapping[str, str]]) -> Generator[N
         yield
 
 
-def serving(test: Test) -> Optional[str]:
+def serving(test: Test) -> str | None:
     """Return why /protected-a is not served as before, or None.
 
     To be served, every origin must answer a HEAD of the probe, every
@@ -1033,7 +1032,7 @@ def serving(test: Test) -> Optional[str]:
     return None
 
 
-def settle(test: Test) -> Optional[str]:
+def settle(test: Test) -> str | None:
     """Wait until the federation serves /protected-a as before.
 
     See serving(). A server that exited on its own ends the wait at once
@@ -1180,7 +1179,7 @@ def direct_reads_capability(test: Test, layout: Layout, data: Mapping[str, bytes
 # nested-export
 
 
-def unnestable(test: Test) -> Optional[str]:
+def unnestable(test: Test) -> str | None:
     """Return why no export can be nested in /public for a while, or None.
 
     The origins must export /public, and take direct clients, since
@@ -1329,7 +1328,7 @@ def nested_token(test: Test, prefix: str, scope_path: str) -> str:
     return jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), body, key=key)
 
 
-def unregister(test: Test, prefix: str) -> Optional[str]:
+def unregister(test: Test, prefix: str) -> str | None:
     """Remove prefix's registration, which the origins made as they started.
 
     A DELETE of /api/v1.0/registry/<prefix> takes a token of
@@ -1355,7 +1354,7 @@ def unregister(test: Test, prefix: str) -> Optional[str]:
     return f"DELETE of {prefix}'s registration got {answer.describe()}"
 
 
-def nested_get(test: Test, origin: common.Origin, name: str, token: Optional[str]) -> web.Response:
+def nested_get(test: Test, origin: common.Origin, name: str, token: str | None) -> web.Response:
     """GET object name of the nested export's collection at origin, in /public."""
     return web.request("GET", stores.url(origin, "public", f"{test.base}/{name}"), token=token)
 
@@ -1391,7 +1390,7 @@ def nested_with_token(test: Test, prefix: str, data: Mapping[str, bytes], token:
     return found.row(f"{prefix}, with its token, at {len(test.fed.origins)} origin(s)")
 
 
-def nested_refused(test: Test, token: Optional[str], data: Mapping[str, bytes], how: str) -> Findings:
+def nested_refused(test: Test, token: str | None, data: Mapping[str, bytes], how: str) -> Findings:
     """Return what is wrong with each origin's answer to a GET it must refuse.
 
     A GET of NESTED/obj with token (how says what it is) must be refused
@@ -1513,7 +1512,7 @@ def nested_export(test: Test) -> dict[str, Row]:
 # backend-token and backend-passthrough
 
 
-def ungated(test: Test, passthrough: bool) -> Optional[str]:
+def ungated(test: Test, passthrough: bool) -> str | None:
     """Return why the origins cannot reach their backend through the gate.
 
     It is that their storage is no HTTPS backend; for passthrough, that
@@ -1972,7 +1971,7 @@ def sentinel_missing(test: Test, origin: common.Origin, text: str) -> Row:
         return FAIL, str(e)
 
 
-def sentinel(test: Test) -> dict[str, Row]:
+def sentinel_location(test: Test) -> dict[str, Row]:
     """Check that the first origin starts only where its sentinels are.
 
     It is restarted with every export naming a SentinelLocation: one
@@ -2042,7 +2041,7 @@ SCENARIO_CHECKS: dict[str, Callable[[Test], dict[str, Row]]] = {
 }
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     There is nothing without /protected-a.
@@ -2122,7 +2121,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                     record(name, gated(test, name == "backend-passthrough"))
             if "sentinel" in selected:
                 print("  sentinel ...")
-                for row, result in attempt_all(ROWS["sentinel"], partial(sentinel, test)).items():
+                for row, result in attempt_all(ROWS["sentinel"], partial(sentinel_location, test)).items():
                     record(row, result)
     finally:
         clean("after the run")

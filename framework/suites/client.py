@@ -70,7 +70,7 @@ import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Optional, Union
+from typing import Any
 from urllib.parse import quote, urlsplit
 
 from testlib import (
@@ -164,7 +164,7 @@ RETRYABLE_EXIT = 11
 NO_TOKEN = 4010
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     The suite needs /protected-a.
@@ -411,7 +411,7 @@ class Test:
         name: str,
         data: bytes,
         namespace: str = NAMESPACE,
-        origins: Optional[Sequence[common.Origin]] = None,
+        origins: Sequence[common.Origin] | None = None,
     ) -> None:
         """Put object name, holding data, in namespace's storage.
 
@@ -465,8 +465,8 @@ class Test:
         self,
         name: str,
         args: Sequence[str],
-        env: Optional[Mapping[str, str]] = None,
-        cwd: Optional[str] = None,
+        env: Mapping[str, str] | None = None,
+        cwd: str | None = None,
     ) -> Fetched:
         """Run `pelican <args>`, in a directory of its own.
 
@@ -486,9 +486,9 @@ class Test:
         self,
         name: str,
         urls: Sequence[str],
-        env: Optional[Mapping[str, str]] = None,
+        env: Mapping[str, str] | None = None,
         upload: bool = False,
-        sources: Optional[Sequence[str]] = None,
+        sources: Sequence[str] | None = None,
     ) -> Fetched:
         """Run stash_plugin's transfer of urls, in a directory of its own.
 
@@ -547,7 +547,7 @@ class Test:
         """
         return web.request(method, f"{server_url}{self.path(name)}", token=self.token, timeout=120)
 
-    def age(self, cache: common.Cache, name: str) -> Optional[int]:
+    def age(self, cache: common.Cache, name: str) -> int | None:
         """Return the Age with which a V2 cache says it holds all of name.
 
         A cache says so with Age, from 0 the moment it completes the
@@ -561,7 +561,7 @@ class Test:
         """Return whether a V2 cache says it holds all of object name."""
         return self.age(cache, name) is not None
 
-    def fill(self, cache: common.Cache, name: str) -> Optional[str]:
+    def fill(self, cache: common.Cache, name: str) -> str | None:
         """Read object name whole through cache, which must serve it.
 
         For a V2 cache, wait until it says it holds it all. The read is
@@ -676,7 +676,7 @@ def last_attempt(ad: Ad) -> int:
     return max(numbers, default=0)
 
 
-def checksum_problems(fed: common.Federation, ad: Ad, data: bytes, cache: Optional[str]) -> list[str]:
+def checksum_problems(fed: common.Federation, ad: Ad, data: bytes, cache: str | None) -> list[str]:
     """Return what is wrong with an ad's ServerChecksums.
 
     Whichever digests it reports must be the object's, and after a whole
@@ -709,7 +709,7 @@ def served_by(ad: Ad) -> str:
     return str(found or "").partition(":")[0]
 
 
-def cache_hit_problems(fed: common.Federation, ad: Ad, cold_host: Optional[str]) -> list[str]:
+def cache_hit_problems(fed: common.Federation, ad: Ad, cold_host: str | None) -> list[str]:
     """Return what is wrong with an ad's DataAge and CacheHit.
 
     Those of its last attempt, which a V2 cache's Age gives, must say: on
@@ -755,7 +755,7 @@ def ads_by_url(ads: Sequence[Ad], urls: Sequence[str]) -> tuple[dict[str, Ad], l
     return found, problems
 
 
-def exit_problem(fetch: Fetched, ads: Sequence[Ad]) -> Optional[str]:
+def exit_problem(fetch: Fetched, ads: Sequence[Ad]) -> str | None:
     """Return why the plugin's exit status disagrees with its ads, or None.
 
     The status must be 0 if every transfer succeeded, else RETRYABLE_EXIT
@@ -844,7 +844,7 @@ def plugin_ads(test: Test) -> list[Row]:
             )
         )
 
-    def failed_row(case: str, fetch: Fetched, want_type: str, want_code: Optional[int]) -> Row:
+    def failed_row(case: str, fetch: Fetched, want_type: str, want_code: int | None) -> Row:
         try:
             ads = parse_ads(fetch.said)
         except ValueError as e:
@@ -905,7 +905,7 @@ def plugin_ads(test: Test) -> list[Row]:
     return rows
 
 
-def upload_ads(test: Test, failed_row: Callable[[str, Fetched, str, Optional[int]], Row]) -> list[Row]:
+def upload_ads(test: Test, failed_row: Callable[[str, Fetched, str, int | None], Row]) -> list[Row]:
     """Return the rows of stash_plugin's ads of an upload (`-upload`).
 
     Of a batch of two files to /protected-a (`upload`): each ad must say
@@ -992,7 +992,7 @@ def unknown_token(test: Test) -> str:
 # failover
 
 
-def spoil(test: Test, cache: common.Cache, name: str, block: int) -> Optional[str]:
+def spoil(test: Test, cache: common.Cache, name: str, block: int) -> str | None:
     """Have a V2 cache corrupt block of its copy of object name.
 
     Ask through its chaos API, as its admin.
@@ -1267,7 +1267,7 @@ def discovery_get(test: Test, name: str, url: str, env: Mapping[str, str]) -> Fe
     return test.pelican(name, ["object", "get", url, "."], env)
 
 
-def got(fetch: Fetched, data: bytes, local: str = "object") -> Optional[str]:
+def got(fetch: Fetched, data: bytes, local: str = "object") -> str | None:
     """Return why the download did not bring data, or None if it did.
 
     It must bring it to file local in its directory.
@@ -1279,12 +1279,12 @@ def got(fetch: Fetched, data: bytes, local: str = "object") -> Optional[str]:
     return None
 
 
-def got_named(fetch: Fetched, data: bytes) -> Optional[str]:
+def got_named(fetch: Fetched, data: bytes) -> str | None:
     """Return got() of the discovery object, under its own name."""
     return got(fetch, data, "discovery")
 
 
-def refused(fetch: Fetched) -> Optional[str]:
+def refused(fetch: Fetched) -> str | None:
     """Return why the download was not refused, or None."""
     if fetch.status == 0:
         return "succeeded, but should have been refused"
@@ -1293,7 +1293,7 @@ def refused(fetch: Fetched) -> Optional[str]:
     return None
 
 
-def plugin_refused(fetch: Fetched) -> Optional[str]:
+def plugin_refused(fetch: Fetched) -> str | None:
     """Return why the plugin's download was not refused, or None.
 
     Its ad must report an error of type `Authorization`.
@@ -1314,7 +1314,7 @@ def plugin_refused(fetch: Fetched) -> Optional[str]:
 Discoverer = tuple[
     str,
     Callable[[Test, str, str, Mapping[str, str]], Fetched],
-    Callable[[Fetched], Optional[str]],
+    Callable[[Fetched], str | None],
 ]
 DISCOVERERS: tuple[Discoverer, ...] = (
     ("", discovery_get, refused),
@@ -1355,7 +1355,7 @@ def token_discovery(test: Test) -> list[Row]:
     rows: list[Row] = []
     for prefix, get, denied in DISCOVERERS:
 
-        def row(case: str, why: Optional[str], passed: str = "", client: str = prefix) -> Row:
+        def row(case: str, why: str | None, passed: str = "", client: str = prefix) -> Row:
             return (client + case, FAIL, why) if why else (client + case, PASS, passed)
 
         env = {**base, "BEARER_TOKEN": test.token}
@@ -1486,7 +1486,7 @@ def url_forms(test: Test) -> list[Row]:
 
 def create_token(
     test: Test, name: str, url: str, key: str, *flags: str
-) -> tuple[Optional[dict[str, Any]], str, Fetched]:
+) -> tuple[dict[str, Any] | None, str, Fetched]:
     """Run `pelican token create url --read --private-key key`.
 
     It runs with flags, the session's --profile, and with no --issuer or
@@ -2157,9 +2157,7 @@ def job_id(out: str) -> str:
     return m.group(1) if m else ""
 
 
-def job_status(
-    pelican: Callable[..., tuple[int, str, str]], job: str
-) -> tuple[Optional[dict[str, Any]], str]:
+def job_status(pelican: Callable[..., tuple[int, str, str]], job: str) -> tuple[dict[str, Any] | None, str]:
     """Return what `pelican job status --json` says of job.
 
     Returns:
@@ -2243,7 +2241,7 @@ def async_job(test: Test) -> list[Row]:
     test.put(name, data)
     rows: list[Row] = []
 
-    def pelican(*args: str, cwd: Optional[str] = None) -> tuple[int, str, str]:
+    def pelican(*args: str, cwd: str | None = None) -> tuple[int, str, str]:
         return test.session.pelican_cmd(*args, env=env, cwd=cwd)
 
     job = ""
@@ -2353,7 +2351,7 @@ def async_job(test: Test) -> list[Row]:
 
 # What a scenario of RUN, given the Test, returns: its rows, or for one
 # row with no case, its status and note.
-Rows = Union[tuple[str, str], list[Row]]
+Rows = tuple[str, str] | list[Row]
 
 RUN: dict[str, Callable[[Test], Rows]] = {
     "plugin-ads": plugin_ads,

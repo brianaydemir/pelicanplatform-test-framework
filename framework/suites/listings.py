@@ -37,7 +37,7 @@ import traceback
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from html.parser import HTMLParser
-from typing import Optional
+from typing import override
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 from testlib import common, credentials, stores, web, webdav
@@ -162,15 +162,15 @@ class Test:
         """
         return f"only-{self.fed.storage_namespace(namespace)}"
 
-    def children(self, namespace: str) -> dict[str, Optional[int]]:
+    def children(self, namespace: str) -> dict[str, int | None]:
         """Return Depth 1 of namespace's tree/."""
         return {**CHILDREN, self.own(namespace): OWN}
 
-    def everything(self, namespace: str) -> dict[str, Optional[int]]:
+    def everything(self, namespace: str) -> dict[str, int | None]:
         """Return Depth infinity of namespace's tree/."""
         return {**EVERYTHING, self.own(namespace): OWN}
 
-    def refusal(self, url: str, depth: str, token: Optional[str]) -> Optional[str]:
+    def refusal(self, url: str, depth: str, token: str | None) -> str | None:
         """Return what is wrong with how url answers a PROPFIND at depth.
 
         url should refuse it. Return None if it does.
@@ -216,9 +216,9 @@ class Test:
         url: str,
         depth: str,
         base: str,
-        token: Optional[str],
-        body: Optional[bytes] = None,
-    ) -> tuple[web.Response, Optional[dict[str, webdav.Entry]], str]:
+        token: str | None,
+        body: bytes | None = None,
+    ) -> tuple[web.Response, dict[str, webdav.Entry] | None, str]:
         """PROPFIND url at depth, with token and body.
 
         Returns:
@@ -238,10 +238,10 @@ class Test:
         url: str,
         depth: str,
         base: str,
-        want: Mapping[str, Optional[int]],
-        token: Optional[str],
-        body: Optional[bytes] = None,
-    ) -> Optional[str]:
+        want: Mapping[str, int | None],
+        token: str | None,
+        body: bytes | None = None,
+    ) -> str | None:
         """Return what is wrong with url's listing at depth against want."""
         _, got, why = self.listing(url, depth, base, token, body)
         if got is None:
@@ -249,7 +249,7 @@ class Test:
         wrong = webdav.problems(want, got)
         return f"Depth {depth}: {'; '.join(wrong)}" if wrong else None
 
-    def ls(self, rel: str) -> tuple[Optional[dict[str, tuple[bool, int]]], str]:
+    def ls(self, rel: str) -> tuple[dict[str, tuple[bool, int]] | None, str]:
         """Run `pelican object ls -l --json` of rel in /protected-a.
 
         Returns:
@@ -373,9 +373,9 @@ def infinity(
     test: Test,
     url: str,
     namespace: str,
-    token: Optional[str],
+    token: str | None,
     refusable: bool = True,
-) -> tuple[Optional[str], str]:
+) -> tuple[str | None, str]:
     """Check Depth infinity of namespace's tree at url.
 
     RFC 4918 lets a server refuse it with 403, unless refusable is False,
@@ -531,7 +531,7 @@ def cache_depth_1(test: Test) -> tuple[str, str]:
     return PASS, f"{len(test.caches)} cache(s)"
 
 
-def origins_refuse_infinity(test: Test, ns: str) -> Optional[bool]:
+def origins_refuse_infinity(test: Test, ns: str) -> bool | None:
     """Return whether an origin refuses Depth infinity of ns's tree (403).
 
     If one does, a cache that relays it to one then may. Return None if
@@ -612,7 +612,7 @@ def servers(test: Test) -> list[tuple[str, str, str]]:
     return [(o.svc, o.url, "origin") for o in test.origins] + [(c.svc, c.url, "cache") for c in test.caches]
 
 
-def refused_everywhere(test: Test, token: Optional[str]) -> tuple[str, str]:
+def refused_everywhere(test: Test, token: str | None) -> tuple[str, str]:
     """Check that every server refuses to list /protected-a with token.
 
     token is none, or one for elsewhere. A listing of an object, and of a
@@ -785,18 +785,21 @@ class Anchors(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.links: list[tuple[str, str]] = []
-        self._href: Optional[str] = None
+        self._href: str | None = None
         self._text: list[str] = []
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+    @override
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "a":
             self._href = dict(attrs).get("href")
             self._text = []
 
+    @override
     def handle_data(self, data: str) -> None:
         if self._href is not None:
             self._text.append(data)
 
+    @override
     def handle_endtag(self, tag: str) -> None:
         if tag == "a" and self._href is not None:
             self.links.append((self._href.strip(), "".join(self._text).strip()))
@@ -1009,7 +1012,7 @@ RUN = {
 }
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     There is nothing without /protected-a.

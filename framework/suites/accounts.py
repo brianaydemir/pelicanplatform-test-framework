@@ -68,7 +68,7 @@ import secrets
 import traceback
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 
 from testlib import accounts, collections, common, credentials, issuer, web, webapi
 from testlib.accounts import Api, ApiError, must
@@ -110,7 +110,7 @@ CONFIG = "/api/v1.0/config"
 REFRESHABLE = ("openid", "offline_access")
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     That is so with no embedded issuer, or no protected namespace.
@@ -477,7 +477,7 @@ def user_status(test: Test) -> list[Row]:
         nonlocal refresh
         must(accounts.set_status(admin, user_id, "active"), "making the user active again")
         problems = web_problems(test, username, cookie, allowed=True)
-        renewed: Optional[Tokens] = None
+        renewed: Tokens | None = None
         try:
             renewed = issuer.device_tokens(test.client("device"), user, REFRESHABLE)
         except IssuerError as e:
@@ -1069,7 +1069,7 @@ def aup(test: Test) -> list[Row]:
             raise ApiError(f"PUT {accounts.AUP}: version {new!r}, not a new one")
         return new
 
-    def gated(api: Api, route: str, new: str) -> Optional[str]:
+    def gated(api: Api, route: str, new: str) -> str | None:
         """Return why api's user is not refused route, or None if they are.
 
         It is a user route, and the refusal must be for want of agreeing

@@ -38,7 +38,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlsplit
 
 from testlib import accounts, common, credentials, director, registry, web
@@ -200,13 +200,13 @@ class Test:
         self.chaining = not self.fed.owners
         self.servers = servers(self.fed)
         self.protected = next((ns for ns in credentials.PROTECTED if ns in self.fed.exports), None)
-        self._admin: Optional[accounts.Api] = None
+        self._admin: accounts.Api | None = None
         self._csrf: dict[str, str] = {}
-        self._user: Optional[tuple[accounts.Api, str]] = None
-        self._heir: Optional[tuple[accounts.Api, str]] = None
+        self._user: tuple[accounts.Api, str] | None = None
+        self._heir: tuple[accounts.Api, str] | None = None
         self._server_admins: dict[str, accounts.Api] = {}
         self._metadata: dict[str, dict[str, Any]] = {}
-        self._published: dict[str, Optional[frozenset[str]]] = {}
+        self._published: dict[str, frozenset[str] | None] = {}
 
     # Keys and prefixes of the run's own.
 
@@ -295,7 +295,7 @@ class Test:
         """GET path at the registry, with no credentials."""
         return web.request("GET", self.registry + path)
 
-    def stored(self, prefix: str) -> Optional[dict[str, Any]]:
+    def stored(self, prefix: str) -> dict[str, Any] | None:
         """Return the registration of prefix, or None if there is none.
 
         It is as anyone may read it (/api/v1.0/registry/<prefix>,
@@ -306,7 +306,7 @@ class Test:
             return None
         return common.as_object(registry.parse(answer.body))
 
-    def stored_keys(self, prefix: str) -> Optional[frozenset[str]]:
+    def stored_keys(self, prefix: str) -> frozenset[str] | None:
         """Return the thumbprints of the keys registered for prefix.
 
         Returns:
@@ -332,7 +332,7 @@ class Test:
         found = self.stored(prefix)
         return "" if found is None else str(registry.admin_metadata(found).get("status", ""))
 
-    def set_status(self, prefix: str, action: str) -> Optional[str]:
+    def set_status(self, prefix: str, action: str) -> str | None:
         """Approve or deny prefix's registration, as the admin.
 
         Args:
@@ -408,7 +408,7 @@ class Test:
                 found[export.prefix] = server
         return found
 
-    def published(self, server: Server) -> Optional[frozenset[str]]:
+    def published(self, server: Server) -> frozenset[str] | None:
         """Return the thumbprints of the keys server publishes itself.
 
         It publishes them at /.well-known/issuer.jwks, and registers them
@@ -1327,7 +1327,7 @@ def ownership(test: Test) -> list[Row]:
     def description() -> str:
         return str(registry.admin_metadata(test.registration(reg_id)).get("description") or "")
 
-    def claim(who: str, signer: Optional[str]) -> accounts.Answer:
+    def claim(who: str, signer: str | None) -> accounts.Answer:
         query = ""
         if signer:
             tok = registry.token(signer, registry.EDIT_REGISTRATION, "admin", issuer)
@@ -1335,7 +1335,7 @@ def ownership(test: Test) -> list[Row]:
         return apis[who].call("POST", f"{REGISTRATIONS}/{reg_id}/claim{query}", None, headers[who])
 
     def edit(
-        who: str, text: str, site_name: Optional[str] = None, pubkey: Optional[str] = None
+        who: str, text: str, site_name: str | None = None, pubkey: str | None = None
     ) -> accounts.Answer:
         """PUT the registration as who, with text as its description.
 
@@ -1356,7 +1356,7 @@ def ownership(test: Test) -> list[Row]:
         }
         return apis[who].call("PUT", f"{REGISTRATIONS}/{reg_id}", body, headers[who])
 
-    def invite(who: str, body: Optional[dict[str, Any]]) -> accounts.Answer:
+    def invite(who: str, body: dict[str, Any] | None) -> accounts.Answer:
         return apis[who].call("POST", f"{REGISTRATIONS}/{reg_id}/{OWNERSHIP_INVITES}", body, headers[who])
 
     # claim
@@ -1901,7 +1901,7 @@ def future(test: Test, cache: Server, cache_id: str, cache_name: str, later: tup
     )
 
 
-def remove_downtime(test: Test, downtime_id: str, record: Mapping[str, Any]) -> Optional[str]:
+def remove_downtime(test: Test, downtime_id: str, record: Mapping[str, Any]) -> str | None:
     """Remove a downtime from the registry.
 
     The registry's own is removed as its admin; a server's, as that server,
@@ -2003,7 +2003,7 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 }
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     A standalone origin has no registry.

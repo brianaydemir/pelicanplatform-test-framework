@@ -45,7 +45,6 @@ import time
 import traceback
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from testlib import accounts, common, credentials, director, jwt, web
 from testlib.common import first
@@ -327,7 +326,7 @@ def create_token(
     name: str,
     expires: datetime,
     cookie: str = "",
-    token: Optional[str] = None,
+    token: str | None = None,
     scope: str = DISCOVERY_SCOPE,
 ) -> web.Response:
     """POST a request for an API token of scope to server.
@@ -519,7 +518,7 @@ def expiring_rows(server: Server, cookie: str, name: str, made: list[str]) -> li
 # web_ui/middleware.go.
 
 
-def set_cookie(answer: web.Response, name: str) -> Optional[tuple[str, dict[str, str]]]:
+def set_cookie(answer: web.Response, name: str) -> tuple[str, dict[str, str]] | None:
     """Return the cookie name that answer sets.
 
     Returns:
@@ -572,13 +571,13 @@ def cleared(answer: web.Response) -> list[str]:
     return []
 
 
-def whoami(server: Server, token: Optional[str] = None, cookie: str = "") -> web.Response:
+def whoami(server: Server, token: str | None = None, cookie: str = "") -> web.Response:
     """GET server's /whoami, with token or cookie."""
     headers = cookie_header(login=cookie) if cookie else {}
     return web.request("GET", server.web_url + accounts.WHOAMI, token=token, headers=headers)
 
 
-def whoami_row(case: str, answer: web.Response, role: Optional[str], user: str = "") -> Row:
+def whoami_row(case: str, answer: web.Response, role: str | None, user: str = "") -> Row:
     """Return case's row: answer, a /whoami's, must say who is logged in.
 
     It must say so with role (and user, if given), or, for role None, say
@@ -780,7 +779,7 @@ def malformed_path(test: Access) -> list[Row]:
 # web_ui/middleware.go, and the directors' list of servers.
 
 
-def reported_version(server: Server) -> tuple[Optional[str], str]:
+def reported_version(server: Server) -> tuple[str | None, str]:
     """Return the version that server reports (GET /api/v1.0/version).
 
     Returns:
@@ -891,7 +890,7 @@ RUN: dict[str, Callable[[Access], list[Row]]] = {
 }
 
 
-def skip(_fed: common.Federation) -> Optional[str]:
+def skip(_fed: common.Federation) -> str | None:
     """Return None: every server has a web API."""
     return None
 

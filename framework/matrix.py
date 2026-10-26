@@ -40,7 +40,6 @@ import textwrap
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Optional
 
 TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -453,7 +452,7 @@ SMOKE_LIMITS: list[Rule] = [
 ]
 
 
-def shape_of(presets: Iterable[str], rotated: bool = False) -> tuple[Optional[Shape], list[str]]:
+def shape_of(presets: Iterable[str], rotated: bool = False) -> tuple[Shape | None, list[str]]:
     """Return the shape that presets make, and what is wrong with them.
 
     Args:
@@ -504,7 +503,7 @@ def changes(factors: Sequence[str], depth: int) -> Iterator[dict[str, str]]:
                 yield dict(zip(chosen, levels))
 
 
-def completion(fixed: Mapping[str, str]) -> Optional[Shape]:
+def completion(fixed: Mapping[str, str]) -> Shape | None:
     """Return a shape that smoke.sh could run that makes the fixed choices.
 
     The shape has as few other factors away from their defaults as can
@@ -584,7 +583,7 @@ def adds_nothing(shape: Shape, counts: Counter[Pair], valid: set[Pair]) -> bool:
     return all(counts[p] > 1 for p in shape.pairs() & valid)
 
 
-def simpler(shape: Shape, counts: Counter[Pair], valid: set[Pair]) -> Optional[Shape]:
+def simpler(shape: Shape, counts: Counter[Pair], valid: set[Pair]) -> Shape | None:
     """Return shape with one of its choices the default, if that loses no pair.
 
     The simpler shape must be one that smoke.sh could run, and make every

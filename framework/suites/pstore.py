@@ -73,7 +73,7 @@ import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlencode
 
 from testlib import (
@@ -262,7 +262,7 @@ class Test:
         self.objects = listing_objects(self)
         # What went wrong putting the collection at each origin that has
         # it, by service.
-        self._listed: dict[str, Optional[str]] = {}
+        self._listed: dict[str, str | None] = {}
 
     def rel(self, *parts: str) -> str:
         """Return where parts are, under the run's collection."""
@@ -310,7 +310,7 @@ class Test:
         """Return USER's token for origin's web API."""
         return read_token(self.web_token(origin, USER))
 
-    def api(self, origin: common.Origin, path: str, token: Optional[str], **query: Any) -> web.Response:
+    def api(self, origin: common.Origin, path: str, token: str | None, **query: Any) -> web.Response:
         """GET path of origin's storage API, with query, presenting token.
 
         path is e.g. `usage`, or `ls/<path>`.
@@ -320,7 +320,7 @@ class Test:
             url += "?" + urlencode(query)
         return web.request("GET", url, token=token)
 
-    def listed(self, origin: common.Origin) -> Optional[str]:
+    def listed(self, origin: common.Origin) -> str | None:
         """Put the storage API's collection at origin, once.
 
         Returns:
@@ -331,7 +331,7 @@ class Test:
             self._listed[origin.svc] = next((why for why in puts if why), None)
         return self._listed[origin.svc]
 
-    def put(self, origin: common.Origin, rel: str, data: bytes) -> Optional[str]:
+    def put(self, origin: common.Origin, rel: str, data: bytes) -> str | None:
         """Upload data to rel at origin, with its length.
 
         The store makes rel's collections.
@@ -364,7 +364,7 @@ def decoded(answer: web.Response) -> Any:
         return None
 
 
-def usage(test: Test, origin: common.Origin) -> tuple[Optional[dict[str, Any]], str]:
+def usage(test: Test, origin: common.Origin) -> tuple[dict[str, Any] | None, str]:
     """Return what origin's storage API tells the admin of its usage.
 
     Returns:
@@ -457,7 +457,7 @@ def authz(test: Test, origin: common.Origin, _objects: Mapping[str, bytes]) -> R
     return outcome(problems, f"{len(routes)} routes, {len(tries)} callers")
 
 
-def entries(answer: web.Response) -> tuple[Optional[list[dict[str, Any]]], bool]:
+def entries(answer: web.Response) -> tuple[list[dict[str, Any]] | None, bool]:
     """Return the entries of an `ls` answer, and its `more`.
 
     Returns:
@@ -616,7 +616,7 @@ def digest(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> R
     return outcome(problems, f"'{header}', as Want-Digest says")
 
 
-def gauges_agree(test: Test, origin: common.Origin, seconds: float) -> tuple[Optional[str], str]:
+def gauges_agree(test: Test, origin: common.Origin, seconds: float) -> tuple[str | None, str]:
     """Wait until origin's capacity gauges say what its usage says.
 
     The gauges are pelican_pstore_used_bytes and
@@ -717,7 +717,7 @@ class Cli:
     origin: common.Origin
 
     def run(
-        self, *args: str, token_file: Optional[str], env: Optional[Mapping[str, str]] = None
+        self, *args: str, token_file: str | None, env: Mapping[str, str] | None = None
     ) -> tuple[int, str, str]:
         """Run `origin introspect <args> --json` at the origin.
 
@@ -748,8 +748,8 @@ class Cli:
         return done.returncode, done.stdout, done.stderr
 
     def compare(
-        self, args: Sequence[str], api_route: str, env: Optional[Mapping[str, str]] = None
-    ) -> Optional[str]:
+        self, args: Sequence[str], api_route: str, env: Mapping[str, str] | None = None
+    ) -> str | None:
         """Return why introspect disagrees with the storage API, or None.
 
         `introspect <args>`, with the admin's token file, or with none
@@ -996,7 +996,7 @@ def block_files(origin: common.Origin) -> dict[str, int]:
     return found
 
 
-def flip_byte(path: str, offset: int) -> Optional[str]:
+def flip_byte(path: str, offset: int) -> str | None:
     """Invert the byte at offset in the file at path.
 
     Returns:
@@ -1085,7 +1085,7 @@ def corruption(test: Test) -> dict[str, Row]:
 # The restart, for capacity and backups.
 
 
-def config_text(bound: Optional[int], backups: Optional[str]) -> str:
+def config_text(bound: int | None, backups: str | None) -> str:
     """Return the restart's configuration.
 
     It bounds the store's one directory at bound bytes, if given, and
@@ -1103,7 +1103,7 @@ def config_text(bound: Optional[int], backups: Optional[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def serving(test: Test) -> Optional[str]:
+def serving(test: Test) -> str | None:
     """Return why the namespace is not served as before, or None.
 
     Every origin must answer a HEAD of the probe, every director name
@@ -1128,7 +1128,7 @@ def serving(test: Test) -> Optional[str]:
     return None
 
 
-def settle(test: Test) -> Optional[str]:
+def settle(test: Test) -> str | None:
     """Wait until the federation serves the namespace as before.
 
     See serving(). A server that exited on its own ends the wait at once
@@ -1231,7 +1231,7 @@ class Capacity:
             )
         return PASS, f"{len(self.fillers)} fillers, {room} bytes left of {self.bound}"
 
-    def refused(self, case: str, send: Callable[[int], tuple[Optional[str], str]]) -> Row:
+    def refused(self, case: str, send: Callable[[int], tuple[str | None, str]]) -> Row:
         """Check that send()'s PUT, of more than the room left, is refused.
 
         It must also count as one no_space write failure.
@@ -1251,7 +1251,7 @@ class Capacity:
             return FAIL, f"no_space write failures rose by {risen:.0f}, not 1"
         return PASS, f"{case}: {note}, with {room} bytes left"
 
-    def sized(self, expect: bool) -> Callable[[int], tuple[Optional[str], str]]:
+    def sized(self, expect: bool) -> Callable[[int], tuple[str | None, str]]:
         """Return a send() for refused() that PUTs headers alone.
 
         The PUT sends its headers, with a Content-Length past the room
@@ -1261,7 +1261,7 @@ class Capacity:
         in pstore/capacity.go).
         """
 
-        def send(room: int) -> tuple[Optional[str], str]:
+        def send(room: int) -> tuple[str | None, str]:
             headers = {"Content-Length": str(room + SIZED_OVER)}
             if expect:
                 headers["Expect"] = "100-continue"
@@ -1274,7 +1274,7 @@ class Capacity:
 
         return send
 
-    def chunked(self, room: int) -> tuple[Optional[str], str]:
+    def chunked(self, room: int) -> tuple[str | None, str]:
         """PUT more than the room left in chunks, as a send() for refused().
 
         It must get 507, which the origin must not turn into the WebDAV
@@ -1402,7 +1402,7 @@ def guarded(step: Callable[[], Row]) -> Row:
 # backups
 
 
-def backup_time(name: str) -> Optional[float]:
+def backup_time(name: str) -> float | None:
     """Return when a backup named name was written, in Unix time.
 
     Returns:
@@ -1590,7 +1590,7 @@ def keys_env(test: Test, origin: common.Origin) -> dict[str, str]:
     return {"PELICAN_ISSUERKEYSDIRECTORY": os.path.abspath(keys)}
 
 
-def give_back(path: str, uid: int, gid: int) -> Optional[str]:
+def give_back(path: str, uid: int, gid: int) -> str | None:
     """Make path, and everything under it, belong to uid and gid.
 
     What the origin wrote belongs to them, so an origin that dropped
@@ -1716,7 +1716,7 @@ class Restore:
             return FAIL, f"{LATE}, written after the backup, {answer.describe()}"
         return PASS, f"{len(RESTORE_SIZES)} objects, backup {name}, then {LATE}"
 
-    def set_aside(self) -> Optional[str]:
+    def set_aside(self) -> str | None:
         """Set the stopped origin's catalog aside.
 
         The store then holds its block files and master key alone, as a
@@ -1868,7 +1868,7 @@ class Restore:
 # Running the restart's scenarios.
 
 
-def unrestartable(test: Test) -> Optional[str]:
+def unrestartable(test: Test) -> str | None:
     """Return why the suite cannot restart the first origin, or None.
 
     The restart is with configuration of the suite's own.
@@ -1900,7 +1900,7 @@ def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], 
             (SKIP, "no pelican-server, which has `origin pstore`; run ./fed.sh init"),
         )
         wanted = [s for s in wanted if s != "restore"]
-    bound: Optional[int] = None
+    bound: int | None = None
     if "capacity" in wanted:
         found, why = usage(test, origin)
         if found is None:
@@ -1956,7 +1956,7 @@ def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], 
 # --------------------------------------------------------------------------
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None.
 
     There is nothing with XRootD origins, whose stores are no pstore,
@@ -1967,7 +1967,7 @@ def skip(fed: common.Federation) -> Optional[str]:
     return None
 
 
-def writable(fed: common.Federation) -> Optional[str]:
+def writable(fed: common.Federation) -> str | None:
     """Return the first protected namespace that takes writes, or None."""
     return next((ns for ns in NAMESPACES if "Writes" in fed.exports.get(ns, ())), None)
 

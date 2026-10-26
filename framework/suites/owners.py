@@ -45,7 +45,6 @@ import os
 import shutil
 import time
 import traceback
-from typing import Optional
 
 from testlib import common, credentials, director, owners, stores, transfers, web
 from testlib.common import die, first
@@ -80,7 +79,7 @@ ONE_PROFILE = ("ready", "keys", "routing")
 TRIES, INTERVAL = 20, 15
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None.
 
     There is nothing without another owner, or without a pair.
@@ -117,11 +116,11 @@ class Test:
         )
         self.base = f"data/owners/{session.run}"
         self.out = session.var_dir(OUT)
-        self._tokens: dict[tuple[str, str, str, str], tuple[Optional[str], Optional[str]]] = {}
+        self._tokens: dict[tuple[str, str, str, str], tuple[str | None, str | None]] = {}
 
     def token(
-        self, cred: OwnerCredential, pair: Pair, side: str, profile: Optional[str] = None
-    ) -> tuple[Optional[str], Optional[str]]:
+        self, cred: OwnerCredential, pair: Pair, side: str, profile: str | None = None
+    ) -> tuple[str | None, str | None]:
         """Return cred's token for side of pair, and its file.
 
         The token is of the session's profile, unless profile names one.
@@ -230,7 +229,7 @@ def not_ready(test: Test) -> str:
 # keys
 
 
-def get_kids(test: Test, url: str, name: str) -> tuple[Optional[frozenset[str]], str]:
+def get_kids(test: Test, url: str, name: str) -> tuple[frozenset[str] | None, str]:
     """Return the kids of the JWKS at url, kept as name.
 
     Returns:
@@ -429,7 +428,7 @@ def check_credential(test: Test, cred: OwnerCredential, report: Report) -> None:
             token, _ = test.token(cred, pair, side)
             rel = test.object_rel(side)
             want = common.sha256(test.path(test.stores_of(pair, side)[0], pair, side, rel))
-            targets: list[tuple[str, str, Optional[common.Origin]]] = [
+            targets: list[tuple[str, str, common.Origin | None]] = [
                 (label(o.svc, "origin"), o.url, o) for o in test.stores_of(pair, side)
             ]
             targets += [(label(c.svc, "cache"), c.url, None) for c in fed.caches]
@@ -481,7 +480,7 @@ def check_put(
     side: str,
     target: str,
     origin: common.Origin,
-    token: Optional[str],
+    token: str | None,
 ) -> None:
     """PUT new bytes to side of pair at origin, with token."""
     ns, name = pair.namespace(side), pair.name(side)
@@ -511,7 +510,7 @@ def check_delete(
     side: str,
     target: str,
     origin: common.Origin,
-    token: Optional[str],
+    token: str | None,
 ) -> None:
     """DELETE an object put in origin's store for it, with token."""
     ns, name = pair.namespace(side), pair.name(side)
@@ -555,7 +554,7 @@ def check_delete(
 
 def client_get(
     test: Test, pair: Pair, side: str, cred: OwnerCredential, direct: bool, tag: str
-) -> Optional[str]:
+) -> str | None:
     """Run `pelican object get` of one of side's objects with cred's token.
 
     Get it into a directory, so that the client stats the object first
@@ -607,7 +606,7 @@ def client_get(
     return None
 
 
-def client_put(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: str) -> Optional[str]:
+def client_put(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: str) -> str | None:
     """Run `pelican object put` of a new object to side with cred's token.
 
     Returns:
@@ -657,7 +656,7 @@ def client(test: Test, name: str) -> tuple[str, str]:
     done = 0
     for pair in test.pairs:
         tag = f"{name}-{pair.export.name}"
-        found: list[Optional[str]] = []
+        found: list[str | None] = []
         writes = "Writes" in pair.export.caps and "Writes" in test.fed.exports[pair.like]
         if name in ("get", "direct-get"):
             found.append(client_get(test, pair, "owner", reader(pair), name == "direct-get", tag))

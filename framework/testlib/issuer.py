@@ -43,7 +43,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from . import common, web
@@ -126,8 +126,8 @@ class User:
             carries the groups the user was in when they logged in.
     """
 
-    token: Optional[str] = None
-    cookie: Optional[str] = None
+    token: str | None = None
+    cookie: str | None = None
 
     @property
     def headers(self) -> dict[str, str]:
@@ -188,7 +188,7 @@ class Tokens:
     """
 
     access: str
-    refresh: Optional[str]
+    refresh: str | None
     expires_in: int
     raw: dict[str, Any] = field(default_factory=dict[str, Any])
 
@@ -256,10 +256,10 @@ def client_of(
 def admin_call(
     web_url: str,
     namespace: str,
-    bearer: Optional[str],
+    bearer: str | None,
     method: str = "GET",
     client_id: str = "",
-    body: Optional[dict[str, Any]] = None,
+    body: dict[str, Any] | None = None,
 ) -> web.Response:
     """Send method to the admin API for the clients of a server's issuer.
 
@@ -330,7 +330,7 @@ def create_client(
     )
 
 
-def delete_client(web_url: str, namespace: str, admin_token: str, client_id: str) -> Optional[str]:
+def delete_client(web_url: str, namespace: str, admin_token: str, client_id: str) -> str | None:
     """Have the server's admin delete a client of its issuer of namespace.
 
     Returns:
@@ -389,8 +389,8 @@ def configuration(
     issuer_url: str,
     client_id: str,
     method: str,
-    access: Optional[str],
-    metadata: Optional[dict[str, Any]] = None,
+    access: str | None,
+    metadata: dict[str, Any] | None = None,
 ) -> web.Response:
     """Send method to the configuration of a client that registered itself.
 
@@ -557,7 +557,7 @@ def authorize(
     wanted: Sequence[str],
     challenge: str,
     state: str,
-    redirect_uri: Optional[str] = None,
+    redirect_uri: str | None = None,
 ) -> web.Response:
     """Ask client's issuer, as user, to authorize client.
 
@@ -744,7 +744,7 @@ def groups(tok: str) -> frozenset[str]:
 # The Pelican client, acquiring tokens from the issuer itself.
 
 
-def approval_url(line: str) -> Optional[tuple[str, str]]:
+def approval_url(line: str) -> tuple[str, str] | None:
     """Return the flow a client's line of output asks the user to approve.
 
     Such a line names the issuer's verification page

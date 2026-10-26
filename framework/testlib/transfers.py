@@ -37,7 +37,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from . import common, credentials, report
 from .credentials import ALLOW, CREDENTIALS, NAMESPACES, Credential
@@ -83,7 +83,7 @@ class Scenario:
     route: str
     op: str
     namespace: str
-    credential: Optional[Credential]
+    credential: Credential | None
     missing: bool
     collection: str
     stem: str
@@ -599,7 +599,7 @@ HTTP_RULES: dict[tuple[str, int], str] = {
 HTTP_HOPS = 5
 
 
-def http_category(status: Optional[int], at_director: bool) -> str:
+def http_category(status: int | None, at_director: bool) -> str:
     """Return the category of a plain HTTP client's failure.
 
     Args:
@@ -637,7 +637,7 @@ def combine(categories: Iterable[str]) -> str:
     return "other"
 
 
-def refused(text: str) -> Optional[str]:
+def refused(text: str) -> str | None:
     """Return why a client command's output shows it was refused, or None.
 
     The command may be any, not only a transfer.
@@ -707,7 +707,7 @@ def plugin_passed(text: str) -> bool:
     return "TransferSuccess = true" in text and "TransferSuccess = false" not in text
 
 
-def plugin_error(text: str) -> Optional[str]:
+def plugin_error(text: str) -> str | None:
     """Return the first TransferError in the plugin's result ads, if any.
 
     It is the ad's string, unescaped.
@@ -752,7 +752,7 @@ class Observation:
     """
 
     passed: bool
-    failure: Optional[str]
+    failure: str | None
     local: Mapping[str, str]
     others: tuple[str, ...]
 

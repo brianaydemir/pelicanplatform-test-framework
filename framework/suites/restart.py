@@ -60,7 +60,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union
+from typing import Any
 
 from testlib import (
     accounts,
@@ -112,7 +112,7 @@ ONE_PROFILE = ("state-survives", "ad-expiry", "xrootd-wedged", "peer-director")
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.
 Row = tuple[str, str, str]
-Rows = Union[tuple[str, str], list[Row]]
+Rows = tuple[str, str] | list[Row]
 
 OBJECT_SIZE = 1 << 20
 # How many objects each cache holds across its restart.
@@ -172,7 +172,7 @@ DIRECTORS = "/api/v1.0/director/directors"
 HEALTH = "/api/v1.0/metrics/health"
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None.
 
     There is nothing in the tiny topology, whose servers are one
@@ -271,7 +271,7 @@ class Test:
         answer = web.request("HEAD", f"{cache.url}{self.path(name)}", token=self.setup)
         return answer.status == 200 and answer.header("Age").strip().isdigit()
 
-    def fill(self, cache: common.Cache, name: str) -> Optional[str]:
+    def fill(self, cache: common.Cache, name: str) -> str | None:
         """Read object name whole through cache, which must serve it.
 
         For a V2 cache, wait until it says it holds it all. The read is
@@ -303,7 +303,7 @@ class Test:
         """
         return director.naming(self.fed.directors, route, path, host)
 
-    def wait_named(self, route: str, path: str, host: str, seconds: float) -> Optional[float]:
+    def wait_named(self, route: str, path: str, host: str, seconds: float) -> float | None:
         """Wait up to seconds until every director names host for path.
 
         Returns:
@@ -318,7 +318,7 @@ class Test:
             return time.monotonic() - started
         return None
 
-    def wait_unnamed(self, route: str, path: str, host: str, seconds: float) -> Optional[float]:
+    def wait_unnamed(self, route: str, path: str, host: str, seconds: float) -> float | None:
         """Wait up to seconds until no director names host for path.
 
         Returns:
@@ -330,7 +330,7 @@ class Test:
         return None
 
 
-def sent_bytes(fed: common.Federation) -> Optional[float]:
+def sent_bytes(fed: common.Federation) -> float | None:
     """Return how many bytes the native origins have sent for GETs, in all.
 
     Returns:
@@ -482,7 +482,7 @@ class Recorded:
     api_token_id: str = ""
     downtime_id: str = ""
     refresh: str = ""
-    client: Optional[issuer.Client] = None
+    client: issuer.Client | None = None
 
 
 def local_metadata(test: Test, server: Server) -> dict[str, Any]:
@@ -495,7 +495,7 @@ def local_metadata(test: Test, server: Server) -> dict[str, Any]:
     return answer.object if answer.status == 200 else {}
 
 
-def registered_servers(test: Test) -> Optional[list[tuple[str, str]]]:
+def registered_servers(test: Test) -> list[tuple[str, str]] | None:
     """Return each server the registry lists, as its admin reads them.
 
     Returns:
@@ -515,7 +515,7 @@ def registered_servers(test: Test) -> Optional[list[tuple[str, str]]]:
     ]
 
 
-def issuer_origin(test: Test) -> tuple[Optional[common.Origin], str]:
+def issuer_origin(test: Test) -> tuple[common.Origin | None, str]:
     """Return the issuer origin (origin-0), if its issuer can be used.
 
     Returns:
@@ -612,7 +612,7 @@ def record_state(test: Test, found: Recorded) -> list[str]:
     return problems
 
 
-def restart_and_settle(test: Test, svc: str, route: str, host: str) -> Optional[str]:
+def restart_and_settle(test: Test, svc: str, route: str, host: str) -> str | None:
     """Restart svc, and wait until every director names host for the probe.
 
     The directors are asked by route; with none, nothing is waited for.
@@ -873,7 +873,7 @@ def health_component(test: Test, origin: common.Origin, component: str) -> str:
     return health_of(test, origin.svc, origin.web_url, component)
 
 
-def restart_backend(backend: str) -> Optional[str]:
+def restart_backend(backend: str) -> str | None:
     """Start backend again, and return why that failed, or None."""
     try:
         control.start(backend)
@@ -882,7 +882,7 @@ def restart_backend(backend: str) -> Optional[str]:
     return None
 
 
-def revived(svc: str) -> Optional[str]:
+def revived(svc: str) -> str | None:
     """Start svc again if its container has exited, and say so.
 
     An origin that cannot reach its storage may give up and exit, as an
@@ -1253,7 +1253,7 @@ def failover_problems(fetch: Fetched, data: bytes, dead: str, client: str) -> li
     return problems
 
 
-def unfetched(test: Test, name: str, data: bytes, routes: Sequence[str] = ("",)) -> Optional[str]:
+def unfetched(test: Test, name: str, data: bytes, routes: Sequence[str] = ("",)) -> str | None:
     """Return why a client can't get object name with every server up.
 
     None if both can. `pelican object get` and stash_plugin each get it
@@ -1485,7 +1485,7 @@ def origin_failover(test: Test) -> list[Row]:
 # peer-director
 
 
-def listed_directors(url: str) -> Optional[set[str]]:
+def listed_directors(url: str) -> set[str] | None:
     """Return the hosts in the director at url's list of directors.
 
     Returns:

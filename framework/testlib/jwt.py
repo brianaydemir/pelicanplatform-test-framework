@@ -21,7 +21,7 @@ import shutil
 import subprocess  # nosec B404
 import tempfile
 from collections.abc import Mapping
-from typing import Any, Optional
+from typing import Any
 
 from . import common
 
@@ -123,7 +123,7 @@ def thumbprint(jwk: Mapping[str, str]) -> str:
     return b64(hashlib.sha256(members.encode()).digest())
 
 
-def key_id(key: str, jwks: Optional[bytes] = None) -> str:
+def key_id(key: str, jwks: bytes | None = None) -> str:
     """Return the kid to name PEM private key file key by.
 
     Pick it as `pelican token create` does: the kid of the key in JWKS
@@ -149,7 +149,7 @@ def algorithm(key: str) -> str:
     return ES256 if public_jwk(key)["kty"] == "EC" else RS256
 
 
-def header(alg: str = ES256, kid: Optional[str] = None) -> dict[str, Any]:
+def header(alg: str = ES256, kid: str | None = None) -> dict[str, Any]:
     """Return a JWS header, as Pelican writes one.
 
     It has alg, kid (unless None), and typ.
@@ -174,9 +174,9 @@ def _ecdsa(der: bytes) -> bytes:
 def encode(
     head: Mapping[str, Any],
     claims: Mapping[str, Any],
-    key: Optional[str] = None,
-    secret: Optional[bytes] = None,
-    alg: Optional[str] = None,
+    key: str | None = None,
+    secret: bytes | None = None,
+    alg: str | None = None,
 ) -> str:
     """Return a compact JWT of header head and claims, both as they are.
 
@@ -238,7 +238,7 @@ def _der_integer(value: bytes) -> bytes:
     return bytes([0x02, len(value)]) + value
 
 
-def verify(token: str, jwks: bytes) -> Optional[str]:
+def verify(token: str, jwks: bytes) -> str | None:
     """Return the kid of the key in JWKS document jwks that signed token.
 
     token is a compact JWT signed by ES256, as its header names it. The

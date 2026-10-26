@@ -53,7 +53,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Mapping
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 from testlib import accounts, ads, common, credentials, director, jwt, metrics, stores, web
@@ -148,7 +148,7 @@ class Test(Servers):
         return self.fed.federated_caches
 
 
-def rejected(url: str) -> Optional[float]:
+def rejected(url: str) -> float | None:
     """Return how many ads the director at url has refused.
 
     Returns:
@@ -204,7 +204,7 @@ def restored_row(test: Test, *servers: Server) -> Row:
 
 
 def forged(
-    test: Test, kind: str, body: Mapping[str, Any], token: Optional[str]
+    test: Test, kind: str, body: Mapping[str, Any], token: str | None
 ) -> tuple[list[str], list[str]]:
     """POST ad body to every director, as a server of kind, with token.
 
@@ -234,7 +234,7 @@ def forged(
 # A forged ad: its row's name, the kind of server it posts as, the ad, the
 # token, and, if it claims a prefix, the prefix and the server that no
 # director may then name for it.
-Variant = tuple[str, str, dict[str, Any], Optional[str], Optional[tuple[str, Server]]]
+Variant = tuple[str, str, dict[str, Any], str | None, tuple[str, Server] | None]
 
 
 def everlasting(key: str, kid: str, issuer: str, audience: str) -> str:
@@ -542,7 +542,7 @@ def spoofed_status(test: Test) -> list[Row]:
 # fed-token
 
 
-def get_fed_token(test: Test, query: Mapping[str, str], token: Optional[str]) -> web.Response:
+def get_fed_token(test: Test, query: Mapping[str, str], token: str | None) -> web.Response:
     """Ask the first director for a federation token, with query and token.
 
     If token is None, present none.
@@ -699,7 +699,7 @@ def fed_token(test: Test) -> list[Row]:
     else:
         other = test.server("Origin", director.host(test.fed.origins[0].url))
         other_query = {"host": other.registered_host, "sType": "Origin"}
-    bad: list[tuple[str, dict[str, str], Optional[str]]] = [
+    bad: list[tuple[str, dict[str, str], str | None]] = [
         ("no-host", {"sType": "Cache"}, token),
         ("no-stype", {"host": host}, token),
         ("no-token", {"host": host, "sType": "Cache"}, None),
@@ -828,7 +828,7 @@ def discover_servers(test: Test) -> list[Row]:
     fed = test.fed
     key, kid = federation_key(fed)
     issuer = str(fed.discovery.get("discovery_endpoint", ""))
-    tokens: tuple[tuple[str, Optional[str]], ...] = (
+    tokens: tuple[tuple[str, str | None], ...] = (
         ("no-token", None),
         ("unknown-issuer", unknown_token(DISCOVERY, ELSEWHERE, jwt.ANY_AUDIENCE)),
         ("federation", sign(key, kid, DISCOVERY, issuer, jwt.ANY_AUDIENCE)),
@@ -855,7 +855,7 @@ def discover_servers(test: Test) -> list[Row]:
 
 # A request of the broker: its row's name, its path, its token, its body,
 # its timeout (X-Pelican-Timeout), and the statuses it may get.
-BrokerRequest = tuple[str, str, Optional[str], dict[str, str], str, tuple[int, ...]]
+BrokerRequest = tuple[str, str, str | None, dict[str, str], str, tuple[int, ...]]
 
 
 def broker(test: Test) -> list[Row]:
@@ -949,7 +949,7 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 }
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     A standalone origin has no director.

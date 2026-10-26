@@ -33,7 +33,6 @@ import os
 import re
 import shutil
 import traceback
-from typing import Optional
 
 from testlib import common, credentials, stores, transfers, web, webdav
 from testlib.common import die, first
@@ -62,7 +61,7 @@ UNKNOWN_KEY = "test-keys/unknown.pem"
 LISTED = {"a": 1000, "b": 2000}
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
     There is nothing without a site-local cache, or without /protected-a.
@@ -261,7 +260,7 @@ def refused(test: Test) -> tuple[str, str]:
     return PASS, f"refused ({why})"
 
 
-def cached_upstream(cache: common.Cache, path: str, token: str) -> Optional[bool]:
+def cached_upstream(cache: common.Cache, path: str, token: str) -> bool | None:
     """Return whether cache, a federated V2 cache, holds path.
 
     A HEAD with Cache-Control: only-if-cached answers 200 if it does, or

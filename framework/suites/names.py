@@ -45,7 +45,7 @@ import os
 import shutil
 import traceback
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
 from testlib import common, digests, director, stores, transfers, web, webdav
@@ -124,7 +124,7 @@ class Test:
         """Return the name of the object whose bytes data are, or ""."""
         return next((name for name, held in self.objects.items() if held == data), "")
 
-    def wrong(self, name: str, data: bytes) -> Optional[str]:
+    def wrong(self, name: str, data: bytes) -> str | None:
         """Return why data, as served for object name, are not its bytes.
 
         Returns:
@@ -154,7 +154,7 @@ class Test:
 
 def catalogued_sizes(
     test: Test, origin: common.Origin, collection: str
-) -> tuple[Optional[dict[str, Any]], str]:
+) -> tuple[dict[str, Any] | None, str]:
     """Return the size of each entry of collection in a pstore's catalog.
 
     collection is in /protected-a, and the origin's admin lists it
@@ -336,7 +336,7 @@ def listed(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
         The status and note, as a scenario returns them.
     """
     path = f"/protected-a/{test.base}"
-    want: dict[str, Optional[int]] = {n: len(data) for n, data in test.objects.items()}
+    want: dict[str, int | None] = {n: len(data) for n, data in test.objects.items()}
     problems: list[str] = []
     for svc, server in servers:
         answer = webdav.propfind(f"{server}{quote(path)}/", "1", test.token)
@@ -399,7 +399,7 @@ def fetched(test: Test, target: str, got: list[str]) -> list[str]:
     return problems
 
 
-def ways(test: Test) -> tuple[list[tuple[str, Optional[common.Cache]]], list[str]]:
+def ways(test: Test) -> tuple[list[tuple[str, common.Cache | None]], list[str]]:
     """Return the ways a client reaches the objects in this shape.
 
     They are: through the cache the director picks; direct from an origin,
@@ -411,7 +411,7 @@ def ways(test: Test) -> tuple[list[tuple[str, Optional[common.Cache]]], list[str
         Each way's key (`cache`, `direct`, or `named-<cache>`) and the
         cache it names; and notes on the ways that the shape lacks.
     """
-    found: list[tuple[str, Optional[common.Cache]]] = [("cache", None)]
+    found: list[tuple[str, common.Cache | None]] = [("cache", None)]
     notes: list[str] = []
     if "DirectReads" in test.caps:
         found.append(("direct", None))
@@ -423,7 +423,7 @@ def ways(test: Test) -> tuple[list[tuple[str, Optional[common.Cache]]], list[str
     return found, notes
 
 
-def served_elsewhere(hosts: list[str], cache: Optional[common.Cache]) -> Optional[str]:
+def served_elsewhere(hosts: list[str], cache: common.Cache | None) -> str | None:
     """Return which servers other than the named cache served an object.
 
     Args:
@@ -502,7 +502,7 @@ def client_get(test: Test) -> tuple[str, str]:
 
 
 def plugin_one(
-    test: Test, label: str, url: str, local: str, upload: bool, cache: Optional[common.Cache]
+    test: Test, label: str, url: str, local: str, upload: bool, cache: common.Cache | None
 ) -> tuple[bool, str]:
     """Run stash_plugin on one transfer, with the token for /protected-a.
 
@@ -570,7 +570,7 @@ def plugin_get(test: Test) -> tuple[str, str]:
     return status, "; ".join([note, *notes])
 
 
-def put_by(test: Test, label: str, put: Callable[[str, str], Optional[str]]) -> tuple[str, str]:
+def put_by(test: Test, label: str, put: Callable[[str, str], str | None]) -> tuple[str, str]:
     """Check that a put of a file of each name lands as that object.
 
     A put of each, alone, to its object's URL in a new collection must
@@ -635,7 +635,7 @@ def client_put(test: Test) -> tuple[str, str]:
     what lands.
     """
 
-    def put(source: str, url: str) -> Optional[str]:
+    def put(source: str, url: str) -> str | None:
         code, out, err = test.session.pelican_cmd("object", "put", "--token", test.token_file, source, url)
         return f"exit {code}: {last_line(err or out)}" if code != 0 else None
 
@@ -650,7 +650,7 @@ def plugin_put(test: Test) -> tuple[str, str]:
     """
     count = [0]
 
-    def put(source: str, url: str) -> Optional[str]:
+    def put(source: str, url: str) -> str | None:
         count[0] += 1
         passed, said = plugin_one(test, f"plugin-put-{count[0]}", url, source, True, None)
         return None if passed else f"failed: {transfers.plugin_error(said) or last_line(said)}"
@@ -707,7 +707,7 @@ RUN = {
 }
 
 
-def skip(fed: common.Federation) -> Optional[str]:
+def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test: no /protected-a."""
     if "protected-a" not in fed.exports:
         return "this shape does not export /protected-a"

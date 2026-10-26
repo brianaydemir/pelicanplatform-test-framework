@@ -14,7 +14,7 @@ import ssl
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, Optional, Union
+from typing import Any
 from urllib.parse import urlsplit
 
 # The federation's CA, in the dev container.
@@ -38,7 +38,7 @@ class Response:
             that broke off.
     """
 
-    status: Optional[int]
+    status: int | None
     body: bytes = b""
     headers: tuple[tuple[str, str], ...] = ()
     trailers: tuple[tuple[str, str], ...] = ()
@@ -131,7 +131,7 @@ def _pieces(data: bytes, size: int = 1 << 16) -> Iterator[bytes]:
         yield data[start : start + size]
 
 
-def _failure(status: Optional[int], error: Exception) -> str:
+def _failure(status: int | None, error: Exception) -> str:
     """Return what went wrong, for a Response's error.
 
     status is the one that came before error, if one did.
@@ -154,9 +154,9 @@ def _connect(url: str, timeout: float) -> tuple[http.client.HTTPConnection, str]
 def request(
     method: str,
     url: str,
-    token: Optional[str] = None,
-    upload: Union[bytes, str, None] = None,
-    headers: Optional[Mapping[str, str]] = None,
+    token: str | None = None,
+    upload: bytes | str | None = None,
+    headers: Mapping[str, str] | None = None,
     timeout: float = 60,
     chunked: bool = False,
 ) -> Response:
@@ -179,16 +179,16 @@ def request(
     sent = dict(headers or {})
     if token is not None:
         sent["Authorization"] = f"Bearer {token}"
-    data: Optional[bytes] = None
+    data: bytes | None = None
     if isinstance(upload, str):
         with open(upload, "rb") as f:
             data = f.read()
     else:
         data = upload
-    body: Union[bytes, Iterable[bytes], None] = data
+    body: bytes | Iterable[bytes] | None = data
     if chunked and data is not None:
         body = _pieces(data)
-    status: Optional[int] = None
+    status: int | None = None
     try:
         conn.request(method, target, body=body, headers=sent, encode_chunked=chunked)
         answer = conn.getresponse()
@@ -212,15 +212,15 @@ class Timed:
     """
 
     response: Response
-    first: Optional[float]
-    whole: Optional[float]
+    first: float | None
+    whole: float | None
 
 
 def timed_get(
     url: str,
-    token: Optional[str],
+    token: str | None,
     first: int,
-    headers: Optional[Mapping[str, str]] = None,
+    headers: Mapping[str, str] | None = None,
     timeout: float = 60,
 ) -> Timed:
     """GET url, as request() does, timing the first `first` bytes, then all.
@@ -233,8 +233,8 @@ def timed_get(
     if token is not None:
         sent["Authorization"] = f"Bearer {token}"
     started = time.monotonic()
-    head: Optional[float] = None
-    status: Optional[int] = None
+    head: float | None = None
+    status: int | None = None
     try:
         conn.request("GET", target, headers=sent)
         answer = conn.getresponse()
@@ -254,8 +254,8 @@ def timed_get(
 def statuses_before_body(
     method: str,
     url: str,
-    token: Optional[str] = None,
-    headers: Optional[Mapping[str, str]] = None,
+    token: str | None = None,
+    headers: Mapping[str, str] | None = None,
     timeout: float = 10,
 ) -> tuple[int, ...]:
     """Return the statuses that url's server sends before a request's body.
@@ -309,10 +309,10 @@ def statuses_before_body(
 
 def read_part(
     url: str,
-    token: Optional[str],
+    token: str | None,
     size: int,
     timeout: float = 60,
-    headers: Optional[Mapping[str, str]] = None,
+    headers: Mapping[str, str] | None = None,
 ) -> Response:
     """GET url, with headers, and hang up once size bytes of the body come.
 
@@ -327,7 +327,7 @@ def read_part(
     sent = dict(headers or {})
     if token is not None:
         sent["Authorization"] = f"Bearer {token}"
-    status: Optional[int] = None
+    status: int | None = None
     try:
         conn.request("GET", target, headers=sent)
         answer = conn.getresponse()

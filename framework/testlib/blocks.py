@@ -46,7 +46,6 @@ import re
 import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional
 
 from . import common, web
 
@@ -103,7 +102,7 @@ EDGES = (
     CHUNK_UNDECLARED,
 )
 
-Range = tuple[Optional[int], Optional[int]]
+Range = tuple[int | None, int | None]
 Request = tuple[Range, ...]
 
 
@@ -206,7 +205,7 @@ def readv_edges(size: int) -> list[Request]:
     return found
 
 
-def content_range(value: str) -> Optional[tuple[int, int, int]]:
+def content_range(value: str) -> tuple[int, int, int] | None:
     """Return a Content-Range header's first byte, last byte, and total.
 
     Returns:
@@ -258,7 +257,7 @@ def merge(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
-def check(data: bytes, request: Request, answer: web.Response) -> Optional[str]:
+def check(data: bytes, request: Request, answer: web.Response) -> str | None:
     """Return what is wrong with a response to request, or None if nothing.
 
     A range with no byte in the object is passed over, as a server passes
@@ -340,8 +339,8 @@ def unsatisfiable(size: int, request: Request) -> bool:
 
 
 def which_version(
-    versions: dict[str, bytes], request: Optional[Request], answer: web.Response
-) -> tuple[Optional[str], str]:
+    versions: dict[str, bytes], request: Request | None, answer: web.Response
+) -> tuple[str | None, str]:
     """Return which of versions a response to request came from.
 
     Args:
@@ -382,7 +381,7 @@ def which_version(
     return None, "; ".join(problems)
 
 
-def freshness(cache_control: str) -> Optional[float]:
+def freshness(cache_control: str) -> float | None:
     """Return how many seconds a cache treats an object as fresh.
 
     A V2 cache revalidates no-cache after a grace of 5 seconds
@@ -451,7 +450,7 @@ def overlap_plans() -> dict[str, list[Request]]:
     }
 
 
-def concurrent_reads() -> list[Optional[Request]]:
+def concurrent_reads() -> list[Request | None]:
     """Return reads of a cold OVERLAP_SIZE object, to send all at once.
 
     They are the same range twice, ranges that overlap their neighbors,
@@ -606,7 +605,7 @@ def cache_dir(cache: common.Cache) -> str:
     return f"data/cache/{name}"
 
 
-def store_bytes(cache: common.Cache) -> Optional[int]:
+def store_bytes(cache: common.Cache) -> int | None:
     """Return how many bytes a cache's object files take in its store.
 
     Its store is the one it mounts at /data. A V2 cache's object files
@@ -634,7 +633,7 @@ def store_bytes(cache: common.Cache) -> Optional[int]:
     return total
 
 
-def read_space_file(cache: common.Cache, name: str) -> tuple[Optional[bytes], str]:
+def read_space_file(cache: common.Cache, name: str) -> tuple[bytes | None, str]:
     """Return a file of an XRootD cache's, by its name in namespace/.
 
     The cache links each file from namespace/, where its path in the
@@ -670,7 +669,7 @@ def read_space_file(cache: common.Cache, name: str) -> tuple[Optional[bytes], st
         return None, f"framework/var/{target}: {e.strerror}"
 
 
-def read_cinfo(cache: common.Cache, rel: str) -> tuple[Optional[Cinfo], str]:
+def read_cinfo(cache: common.Cache, rel: str) -> tuple[Cinfo | None, str]:
     """Return what an XRootD cache's .cinfo of rel in /protected-a records.
 
     Returns:
@@ -722,7 +721,7 @@ def xrootd_stored(cache: common.Cache, rel: str, data: bytes) -> tuple[int, list
     return compared, problems, ""
 
 
-def xrootd_holds(cache: common.Cache, rel: str) -> Optional[bool]:
+def xrootd_holds(cache: common.Cache, rel: str) -> bool | None:
     """Return whether an XRootD cache holds all of rel in /protected-a.
 
     Its .cinfo says (read_cinfo()); the cache removes it with the object

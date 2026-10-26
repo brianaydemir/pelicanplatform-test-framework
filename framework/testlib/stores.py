@@ -14,7 +14,7 @@ import hashlib
 import os
 from collections.abc import Iterable, Mapping
 from collections.abc import Set as AbstractSet
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
 from . import common, credentials, web, webdav
@@ -73,7 +73,7 @@ def url(origin: common.Origin, namespace: str, rel: str) -> str:
     return f"{origin.url}/{namespace}/{quote(rel)}"
 
 
-def cannot(fed: common.Federation, operation: str) -> Optional[str]:
+def cannot(fed: common.Federation, operation: str) -> str | None:
     """Return why the origins' storage cannot do operation, or None.
 
     Args:
@@ -83,7 +83,7 @@ def cannot(fed: common.Federation, operation: str) -> Optional[str]:
     return LIMITS.get(fed.origin_variant, {}).get(operation)
 
 
-def digests(fed: common.Federation) -> tuple[tuple[str, ...], Optional[str]]:
+def digests(fed: common.Federation) -> tuple[tuple[str, ...], str | None]:
     """Return which digests the origins' storage reports, and why not all.
 
     An XRootD origin's multiuser checksum path has no crc32c
@@ -119,7 +119,7 @@ def has_digests(fed: common.Federation, size: int, declared: bool) -> bool:
     return fed.origin_variant != "s3v2" or declared or size <= S3_PART
 
 
-def held(origin: common.Origin, namespace: str, rel: str, token: Optional[str]) -> Optional[str]:
+def held(origin: common.Origin, namespace: str, rel: str, token: str | None) -> str | None:
     """Return the SHA-256 of what origin holds at rel in namespace.
 
     Args:
@@ -165,7 +165,7 @@ def storage_route(kind: str, path: str) -> str:
     return f"{kind}{quote(path)}"
 
 
-def storage_admin(session: Session, origin: common.Origin, key: Optional[str] = None) -> str:
+def storage_admin(session: Session, origin: common.Origin, key: str | None = None) -> str:
     """Return a token that origin's storage API takes as its admin's.
 
     It is minted as credentials.mint_admin() mints one, signed with key,
@@ -188,8 +188,8 @@ def catalog_answer(
     kind: str,
     namespace: str,
     rel: str,
-    token: Optional[str] = None,
-) -> tuple[Optional[dict[str, Any]], str]:
+    token: str | None = None,
+) -> tuple[dict[str, Any] | None, str]:
     """Return what a pstore origin's storage API says of rel in namespace.
 
     Its admin asks.
@@ -220,7 +220,7 @@ def catalog_answer(
 
 def written_at(
     session: Session, origin: common.Origin, namespace: str, rel: str
-) -> tuple[Optional[float], str]:
+) -> tuple[float | None, str]:
     """Return when origin's store last wrote rel in namespace, in Unix time.
 
     A store on disk keeps it as the file's modification time; a pstore
@@ -258,7 +258,7 @@ def storage_namespaces(origin: common.Origin, exports: Mapping[str, AbstractSet[
 
 def held_anywhere(
     origins: Iterable[common.Origin], namespace: str, rel: str, tokens: dict[str, str]
-) -> list[Optional[str]]:
+) -> list[str | None]:
     """Return held() at each store of origins, with tokens by namespace.
 
     Raises:
@@ -290,7 +290,7 @@ def put(
     data: bytes,
     token: str,
     chunked: bool = False,
-) -> Optional[str]:
+) -> str | None:
     """Upload data to rel in namespace straight to origin.
 
     Returns:
@@ -328,7 +328,7 @@ def seed(
     data: bytes,
     token: str,
     caps: AbstractSet[str],
-) -> Optional[str]:
+) -> str | None:
     """Put data at rel in namespace at origin, as a test's setup.
 
     It goes through the origin (put()) if the namespace takes writes, and
@@ -371,7 +371,7 @@ def seed_everywhere(
     return [e for e in (seed(o, namespace, rel, data, token, caps) for o in targets) if e]
 
 
-def write_file(store: str, rel: str, data: bytes) -> Optional[str]:
+def write_file(store: str, rel: str, data: bytes) -> str | None:
     """Write data to rel in store, a namespace's storage on disk.
 
     store is as common.Origin.store_of() names it. Any directories that
@@ -432,7 +432,7 @@ def make_dirs(origins: Iterable[common.Origin], namespace: str, rel: str, token:
     return errors
 
 
-def delete(origin: common.Origin, namespace: str, rel: str, token: str) -> Optional[str]:
+def delete(origin: common.Origin, namespace: str, rel: str, token: str) -> str | None:
     """Remove rel in namespace from origin's store, if it is there.
 
     A disk store's file is removed directly, and a pstore origin is sent

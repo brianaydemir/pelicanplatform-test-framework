@@ -18,7 +18,7 @@ import http.server
 import threading
 from collections.abc import Generator
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, override
 
 # The dev container's host name on the federation's network.
 HOST = "dev"
@@ -36,7 +36,7 @@ class Reply:
 
     status: int = 200
     body: bytes = b""
-    length: Optional[int] = None
+    length: int | None = None
 
 
 @dataclass(frozen=True)
@@ -127,7 +127,7 @@ class Stub:
                 """Answer a HEAD."""
                 self.reply(False)
 
-            # pylint: disable-next=redefined-builtin
+            @override
             def log_message(self, format: str, *args: Any) -> None:
                 """Log nothing: the tests read what the stub saw instead."""
 

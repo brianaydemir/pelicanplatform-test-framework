@@ -49,7 +49,7 @@ import uuid
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlsplit
 
 from . import common, jwt
@@ -118,7 +118,7 @@ class Credential:
     """
 
     name: str
-    key: Optional[str]
+    key: str | None
     issuer: str
     scope_path: str
     get_scopes: tuple[str, ...]
@@ -254,7 +254,7 @@ def namespace_issuers(fed: common.Federation) -> bool:
     return fed.issuer_of("protected-a") != fed.issuer_of("protected-b")
 
 
-def moot(fed: common.Federation, cred: Credential) -> Optional[str]:
+def moot(fed: common.Federation, cred: Credential) -> str | None:
     """Return why cred can test nothing in fed, or None if it can.
 
     With the origins' issuer off, or the external issuer in its place,
@@ -372,7 +372,7 @@ def server_jwks_problems(
 
 def public_jwks_problems(
     have: AbstractSet[str],
-    server: Optional[AbstractSet[str]],
+    server: AbstractSet[str] | None,
     own: Mapping[str, AbstractSet[str]],
 ) -> list[str]:
     """Return what is wrong with /public's JWKS, where it has an issuer.
@@ -405,7 +405,7 @@ def public_jwks_problems(
 def namespace_jwks_problems(
     namespace: str,
     have: AbstractSet[str],
-    server: Optional[AbstractSet[str]],
+    server: AbstractSet[str] | None,
     own: Mapping[str, AbstractSet[str]],
 ) -> list[str]:
     """Return what is wrong with protected namespace's JWKS.
@@ -546,7 +546,7 @@ def server_claims(
     scope_path: str = "/",
     lifetime: int = LONG,
     subject: str = SUBJECT,
-    audience: Optional[str] = None,
+    audience: str | None = None,
     *,
     profile: str,
 ) -> dict[str, Any]:
@@ -576,7 +576,7 @@ def server_claims(
 
 def mint_credential(
     fed: common.Federation, cred: Credential, namespace: str, op: str, out: str, profile: str
-) -> Optional[float]:
+) -> float | None:
     """Write cred's token of profile for op in namespace to file out.
 
     `token create` logs an error, but writes the token anyway, when the
@@ -685,7 +685,7 @@ def web_token(
     subject: str,
     scopes: tuple[str, ...],
     lifetime: int = 300,
-    key: Optional[str] = None,
+    key: str | None = None,
 ) -> str:
     """Return a token from the local issuer of the server at web_url.
 
@@ -712,7 +712,7 @@ def web_token(
     return jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), claims, key=key)
 
 
-def wait_until_stale(expiry: Optional[float]) -> None:
+def wait_until_stale(expiry: float | None) -> None:
     """Sleep until 70s past expiry, if there is one.
 
     Native servers allow 60s of clock skew, and remember a token they

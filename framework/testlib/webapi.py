@@ -16,7 +16,7 @@ import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlencode
 
 from . import accounts, common, credentials, director, jwt, web
@@ -155,7 +155,7 @@ class Access:
         self,
         server: Server,
         fields: Mapping[str, str],
-        headers: Optional[Mapping[str, str]] = None,
+        headers: Mapping[str, str] | None = None,
         spaced: bool = True,
         early: bool = False,
     ) -> web.Response:
@@ -281,7 +281,7 @@ def other_key(access: Access, server: Server) -> tuple[str, str]:
     return credentials.keys(access.fed)["unknown"], "unknown.pem"
 
 
-def made_token(answer: web.Response) -> Optional[tuple[str, str, str]]:
+def made_token(answer: web.Response) -> tuple[str, str, str] | None:
     """Return the API token that answer hands out, if it does.
 
     Args:
