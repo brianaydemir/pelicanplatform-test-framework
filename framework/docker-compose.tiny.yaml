@@ -46,7 +46,7 @@ services:
       - "origin"
       - "--module"
       - "cache"
-    # Only matter under `-p origin-metadata` and `-p auth-oidc`.
+    # Only matter under `-p origin-metadata` and `-p auth-oidc-local`.
     depends_on:
       metadata: { condition: service_healthy, required: false }
       idp: { condition: service_healthy, required: false }
@@ -135,7 +135,7 @@ services:
       - "9007:9007"
     volumes:
       - ./idp/idp.py:/fed/bin/idp.py:ro
-      - ./etc/idp-users.json:/fed/idp/users.json:ro
+      - ./var/generated/idp-users.json:/fed/idp/users.json:ro
       - ./var/generated:/fed/generated:ro
       - ./var/data/idp:/var/log/idp
     secrets:

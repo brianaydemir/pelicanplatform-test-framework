@@ -1,7 +1,7 @@
 """A small OpenID Connect provider, the `idp` service.
 
 It stands in for an identity provider such as CILogon under
-`-p auth-oidc`: the servers send their users here to log in
+`-p auth-oidc-local`: the servers send their users here to log in
 (OIDC.Issuer), and the registry asks it for a user's identity by the
 device flow (`pelican namespace register --with-identity`). Python's
 standard library alone: the servers read its ID tokens without checking

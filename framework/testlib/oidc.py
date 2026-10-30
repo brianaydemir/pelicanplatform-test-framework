@@ -1,7 +1,7 @@
 """Logging in to a Pelican server through the identity provider.
 
 The tests log in as a browser would, through the provider
-(`-p auth-oidc`; framework/idp/idp.py). Here too is what else the
+(`-p auth-oidc-local`; framework/idp/idp.py). Here too is what else the
 provider offers the tests: its users, and approving a device flow
 there.
 
@@ -30,7 +30,7 @@ from . import accounts, common, web
 
 # The provider's users, as docker-compose.yaml gives the `idp` service
 # them.
-USERS_FILE = os.path.join(common.FRAMEWORK, "etc", "idp-users.json")
+USERS_FILE = os.path.join(common.VAR, "generated", "idp-users.json")
 # What the provider logs, under framework/var: a JSON object per request.
 LOG = "data/idp/requests.log"
 # The servers' client, under framework/var, which the provider takes.

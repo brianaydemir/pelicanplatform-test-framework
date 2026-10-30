@@ -149,13 +149,15 @@ x-needs-backends: &needs-backends
 
 services:
 
-  # An identity provider of the framework's own (`-p auth-oidc`), which
-  # the servers send their users to log in through, and the registry
-  # asks for a user's identity (idp/idp.py). Its users are
-  # etc/idp-users.json; its client is the one the servers read from
-  # ./var/generated/oidc-client-{id,secret}. It logs every request in
-  # ./var/data/idp/requests.log. Its port is the same inside and out, so
-  # that https://idp:9007 serves a browser too, given a hosts entry.
+  # An identity provider of the framework's own (`-p auth-oidc-local`),
+  # which the servers send their users to log in through, and the
+  # registry asks for a user's identity (idp/idp.py). Its users are
+  # ./var/generated/idp-users.json, which fed.sh makes from
+  # etc/idp-users.json and any local/etc/idp-users.json; its client is
+  # the one the servers read from ./var/generated/oidc-client-{id,secret}.
+  # It logs every request in ./var/data/idp/requests.log. Its port is the
+  # same inside and out, so that https://idp:9007 serves a browser too,
+  # given a hosts entry.
   idp:
     hostname: idp
     networks: [default, firewalled]
@@ -183,7 +185,7 @@ services:
       - "9007:9007"
     volumes:
       - ./idp/idp.py:/fed/bin/idp.py:ro
-      - ./etc/idp-users.json:/fed/idp/users.json:ro
+      - ./var/generated/idp-users.json:/fed/idp/users.json:ro
       - ./var/generated:/fed/generated:ro
       - ./var/data/idp:/var/log/idp
     secrets:

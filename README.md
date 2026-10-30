@@ -141,8 +141,9 @@ the client, in `framework/var/bin/`:
 | config for one service                               | `local/config.d/instance/<service>/*.yaml` | `./fed.sh restart <service>`    |
 | a [knob](docs/configuration.md#knobs)                | your environment, or a local preset        | `./fed.sh init`, `up`           |
 | a [shape of your own](docs/configuration.md#presets) | `local/presets/<name>.sh`                  | `./fed.sh -p <name> init`, `up` |
-| another identity provider's client                   | `local/etc/oidc-client-{id,secret}`        | `./fed.sh restart`              |
+| CILogon's or another identity provider's client      | `local/etc/oidc-client-{id,secret}`        | `./fed.sh restart`              |
 | S3 credentials (`-p origin-s3v2`)                    | `local/etc/s3-{access,secret}-key`         | `./fed.sh restart`              |
+| identity provider users (`-p auth-oidc-local`)       | `local/etc/idp-users.json`                 | any `./fed.sh` command          |
 
 Pelican reads its configuration only at startup. `restart` recreates the
 containers, so they read it again.
@@ -313,7 +314,8 @@ presets add to `topo-basic`, and `topo-no-cache` takes from it)
 
 | Preset                 | Effect                                                                                                                                                                                                                                                                       |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `auth-oidc`            | web UI login, and the registry's `--with-identity`, through an identity provider of the framework's own, the `idp` service (`framework/idp/idp.py`), whose users are `framework/etc/idp-users.json`; see `oidc`                                                              |
+| `auth-oidc-local`      | web UI login, and the registry's `--with-identity`, through an identity provider of the framework's own, the `idp` service (`framework/idp/idp.py`), whose users are `framework/etc/idp-users.json`; see `oidc`                                                              |
+| `auth-oidc-cilogon`    | web UI login, and the registry's `--with-identity`, through CILogon (`https://cilogon.org`), with your own client in `local/etc/oidc-client-{id,secret}`, which must accept each server's redirect URI (see [Ports](#ports)); the `oidc` suite skips                         |
 | `auth-external-issuer` | the exports trust `https://discovery:8444/issuer`, whose key signs the tests' tokens, instead of the origins' issuers, which are off, so the suites that need one skip, as under `auth-no-issuer`                                                                            |
 | `auth-no-issuer`       | the origins run no issuer (`Origin.EnableIssuer`, Pelican's default): each namespace's issuer is the origin itself, whose own key signs its tokens out of band, as `pelican token create` does; the `collections`, `issuer`, and `accounts` suites skip, and parts of others |
 
@@ -420,7 +422,7 @@ them.
 | `data/owners-test/`  | the responses the `owners` suite got; `data/owners-test-scitokens/`, in its SciTokens pass                                                                                              |
 | `data/metadata/`     | every request the metadata recorder received                                                                                                                                            |
 | `data/webdav-gate/`  | the `Authorization` of every request an `https` or `httpsv2` origin sent its backend through the gate (`exports`)                                                                       |
-| `data/idp/`          | every request the identity provider served (`-p auth-oidc`), one JSON object per line, without its secrets                                                                              |
+| `data/idp/`          | every request the identity provider served (`-p auth-oidc-local`), one JSON object per line, without its secrets                                                                        |
 | `data/commands.log`  | the client commands the tests ran, with each one's exit status and output; `commands-scitokens.log`, in their SciTokens pass                                                            |
 | `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                                                                                           |
 | `logs/<time>/`       | every service's log, the containers' states, the shape and its configuration, the run's results, what the tests printed, and what the control helper did, as each `./fed.sh test` ended |
@@ -436,11 +438,14 @@ them.
 ## Ports
 
 The web UIs log in as `admin` / `asdf`. `framework/var/certs/ca.crt` signs
-the certificates. Under `-p auth-oidc`, each server's OIDC redirect URI is
-`https://localhost:<port>/api/v1.0/auth/oauth/callback`, and its login
-page offers the identity provider, which the servers name as
+the certificates. Under `-p auth-oidc-local` or `-p auth-oidc-cilogon`,
+each server's OIDC redirect URI is
+`https://localhost:<port>/api/v1.0/auth/oauth/callback`. Under
+`-p auth-oidc-local`, its login page offers the identity provider,
+which the servers name as
 `https://idp:9007`: to log in from a browser, map `idp` to `127.0.0.1`
-in your hosts file, as any user of `framework/etc/idp-users.json`.
+in your hosts file, as any user of `framework/etc/idp-users.json` or
+`local/etc/idp-users.json`.
 
 | URL                      | Service                                                                               |
 | ------------------------ | ------------------------------------------------------------------------------------- |
@@ -450,7 +455,7 @@ in your hosts file, as any user of `framework/etc/idp-users.json`.
 | <https://localhost:9001> | registry                                                                              |
 | <https://localhost:9005> | discovery (`/.well-known/pelican-configuration`), and the external issuer (`/issuer`) |
 | <https://localhost:9006> | transfer (`topo-transfer-server`)                                                     |
-| <https://localhost:9007> | idp, the identity provider (`auth-oidc`); `https://idp:9007` to the servers           |
+| <https://localhost:9007> | idp, the identity provider (`auth-oidc-local`); `https://idp:9007` to the servers     |
 | <https://localhost:9008> | director, the directors' load balancer (`director-ha`)                                |
 | <http://localhost:9002>  | dev container (serve on `0.0.0.0:8444` inside)                                        |
 | <http://localhost:9003>  | Grafana (`admin` / `admin`; see `framework/presets/with-grafana.sh`)                  |
@@ -479,7 +484,7 @@ in your hosts file, as any user of `framework/etc/idp-users.json`.
   `director-discovery`, `origin-broker`, `origin-firewalled`,
   `topo-no-cache`, and every
   preset that adds a service but `origin-metadata`,
-  `origin-metadata-tx`, and `auth-oidc`.
+  `origin-metadata-tx`, and `auth-oidc-local`.
 - **`-p origin-metadata`** builds the verifier's image from GitHub on the
   first `up`, which needs network access and takes a few minutes.
 

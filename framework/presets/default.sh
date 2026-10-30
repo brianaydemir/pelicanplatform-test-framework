@@ -79,6 +79,10 @@ ORIGIN_DISABLE_DIRECT_CLIENTS=false
 # EnableOIDC for every server: origin, cache, director, and registry.
 ENABLE_OIDC=false
 
+# Whether the servers' OIDC login is through CILogon, with a client of
+# the user's own (see presets/auth-oidc-cilogon.sh).
+OIDC_CILOGON=false
+
 # Origin.Posc.Enabled, Origin.Metadata.{Enabled,TrackAccess}, and
 # Origin.Metadata.Mode (see presets/origin-posc.sh and
 # presets/origin-metadata.sh).

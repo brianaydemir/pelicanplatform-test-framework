@@ -2,15 +2,17 @@
 
 Part of [What the tests check](README.md).
 
-Under `-p auth-oidc`, every server lets its users log in through an
-identity provider (`Origin.EnableOIDC` and the other modules' flags),
-and the registry has one prove who registers a prefix from the command
-line. The provider is the `idp` service, an OpenID Connect provider of
+Under `-p auth-oidc-local`, every server lets its users log in through
+an identity provider (`Origin.EnableOIDC` and the other modules'
+flags), and the registry has one prove who registers a prefix from the
+command line. The provider is the `idp` service, an OpenID Connect provider of
 the framework's own (`framework/idp/idp.py`), at `https://idp:9007`
 (`OIDC.Issuer`), standing in for CILogon: its users, their passwords,
-and their groups are `framework/etc/idp-users.json`, and its one client
-is the ID and secret that `fed.sh` makes at random for the servers
-(`framework/var/generated/oidc-client-{id,secret}`). It serves
+and their groups are `framework/etc/idp-users.json`, plus any in
+`local/etc/idp-users.json`, which replace those of the same username,
+and its one client is the ID and secret that `fed.sh` makes at random
+for the servers (`framework/var/generated/oidc-client-{id,secret}`).
+It serves
 discovery, a JWKS, the authorization code flow, the device flow, and
 userinfo, signs its ID tokens itself (RS256, with a key it makes as it
 starts), and logs every request in `framework/var/data/idp/requests.log`,

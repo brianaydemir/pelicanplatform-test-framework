@@ -101,9 +101,10 @@ EOF
   tests' own layer ([Unix users](tests/unix-users.md)).
 - `fed.sh` generates `Logging.Level` (from `PELICAN_LOG_LEVEL`), every
   server's `EnableOIDC` and, with it, `OIDC.Issuer`, the identity
-  provider's URL (from `-p auth-oidc`; `Issuer.GroupSource` stays
+  provider's URL (from `-p auth-oidc-local`; `Issuer.GroupSource` stays
   `internal`, and the `oidc` suite restarts origin-0 with `oidc`, and
-  with `Server.UIAdminUsers`, for a while), the caches'
+  with `Server.UIAdminUsers`, for a while) or CILogon's (from
+  `-p auth-oidc-cilogon`), the caches'
   `Cache.MemoryCacheSize` (from `-p cache-memory`),
   `Director.DefaultResponse` (from
   `-p director-default-origin`), the registry's
@@ -198,10 +199,11 @@ name. It can set any knob in `framework/presets/default.sh`, or call
   one choice fewer, without leaving some pair uncovered
   ([Developing the framework](development.md#the-smoke-matrix)). The
   exceptions: `with-grafana`, which needs a data source that the
-  framework lacks; rotated keys with `server-unprivileged`, whose
+  framework lacks; `auth-oidc-cilogon`, which needs a CILogon client of
+  your own; rotated keys with `server-unprivileged`, whose
   servers' keys the host may not write; and `cache-mixed`,
-  `topo-no-cache`, `auth-oidc`, and `topo-transfer-server` with origins
-  other than `posixv2` and `xrootd`, since what the first tests is
+  `topo-no-cache`, `auth-oidc-local`, and `topo-transfer-server` with
+  origins other than `posixv2` and `xrootd`, since what the first tests is
   between the caches, the second how the directors and the clients do
   without one, the third the servers' web login, which their storage
   does not change, and the fourth a transfer server's own confinement

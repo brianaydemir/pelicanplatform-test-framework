@@ -34,4 +34,8 @@ __pycache__/
 #---------------------------------------------------------------------------
 # Project-specific
 
-# <to be filled in>
+# Everything the framework generates (emptied by reset.sh)
+/framework/var/
+
+# smoke.sh's logs and results
+/smoke-logs/

@@ -1,4 +1,4 @@
-"""Logging in through an identity provider (`-p auth-oidc`).
+"""Logging in through an identity provider (`-p auth-oidc-local`).
 
 What every server does with a user that the provider vouches for,
 through the OAuth2 authorization code flow that a browser follows
@@ -7,7 +7,7 @@ username and groups; and the registry's use of the provider's device
 flow to learn who registers a prefix
 (`pelican namespace register --with-identity`). The provider is the
 `idp` service (framework/idp/idp.py), whose users are
-framework/etc/idp-users.json.
+framework/etc/idp-users.json's and local/etc/idp-users.json's.
 
   enabled            each server lists the modules it logs in through
                      the provider, and begins a login: a redirect to
@@ -121,7 +121,7 @@ ONE_PROFILE = tuple(SCENARIOS)
 Row = tuple[str, str, str]
 
 # The provider's users (framework/etc/idp-users.json), by what each is
-# for.
+# for. Users of the same name in local/etc/idp-users.json replace them.
 MEMBER = "idp-member"  # in test-project-a
 ADMIN = "idp-admin"  # in test-server-admins (Server.AdminGroups) and test-project-b
 OWNER = "idp-owner"  # named in Server.UIAdminUsers by the restart
@@ -151,7 +151,7 @@ def row(case: str, problems: Sequence[str], note: str) -> Row:
 def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test (no provider), or None."""
     if fed.oidc_issuer is None:
-        return "the servers log in through no identity provider ('-p auth-oidc')"
+        return "the servers log in through no provider of the framework's own ('-p auth-oidc-local')"
     return None
 
 

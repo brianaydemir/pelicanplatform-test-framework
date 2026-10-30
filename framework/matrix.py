@@ -106,7 +106,7 @@ PRESETS: dict[str, tuple[str, str]] = {
     "topo-site-local-cache": ("site_local", "on"),
     "auth-external-issuer": ("issuer", "external"),
     "auth-no-issuer": ("issuer", "none"),
-    "auth-oidc": ("login", "oidc"),
+    "auth-oidc-local": ("login", "oidc"),
     "origin-no-direct": ("direct", "no"),
     "origin-posc": ("posc", "on"),
     "origin-atomic-uploads": ("atomic", "on"),
@@ -134,6 +134,7 @@ PRESETS: dict[str, tuple[str, str]] = {
 # Presets smoke.sh does not run, and why.
 NOT_RUN: dict[str, str] = {
     "with-grafana": "Grafana has nothing provisioned to check",
+    "auth-oidc-cilogon": "it needs a CILogon client of the user's own",
 }
 
 # The origins that run XRootD, and those with a backend service.

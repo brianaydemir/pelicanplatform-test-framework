@@ -884,10 +884,12 @@ class Federation:
 
     @cached_property
     def oidc_issuer(self) -> str | None:
-        """The OIDC issuer URL of the identity provider (`-p auth-oidc`).
+        """The OIDC issuer URL of the identity provider (`auth-oidc-local`).
 
         The servers send their users to log in through it. It is None if
-        the shape runs none (see presets/auth-oidc.sh).
+        the shape runs none (see presets/auth-oidc-local.sh), including
+        where the servers log in through CILogon (`auth-oidc-cilogon`),
+        which the tests cannot log in through.
         """
         found = self._line("oidc")
         return None if found == "off" else found

@@ -19,7 +19,7 @@ pelican-defaults	no	origin-xrootd cache-xrootd auth-no-issuer director-discovery
 ssh-v2	no	origin-ssh
 https-v2-no-issuer	no	origin-https auth-no-issuer
 posixv2-v2-multi-owner-multiuser	no	topo-multi-owner origin-multiuser
-posixv2-v2-oidc-discovery	no	auth-oidc director-discovery
+posixv2-v2-oidc-local-discovery	no	auth-oidc-local director-discovery
 pstore-v2-export-templates	no	origin-pstore origin-export-templates
 s3-v2-broker	no	origin-s3 origin-broker
 https-v2-short-tokens-rotated	yes	origin-https origin-short-tokens
@@ -49,10 +49,10 @@ nocache-xrootd-no-issuer-atomic-uploads-multiuser-broker-default-origin	no	topo-
 posixv2-mixed-multi-cache-multi-director-metadata-ha-short-tokens-export-templates	no	cache-mixed topo-multi-cache topo-multi-director origin-metadata director-ha origin-short-tokens origin-export-templates
 posixv2-mixed-public-public-writes-multi-origin-multi-cache-multi-owner-approval	no	cache-mixed origin-public origin-public-writes topo-multi-origin topo-multi-cache topo-multi-owner registry-approval
 posixv2-v2-posc-metadata-tiered-memory-small-short-tokens-export-templates	no	origin-posc origin-metadata cache-tiered cache-memory cache-small origin-short-tokens origin-export-templates
-posixv2-v2-public-writes-multi-origin-multi-owner-oidc-posc-memory-rotated	yes	origin-public-writes topo-multi-origin topo-multi-owner auth-oidc origin-posc cache-memory
+posixv2-v2-public-writes-multi-origin-multi-owner-oidc-local-posc-memory-rotated	yes	origin-public-writes topo-multi-origin topo-multi-owner auth-oidc-local origin-posc cache-memory
 s3-v2-multi-origin-multi-cache-no-issuer-no-direct-tiered-memory	no	origin-s3 topo-multi-origin topo-multi-cache auth-no-issuer origin-no-direct cache-tiered cache-memory
 s3v2-v2-no-issuer-transfer-api-default-origin-discovery-approval-rotated	yes	origin-s3v2 auth-no-issuer origin-transfer-api director-default-origin director-discovery registry-approval
-tiny-posixv2-public-public-writes-no-issuer-oidc-small-rotated	yes	topo-tiny origin-public origin-public-writes auth-no-issuer auth-oidc cache-small
+tiny-posixv2-public-public-writes-no-issuer-oidc-local-small-rotated	yes	topo-tiny origin-public origin-public-writes auth-no-issuer auth-oidc-local cache-small
 xrootd-mixed-multi-cache-atomic-uploads-multiuser-transfer-api-export-templates	no	origin-xrootd cache-mixed topo-multi-cache origin-atomic-uploads origin-multiuser origin-transfer-api origin-export-templates
 xrootd-v2-public-writes-multi-owner-site-local-cache-atomic-uploads-transfer-server-unprivileged	no	origin-xrootd origin-public-writes topo-multi-owner topo-site-local-cache origin-atomic-uploads topo-transfer-server server-unprivileged
 https-v2-site-local-cache-broker-transfer-api-tiered-memory-small-discovery	no	origin-https topo-site-local-cache origin-broker origin-transfer-api cache-tiered cache-memory cache-small director-discovery
@@ -60,13 +60,13 @@ https-xrootd-external-issuer-no-direct-firewalled-small-unprivileged-default-ori
 httpsv2-v2-no-direct-tiered-memory-default-origin-discovery-short-tokens-rotated	yes	origin-httpsv2 origin-no-direct cache-tiered cache-memory director-default-origin director-discovery origin-short-tokens
 nocache-posixv2-public-multi-origin-multi-director-metadata-unprivileged-discovery-ha	no	topo-no-cache origin-public topo-multi-origin topo-multi-director origin-metadata server-unprivileged director-discovery director-ha
 nocache-posixv2-public-public-writes-multi-origin-multi-owner-multi-director-metadata-tx-ha	no	topo-no-cache origin-public origin-public-writes topo-multi-origin topo-multi-owner topo-multi-director origin-metadata-tx director-ha
-nocache-xrootd-multi-director-external-issuer-oidc-atomic-uploads-broker-transfer-server	no	topo-no-cache origin-xrootd topo-multi-director auth-external-issuer auth-oidc origin-atomic-uploads origin-broker topo-transfer-server
+nocache-xrootd-multi-director-external-issuer-oidc-local-atomic-uploads-broker-transfer-server	no	topo-no-cache origin-xrootd topo-multi-director auth-external-issuer auth-oidc-local origin-atomic-uploads origin-broker topo-transfer-server
 posixv2-mixed-multi-cache-no-issuer-metadata-tx-max-age-transfer-server-small-unprivileged	no	cache-mixed topo-multi-cache auth-no-issuer origin-metadata-tx origin-max-age topo-transfer-server cache-small server-unprivileged
-posixv2-mixed-multi-cache-site-local-cache-external-issuer-oidc-no-direct-posc-metadata-tx	no	cache-mixed topo-multi-cache topo-site-local-cache auth-external-issuer auth-oidc origin-no-direct origin-posc origin-metadata-tx
+posixv2-mixed-multi-cache-site-local-cache-external-issuer-oidc-local-no-direct-posc-metadata-tx	no	cache-mixed topo-multi-cache topo-site-local-cache auth-external-issuer auth-oidc-local origin-no-direct origin-posc origin-metadata-tx
 posixv2-v2-multi-director-metadata-tx-max-age-multiuser-transfer-api-tiered-memory-ha	no	topo-multi-director origin-metadata-tx origin-max-age origin-multiuser origin-transfer-api cache-tiered cache-memory director-ha
-posixv2-v2-multi-director-no-issuer-oidc-no-direct-posc-metadata-default-origin-ha	no	topo-multi-director auth-no-issuer auth-oidc origin-no-direct origin-posc origin-metadata director-default-origin director-ha
-posixv2-v2-public-public-writes-multi-owner-site-local-cache-external-issuer-oidc-tiered-default-origin	no	origin-public origin-public-writes topo-multi-owner topo-site-local-cache auth-external-issuer auth-oidc cache-tiered director-default-origin
-posixv2-xrootd-site-local-cache-oidc-posc-metadata-tx-max-age-multiuser-approval	no	cache-xrootd topo-site-local-cache auth-oidc origin-posc origin-metadata-tx origin-max-age origin-multiuser registry-approval
+posixv2-v2-multi-director-no-issuer-oidc-local-no-direct-posc-metadata-default-origin-ha	no	topo-multi-director auth-no-issuer auth-oidc-local origin-no-direct origin-posc origin-metadata director-default-origin director-ha
+posixv2-v2-public-public-writes-multi-owner-site-local-cache-external-issuer-oidc-local-tiered-default-origin	no	origin-public origin-public-writes topo-multi-owner topo-site-local-cache auth-external-issuer auth-oidc-local cache-tiered director-default-origin
+posixv2-xrootd-site-local-cache-oidc-local-posc-metadata-tx-max-age-multiuser-approval	no	cache-xrootd topo-site-local-cache auth-oidc-local origin-posc origin-metadata-tx origin-max-age origin-multiuser registry-approval
 pstore-xrootd-multi-origin-multi-cache-multi-director-site-local-cache-max-age-short-tokens	no	origin-pstore cache-xrootd topo-multi-origin topo-multi-cache topo-multi-director topo-site-local-cache origin-max-age origin-short-tokens
 s3-v2-multi-owner-default-origin-discovery-approval-short-tokens-export-templates-rotated	yes	origin-s3 topo-multi-owner director-default-origin director-discovery registry-approval origin-short-tokens origin-export-templates
 s3-xrootd-multi-cache-multi-director-site-local-cache-external-issuer-firewalled-transfer-api	no	origin-s3 cache-xrootd topo-multi-cache topo-multi-director topo-site-local-cache auth-external-issuer origin-firewalled origin-transfer-api
@@ -74,7 +74,7 @@ s3v2-v2-external-issuer-no-direct-max-age-tiered-memory-small-unprivileged	no	or
 s3v2-xrootd-multi-origin-multi-cache-multi-owner-multi-director-site-local-cache-export-templates	no	origin-s3v2 cache-xrootd topo-multi-origin topo-multi-cache topo-multi-owner topo-multi-director topo-site-local-cache origin-export-templates
 ssh-v2-external-issuer-no-direct-ssh-tunnel-tiered-memory-small-discovery	no	origin-ssh auth-external-issuer origin-no-direct origin-ssh-tunnel cache-tiered cache-memory cache-small director-discovery
 ssh-xrootd-multi-origin-multi-cache-multi-director-site-local-cache-ssh-tunnel-default-origin	no	origin-ssh cache-xrootd topo-multi-origin topo-multi-cache topo-multi-director topo-site-local-cache origin-ssh-tunnel director-default-origin
-standalone-posixv2-public-writes-oidc-posc-transfer-api-unprivileged-short-tokens-export-templates	no	topo-standalone origin-public-writes auth-oidc origin-posc origin-transfer-api server-unprivileged origin-short-tokens origin-export-templates
+standalone-posixv2-public-writes-oidc-local-posc-transfer-api-unprivileged-short-tokens-export-templates	no	topo-standalone origin-public-writes auth-oidc-local origin-posc origin-transfer-api server-unprivileged origin-short-tokens origin-export-templates
 standalone-ssh-max-age-ssh-tunnel-transfer-api-short-tokens-export-templates-rotated	yes	topo-standalone origin-ssh origin-max-age origin-ssh-tunnel origin-transfer-api origin-short-tokens origin-export-templates
 tiny-pstore-transfer-api-memory-small-unprivileged-default-origin-approval	no	topo-tiny origin-pstore origin-transfer-api cache-memory cache-small server-unprivileged director-default-origin registry-approval
 tiny-xrootd-public-no-direct-atomic-uploads-multiuser-memory-short-tokens	no	topo-tiny origin-xrootd origin-public origin-no-direct origin-atomic-uploads origin-multiuser cache-memory origin-short-tokens
@@ -82,4 +82,4 @@ xrootd-mixed-multi-cache-broker-default-origin-discovery-short-tokens-rotated	ye
 xrootd-v2-multi-director-atomic-uploads-transfer-server-small-discovery-ha-approval	no	origin-xrootd topo-multi-director origin-atomic-uploads topo-transfer-server cache-small director-discovery director-ha registry-approval
 xrootd-v2-multi-origin-atomic-uploads-multiuser-transfer-server-tiered-memory-small	no	origin-xrootd topo-multi-origin origin-atomic-uploads origin-multiuser topo-transfer-server cache-tiered cache-memory cache-small
 xrootd-xrootd-external-issuer-firewalled-transfer-server-discovery-approval-rotated	yes	origin-xrootd cache-xrootd auth-external-issuer origin-firewalled topo-transfer-server director-discovery registry-approval
-xrootd-xrootd-public-public-writes-oidc-atomic-uploads-multiuser-firewalled	no	origin-xrootd cache-xrootd origin-public origin-public-writes auth-oidc origin-atomic-uploads origin-multiuser origin-firewalled
+xrootd-xrootd-public-public-writes-oidc-local-atomic-uploads-multiuser-firewalled	no	origin-xrootd cache-xrootd origin-public origin-public-writes auth-oidc-local origin-atomic-uploads origin-multiuser origin-firewalled

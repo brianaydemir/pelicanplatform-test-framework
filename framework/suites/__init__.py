@@ -84,7 +84,7 @@ each):
                  restarted. accounts ends by putting up a new AUP at the
                  issuer origin, which for a moment gates its every user,
                  and restores the old
-  oidc           under `-p auth-oidc`, logs the identity provider's
+  oidc           under `-p auth-oidc-local`, logs the identity provider's
                  users in at every server, and restarts the first origin
                  to take their groups from the provider and name one of
                  them its admin, and restores it
