@@ -22,13 +22,14 @@ functions read what a client printed.
 import json
 import os
 import shlex
+import shutil
 import subprocess  # nosec B404
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from . import common, credentials, report
+from . import common, credentials, report, transfers
 from .credentials import RWM, WLCG, Credential
 
 # How long a client command may run before it is killed and fails, and
@@ -272,6 +273,49 @@ class Session:
         seconds = time.monotonic() - started
         self.log_command(["stash_plugin", *args], cwd or self.tmp, seconds, status, out, err, files)
         return status, out, err, ads
+
+    def plugin_run(
+        self,
+        name: str,
+        ads: Sequence[tuple[str, str]],
+        creds: Mapping[str, str] | None = None,
+        upload: bool = False,
+        cache: str | None = None,
+        env: Mapping[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> tuple[int, str, str, str]:
+        """Run plugin_cmd() on transfers of its own, as HTCondor would.
+
+        Its input and output are <name>.in and <name>.ad in tmp, and its
+        credentials directory (_CONDOR_CREDS) <name>.creds.
+
+        Args:
+            name: The name of its files, e.g. `<suite>/<transfer>`, under a
+                suite's own directory (path()).
+            ads: Each transfer's URL and local file (transfers.transfer_ad()).
+            creds: The token files to put in its credentials directory, by
+                the name each is to have there, e.g. scitokens.use.
+            upload: Whether it uploads rather than downloads.
+            cache: The cache it is to use alone (Client.PreferredCaches).
+            env: The environment, if not the session's.
+            cwd: The working directory, if not the scratch directory.
+
+        Returns:
+            What plugin_cmd() returns.
+        """
+        infile, outfile = (os.path.join(self.tmp, f"{name}.{ext}") for ext in ("in", "ad"))
+        with open(infile, "w", encoding="utf-8") as f:
+            f.writelines(transfers.transfer_ad(url, local) for url, local in ads)
+        environ = dict(self.env if env is None else env)
+        if creds is not None:
+            directory = os.path.join(self.tmp, f"{name}.creds")
+            os.makedirs(directory, exist_ok=True)
+            for creds_name, token_file in creds.items():
+                shutil.copyfile(token_file, os.path.join(directory, creds_name))
+            environ["_CONDOR_CREDS"] = directory
+        if cache:
+            environ["PELICAN_CLIENT_PREFERREDCACHES"] = cache
+        return self.plugin_cmd(infile, outfile, upload, environ, cwd)
 
     def _run(
         self,

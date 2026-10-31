@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --quiet --frozen --no-dev
 """A federation's choices, and the shapes that smoke.sh runs by default.
 
   framework/matrix.py check     check smoke.sh's shapes (see below)

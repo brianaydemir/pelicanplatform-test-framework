@@ -45,18 +45,16 @@ profile; the rest present an admin's tokens, or the servers' own.
 """
 
 import functools
-import json
 import re
 import time
-import traceback
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, urlsplit
 
 from testlib import ads, common, credentials, director, metrics, stores, web, webdav
-from testlib.common import first, warn
+from testlib.common import first, outcome, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
 
@@ -308,17 +306,6 @@ class Test:
 # Reading a director's answers.
 
 
-def parse(answer: web.Response) -> Any:
-    """Return answer's body, as JSON, or None if it is not.
-
-    A body of two JSON documents, one after the other, is not.
-    """
-    try:
-        return json.loads(answer.body)
-    except ValueError:
-        return None
-
-
 def objects(value: Any) -> list[dict[str, Any]]:
     """Return the objects in value, a JSON array; none if it is none."""
     return [common.as_object(v) or {} for v in common.as_array(value) or []]
@@ -326,7 +313,7 @@ def objects(value: Any) -> list[dict[str, Any]]:
 
 def listed_servers(answer: web.Response) -> list[dict[str, Any]] | None:
     """Return answer's list of servers, or None if it is not one."""
-    found = common.as_array(parse(answer)) if answer.status == 200 else None
+    found = common.as_array(answer.json()) if answer.status == 200 else None
     return None if found is None else objects(found)
 
 
@@ -361,22 +348,6 @@ def caps_json(caps: frozenset[str]) -> dict[str, bool]:
 def issuer_of(export: common.Export) -> str | None:
     """Return the issuer a director should name for export, if any."""
     return export.issuer if credentials.has_issuer(export.caps) else None
-
-
-def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
-    """Return FAIL with the first of problems, or PASS with note."""
-    return (FAIL, first(problems)) if problems else (PASS, note)
-
-
-def guarded(check: Callable[[], list[Row]]) -> list[Row]:
-    """Return check()'s rows, or one failing row if it raised."""
-    try:
-        return check()
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # scenario fails, and the rest still run.
-        traceback.print_exc()
-        return [("", FAIL, f"{type(e).__name__}: {e}")]
 
 
 def utc_stamp() -> str:
@@ -557,14 +528,14 @@ def one_problems(test: Test, url: str) -> list[str]:
             continue
         target = f"{url}{SERVERS}/{quote(known, safe='')}"
         answer = web.request("GET", target)
-        found = common.as_object(parse(answer)) if answer.status == 200 else None
+        found = common.as_object(answer.json()) if answer.status == 200 else None
         if found is None:
             problems.append(f"{name}: {SERVERS}/{known}: {answer.describe()}, not a server")
             continue
         if found.get("name") != known or found.get("type") not in kinds[known]:
             problems.append(f"{name}: {SERVERS}/{known} is {found.get('type')} {found.get('name')!r}")
         listed = web.request("GET", f"{target}/namespaces")
-        paths = namespace_paths(parse(listed)) if listed.status == 200 else None
+        paths = namespace_paths(listed.json()) if listed.status == 200 else None
         if paths is None:
             problems.append(f"{name}: {SERVERS}/{known}/namespaces: {listed.describe()}")
         elif server.kind == "Origin" and found.get("type") == "Origin":
@@ -592,7 +563,7 @@ def ui_namespaces_problems(test: Test, url: str) -> list[str]:
     """
     name = director.host(url)
     answer = web.request("GET", f"{url}{UI_NAMESPACES}")
-    found = common.as_array(parse(answer)) if answer.status == 200 else None
+    found = common.as_array(answer.json()) if answer.status == 200 else None
     if found is None:
         return [f"{name}: {answer.describe()}, not a list of namespaces"]
     by_path = {str(n.get("path", "")): n for n in objects(found)}
@@ -620,7 +591,7 @@ def contact_problems(url: str) -> list[str]:
     It must be the email and URL its configuration gives.
     """
     answer = web.request("GET", f"{url}{CONTACT}")
-    found = common.as_object(parse(answer)) or {}
+    found = common.as_object(answer.json()) or {}
     want = {"email": CONTACT_EMAIL, "url": CONTACT_URL}
     got = {k: found.get(k) for k in want}
     if answer.status != 200 or got != want:
@@ -635,7 +606,7 @@ def directors_problems(test: Test, url: str) -> list[str]:
     at, and no other.
     """
     answer = web.request("GET", f"{url}{DIRECTORS}")
-    found = common.as_array(parse(answer)) if answer.status == 200 else None
+    found = common.as_array(answer.json()) if answer.status == 200 else None
     if found is None:
         return [f"{director.host(url)}: {answer.describe()}, not a list of directors"]
     got = sorted({director.host(str(d.get("advertise_url", ""))) for d in objects(found)})
@@ -679,7 +650,7 @@ def v2_problems(test: Test, url: str) -> list[str]:
     """
     name = director.host(url)
     answer = web.request("GET", f"{url}{LIST_NAMESPACES}")
-    found = common.as_array(parse(answer)) if answer.status == 200 else None
+    found = common.as_array(answer.json()) if answer.status == 200 else None
     if found is None:
         return [f"{name}: {answer.describe()}, not a list of namespaces"]
     entries = objects(found)
@@ -726,7 +697,7 @@ def v1_problems(url: str) -> list[str]:
         return [f"{name}: {answer.describe()}, not 299"]
     if not warning.startswith("299 "):
         return [f"{name}: Warning is {warning!r}"]
-    if common.as_object(parse(answer)) is None:
+    if common.as_object(answer.json()) is None:
         return [f"{name}: its body is {answer.body[:200]!r}, not a JSON object"]
     return []
 
@@ -759,7 +730,7 @@ def prefix_problems(test: Test, url: str) -> list[str]:
     problems: list[str] = []
     for path, want in prefix_cases(test):
         answer = web.request("GET", f"{url}{PREFIX}{path}")
-        got = (common.as_object(parse(answer)) or {}).get("prefix")
+        got = (common.as_object(answer.json()) or {}).get("prefix")
         if want is None and answer.status != 404:
             problems.append(f"{name}: {path}: {answer.describe()}, not 404")
         elif want is not None and (answer.status != 200 or got != want):
@@ -1067,7 +1038,7 @@ def stat_admin_problems(test: Test, url: str, held: Held) -> list[str]:
     (Director.MaxStatResponse).
     """
     answer = web.request("GET", f"{url}{STAT}/public/{held.rel}", token=test.admin(url))
-    found = common.as_object(parse(answer)) or {}
+    found = common.as_object(answer.json()) or {}
     hosts = {director.host(str(o.get("url", ""))) for o in objects(found.get("objects"))}
     want = holders(test, held)
     if answer.status != 200 or not hosts or not hosts <= want:
@@ -1108,7 +1079,7 @@ def origin_stat(test: Test) -> list[Row]:
         answer = web.request("GET", f"{url}{STAT}{path}", token=token)
         if answer.status not in want:
             cases["unknown-namespace"].append(f"{what}: {answer.describe()}, not {want}")
-        elif common.as_object(parse(answer)) is None:
+        elif common.as_object(answer.json()) is None:
             body = answer.body[:300]
             cases["unknown-namespace"].append(f"{what}: its body is no JSON object: {body!r}")
     rows: list[Row] = [("no-auth", *outcome(cases["no-auth"], "401"))]
@@ -1301,7 +1272,7 @@ def metadata_hosting(test: Test) -> list[Row]:
         if answer.status != 401:
             cases["no-auth"].append(f"{what}: {answer.describe()}, not 401")
         answer = web.request("GET", f"{url}{DISCREPANCY}", token=test.admin(url))
-        found = common.as_object(parse(answer)) or {}
+        found = common.as_object(answer.json()) or {}
         expected: dict[str, Any] = {"enabled": not own, "hasDiscrepancy": False}
         if not own:
             expected["jwksHasOverlap"] = True
@@ -1340,7 +1311,7 @@ class Forwarding:
     def listed(self, url: str) -> dict[str, Any]:
         """Return what the director at url says of the cache."""
         answer = web.request("GET", f"{url}{SERVERS}/{quote(self.cache.name, safe='')}")
-        return common.as_object(parse(answer)) or {}
+        return common.as_object(answer.json()) or {}
 
     def ads_seen(self, url: str) -> float | None:
         """Return how many of the cache's ads the director at url has taken.
@@ -1481,11 +1452,6 @@ def restored(f: Forwarding) -> list[str]:
     return problems
 
 
-def as_rows(check: Callable[[Forwarding], Row], f: Forwarding) -> list[Row]:
-    """Return check(f)'s row, as a list (see guarded())."""
-    return [check(f)]
-
-
 def forwarding(test: Test) -> list[Row]:
     """Check how the directors forward the first federated cache's ads.
 
@@ -1512,7 +1478,7 @@ def forwarding(test: Test) -> list[Row]:
     rows: list[Row] = []
     try:
         for case, check in (("forwarded", forwarded), ("shutdown-lifted", shutdown_lifted)):
-            _, status, note = guarded(functools.partial(as_rows, check, f))[0]
+            _, status, note = common.guarded(functools.partial(check, f), lambda note: ("", FAIL, note))
             rows.append((case, status, note))
     finally:
         problems = restored(f)
@@ -1549,7 +1515,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     test = Test(session)
     try:
         for name in selected:
-            for case, status, note in guarded(functools.partial(RUN[name], test)):
+            rows = common.guarded(functools.partial(RUN[name], test), lambda note: [("", FAIL, note)])
+            for case, status, note in rows:
                 results.add(f"{name} {case}".strip(), status, note)
     finally:
         fed = session.fed

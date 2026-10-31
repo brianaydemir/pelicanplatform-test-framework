@@ -48,15 +48,14 @@ the directors about it; and removes it afterward.
 import glob
 import json
 import os
-import subprocess  # nosec B404
 import time
-import traceback
 import uuid
 from collections.abc import Callable, Mapping
+from functools import partial
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
-from testlib import accounts, ads, common, credentials, director, jwt, metrics, stores, web
+from testlib import accounts, ads, common, credentials, director, jwt, metrics, registry, stores, web
 from testlib.ads import (
     ADVERTISE,
     SERVERS,
@@ -69,7 +68,7 @@ from testlib.ads import (
     sign,
     unknown_token,
 )
-from testlib.common import die, first
+from testlib.common import die, first, outcome
 from testlib.director import expected_targets, listing_problems
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
@@ -107,8 +106,6 @@ RETRIEVE, REVERSE = "broker.retrieve", "broker.reverse"
 # An issuer that no server trusts.
 ELSEWHERE = "https://elsewhere.invalid"
 
-# The registry's registrations.
-REGISTRATIONS = "/api/v1.0/registry_ui/namespaces"
 # The counter of the ads a director refuses (metrics/director.go).
 REJECTED = "pelican_director_rejected_advertisements"
 
@@ -196,7 +193,7 @@ def restored_row(test: Test, *servers: Server) -> Row:
     """Return restored()'s row."""
     problems = restored(test, *servers)
     names = ", ".join(s.host for s in servers)
-    return ("restored", FAIL, first(problems)) if problems else ("restored", PASS, names)
+    return ("restored", *outcome(problems, names))
 
 
 # --------------------------------------------------------------------------
@@ -270,20 +267,10 @@ def forged_ads(test: Test) -> list[Row]:
         kind = server.kind.lower()
         key, kid = test.key(server)
         genuine = test.advertise_token(server)
-        problems: list[str] = []
-        for url in fed.directors:
-            answer = post_ad(url, server.kind, ad(server), genuine)
-            if answer.status != 200:
-                problems.append(f"{director.host(url)}: {answer.describe()}, not 200")
+        problems = post_everywhere(test, server.kind, ad(server), genuine)
         if not problems and len(naming(test, server)) != len(fed.directors):
             problems.append(f"only {naming(test, server)} name it afterward")
-        rows.append(
-            (
-                f"{kind}-genuine",
-                FAIL if problems else PASS,
-                first(problems) if problems else server.prefix,
-            )
-        )
+        rows.append((f"{kind}-genuine", *outcome(problems, server.prefix)))
         web_url = str(server.detail.get("webUrl", ""))
         variants += [
             (f"{kind}-no-token", server.kind, ad(server), None, None),
@@ -370,7 +357,7 @@ def forged_ads(test: Test) -> list[Row]:
             for url in fed.directors:
                 if director.ask(url, route(server), path).names(server.host):
                     problems.append(f"{director.host(url)} now names {server.host} for {path}")
-        rows.append((name, FAIL if problems else PASS, first(problems) if problems else ", ".join(seen)))
+        rows.append((name, *outcome(problems, ", ".join(seen))))
     rows.append(restored_row(test, *servers))
     return rows
 
@@ -402,8 +389,7 @@ def bad_broker_url(test: Test) -> list[Row]:
         if listed.status != 200:
             problems.append(f"{director.host(url)} then answered {SERVERS} with {listed.describe()}")
     problems += restored(test, origin)
-    note = f"{len(test.fed.directors)} director(s)"
-    return [("", FAIL if problems else PASS, first(problems) if problems else note)]
+    return [("", *outcome(problems, f"{len(test.fed.directors)} director(s)"))]
 
 
 # --------------------------------------------------------------------------
@@ -480,13 +466,7 @@ def spoofed_status(test: Test) -> list[Row]:
         if not problems and not common.wait_for(lambda: not naming(test, first_cache), DROP_WAIT, 1):
             problems.append(f"{DROP_WAIT}s on, {naming(test, first_cache)} still named it")
         problems += restored(test, first_cache)
-        rows.append(
-            (
-                name,
-                FAIL if problems else PASS,
-                first(problems) if problems else "dropped, then named again",
-            )
-        )
+        rows.append((name, *outcome(problems, "dropped, then named again")))
     if len(caches) < 2:
         why = "needs a second cache (-p topo-multi-cache)"
         return rows + [
@@ -517,13 +497,7 @@ def spoofed_status(test: Test) -> list[Row]:
             problems.append(
                 f"{director.host(test.director)} lists it filtered ({found.get('filteredType')})"
             )
-        rows.append(
-            (
-                name,
-                FAIL if problems else PASS,
-                first(problems) if problems else f"{first_cache.host} still named",
-            )
-        )
+        rows.append((name, *outcome(problems, f"{first_cache.host} still named")))
         problems = restored(test, first_cache, second)
         if problems:
             rows.append((f"{name}-restored", FAIL, first(problems)))
@@ -601,29 +575,17 @@ def pending_registration(test: Test) -> Row:
     fed = test.fed
     host = f"advertise-{test.run}"
     prefix = f"/caches/{host}"
-    key = test.session.path("advertise-pending.pem")
-    done = subprocess.run(  # nosec B603 B607
-        ["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", key],
-        capture_output=True,
-        check=False,
-    )
-    if done.returncode != 0:
-        return (
-            "pending",
-            FAIL,
-            f"openssl could not make a key: {done.stderr.decode(errors='replace').strip()}",
-        )
-    jwk = jwt.public_jwk(key)
-    kid = jwt.thumbprint(jwk)
-    pubkey = json.dumps({"keys": [{**jwk, "kid": kid, "alg": jwt.ES256, "use": "sig"}]})
-    registry = director.host(fed.registry_url)
+    key = registry.new_key(test.session.path("advertise-pending.pem"))
+    kid = jwt.key_id(key)
+    pubkey = json.dumps(registry.jwks([key]))
+    registry_host = director.host(fed.registry_url)
     admin = accounts.Api(
         fed.registry_url,
         credentials.mint_admin(
             fed,
-            test.session.path(f"tokens/admin.{registry}"),
+            test.session.path(f"tokens/admin.{registry_host}"),
             credentials.local_issuer(fed, fed.registry_url),
-            common.signing_key(f"issuer-keys/{registry}"),
+            common.signing_key(f"issuer-keys/{registry_host}"),
         ),
     )
     try:
@@ -638,14 +600,14 @@ def pending_registration(test: Test) -> Row:
             "institution": "pelican-test-framework",
         },
     }
-    created = admin.call("POST", REGISTRATIONS, registration, headers)
+    created = admin.call("POST", registry.REGISTRATIONS, registration, headers)
     if not created.ok:
         return (
             "pending",
             FAIL,
             f"registering {prefix} as the registry's admin: {created.describe()}",
         )
-    listed = admin.call("GET", f"{REGISTRATIONS}?status=Pending")
+    listed = admin.call("GET", f"{registry.REGISTRATIONS}?status=Pending")
     ids = [
         str(entry.get("id", ""))
         for entry in (common.as_object(r) or {} for r in listed.array)
@@ -659,7 +621,7 @@ def pending_registration(test: Test) -> Row:
         return ("pending", PASS, f"HTTP 403 for {prefix}")
     finally:
         for reg_id in ids:
-            admin.call("DELETE", f"{REGISTRATIONS}/{reg_id}", headers=headers)
+            admin.call("DELETE", f"{registry.REGISTRATIONS}/{reg_id}", headers=headers)
 
 
 def fed_token(test: Test) -> list[Row]:
@@ -683,7 +645,7 @@ def fed_token(test: Test) -> list[Row]:
     rows: list[Row] = []
     answer = get_fed_token(test, {"host": host, "sType": "Cache"}, token)
     problems = fed_token_problems(test, answer, host)
-    rows.append(("valid", FAIL if problems else PASS, first(problems) if problems else f"for {host}"))
+    rows.append(("valid", *outcome(problems, f"for {host}")))
     if len(caches) > 1:
         other = test.server("Cache", director.host(caches[1].url))
         other_query = {"host": other.registered_host, "sType": "Cache"}
@@ -972,15 +934,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     print(f"Asking the directors about {test.path}\n")
     try:
         for name in selected:
-            try:
-                rows = RUN[name](test)
-            except (Missing, accounts.ApiError) as e:
-                rows = [("", FAIL, str(e))]
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                rows = [("", FAIL, f"{type(e).__name__}: {e}")]
+            rows = common.guarded(
+                partial(RUN[name], test), lambda note: [("", FAIL, note)], (Missing, accounts.ApiError)
+            )
             for case, status, note in rows:
                 results.add(f"{name} {case}" if case else name, status, note)
     finally:

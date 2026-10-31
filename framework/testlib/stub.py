@@ -119,11 +119,11 @@ class Stub:
                 if body:
                     self.wfile.write(found.body)
 
-            def do_GET(self) -> None:  # pylint: disable=invalid-name
+            def do_GET(self) -> None:
                 """Answer a GET."""
                 self.reply(True)
 
-            def do_HEAD(self) -> None:  # pylint: disable=invalid-name
+            def do_HEAD(self) -> None:
                 """Answer a HEAD."""
                 self.reply(False)
 

@@ -72,7 +72,6 @@ import json
 import math
 import os
 import time
-import traceback
 import uuid
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
@@ -80,7 +79,7 @@ from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
 from testlib import common, control, credentials, director, jwt, metrics, stores, web
-from testlib.common import first, warn
+from testlib.common import first, outcome, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
 
@@ -282,10 +281,7 @@ def debug_info(answer: web.Response) -> dict[str, Any]:
 
     It is answer's JSON body (server_structs.RedirectInfo), or {}.
     """
-    try:
-        return common.as_object(json.loads(answer.body)) or {}
-    except ValueError:
-        return {}
+    return common.as_object(answer.json()) or {}
 
 
 def servers_info(info: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -342,22 +338,6 @@ def ask(
 ) -> web.Response:
     """Send method to url, presenting token, with headers."""
     return web.request(method, url, token=token, headers=headers)
-
-
-def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
-    """Return FAIL with the first of problems, or PASS with note."""
-    return (FAIL, first(problems)) if problems else (PASS, note)
-
-
-def guarded(check: Callable[[], list[Row]]) -> list[Row]:
-    """Return check()'s rows; one failing row if it raised."""
-    try:
-        return check()
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # scenario fails, and the rest still run.
-        traceback.print_exc()
-        return [("", FAIL, f"{type(e).__name__}: {e}")]
 
 
 def no_director(fed: common.Federation) -> str | None:
@@ -1222,10 +1202,7 @@ def cache_name(test: Test, cache: Server) -> str | None:
         The name, from its list of servers; None if it doesn't list it.
     """
     answer = web.request("GET", f"{test.fed.directors[0]}{SERVERS}")
-    try:
-        rows = common.as_array(json.loads(answer.body)) or []
-    except ValueError:
-        return None
+    rows = common.as_array(answer.json()) or []
     for row in (common.as_object(r) or {} for r in rows):
         if row.get("type") == "Cache" and director.host(str(row.get("webUrl", ""))) == cache.host:
             return str(row.get("name") or "") or None
@@ -1289,10 +1266,7 @@ def filtered_listing(test: Test, name: str | None) -> tuple[str, str]:
     problems: list[str] = []
     for url in test.fed.directors:
         answer = web.request("GET", f"{url}{SERVERS}")
-        try:
-            rows = common.as_array(json.loads(answer.body)) or []
-        except ValueError:
-            rows = []
+        rows = common.as_array(answer.json()) or []
         mine = [r for r in (common.as_object(r) or {} for r in rows) if r.get("name") == name]
         what = director.host(url)
         if not mine:
@@ -1419,9 +1393,8 @@ def unrestartable(test: Test) -> str | None:
 
 
 def checked(check: Callable[[Test], tuple[str, str]], test: Test) -> tuple[str, str]:
-    """Return check(test); FAIL if it raised (see guarded())."""
-    rows = guarded(lambda: [("", *check(test))])
-    return rows[0][1], rows[0][2]
+    """Return check(test); FAIL if it raised (see common.guarded())."""
+    return common.guarded(functools.partial(check, test), lambda note: (FAIL, note))
 
 
 def restarted(test: Test, selected: Sequence[str], add: Callable[[str, str, str, str], None]) -> None:
@@ -1536,10 +1509,7 @@ def permitted_listing(test: Test, permitted: str, restricted: Server) -> tuple[s
     for url in test.fed.directors:
         what = director.host(url)
         answer = web.request("GET", f"{url}{SERVERS}")
-        try:
-            rows = common.as_array(json.loads(answer.body)) or []
-        except ValueError:
-            rows = []
+        rows = common.as_array(answer.json()) or []
         mine = [
             r
             for r in (common.as_object(r) or {} for r in rows)
@@ -1740,7 +1710,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     try:
         for name in selected:
             if name in RUN:
-                for case, status, note in guarded(functools.partial(RUN[name], test)):
+                rows = common.guarded(functools.partial(RUN[name], test), lambda note: [("", FAIL, note)])
+                for case, status, note in rows:
                     add(name, case, status, note)
         later = [s for s in selected if s in RESTARTED]
         if "stat" in selected and len(test.origins) > 1:

@@ -17,6 +17,7 @@ import re
 import shutil
 import sys
 import time
+import traceback
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -244,6 +245,32 @@ def first(problems: Sequence[str]) -> str:
     return problems[0] + more
 
 
+def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
+    """Return FAIL with the first of problems, or PASS with note."""
+    return (report_module.FAIL, first(problems)) if problems else (report_module.PASS, note)
+
+
+def guarded[T](
+    check: Callable[[], T],
+    failed: Callable[[str], T],
+    expected: tuple[type[Exception], ...] = (),
+) -> T:
+    """Return check(), or failed(note) if it raised, so that the rest run.
+
+    An exception of the expected types is one that check() raises to
+    report a problem, and note is its message. Any other is a bug, or a
+    server answering what the suite can't read: its traceback is
+    printed, and note is its type and message.
+    """
+    try:
+        return check()
+    except expected as e:
+        return failed(str(e))
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        traceback.print_exc()
+        return failed(f"{type(e).__name__}: {e}")
+
+
 @dataclass
 class Findings:
     """What a case found: problems, doubts, and notes.
@@ -286,18 +313,14 @@ def timestamp(when: datetime) -> str:
 def parse_rfc3339(value: str) -> datetime | None:
     """Return the time an RFC 3339 string stands for, or None if not one.
 
-    Go writes a time.Time in JSON as one, with as many fractional digits
-    as it needs, up to nine. Python 3.9 reads neither `Z` nor any number
-    of them but three or six, so the fraction is cut or padded to six.
+    datetime.fromisoformat() reads all of RFC 3339 but a lowercase `z`.
     """
-    found = re.fullmatch(r"([^.]+?)(?:\.(\d+))?([Zz]|[+-]\d\d:\d\d)", value.strip())
+    found = re.fullmatch(r"([^.]+?(?:\.\d+)?)([Zz]|[+-]\d\d:\d\d)", value.strip())
     if found is None:
         return None
-    whole, fraction, zone = found.groups()
-    if fraction:
-        whole += "." + (fraction + "00000")[:6]
+    whole, zone = found.groups()
     try:
-        when = datetime.fromisoformat(whole + ("+00:00" if zone in ("Z", "z") else zone))
+        when = datetime.fromisoformat(whole + zone.upper())
     except ValueError:
         return None
     return when if when.tzinfo is not None else None

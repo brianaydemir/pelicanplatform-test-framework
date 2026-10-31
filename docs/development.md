@@ -4,9 +4,11 @@ For changing the framework itself: where its parts are, what a suite is
 made of, and the checks that keep it consistent. Each module's
 docstring is its reference; this page says where to look.
 
-The Python uses the standard library alone. The tests, in the dev
-container, need Python 3.12; the scripts on the host (`control.py`,
-`report.py`, `matrix.py`, and `init-data.py`), 3.10.
+The Python uses the standard library alone, and runs under the version
+that `pyproject.toml` requires, which the checks assume. The scripts on
+the host (`control.py`, `report.py`, `matrix.py`, and `init-data.py`)
+get it from uv, by their `#!` lines and `fed.sh`. The tests get it from
+the dev container, which has no uv, so `test.py`'s `#!` line names it.
 
 ## Layout
 
@@ -71,16 +73,18 @@ suite, wherever it is. So a suite:
   `testlib.control.settle()`, which, like `control.wait_serving()`,
   stops at once if a Pelican server has exited on its own;
 - runs the clients with `session.pelican_cmd()` and
-  `session.plugin_cmd()`, which kill a run that outlasts its timeout, and
-  log every run in the pass's `commands.log`.
+  `session.plugin_cmd()` or `plugin_run()`, which kill a run that
+  outlasts its timeout, and log every run in the pass's `commands.log`.
 
 ### Results
 
 A suite records a row per case ([Results](ci.md#results)), named
-`<scenario>` or `<scenario> <case>`, through `testlib.report`. A row
-that found several problems names the first in its note with
-`testlib.common.first()`, which prints them all. A row the suite could
-not judge is `INCONCLUSIVE`, with a note saying why, never a pass.
+`<scenario>` or `<scenario> <case>`, through `testlib.report`.
+`testlib.common.outcome()` gives a row's verdict: a FAIL naming the
+first problem, with `first()`, which prints them all; or a PASS. A row
+the suite could not judge is `INCONCLUSIVE`, with a note saying why,
+never a pass. A scenario that raises fails, by `testlib.common.guarded()`,
+and the rest still run.
 
 Each suite's page under [What the tests check](tests/README.md)
 describes every scenario. A change to a suite is a change to its page.

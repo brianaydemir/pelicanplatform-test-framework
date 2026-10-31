@@ -71,9 +71,9 @@ import os
 import shutil
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from functools import cached_property
+from functools import cached_property, partial
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -259,6 +259,11 @@ class Test:
         """
         return stores.held(origin, namespace, rel, self.setup_tokens[namespace])
 
+    @staticmethod
+    def labels(target: str, namespace: str, op: str, name: str) -> tuple[str, str]:
+        """Return a row's heading, as printed, and its case, as recorded."""
+        return f"{target:<10} {namespace:<11} {op:<8} {name:<11}", f"{target} {namespace} {op} {name}"
+
     def row(
         self,
         target: str,
@@ -270,14 +275,22 @@ class Test:
         note: str = "",
     ) -> None:
         """Print and record the row of one request."""
-        record(
-            self.report,
-            f"{target:<10} {namespace:<11} {op:<8} {name:<11}",
-            f"{target} {namespace} {op} {name}",
-            answer,
-            why,
-            note,
-        )
+        record(self.report, *self.labels(target, namespace, op, name), answer, why, note)
+
+    def skip_row(self, target: str, namespace: str, op: str, name: str, why: str) -> None:
+        """Print and record the row of one request, skipped because of why."""
+        record_skip(self.report, *self.labels(target, namespace, op, name), why)
+
+    def outcome_row(
+        self, target: str, namespace: str, op: str, name: str, problems: Sequence[str], note: str
+    ) -> None:
+        """Print and record a row of several requests.
+
+        It fails with the first of problems, or passes with note.
+        """
+        heading, case = self.labels(target, namespace, op, name)
+        print(f"{heading}       {FAIL if problems else PASS}  {problems[0] if problems else note}")
+        self.report.add(case, *common.outcome(problems, note))
 
     def check_read(
         self, target: str, url: str, namespace: str, cred: Credential, op: str, direct: bool
@@ -355,8 +368,7 @@ class Test:
         """
         cannot_delete = stores.cannot(self.session.fed, "delete")
         if cannot_delete and credentials.expected(cred, self.caps(namespace), "delete", True) == ALLOW:
-            heading = f"{target:<10} {namespace:<11} {'delete':<8} {cred.name:<11}"
-            record_skip(self.report, heading, f"{target} {namespace} delete {cred.name}", cannot_delete)
+            self.skip_row(target, namespace, "delete", cred.name, cannot_delete)
             return
         name = f"data/auth/{self.run}-{target}-{namespace}-{cred.name}-delete"
         data = os.urandom(4096 + len(name))
@@ -482,17 +494,14 @@ def check_keys(fed: common.Federation, report: Report, out: str) -> None:
 
         answer = web.request("GET", f"{issuer}/.well-known/openid-configuration")
         save(f"{out}/responses/keys-{ns}-discovery", answer)
+        document = common.as_object(answer.json())
         why = ""
         if answer.status != 200:
             why = "expected 200"
-        else:
-            try:
-                have = json.loads(answer.body).get("jwks_uri")
-            except (ValueError, AttributeError):
-                why = "the body is not a discovery document"
-            else:
-                if have != jwks_uri:
-                    why = f"jwks_uri is {have}, not {jwks_uri}"
+        elif document is None:
+            why = "the body is not a discovery document"
+        elif document.get("jwks_uri") != jwks_uri:
+            why = f"jwks_uri is {document.get('jwks_uri')}, not {jwks_uri}"
         record(report, f"{ns:<11} {'discovery':<10}", f"{KEYS} {ns} discovery", answer, why)
 
         answer, kids, problems = get_jwks(jwks_uri, out, f"keys-{ns}-jwks")
@@ -548,16 +557,8 @@ def check_narrow(test: Test, fed: common.Federation, token: str) -> None:
             answer = web.request("GET", f"{url}/protected-a/{rel}", token=token)
             save(f"{test.out}/responses/{target}-protected-a-get-{name}", answer)
             why = ""
-            if name == "narrow-in" and not allowed:
-                if answer.status not in (401, 403):
-                    why = "expected 401 or 403: the origin takes no direct clients"
-                elif answer.body == data:
-                    why = "refused, but the body is the object"
-            elif name == "narrow-in":
-                if answer.status != 200:
-                    why = "expected 200"
-                elif answer.body != data:
-                    why = "the body is not the object"
+            if name == "narrow-in":
+                why = read_problem(answer, allowed, data, "the origin takes no direct clients")
             elif answer.status not in (401, 403):
                 why = "expected 401 or 403: the token is for the test object alone"
             elif answer.body == data:
@@ -600,8 +601,7 @@ def check_scope(test: Test, fed: common.Federation, name: str) -> None:
         target = label(origin.svc, "origin")
         for op, method, existing, allowed in tried:
             if method == "DELETE" and allowed and cannot_delete:
-                heading = f"{target:<10} {'protected-a':<11} {op:<8} {name:<11}"
-                record_skip(test.report, heading, f"{target} protected-a {op} {name}", cannot_delete)
+                test.skip_row(target, "protected-a", op, name, cannot_delete)
                 continue
             rel = f"data/auth/{test.run}-{target}-{name}-{op}"
             answer, why = scope_write(test, origin, rel, method, token, existing, allowed)
@@ -854,10 +854,8 @@ def check_hints(test: Test, fed: common.Federation) -> None:
     for cache in fed.caches:
         target = label(cache.svc, "cache")
         for namespace in namespaces:
-            heading = f"{target:<10} {namespace:<11} {'get':<8} {HINTS:<11}"
-            case = f"{target} {namespace} get {HINTS}"
             if cache.kind != "v2":
-                record_skip(test.report, heading, case, "an XRootD cache sends no hints")
+                test.skip_row(target, namespace, "get", HINTS, "an XRootD cache sends no hints")
                 continue
             answer = web.request("GET", f"{cache.url}/{namespace}/{test.object}")
             save(f"{test.out}/responses/{target}-{namespace}-get-{HINTS}", answer)
@@ -873,7 +871,7 @@ def check_hints(test: Test, fed: common.Federation) -> None:
                 )
             if found.issuers != (issuer,):
                 problems.append(f"X-Pelican-Authorization names {list(found.issuers)}, not {issuer}")
-            record(test.report, heading, case, answer, "; ".join(problems))
+            test.row(target, namespace, "get", HINTS, answer, "; ".join(problems))
 
 
 # --------------------------------------------------------------------------
@@ -893,6 +891,7 @@ def check_audience(test: Test, fed: common.Federation) -> None:
     everything direct anyway.
     """
     caps = fed.exports["protected-a"]
+    data = test.object_bytes["protected-a"]
     token = credentials.mint_server(
         fed,
         test.session.path("tokens/audience"),
@@ -903,18 +902,12 @@ def check_audience(test: Test, fed: common.Federation) -> None:
     for origin in fed.origins:
         target = label(origin.svc, "origin")
         for op in ("get", "put"):
-            heading = f"{target:<10} {'protected-a':<11} {op:<8} {'wrong-aud':<11}"
-            case = f"{target} protected-a {op} wrong-aud"
             if "DirectReads" not in caps:
-                record_skip(test.report, heading, case, "the origin takes no direct clients")
+                test.skip_row(target, "protected-a", op, "wrong-aud", "the origin takes no direct clients")
                 continue
             if op == "get":
                 answer = web.request("GET", stores.url(origin, "protected-a", test.object), token=token)
-                why = ""
-                if answer.status not in (401, 403):
-                    why = "expected 401 or 403: the token is for another audience"
-                elif answer.body == test.object_bytes["protected-a"]:
-                    why = "refused, but the body is the object"
+                why = read_problem(answer, False, data, "the token is for another audience")
             else:
                 rel = f"data/auth/{test.run}-{target}-wrong-aud"
                 answer, why = scope_write(test, origin, rel, "PUT", token, False, False)
@@ -941,6 +934,7 @@ def check_query_token(test: Test, fed: common.Federation) -> None:
     must refuse both.
     """
     caps = fed.exports["protected-a"]
+    data = test.object_bytes["protected-a"]
     creds = {name: credentials.BY_NAME[name] for name in ("server", "unknown")}
     for target, url, direct in targets(fed):
         for form, pattern in QUERY_FORMS.items():
@@ -950,15 +944,7 @@ def check_query_token(test: Test, fed: common.Federation) -> None:
                 answer = web.request("GET", f"{url}/protected-a/{test.object}?{query}")
                 save(f"{test.out}/responses/{target}-protected-a-get-authz-{form}-{name}", answer)
                 allowed = credentials.expected(cred, caps, "get", direct) == ALLOW
-                why = ""
-                if allowed and answer.status != 200:
-                    why = "expected 200: the token in the query is the server's"
-                elif allowed and answer.body != test.object_bytes["protected-a"]:
-                    why = "the body is not the object"
-                elif not allowed and answer.status not in (401, 403):
-                    why = "expected 401 or 403"
-                elif not allowed and answer.body == test.object_bytes["protected-a"]:
-                    why = "refused, but the body is the object"
+                why = read_problem(answer, allowed, data)
                 test.row(target, "protected-a", "get", f"authz-{form}-{name}", answer, why)
 
 
@@ -1115,9 +1101,9 @@ class InUse:
         data = self.test.object_bytes["protected-a"]
         for target, _, decides in self.targets:
             if not decides:
-                heading = f"{target:<10} {'protected-a':<11} {'get':<8} {EXPIRED_IN_USE:<11}"
-                case = f"{target} protected-a get {EXPIRED_IN_USE}"
-                record_skip(self.test.report, heading, case, "the origin takes no direct clients")
+                self.test.skip_row(
+                    target, "protected-a", "get", EXPIRED_IN_USE, "the origin takes no direct clients"
+                )
                 continue
             answers = self.answers[target]
             seen = ", ".join(
@@ -1284,9 +1270,7 @@ def check_audience_specific(test: Test, fed: common.Federation) -> None:
         target = label(origin.svc, "origin")
         for name, token, only in tokens:
             if "DirectReads" not in caps:
-                heading = f"{target:<10} {'protected-a':<11} {'get':<8} {name:<11}"
-                case = f"{target} protected-a get {name}"
-                record_skip(test.report, heading, case, "the origin takes no direct clients")
+                test.skip_row(target, "protected-a", "get", name, "the origin takes no direct clients")
                 continue
             answer = web.request("GET", stores.url(origin, "protected-a", test.object), token=token)
             save(f"{test.out}/responses/{target}-protected-a-get-{name}", answer)
@@ -1348,10 +1332,8 @@ def check_token_lists(test: Test, fed: common.Federation) -> None:
         target = label(origin.svc, "origin")
         for name, headers, query, verdict in token_forms(server, unknown):
             if not fed.native_origins:
-                heading = f"{target:<10} {'protected-a':<11} {'get':<8} {name:<11}"
-                case = f"{target} protected-a get {name}"
                 why = f"XRootD serves the origins ({fed.origin_variant}), not Pelican"
-                record_skip(test.report, heading, case, why)
+                test.skip_row(target, "protected-a", "get", name, why)
                 continue
             url = stores.url(origin, "protected-a", test.object)
             if query:
@@ -1435,14 +1417,12 @@ def check_standalone(test: Test, fed: common.Federation) -> None:
     for origin in fed.origins:
         target = label(origin.svc, "origin")
         for name, rel, token, status in cases:
-            heading = f"{target:<10} {'protected-a':<11} {'get':<8} {name:<11}"
-            case = f"{target} protected-a get {name}"
             if not fed.native_origins:
                 why = f"XRootD serves the origins ({fed.origin_variant}), not Pelican"
-                record_skip(test.report, heading, case, why)
+                test.skip_row(target, "protected-a", "get", name, why)
                 continue
             if "DirectReads" not in caps:
-                record_skip(test.report, heading, case, "the origin takes no direct clients")
+                test.skip_row(target, "protected-a", "get", name, "the origin takes no direct clients")
                 continue
             answer = web.request("GET", stores.url(origin, "protected-a", rel), token=token)
             save(f"{test.out}/responses/{target}-protected-a-get-{name}", answer)
@@ -1504,11 +1484,7 @@ def check_web_token_strict(test: Test, fed: common.Federation) -> None:
         for name, token, takes in cases:
             answer = web.request("GET", web_url + accounts.WHOAMI, token=token)
             save(f"{test.out}/responses/{target}-whoami-{name}", answer)
-            try:
-                found = common.as_object(json.loads(answer.body)) or {}
-            except ValueError:
-                found = {}
-            authenticated = found.get("authenticated")
+            authenticated = (common.as_object(answer.json()) or {}).get("authenticated")
             why = ""
             if takes and (answer.status != 200 or authenticated is not True):
                 why = "expected 200, authenticated: the token is the server's own, and fresh"
@@ -1575,9 +1551,7 @@ def check_narrow_climb(test: Test, fed: common.Federation) -> None:
             continue
         climb(test, target, origin.url, origin, "put", scope, token)
         if cannot_delete:
-            heading = f"{target:<10} {'protected-a':<11} {'delete':<8} {NARROW_CLIMB:<11}"
-            case = f"{target} protected-a delete {NARROW_CLIMB}"
-            record_skip(test.report, heading, case, cannot_delete)
+            test.skip_row(target, "protected-a", "delete", NARROW_CLIMB, cannot_delete)
         else:
             climb(test, target, origin.url, origin, "delete", scope, token)
 
@@ -1603,15 +1577,12 @@ def climb(
         op, f"{test.run}-climbed-delete-{target}"
     )
     rel = f"data/auth/{name}"
-    heading = f"{target:<10} {'protected-a':<11} {op:<8} {NARROW_CLIMB:<11}"
-    case = f"{target} protected-a {op} {NARROW_CLIMB}"
     old = os.urandom(4096)
     if op == "delete" and origin is not None:
         error = stores.seed(origin, "protected-a", rel, old, setup, test.caps("protected-a"))
         if error:
             why = f"could not put the object to delete in place ({error})"
-            print(f"{heading}       FAIL  {why}")
-            test.report.add(case, FAIL, why)
+            test.outcome_row(target, "protected-a", op, NARROW_CLIMB, [why], "")
             return
     paths = climbs_from(scope, name)
     problems: list[str] = []
@@ -1632,12 +1603,7 @@ def climb(
                 problems.append("the store holds what a PUT climbed to")
             elif op == "delete" and have != common.digest(old):
                 problems.append("the object that a DELETE climbed to is gone")
-    if problems:
-        print(f"{heading}       FAIL  {problems[0]}")
-        test.report.add(case, FAIL, common.first(problems))
-    else:
-        print(f"{heading}       PASS  {len(paths)} paths")
-        test.report.add(case, PASS, f"{len(paths)} paths")
+    test.outcome_row(target, "protected-a", op, NARROW_CLIMB, problems, f"{len(paths)} paths")
 
 
 # --------------------------------------------------------------------------
@@ -1929,14 +1895,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             report.add(name, SKIP, reason, seconds=None)
             wanted.discard(name)
     narrow = NARROW in wanted
-    scopes = [name for name in SCOPES if name in wanted]
     checks = bool(creds or wanted)
     if checks:
-        for origin in fed.origins:
-            for namespace in fed.exports:
-                directory = f"{origin.store_of(namespace)}/data/auth"
-                if not origin.pstore and not os.path.isdir(directory):
-                    die(f"framework/var/{directory} is missing; run ./fed.sh init")
+        stores.require_dirs(fed.origins, fed.exports, "data/auth")
 
     out = session.var_dir(OUT)
     shutil.rmtree(out, ignore_errors=True)
@@ -1976,17 +1937,14 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         STANDALONE: check_standalone,
         WEB_TOKEN_STRICT: check_web_token_strict,
         NARROW: lambda t, f: check_narrow(t, f, narrow_token(t, f)),
+        **{name: partial(check_scope, name=name) for name in SCOPES},
+        NARROW_CLIMB: check_narrow_climb,
+        NESTED: check_nested,
+        TRAVERSAL: check_traversal,
     }
     for name, check in others.items():
         if name in wanted:
             check(test, fed)
-    for name in scopes:
-        check_scope(test, fed, name)
-    for name, check in ((NARROW_CLIMB, check_narrow_climb), (NESTED, check_nested)):
-        if name in wanted:
-            check(test, fed)
-    if TRAVERSAL in wanted:
-        check_traversal(test, fed)
     if in_use is not None:
         print(
             f"\nWaiting for {EXPIRED_IN_USE}, which asks each server until"

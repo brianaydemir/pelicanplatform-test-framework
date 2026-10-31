@@ -65,10 +65,10 @@ import re
 import shutil
 import subprocess  # nosec B404
 import time
-import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -83,7 +83,7 @@ from testlib import (
     stores,
     web,
 )
-from testlib.common import first, warn
+from testlib.common import first, outcome, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -349,14 +349,6 @@ def read_token(path: str) -> str:
         return f.read().strip()
 
 
-def decoded(answer: web.Response) -> Any:
-    """Return answer's body as JSON, or None if it is not JSON."""
-    try:
-        return json.loads(answer.body)
-    except ValueError:
-        return None
-
-
 def usage(test: Test, origin: common.Origin) -> tuple[dict[str, Any] | None, str]:
     """Return what origin's storage API tells the admin of its usage.
 
@@ -364,15 +356,10 @@ def usage(test: Test, origin: common.Origin) -> tuple[dict[str, Any] | None, str
         The object, and ""; or None, and why.
     """
     answer = test.api(origin, "usage", test.admin(origin))
-    found = common.as_object(decoded(answer)) if answer.status == 200 else None
+    found = common.as_object(answer.json()) if answer.status == 200 else None
     if found is None or not all(isinstance(found.get(k), int) for k in ("usedBytes", "capacityBytes")):
         return None, f"usage answered {answer.describe()}, without its figures"
     return found, ""
-
-
-def outcome(problems: Sequence[str], note: str) -> Row:
-    """Return FAIL with the first of problems, if any, or PASS with note."""
-    return (FAIL, first(problems)) if problems else (PASS, note)
 
 
 def fetch_metrics(origin: common.Origin) -> metrics.Snapshot:
@@ -454,7 +441,7 @@ def entries(answer: web.Response) -> tuple[list[dict[str, Any]] | None, bool]:
         The entries, and whether more are to come; None and False if
         answer is not a page of a listing.
     """
-    found = common.as_object(decoded(answer)) if answer.status == 200 else None
+    found = common.as_object(answer.json()) if answer.status == 200 else None
     items = common.as_array((found or {}).get("entries"))
     if found is None or items is None:
         return None, False
@@ -537,7 +524,7 @@ def stat(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row
     for name in (FILED, INLINED):
         rel = test.rel("api", name)
         path = test.catalog(origin, rel)
-        found = common.as_object(decoded(test.api(origin, stores.storage_route("stat", path), admin)))
+        found = common.as_object(test.api(origin, stores.storage_route("stat", path), admin).json())
         if found is None:
             problems.append(f"stat of {name} did not answer 200 with an object")
             continue
@@ -560,7 +547,7 @@ def stat(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row
             if found.get(key) != value:
                 problems.append(f"stat of {name}: {key} {found.get(key)!r}, not {value!r}")
     path = test.catalog(origin, test.rel("api", "sub"))
-    found = common.as_object(decoded(test.api(origin, stores.storage_route("stat", path), admin))) or {}
+    found = common.as_object(test.api(origin, stores.storage_route("stat", path), admin).json()) or {}
     if found.get("isDir") is not True or found.get("etag"):
         problems.append(f"stat of sub: isDir {found.get('isDir')!r}, etag {found.get('etag')!r}")
     answer = test.api(
@@ -584,7 +571,7 @@ def digest(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> R
     data = objects[rel]
     problems: list[str] = []
     found = common.as_object(
-        decoded(test.api(origin, stores.storage_route("digest", test.catalog(origin, rel)), admin))
+        test.api(origin, stores.storage_route("digest", test.catalog(origin, rel)), admin).json()
     )
     header = str((found or {}).get("digest", ""))
     wrong, right = digests.check(header, data)
@@ -755,7 +742,7 @@ class Cli:
         except ValueError:
             return f"`introspect {' '.join(args)}` printed no JSON: {last_line(out)}"
         answer = self.test.api(self.origin, api_route, self.test.admin(self.origin))
-        wanted = decoded(answer)
+        wanted = answer.json()
         if answer.status != 200 or printed != wanted:
             return f"`introspect {' '.join(args)}` printed {printed}, the API {wanted}"
         return None
@@ -886,7 +873,7 @@ def passes_at(test: Test, origin: common.Origin) -> Row:
     `corruption`, in an earlier run, may have counted before.
     """
     start = fetch_metrics(origin)
-    ok, snapshot = wait_metrics(
+    ok, _ = wait_metrics(
         origin,
         lambda s: all(v > 0 for v in last_success(s).values()),
         FIRST_PASS_WAIT,
@@ -1374,13 +1361,9 @@ def guarded(step: Callable[[], Row]) -> Row:
     """Return step(), or a FAIL for the exception it raised.
 
     Such an exception is a bug, or a server answering what the suite
-    can't read.
+    can't read (common.guarded()).
     """
-    try:
-        return step()
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        traceback.print_exc()
-        return FAIL, f"{type(e).__name__}: {e}"
+    return common.guarded(step, lambda note: (FAIL, note))
 
 
 # --------------------------------------------------------------------------
@@ -1916,11 +1899,7 @@ def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], 
                 done.add("capacity")
             if backups and startup and "backups" in wanted:
                 add("backups", "startup", startup)
-                try:
-                    rows = backups.finished()
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    traceback.print_exc()
-                    rows = {"": (FAIL, f"{type(e).__name__}: {e}")}
+                rows = common.guarded(backups.finished, lambda note: {"": (FAIL, note)})
                 for case, row in rows.items():
                     add("backups", case, row)
                 done.add("backups")
@@ -1939,6 +1918,16 @@ def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], 
 
 
 # --------------------------------------------------------------------------
+
+
+# The scenarios that run before the restart, by name: each takes the Test,
+# and returns its rows, by case.
+RUN: dict[str, Callable[[Test], dict[str, Row]]] = {
+    "storage-api": storage_api,
+    "introspect-cli": introspect_cli,
+    "scheduled-passes": scheduled_passes,
+    "corruption": corruption,
+}
 
 
 def skip(fed: common.Federation) -> str | None:
@@ -2000,17 +1989,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                     (SKIP, f"the origins' store is {fed.origin_variant}, no pstore"),
                 )
                 continue
-            check = {
-                "storage-api": storage_api,
-                "introspect-cli": introspect_cli,
-                "scheduled-passes": scheduled_passes,
-                "corruption": corruption,
-            }[scenario]
-            try:
-                rows = check(test)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                traceback.print_exc()
-                rows = {"": (FAIL, f"{type(e).__name__}: {e}")}
+            rows = common.guarded(partial(RUN[scenario], test), lambda note: {"": (FAIL, note)})
             for case, row in rows.items():
                 add(scenario, case, row)
         if later and not fed.origins[0].pstore:

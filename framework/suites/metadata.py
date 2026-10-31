@@ -38,7 +38,6 @@ import re
 import shutil
 import subprocess  # nosec B404
 import time
-import traceback
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from functools import partial
@@ -46,7 +45,7 @@ from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 from testlib import accounts, common, control, credentials, director, metrics, stores, web
-from testlib.common import die, first, shown, warn
+from testlib.common import die, first, outcome, shown, warn
 from testlib.recorder import (
     CAPTURES,
     delivered,
@@ -437,11 +436,7 @@ def web_token(fed: common.Federation, origin: common.Origin, out: str, username:
 def fetch(method: str, url: str, token: str | None = None) -> accounts.Answer:
     """Send method to url, a whole URL, as accounts.Api.call() does."""
     answer = web.request(method, url, token=token)
-    try:
-        data = json.loads(answer.body) if answer.body else None
-    except ValueError:
-        data = None
-    return accounts.Answer(answer.status, data)
+    return accounts.Answer(answer.status, answer.json())
 
 
 def go_time(text: Any) -> float | None:
@@ -460,22 +455,9 @@ def go_time(text: Any) -> float | None:
     return whole + float(f"0.{found.group(2) or 0}")
 
 
-def outcome(problems: Sequence[str], note: str) -> Row:
-    """Return a row: FAIL with the first of problems, or PASS with note."""
-    return (FAIL, first(problems)) if problems else (PASS, note)
-
-
 def guarded(check: Callable[[], Row]) -> Row:
     """Return check's row, or a FAIL if it could not set up, or raised."""
-    try:
-        return check()
-    except (Problem, accounts.ApiError, stores.Unreadable) as e:
-        return FAIL, str(e)
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # row fails, and the rest still run.
-        traceback.print_exc()
-        return FAIL, f"{type(e).__name__}: {e}"
+    return common.guarded(check, lambda note: (FAIL, note), (Problem, accounts.ApiError, stores.Unreadable))
 
 
 def same(got: object, want: object) -> bool:
@@ -1040,6 +1022,11 @@ def reconcile_config() -> str:
     return "\n".join(lines) + "\n"
 
 
+def path_of(maker: Callable[[Test], str], test: Test) -> tuple[str, str]:
+    """Return the path of the object that maker makes, and "" (no problem)."""
+    return maker(test), ""
+
+
 def reconcile_rows(test: Test) -> dict[str, Row]:
     """Check that the reconcile sweep re-enqueues only lost publishes.
 
@@ -1066,17 +1053,13 @@ def reconcile_rows(test: Test) -> dict[str, Row]:
     rows: dict[str, Row] = {}
     watched: dict[str, str] = {}
     for case, maker in makers.items():
-        path = ""
-        try:
-            path = maker(test)
-        except (Problem, accounts.ApiError) as e:
-            rows[case] = (FAIL, str(e))
-            continue
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            traceback.print_exc()
-            rows[case] = (FAIL, f"{type(e).__name__}: {e}")
-            continue
-        if common.wait_for(partial(tracked, test, path), 10):
+        made: tuple[str, str] = common.guarded(
+            partial(path_of, maker, test), lambda note: ("", note), (Problem, accounts.ApiError)
+        )
+        path, why = made
+        if why:
+            rows[case] = (FAIL, why)
+        elif common.wait_for(partial(tracked, test, path), 10):
             watched[case] = path
         else:
             rows[case] = (
@@ -1855,12 +1838,10 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         return
 
     print("Waiting for the recorder at http://metadata:9999 ...")
-    for n in range(30):
-        if web.request("GET", "http://metadata:9999/healthz", timeout=5).status == 200:
-            break
-        if n == 29:
-            die("the recorder is not answering; see './fed.sh logs metadata'")
-        time.sleep(2)
+    if not common.wait_for(
+        lambda: web.request("GET", "http://metadata:9999/healthz", timeout=5).status == 200, 60, 2
+    ):
+        die("the recorder is not answering; see './fed.sh logs metadata'")
 
     test = Test(session)
     print(

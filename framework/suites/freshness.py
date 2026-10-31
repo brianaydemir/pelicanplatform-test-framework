@@ -56,7 +56,6 @@ import json
 import os
 import re
 import time
-import traceback
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -75,7 +74,7 @@ from testlib import (
     webdav,
 )
 from testlib.blocks import OVERWRITE_CHANGE, OVERWRITE_SIZE, store_bytes
-from testlib.common import die, first, warn
+from testlib.common import die, first, outcome, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
 
@@ -520,23 +519,10 @@ def only_if_cached(test: Test, _value: str) -> Row:
     if why:
         return FAIL, why
 
-    def sent_bytes() -> float | None:
-        if not test.fed.native_origins:
-            return None
-        total = 0.0
-        for origin in test.origins:
-            found = metrics.fetch(origin.web_url)
-            if found is None:
-                return None
-            total += found.value(
-                "pelican_http_bytes_total", server_type="origin", direction="out", method="GET"
-            )
-        return total
-
     problems: list[str] = []
     asks = [("GET", ONLY_IF_CACHED), ("HEAD", ONLY_IF_CACHED), ("GET", NO_DOWNLOAD)]
     asks += [("HEAD", NO_DOWNLOAD), ("GET", ONLY_IF_CACHED)]
-    before = sent_bytes()
+    before = metrics.origins_sent_bytes(test.fed)
     for wait, plan in ((0, asks), (2, asks[:1])):
         time.sleep(wait)
         for cache in test.v2:
@@ -549,7 +535,7 @@ def only_if_cached(test: Test, _value: str) -> Row:
                         f"{cache.svc}: {method} with {asked} of an object it lacks got"
                         + f" {answer.describe()}, not 504{later}"
                     )
-    after = sent_bytes()
+    after = metrics.origins_sent_bytes(test.fed)
     notes: list[str] = []
     if before is None or after is None:
         notes.append("no origin's byte counter to read")
@@ -597,9 +583,7 @@ def only_if_cached(test: Test, _value: str) -> Row:
                 f"{cache.svc}: HEAD with only-if-cached of what it holds got"
                 + f" {answer.describe()}, Content-Length '{answer.header('Content-Length')}'"
             )
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "; ".join([f"{len(test.v2)} cache(s)"] + notes)
+    return outcome(problems, "; ".join([f"{len(test.v2)} cache(s)"] + notes))
 
 
 def bare_get(url: str, test: Test, rel: str) -> tuple[web.Response, str]:
@@ -658,11 +642,7 @@ def no_negative_cache(test: Test, _value: str) -> Row:
         if answer.status != 404:
             problems.append(f"{cache.svc}: before the object was, {answer.describe()}, not 404")
         elif cache.kind == "v2":
-            try:
-                kind = (common.as_object(json.loads(answer.body)) or {}).get("error")
-            except ValueError:
-                kind = None
-            if kind != "not_found":
+            if (common.as_object(answer.json()) or {}).get("error") != "not_found":
                 problems.append(f"{cache.svc}: a 404 whose body is not JSON with not_found")
     for url in directors:
         answer, where = bare_get(url, test, rel)
@@ -786,9 +766,7 @@ def downstream(test: Test, value: str) -> Row:
             problems.append(f"{cache.svc}: If-None-Match its ETag got {answer.describe()}, not 304")
         else:
             problems += [f"{cache.svc} (304): {p}" for p in downstream_problems(answer, value, filled)]
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "; ".join([f"{len(test.v2)} cache(s)"] + notes)
+    return outcome(problems, "; ".join([f"{len(test.v2)} cache(s)"] + notes))
 
 
 def depth_0(test: Test, cache: common.Cache, rel: str) -> tuple[webdav.Entry | None, str]:
@@ -932,9 +910,7 @@ def propfind_overwrite(test: Test, value: str) -> Row:
             )
         else:
             notes.append(f"{cache.svc} by {waited:.0f}s")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, ", ".join(notes)
+    return outcome(problems, ", ".join(notes))
 
 
 def stale_if_error(test: Test, value: str) -> Row:
@@ -1031,9 +1007,7 @@ def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> Row:
     why = settle(test)
     if why:
         problems.append(f"once the origins started again, {why}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "; ".join(notes)
+    return outcome(problems, "; ".join(notes))
 
 
 def immediate(test: Test, value: str) -> Row:
@@ -1107,9 +1081,7 @@ def immediate(test: Test, value: str) -> Row:
             problems.append(f"{cache.svc}, after serving the new version: {first(wrong)}")
             continue
         notes.append(f"{cache.svc} by {time.time() - overwritten:.0f}s")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "new version " + ", ".join(notes)
+    return outcome(problems, "new version " + ", ".join(notes))
 
 
 def ranged(data: bytes, request: blocks.Request, answer: web.Response) -> tuple[str | None, bool]:
@@ -1146,10 +1118,7 @@ def introspected(test: Test, cache: common.Cache, rel: str) -> tuple[int | None,
     answer = web.request("GET", url, token=test.admin_token(cache))
     if answer.status != 200:
         return None, f"introspection answered {answer.describe()}"
-    try:
-        found = common.as_array(json.loads(answer.body))
-    except ValueError:
-        found = None
+    found = common.as_array(answer.json())
     if found is None:
         return None, "introspection answered no JSON array"
     return len(found), ""
@@ -1221,9 +1190,7 @@ def not_stored(test: Test, value: str) -> Row:
                 f"{cache.svc}'s object files grew by {after - before} bytes, for an object of"
                 + f" {len(data)} it may not store"
             )
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "; ".join([f"{len(test.v2)} cache(s)"] + notes)
+    return outcome(problems, "; ".join([f"{len(test.v2)} cache(s)"] + notes))
 
 
 def s_maxage(test: Test, value: str) -> Row:
@@ -1315,15 +1282,9 @@ CASES = (
 
 def run_case(test: Test, case: Case, value: str, results: common.Results) -> None:
     """Run case, with the origins sending value, and record its row."""
-    try:
-        status, note = case.run(test, value)
-    except stores.Unreadable as e:
-        status, note = FAIL, f"could not read a store: {e}"
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # case fails, and the rest still run.
-        traceback.print_exc()
-        status, note = FAIL, f"{type(e).__name__}: {e}"
+    status, note = common.guarded(
+        partial(case.run, test, value), lambda note: (FAIL, note), (stores.Unreadable,)
+    )
     results.add(case.row, status, note)
 
 
@@ -1389,10 +1350,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     afterward.
     """
     fed = session.fed
-    for origin in stores.unique(fed.origins):
-        directory = f"{origin.store_of(NAMESPACE)}/data/freshness"
-        if not origin.pstore and not os.path.isdir(directory):
-            die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    stores.require_dirs(fed.origins, [NAMESPACE], "data/freshness")
     tokens = session.setup_tokens()
 
     def clean(when: str) -> None:

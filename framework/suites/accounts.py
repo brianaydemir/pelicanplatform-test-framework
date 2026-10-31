@@ -64,17 +64,15 @@ group deleted, and frees its name.
 """
 
 import functools
-import json
 import secrets
-import traceback
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from testlib import accounts, collections, common, credentials, issuer, web, webapi
 from testlib.accounts import Api, ApiError, must
 from testlib.collections import create, delete, get, grant, grants, listed, patch
-from testlib.common import die, first, objects, warn
+from testlib.common import die, objects, outcome, warn
 from testlib.credentials import PROTECTED
 from testlib.issuer import IssuerError, Tokens, User
 from testlib.report import FAIL, PASS, SKIP
@@ -117,15 +115,6 @@ def skip(fed: common.Federation) -> str | None:
     That is so with no embedded issuer, or no protected namespace.
     """
     return collections.missing(fed)
-
-
-def outcome(problems: Sequence[str], note: str) -> Row:
-    """Return a row with no case.
-
-    Returns:
-        FAIL with the first of problems, or PASS with note.
-    """
-    return ("", FAIL, first(problems)) if problems else ("", PASS, note)
 
 
 class Test:
@@ -334,13 +323,13 @@ def finish(test: Test) -> None:
             warn(f"could not remove the {kind} client: {failed}")
 
 
-def checked(rows: list[Row], case: str, check: Callable[[], Row]) -> None:
-    """Append check()'s row to rows, as case.
+def checked(rows: list[Row], case: str, check: Callable[[], tuple[str, str]]) -> None:
+    """Append case's row to rows: check()'s status and note.
 
     It is a failing one if check() raised ApiError or IssuerError.
     """
     try:
-        _, status, note = check()
+        status, note = check()
     except (ApiError, IssuerError) as e:
         status, note = FAIL, str(e)
     rows.append((case, status, note))
@@ -430,7 +419,7 @@ def issuer_refusals(test: Test, user: User, refresh: str) -> list[str]:
     if not refresh:
         return problems
     answer = issuer.refresh(test.client("device"), refresh)
-    if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
+    if not issuer.refused_with(answer, 400, "invalid_grant"):
         error = issuer.error_of(answer) or "no error"
         problems.append(f"the refresh token: {answer.describe()} ({error}), not invalid_grant")
     return problems
@@ -456,25 +445,25 @@ def user_status(test: Test) -> list[Row]:
     refresh = held.refresh
     rows: list[Row] = []
 
-    def active() -> Row:
+    def active() -> tuple[str, str]:
         problems = web_problems(test, username, cookie, allowed=True)
         if not authorizes(test.client("code"), user)[0]:
             problems.append("the authorization page sent back no code for the login cookie")
         return outcome(problems, "the cookie, a login, the token, and the issuer all work")
 
-    def inactive_web() -> Row:
+    def inactive_web() -> tuple[str, str]:
         must(accounts.set_status(admin, user_id, "inactive"), "making the user inactive")
         problems = web_problems(test, username, cookie, allowed=False)
         return outcome(problems, "the cookie cleared, a login, and the token: each 401")
 
-    def refused_issuer() -> Row:
+    def refused_issuer() -> tuple[str, str]:
         nonlocal refresh
         problems = issuer_refusals(test, user, refresh)
         # Honored or not, it may be spent.
         refresh = ""
         return outcome(problems, "no device flow, no code, and invalid_grant")
 
-    def reactivated() -> Row:
+    def reactivated() -> tuple[str, str]:
         nonlocal refresh
         must(accounts.set_status(admin, user_id, "active"), "making the user active again")
         problems = web_problems(test, username, cookie, allowed=True)
@@ -495,7 +484,7 @@ def user_status(test: Test) -> list[Row]:
             problems.append("no unused refresh token to try once the user is deleted")
         return outcome(problems, "all work again")
 
-    def deleted_web() -> Row:
+    def deleted_web() -> tuple[str, str]:
         failed = accounts.delete_user(admin, user_id)
         if failed:
             raise ApiError(failed)
@@ -537,7 +526,7 @@ def scope_grants(test: Test) -> list[Row]:
         if answer.status != 204:
             raise ApiError(f"revoking {scope}: {answer.describe()}, not 204")
 
-    def user_admin() -> Row:
+    def user_admin() -> tuple[str, str]:
         username = test.name("useradmin")
         user_id = make_user(test, username)
         api = test.api(username)
@@ -577,7 +566,7 @@ def scope_grants(test: Test) -> list[Row]:
                 problems.append(f"{what}: {answer.describe()}, not 403")
         return outcome(problems, "creates users; may not touch the admin, nor grant")
 
-    def log_read() -> Row:
+    def log_read() -> tuple[str, str]:
         username = test.name("logreader")
         user_id = make_user(test, username)
         api = test.api(username)
@@ -598,7 +587,7 @@ def scope_grants(test: Test) -> list[Row]:
             problems.append(f"GET {LOG_TAIL} once revoked: {answer.describe()}, not 403")
         return outcome(problems, "the log tail, not the configuration; refused once revoked")
 
-    def collection_admin() -> Row:
+    def collection_admin() -> tuple[str, str]:
         username = test.name("curator")
         user_id = make_user(test, username)
         api = test.api(username)
@@ -618,7 +607,7 @@ def scope_grants(test: Test) -> list[Row]:
             problems.append(f"creating a collection once revoked: {answer.describe()}, not 403")
         return outcome(problems, "creates a collection; refused once revoked")
 
-    def collection_admin_token() -> Row:
+    def collection_admin_token() -> tuple[str, str]:
         """Check who may make an API token of server.collection_admin.
 
         A user granted server.collection_admin asks for an API token of
@@ -634,26 +623,14 @@ def scope_grants(test: Test) -> list[Row]:
         user_id = make_user(test, username)
         cookie = log_in(test, username, user_id)
         granted(user_id, "server.collection_admin")
-        body = {
-            "name": test.name("token"),
-            "scopes": ["server.collection_admin"],
-            "expiration": common.timestamp(datetime.now(timezone.utc) + timedelta(hours=1)),
-        }
+        name = test.name("token")
+        expires = datetime.now(timezone.utc) + timedelta(hours=1)
 
         def mint(login: str) -> web.Response:
-            return web.request(
-                "POST",
-                test.web + webapi.TOKENS,
-                upload=json.dumps(body).encode(),
-                headers={**accounts.JSON, **webapi.cookie_header(login=login)},
-            )
+            return webapi.create_token(test.web, name, ["server.collection_admin"], expires, login)
 
         def drop(login: str, token_id: str) -> None:
-            dropped = web.request(
-                "DELETE",
-                f"{test.web}{webapi.TOKENS}/{token_id}",
-                headers=webapi.cookie_header(login=login),
-            )
+            dropped = webapi.delete_token(test.web, token_id, login)
             if not dropped.ok:
                 warn(f"deleting API token {token_id}: {dropped.describe()}")
 
@@ -690,18 +667,18 @@ def scope_grants(test: Test) -> list[Row]:
             "a user is refused one; the admin's creates a collection, and is refused once deleted",
         )
 
-    def ungrantable() -> Row:
+    def ungrantable() -> tuple[str, str]:
         user_id = make_user(test, test.name("ungranted"))
         answer = admin.call("POST", scope_route(user_id), {"scope": "storage.read:/"})
         if answer.status != 400:
-            return ("", FAIL, f"granting storage.read:/: {answer.describe()}, not 400")
+            return FAIL, f"granting storage.read:/: {answer.describe()}, not 400"
         held = {
             str(row.get("scope"))
             for row in objects(must(admin.call("GET", scope_route(user_id)), "listing").array)
         }
         if "storage.read:/" in held:
-            return ("", FAIL, "storage.read:/ is listed among the user's scopes")
-        return ("", PASS, "storage.read:/ refused (400)")
+            return FAIL, "storage.read:/ is listed among the user's scopes"
+        return PASS, "storage.read:/ refused (400)"
 
     checked(rows, "user-admin", user_admin)
     checked(rows, "log-read", log_read)
@@ -739,7 +716,7 @@ def authority_groups(test: Test) -> list[Row]:
         reserved[name] = found
     rows: list[Row] = []
 
-    def names() -> Row:
+    def names() -> tuple[str, str]:
         username = test.name("squatter")
         make_user(test, username)
         problems: list[str] = []
@@ -754,7 +731,7 @@ def authority_groups(test: Test) -> list[Row]:
                 problems.append(f"the admin's deleting {name}: {answer.describe()}, not 409")
         return outcome(problems, "creating and deleting each: 409")
 
-    def collection_admins() -> Row:
+    def collection_admins() -> tuple[str, str]:
         username = test.name("member-curator")
         user_id = make_user(test, username)
         gid = reserved[COLLECTION_ADMINS]
@@ -777,7 +754,7 @@ def authority_groups(test: Test) -> list[Row]:
         creates("once removed, logged in again", 403)
         return outcome(problems, "a member creates a collection; refused once removed")
 
-    def server_admins() -> Row:
+    def server_admins() -> tuple[str, str]:
         username = test.name("member-admin")
         user_id = make_user(test, username)
         gid = reserved[SERVER_ADMINS]
@@ -797,7 +774,7 @@ def authority_groups(test: Test) -> list[Row]:
         role("once removed, logged in again", "user")
         return outcome(problems, "a member is admin; not once removed")
 
-    def stale_cookie() -> Row:
+    def stale_cookie() -> tuple[str, str]:
         username = test.name("member-stale")
         user_id = make_user(test, username)
         gid = reserved[SERVER_ADMINS]
@@ -806,15 +783,15 @@ def authority_groups(test: Test) -> list[Row]:
             cookie = log_in(test, username, user_id)
             found = whoami(test, cookie).get("role")
             if found != "admin":
-                return ("", FAIL, f"/whoami's role in {SERVER_ADMINS}: {found!r}, not 'admin'")
+                return FAIL, f"/whoami's role in {SERVER_ADMINS}: {found!r}, not 'admin'"
         finally:
             accounts.remove_member(admin, gid, user_id)
         found = whoami(test, cookie).get("role")
         if found != "user":
-            return ("", FAIL, f"once removed, the old login cookie's role is still {found!r}")
-        return ("", PASS, "once removed, the old login cookie is a user's")
+            return FAIL, f"once removed, the old login cookie's role is still {found!r}"
+        return PASS, "once removed, the old login cookie is a user's"
 
-    def user_admin_user() -> Row:
+    def user_admin_user() -> tuple[str, str]:
         user_id = accounts.ensure_user(admin, USER_ADMIN)
         api = test.api(USER_ADMIN)
         accounts.agree_to_aup(api)
@@ -855,7 +832,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
     admin = test.api("admin")
     rows: list[Row] = []
 
-    def group_deleted() -> Row:
+    def group_deleted() -> tuple[str, str]:
         member = test.name("member")
         member_id = make_user(test, member)
         name = test.name("doomed")
@@ -866,7 +843,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
         must(grant(admin, cid, name, "read"), "granting the group read")
         must(patch(admin, cid, adminId=gid), "making the group the collection's admin group")
         if read not in test.data_scopes(member):
-            return ("", FAIL, f"the member's token lacks {read} before the group is deleted")
+            return FAIL, f"the member's token lacks {read} before the group is deleted"
         failed = accounts.delete_group(admin, gid)
         if failed:
             raise ApiError(failed)
@@ -887,7 +864,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
             problems.append(f"a member of the new group of the name gets {read}")
         return outcome(problems, "its grant and admin role gone; a new group of its name, nothing")
 
-    def user_deleted() -> Row:
+    def user_deleted() -> tuple[str, str]:
         username = test.name("former")
         old_id = make_user(test, username)
         cid = make_collection(test, "y")
@@ -896,7 +873,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
         must(grant(admin, cid, f"user-{username}", "read"), "granting the user read")
         api = test.api(username)
         if cid not in listed(api) or read not in test.data_scopes(username):
-            return ("", FAIL, f"the owner does not see the collection, or lacks {read}")
+            return FAIL, f"the owner does not see the collection, or lacks {read}"
         failed = accounts.delete_user(admin, old_id)
         if failed:
             raise ApiError(failed)
@@ -920,7 +897,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
             problems.append(f"the new user of the name gets {read}")
         return outcome(problems, "a new user of the name may not see, delete, or read it")
 
-    def renamed() -> Row:
+    def renamed() -> tuple[str, str]:
         holder, newcomer = test.name("holder"), test.name("newcomer")
         holder_id = make_user(test, holder)
         newcomer_id = make_user(test, newcomer)
@@ -934,7 +911,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
         must(grant(admin, cid, old_group, "read"), "granting the group read")
         must(grant(admin, cid, f"user-{old_user}", "read"), "granting the user read")
         if read not in test.data_scopes(holder) or read not in test.data_scopes(old_user):
-            return ("", FAIL, f"the group's member or the user lacks {read} before the renames")
+            return FAIL, f"the group's member or the user lacks {read} before the renames"
         must(
             admin.call("PATCH", f"{accounts.GROUPS}/{gid}", {"name": new_group}),
             "renaming the group",
@@ -1003,7 +980,7 @@ def group_invites(test: Test) -> list[Row]:
         mine = test.api(joiners[role]).call("GET", accounts.MY_GROUPS).array
         return gid in {str(row.get("id")) for row in objects(mine)}
 
-    def single_use() -> Row:
+    def single_use() -> tuple[str, str]:
         token = invite(single=True)
         problems: list[str] = []
         answer = redeem("a", token)
@@ -1019,7 +996,7 @@ def group_invites(test: Test) -> list[Row]:
             problems.append(f"a member's making an invite link: {answer.describe()}, not 403")
         return outcome(problems, "the first joins; the second refused; only the owner invites")
 
-    def multi_use() -> Row:
+    def multi_use() -> tuple[str, str]:
         token = invite(single=False)
         problems: list[str] = []
         for role in ("b", "c"):
@@ -1082,7 +1059,7 @@ def aup(test: Test) -> list[Row]:
             return f"GET {route}'s 403 says {found}, not the new version"
         return None
 
-    def gates() -> Row:
+    def gates() -> tuple[str, str]:
         new = put_up(1)
         problems: list[str] = []
         why = gated(admin, accounts.USERS, new)
@@ -1104,21 +1081,21 @@ def aup(test: Test) -> list[Row]:
             problems.append(f"GET {accounts.USERS} once agreed: {answer.describe()}, not 200")
         return outcome(problems, "refused until agreed, not by an old version; policy public")
 
-    def again() -> Row:
+    def again() -> tuple[str, str]:
         new = put_up(2)
         why = gated(admin, accounts.USERS, new) or gated(test.api(signer), accounts.MY_GROUPS, new)
-        return ("", FAIL, why) if why else ("", PASS, "the admin and a user refused again")
+        return (FAIL, why) if why else (PASS, "the admin and a user refused again")
 
-    def restored() -> Row:
+    def restored() -> tuple[str, str]:
         back = must(admin.call("PUT", accounts.AUP, {"content": content}), "restoring the AUP")
         found = str(back.object.get("version", ""))
         if found != version:
-            return ("", FAIL, f"the restored AUP's version is {found!r}, not {version!r}")
+            return FAIL, f"the restored AUP's version is {found!r}, not {version!r}"
         answer = test.api(signer).call("GET", accounts.MY_GROUPS)
         if answer.status != 200:
             why = f"GET {accounts.MY_GROUPS}: {answer.describe()}"
-            return ("", FAIL, f"as a user who had agreed to it, {why}")
-        return ("", PASS, "its version back, and the agreements to it good again")
+            return FAIL, f"as a user who had agreed to it, {why}"
+        return PASS, "its version back, and the agreements to it good again"
 
     try:
         checked(rows, "gates", gates)
@@ -1146,19 +1123,6 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 }
 
 
-def guarded(check: Callable[[], list[Row]]) -> list[Row]:
-    """Return check()'s rows, or one failing row if it raised."""
-    try:
-        return check()
-    except (ApiError, IssuerError) as e:
-        return [("", FAIL, str(e))]
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # scenario fails, and the rest still run.
-        traceback.print_exc()
-        return [("", FAIL, f"{type(e).__name__}: {e}")]
-
-
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, and remove what this run made.
 
@@ -1171,7 +1135,12 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         die(f"could not set up the suite: {e}")
     try:
         for name in selected:
-            for case, status, note in guarded(functools.partial(RUN[name], test)):
+            rows = common.guarded(
+                functools.partial(RUN[name], test),
+                lambda note: [("", FAIL, note)],
+                (ApiError, IssuerError),
+            )
+            for case, status, note in rows:
                 results.add(f"{name} {case}".strip(), status, note)
     finally:
         finish(test)

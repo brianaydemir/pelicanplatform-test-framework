@@ -198,15 +198,17 @@ def url(web_url: str, namespace: str) -> str:
 
 def decoded(answer: web.Response) -> dict[str, Any]:
     """Return the JSON object in answer's body, or {}."""
-    try:
-        return common.as_object(json.loads(answer.body)) or {}
-    except ValueError:
-        return {}
+    return common.as_object(answer.json()) or {}
 
 
 def error_of(answer: web.Response) -> str:
     """Return the OAuth2 error in answer, e.g. invalid_grant, or ""."""
     return str(decoded(answer).get("error", ""))
+
+
+def refused_with(answer: web.Response, status: int, error: str) -> bool:
+    """Return whether answer is an OAuth2 error of status and error."""
+    return answer.status == status and error_of(answer) == error
 
 
 def failed(what: str, answer: web.Response) -> IssuerError:
@@ -688,24 +690,24 @@ def userinfo(issuer_url: str, access: str) -> web.Response:
     return web.request("GET", f"{issuer_url}/userinfo", token=access)
 
 
-def claims(tok: str) -> dict[str, Any]:
-    """Return a token's claims, not verified."""
+def _part(tok: str, index: int) -> dict[str, Any]:
+    """Return part index of a token, the JSON object it encodes, or {}."""
     try:
-        payload = tok.split(".")[1]
-        padded = payload + "=" * (-len(payload) % 4)
+        part = tok.split(".")[index]
+        padded = part + "=" * (-len(part) % 4)
         return common.as_object(json.loads(base64.urlsafe_b64decode(padded))) or {}
     except (IndexError, ValueError):
         return {}
+
+
+def claims(tok: str) -> dict[str, Any]:
+    """Return a token's claims, not verified."""
+    return _part(tok, 1)
 
 
 def header(tok: str) -> dict[str, Any]:
     """Return a token's header: its kid and alg."""
-    try:
-        head = tok.split(".")[0]
-        padded = head + "=" * (-len(head) % 4)
-        return common.as_object(json.loads(base64.urlsafe_b64decode(padded))) or {}
-    except (IndexError, ValueError):
-        return {}
+    return _part(tok, 0)
 
 
 def scopes(tok: str) -> frozenset[str]:

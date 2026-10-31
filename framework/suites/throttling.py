@@ -50,19 +50,17 @@ tag per origin host; deriveSchedulerTag in client/handle_http.go).
 """
 
 import contextlib
-import json
 import os
 import re
-import shutil
 import time
-import traceback
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from urllib.parse import quote
 
 from testlib import common, control, director, stores, transfers, web
-from testlib.common import Findings, die, first, warn
-from testlib.report import FAIL, PASS, SKIP
+from testlib.common import Findings, die, first, outcome, warn
+from testlib.report import FAIL, SKIP
 from testlib.session import Session, last_line
 
 SCENARIOS = {
@@ -293,10 +291,7 @@ def served(answer: web.Response, data: bytes) -> str | None:
 
 def shed_reason(answer: web.Response) -> str | None:
     """Return the `error` of a 429's JSON body, or None if it has none."""
-    try:
-        found = common.as_object(json.loads(answer.body)) or {}
-    except ValueError:
-        return None
+    found = common.as_object(answer.json()) or {}
     reason = found.get("error")
     return reason if isinstance(reason, str) else None
 
@@ -788,19 +783,16 @@ def get_plugin(
     the URL, and a cache is named by Client.PreferredCaches.
     """
     directory = os.path.join(test.tmp, name)
-    creds = os.path.join(test.tmp, f"{name}.creds")
     os.makedirs(directory)
-    os.makedirs(creds)
-    shutil.copyfile(test.token_file, os.path.join(creds, "server.use"))
-    infile, outfile = (os.path.join(test.tmp, f"{name}.{ext}") for ext in ("in", "ad"))
     url = test.object_url(rel) + (transfers.DIRECT_QUERY if direct else "")
-    with open(infile, "w", encoding="utf-8") as f:
-        f.write(f'[ Url="{url}"; LocalFileName="object" ]\n')
-    env = client_env(test, slow)
-    env["_CONDOR_CREDS"] = creds
-    if cache:
-        env["PELICAN_CLIENT_PREFERREDCACHES"] = cache.url
-    status, out, err, ads = test.session.plugin_cmd(infile, outfile, env=env, cwd=directory)
+    status, out, err, ads = test.session.plugin_run(
+        f"throttling/{name}",
+        [(url, "object")],
+        creds={"server.use": test.token_file},
+        cache=cache.url if cache else None,
+        env=client_env(test, slow),
+        cwd=directory,
+    )
     return fetched(directory, status, ads or err or out)
 
 
@@ -998,7 +990,7 @@ def slow_transfer(test: Test) -> dict[str, Row]:
             problems = pelican_problems(fetch, {SLOW_TRANSFER})
         else:
             problems = plugin_problems(fetch, {SLOW_TRANSFER})
-        rows[name] = (FAIL, first(problems)) if problems else (PASS, "error 6002")
+        rows[name] = outcome(problems, "error 6002")
 
     found = Findings()
     route = "direct" if test.direct else f"through {test.v2[0].svc}"
@@ -1051,13 +1043,7 @@ def row_name(scenario: str, name: str) -> str:
 
 def run_scenario(test: Test, scenario: str, results: common.Results) -> None:
     """Run scenario, and record its rows."""
-    try:
-        rows = CASES[scenario](test)
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # scenario fails, and the rest still run.
-        traceback.print_exc()
-        rows = {"": (FAIL, f"{type(e).__name__}: {e}")}
+    rows = common.guarded(partial(CASES[scenario], test), lambda note: {"": (FAIL, note)})
     for name, (status, note) in rows.items():
         results.add(row_name(scenario, name), status, note)
 
@@ -1106,10 +1092,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         for scenario in selected:
             results.add(scenario, SKIP, why)
         return
-    for origin in stores.unique(fed.origins):
-        directory = f"{origin.store_of(NAMESPACE)}/data/throttling"
-        if not os.path.isdir(directory):
-            die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    stores.require_dirs(fed.origins, [NAMESPACE], "data/throttling")
     tokens = session.setup_tokens()
 
     def clean(when: str) -> None:

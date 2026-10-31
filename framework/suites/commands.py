@@ -34,9 +34,9 @@ import hashlib
 import os
 import re
 import time
-import traceback
 from collections import Counter
 from collections.abc import Callable, Iterable
+from functools import partial
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -1585,11 +1585,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     The tree is put in place first.
     """
     fed = session.fed
-    for origin in stores.unique(fed.origins):
-        for ns in fed.exports:
-            directory = f"{origin.store_of(ns)}/data/cmd"
-            if not origin.pstore and not os.path.isdir(directory):
-                die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    stores.require_dirs(fed.origins, fed.exports, "data/cmd")
     # A pstore origin's store, which only it can change, is emptied
     # through it, with a token for each namespace with storage of its own.
     tokens = session.setup_tokens() if any(o.pstore for o in fed.origins) else {}
@@ -1612,15 +1608,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 continue
             namespace, needs = needs_of(name)
             test.lacks = needs - fed.exports[namespace]
-            try:
-                status, note = RUN[name](test)
-            except stores.Unreadable as e:
-                status, note = FAIL, f"could not read a store: {e}"
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                status, note = FAIL, f"{type(e).__name__}: {e}"
+            status, note = common.guarded(
+                partial(RUN[name], test), lambda note: (FAIL, note), (stores.Unreadable,)
+            )
             results.add(name, status, note)
     finally:
         # Some of the tree's collections are the origins' making, so on a

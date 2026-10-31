@@ -81,14 +81,13 @@ import contextlib
 import os
 import re
 import time
-import traceback
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from urllib.parse import quote
 
 from testlib import common, control, credentials, director, jwt, registry, stores, web, webdav
-from testlib.common import Findings, die, first, warn
+from testlib.common import Findings, die, first, outcome, warn
 from testlib.recorder import index
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -1756,9 +1755,7 @@ def gated_checks(test: Test, passthrough: bool, static: str, before: int) -> Row
     problems += found
     for problem in problems:
         print(f"    {problem}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.fed.origins)} origin(s); {note}"
+    return outcome(problems, f"{len(test.fed.origins)} origin(s); {note}")
 
 
 def gated(test: Test, passthrough: bool) -> Row:
@@ -1972,26 +1969,14 @@ def sentinel_location(test: Test) -> dict[str, Row]:
 
 def attempt(check: Callable[[], Row]) -> Row:
     """Return check's row; a FAIL if it could not set up, or raised."""
-    try:
-        return check()
-    except (SetupError, stores.Unreadable) as e:
-        return FAIL, str(e)
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # check fails, and the rest still run.
-        traceback.print_exc()
-        return FAIL, f"{type(e).__name__}: {e}"
+    return common.guarded(check, lambda note: (FAIL, note), (SetupError, stores.Unreadable))
 
 
 def attempt_all(rows: Sequence[str], check: Callable[[], dict[str, Row]]) -> dict[str, Row]:
     """Return check's rows; each a FAIL if it could not set up or raised."""
-    try:
-        return check()
-    except (SetupError, stores.Unreadable) as e:
-        return {row: (FAIL, str(e)) for row in rows}
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        traceback.print_exc()
-        return {row: (FAIL, f"{type(e).__name__}: {e}") for row in rows}
+    return common.guarded(
+        check, lambda note: {row: (FAIL, note) for row in rows}, (SetupError, stores.Unreadable)
+    )
 
 
 # Each scenario checked whole: its check, which returns a Row for each of

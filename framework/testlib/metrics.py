@@ -151,6 +151,26 @@ def fetch(url: str, token: str | None = None) -> Snapshot | None:
     return parse(answer.body.decode(errors="replace"))
 
 
+def origins_sent_bytes(fed: common.Federation) -> float | None:
+    """Return how many bytes the native origins have sent for GETs, in all.
+
+    Returns:
+        The sum of their pelican_http_bytes_total; None where they keep
+        no such counter, or one did not answer.
+    """
+    if not fed.native_origins:
+        return None
+    total = 0.0
+    for origin in fed.origins:
+        found = fetch(origin.web_url)
+        if found is None:
+            return None
+        total += found.value(
+            "pelican_http_bytes_total", server_type="origin", direction="out", method="GET"
+        )
+    return total
+
+
 def delta(before: Snapshot, after: Snapshot, name: str, /, **labels: str) -> float:
     """Return how much the sum of metric name's series with labels rose.
 

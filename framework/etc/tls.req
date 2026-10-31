@@ -4,7 +4,7 @@ extendedKeyUsage = serverAuth
 subjectAltName = @subject_alternative_names
 
 # RFC 5280 requires both identifiers of a certificate a CA issues, and
-# a strict verifier, such as Python 3.13 and later (VERIFY_X509_STRICT)
+# a strict verifier, such as Python's by default (VERIFY_X509_STRICT)
 # and `openssl verify -x509_strict`, refuses one without them.
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid, issuer

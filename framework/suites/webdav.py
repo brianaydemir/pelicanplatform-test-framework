@@ -55,14 +55,14 @@ put in place, and the stores read, with WLCG tokens either way.
 import os
 import re
 import shutil
-import traceback
 import xml.etree.ElementTree as ET  # nosec B405
 from dataclasses import dataclass, field
+from functools import partial
 
 from testlib import common, credentials, digests, stores, web, webdav
 from testlib.common import first, warn
 from testlib.credentials import R
-from testlib.report import FAIL, PASS, SKIP
+from testlib.report import FAIL, SKIP
 from testlib.session import Session
 from testlib.webdav import copy_or_move, root_url
 
@@ -324,15 +324,11 @@ def at(origin: common.Origin, rel: str) -> str:
     return stores.url(origin, NAMESPACE, rel)
 
 
-class Findings:
+class Findings(common.Findings):
     """What a scenario found wrong at each server, and what it noted.
 
     A server is an origin, or for `cache-methods` a cache.
     """
-
-    def __init__(self) -> None:
-        self.problems: list[str] = []
-        self.notes: list[str] = []
 
     def add(self, server: common.Origin | common.Cache, problem: str | None) -> None:
         """Record problem, if any, at server, and print it."""
@@ -343,16 +339,6 @@ class Findings:
     def note(self, server: common.Origin | common.Cache, note: str) -> None:
         """Note what server did."""
         self.notes.append(f"{server.svc}: {note}")
-
-    def result(self, passed: str) -> tuple[str, str]:
-        """Return the scenario's status and note.
-
-        That is FAIL with the first problem, or PASS with passed and the
-        notes.
-        """
-        if self.problems:
-            return FAIL, first(self.problems)
-        return PASS, "; ".join([passed, *self.notes])
 
 
 # --------------------------------------------------------------------------
@@ -388,7 +374,7 @@ def post_create_only(test: Test) -> tuple[str, str]:
             if data in answer.body:
                 found.add(origin, f"POST with {name} alone got the object's bytes")
             found.add(origin, test.stored(origin, NAMESPACE, rel, data, "the object"))
-    return found.result(f"{len(test.fed.origins)} origin(s) refused both")
+    return found.row(f"{len(test.fed.origins)} origin(s) refused both")
 
 
 # --------------------------------------------------------------------------
@@ -489,7 +475,7 @@ def copy_move_destination(test: Test) -> tuple[str, str]:
                 found.add(origin, f"{what} got {answer.describe()}, not 502")
             found.add(origin, test.stored(origin, NAMESPACE, dst, None, f"{what}: {dst}"))
             found.add(origin, test.stored(origin, NAMESPACE, src, data, f"{what}: the source"))
-    return found.result(
+    return found.row(
         f"{len(fed.origins)} origin(s): COPY and MOVE within /{NAMESPACE} worked,"
         + f" and {len(ESCAPES) + 3} others each were refused"
     )
@@ -536,7 +522,7 @@ def copy_move_scopes(test: Test) -> tuple[str, str]:
     passed = f"{len(test.fed.origins)} origin(s)"
     if not create_only:
         passed += "; Overwrite: F alone, since SciTokens has no storage.create"
-    return found.result(passed)
+    return found.row(passed)
 
 
 def create_alone(test: Test, origin: common.Origin, base: str, found: Findings) -> None:
@@ -624,7 +610,7 @@ def mkcol(test: Test) -> tuple[str, str]:
         if answer.status != 415:
             found.add(origin, f"MKCOL with a body got {answer.describe()}, not 415")
         found.add(origin, test.made(origin, rel, False, "MKCOL with a body"))
-    return found.result(f"{len(test.fed.origins)} origin(s)")
+    return found.row(f"{len(test.fed.origins)} origin(s)")
 
 
 # --------------------------------------------------------------------------
@@ -712,7 +698,7 @@ def lock(test: Test) -> tuple[str, str]:
                     + f" {origin.svc} restarts",
                 )
         found.note(origin, ", ".join(statuses))
-    return found.result(f"{len(test.fed.origins)} origin(s)")
+    return found.row(f"{len(test.fed.origins)} origin(s)")
 
 
 # --------------------------------------------------------------------------
@@ -873,7 +859,7 @@ def symlink_writes(test: Test) -> tuple[str, str]:
             found.note(origin, ", ".join(codes))
         finally:
             remove_decoys(decoys, links)
-    return found.result(f"{len(origins)} origin(s)")
+    return found.row(f"{len(origins)} origin(s)")
 
 
 # --------------------------------------------------------------------------
@@ -913,7 +899,7 @@ def stored_html(test: Test) -> tuple[str, str]:
                     f"GET {name} is typed '{kind}', with no Content-Disposition: attachment",
                 )
             found.note(origin, f"{name} '{kind}'" + (f", {disposition}" if disposition else ""))
-    return found.result(f"{len(test.fed.origins)} origin(s)")
+    return found.row(f"{len(test.fed.origins)} origin(s)")
 
 
 # --------------------------------------------------------------------------
@@ -1030,7 +1016,7 @@ def webdav_semantics(test: Test) -> tuple[str, str]:
             ),
         )
         found.note(origin, f"DELETE of the root: {answer.describe()}")
-    return found.result(f"{len(test.fed.origins)} origin(s)")
+    return found.row(f"{len(test.fed.origins)} origin(s)")
 
 
 # --------------------------------------------------------------------------
@@ -1103,7 +1089,7 @@ def cache_methods(test: Test) -> tuple[str, str]:
                 )
                 found.add(origin, test.made(origin, new, False, f"{what}: the new path"))
         found.note(cache, ", ".join(answered))
-    return found.result(f"{len(caches)} cache(s)")
+    return found.row(f"{len(caches)} cache(s)")
 
 
 # Each scenario, by name: it takes the Test, and returns its status and
@@ -1160,15 +1146,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 common.die(f"could not make the run's collection: {errors[0]}")
         for name in selected:
             print(f"  {name} ...")
-            try:
-                status, note = RUN[name](test)
-            except SetupError as e:
-                status, note = FAIL, str(e)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                status, note = FAIL, f"{type(e).__name__}: {e}"
-            results.add(name, status, note)
+            results.add(
+                name, *common.guarded(partial(RUN[name], test), lambda note: (FAIL, note), (SetupError,))
+            )
     finally:
         clean(test, "after the run")

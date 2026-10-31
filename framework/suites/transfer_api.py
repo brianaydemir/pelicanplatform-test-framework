@@ -44,7 +44,6 @@ import os
 import re
 import secrets
 import time
-import traceback
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -62,7 +61,7 @@ from testlib import (
     web,
 )
 from testlib.accounts import Api
-from testlib.common import die, first, warn
+from testlib.common import die, first, outcome, warn
 from testlib.issuer import User
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -196,19 +195,12 @@ Row = tuple[str, str, str]
 Rows = tuple[str, str] | list[Row]
 
 
-def outcome(problems: Sequence[str], note: str) -> Row:
-    """Return a row with no case: FAIL with problems, or PASS with note.
-
-    A FAIL's note is the first of problems.
-    """
-    return ("", FAIL, first(problems)) if problems else ("", PASS, note)
-
-
 class Test:
     """The API, its tokens and credentials, and the run's objects.
 
     Attributes:
-        url: The URL of the API's host.
+        url: The web URL of the API's host: origin-0 (`fed` in the tiny
+            topology), or the transfer server.
         issuer: The issuer of the API's own tokens.
         key_dir: The key directory of the API's host.
         storage: A storage token for /protected-a, for credentials, of
@@ -222,8 +214,6 @@ class Test:
             owns it.
         confined: Whether the API confines jobs to the origin's exports:
             origin-0's does, a transfer server's does not.
-        web: The web URL of the API's host: origin-0 (`fed` in the tiny
-            topology), or the transfer server.
         svc: The host's service, which `restart` restarts.
         key: The host's key.
         origin_web: The web URL of origin-0, whose namespace issuer the
@@ -254,15 +244,14 @@ class Test:
         self.storage = session.token("protected-a")
         self.read_only = session.token("protected-a", credentials.R)
         self.setup = session.setup_token("protected-a")
-        self.token = self.mint("user", common.signing_key(self.key_dir), credentials.SUBJECT)
+        self.key = common.signing_key(self.key_dir)
+        self.token = self.mint("user", self.key, credentials.SUBJECT)
         # Past pstore's chunk, so that a copy takes many reads and writes.
         self.data = os.urandom(blocks.CHUNK_UNDECLARED + 4321)
         self.credential_ids: list[tuple[str, str]] = []
         self._finished_job: dict[str, Any] | None = None
         self.confined = api.confined
-        self.web = self.url
         self.svc = api.svc
-        self.key = common.signing_key(self.key_dir)
         self.origin_web = self.fed.origin_web_url
         self.origin_svc = self.fed.origins[0].svc
         self.origin_key = common.signing_key(f"issuer-keys/{self.origin_svc}")
@@ -305,7 +294,7 @@ class Test:
             self._admin = credentials.mint_admin(
                 self.fed,
                 self.session.path("tokens/transfer-api.admin"),
-                credentials.local_issuer(self.fed, self.web),
+                credentials.local_issuer(self.fed, self.url),
                 self.key,
             )
         return self._admin
@@ -315,7 +304,7 @@ class Test:
 
         It is admin_token() where origin-0 is the API's host.
         """
-        if self.origin_web == self.web:
+        if self.origin_web == self.url:
             return self.admin_token()
         if self._origin_admin is None:
             self._origin_admin = credentials.mint_admin(
@@ -328,7 +317,7 @@ class Test:
 
     def admin(self) -> Api:
         """Return the API's host's web API, as its admin."""
-        return Api(self.web, self.admin_token())
+        return Api(self.url, self.admin_token())
 
     def token_file(self, name: str, token: str) -> str:
         """Write token to a file, for the client's --token.
@@ -354,7 +343,7 @@ class Test:
         allowed_scopes, and removed when the suite ends.
         """
         if namespace == issuer.LOCAL_NAMESPACE:
-            site, token = self.web, self.admin_token()
+            site, token = self.url, self.admin_token()
         else:
             site, token = self.origin_web, self.origin_admin_token()
         made = issuer.create_client(
@@ -384,11 +373,7 @@ class Test:
         upload = json.dumps(body).encode() if body is not None else None
         headers = {"Content-Type": "application/json"} if body is not None else {}
         answer = web.request(method, f"{self.url}{API}{path}", token=token, upload=upload, headers=headers)
-        try:
-            found = common.as_object(json.loads(answer.body)) or {}
-        except ValueError:
-            found = {}
-        return answer.status, found, answer.body
+        return answer.status, common.as_object(answer.json()) or {}, answer.body
 
     def rel(self, name: str) -> str:
         """Return where object name of the run is in /protected-a."""
@@ -603,7 +588,7 @@ def copy(test: Test) -> list[Row]:
         test.url_of("dest-origin-copy"),
     )
     landed = common.digest(test.data) in test.held("dest-origin-copy")
-    if test.origin_web == test.web:
+    if test.origin_web == test.url:
         if code != 0:
             rows.append(("dest-origin", FAIL, f"exit {code}: {last_line(err or out)}"))
         elif not landed:
@@ -674,7 +659,7 @@ def other_user(test: Test) -> tuple[str, str]:
     Nor may they use the user's credentials.
     """
     job = test.finished_job()
-    other = test.mint("other", common.signing_key(test.key_dir), "pelican-test-other")
+    other = test.mint("other", test.key, "pelican-test-other")
     status, _, _ = test.call("GET", f"/jobs/{job['job_id']}", other)
     if status != 404:
         return FAIL, f"getting the user's job: HTTP {status}, not 404"
@@ -729,19 +714,28 @@ def path_not_allowed(test: Test) -> tuple[str, str]:
 def cancel(test: Test) -> tuple[str, str]:
     """Check cancelling a job that does not exist, then a finished one.
 
-    The finished one must stay as it finished.
+    The finished one must stay as it finished (see cancel_kept()).
     """
     status, _, _ = test.call("DELETE", f"/jobs/{uuid.uuid4()}", test.token)
     if status != 404:
         return FAIL, f"cancelling an unknown job: HTTP {status}, not 404"
     job = test.finished_job()
-    status, _, raw = test.call("DELETE", f"/jobs/{job['job_id']}", test.token)
+    return cancel_kept(test, str(job["job_id"]), job.get("status"))
+
+
+def cancel_kept(test: Test, job_id: str, finished: object) -> tuple[str, str]:
+    """Check that cancelling a finished job leaves it as it finished.
+
+    The job is job_id, whose status was finished. The cancel must be
+    taken (2xx) or refused as too late (409), and the status stay so.
+    """
+    status, _, raw = test.call("DELETE", f"/jobs/{job_id}", test.token)
     if status is None or not (200 <= status < 300 or status == 409):
-        return FAIL, f"cancelling a completed job: HTTP {status}, not 2xx or 409: {raw[:120]!r}"
-    _, found, _ = test.call("GET", f"/jobs/{job['job_id']}", test.token)
-    if found.get("status") != job.get("status"):
-        return FAIL, f"cancelling a {job.get('status')} job made it {found.get('status')}"
-    return PASS, f"HTTP {status}"
+        return FAIL, f"cancelling a {finished} job: HTTP {status}, not 2xx or 409: {raw[:120]!r}"
+    _, after, _ = test.call("GET", f"/jobs/{job_id}", test.token)
+    if after.get("status") != finished:
+        return FAIL, f"cancelling a {finished} job (HTTP {status}) made it {after.get('status')}"
+    return PASS, f"HTTP {status}, still {finished}"
 
 
 def confined(
@@ -881,7 +875,7 @@ def subjects(test: Test) -> list[Row]:
             status, _, _ = test.call("GET", f"/jobs/{mine[0]}", test.token)
             if status != 404:
                 problems.append(f"another subject's GET of the job: HTTP {status}, not 404")
-        rows.append((case, *outcome(problems, f"{subject[:40]!r}: lists, copies, and owns")[1:]))
+        rows.append((case, *outcome(problems, f"{subject[:40]!r}: lists, copies, and owns")))
     return rows
 
 
@@ -902,13 +896,7 @@ def cancel_finished(test: Test) -> tuple[str, str]:
     job = test.wait(job_id)
     if job.get("status") != "failed":
         return FAIL, f"the job: {job.get('status')}, not failed"
-    status, _, raw = test.call("DELETE", f"/jobs/{job_id}", test.token)
-    if status is None or not (200 <= status < 300 or status == 409):
-        return FAIL, f"cancelling it: HTTP {status}, not 2xx or 409: {raw[:120]!r}"
-    _, after, _ = test.call("GET", f"/jobs/{job_id}", test.token)
-    if after.get("status") != "failed":
-        return FAIL, f"cancelling a failed job (HTTP {status}) made it {after.get('status')}"
-    return PASS, f"HTTP {status}, still failed"
+    return cancel_kept(test, job_id, "failed")
 
 
 def parse_sse(text: str) -> list[tuple[str, dict[str, Any]]]:
@@ -1016,7 +1004,7 @@ def ssrf_and_prefixes(test: Test) -> list[Row]:
             problems.append(
                 f"{case} ({source}): HTTP {status}, {found.get('code')}, not 403" + " ENDPOINT_NOT_ALLOWED"
             )
-    rows.append(("endpoints", *outcome(problems, "loopback and link-local: 403")[1:]))
+    rows.append(("endpoints", *outcome(problems, "loopback and link-local: 403")))
     sibling = f"{test.fed.url}/protected-ab/{test.rel('x')}"
     body = {"transfers": [{"operation": "copy", "source": sibling, "destination": f"{sibling}-2"}]}
     if not test.confined:
@@ -1063,7 +1051,7 @@ def plain_secrets(test: Test) -> list[Row]:
             for secret in secrets_held
             if secret.encode() in content
         ]
-    return [("secrets", *outcome(leaked, f"{len(files)} file(s), no token in plain")[1:])]
+    return [("secrets", *outcome(leaked, f"{len(files)} file(s), no token in plain"))]
 
 
 def cli_json(out: str) -> Any:
@@ -1211,8 +1199,8 @@ def log_in(test: Test, username: str, user_id: str) -> str:
     """
     invite = accounts.password_invite(test.admin(), user_id)
     password = secrets.token_urlsafe(12)
-    accounts.set_password(test.web, invite, password)
-    return accounts.login(test.web, username, password)
+    accounts.set_password(test.url, invite, password)
+    return accounts.login(test.url, username, password)
 
 
 def enabled_groups(test: Test) -> list[Row]:
@@ -1246,11 +1234,11 @@ def enabled_groups(test: Test) -> list[Row]:
         token = credentials.mint_user(
             test.fed,
             test.session.path(f"tokens/transfer-api.web.{role}"),
-            credentials.local_issuer(test.fed, test.web),
+            credentials.local_issuer(test.fed, test.url),
             test.key,
             username,
         )
-        accounts.agree_to_aup(Api(test.web, token))
+        accounts.agree_to_aup(Api(test.url, token))
         if role == "member":
             accounts.add_member(admin, gid, user_id)
         cookies[role] = log_in(test, username, user_id)
@@ -1270,7 +1258,7 @@ def enabled_groups(test: Test) -> list[Row]:
                 f"{users[role]}'s token {'has' if granted else 'lacks'} {SCOPE}:"
                 + f" {sorted(issuer.scopes(tokens[role]))}"
             )
-    rows.append(("issuer", *outcome(problems, f"{SCOPE} to the member alone")[1:]))
+    rows.append(("issuer", *outcome(problems, f"{SCOPE} to the member alone")))
     problems = []
     for role, want in (("member", (200,)), ("other", (401, 403))):
         if role not in tokens:
@@ -1278,13 +1266,13 @@ def enabled_groups(test: Test) -> list[Row]:
         status, _, _ = test.call("GET", "/jobs", tokens[role])
         if status not in want:
             problems.append(f"GET /jobs with {users[role]}'s token: HTTP {status}, not {want}")
-    rows.append(("token", *outcome(problems, "the member's taken, the other's refused")[1:]))
+    rows.append(("token", *outcome(problems, "the member's taken, the other's refused")))
     problems = []
     for role, want in (("member", (200,)), ("other", (403,))):
         answer = web.request("GET", f"{test.url}{API}/jobs", headers={"Cookie": f"login={cookies[role]}"})
         if answer.status not in want:
             problems.append(f"GET /jobs with {users[role]}'s login cookie: {answer.describe()}, not {want}")
-    rows.append(("cookie", *outcome(problems, "the member's taken, the other's refused")[1:]))
+    rows.append(("cookie", *outcome(problems, "the member's taken, the other's refused")))
     return rows
 
 
@@ -1305,7 +1293,7 @@ def oauth_clients_disabled(test: Test) -> list[Row]:
         status, found, _ = test.call(method, OAUTH_CLIENTS, test.token, sent)
         if status != 403 or found.get("code") != "DISABLED":
             problems.append(f"{method}: HTTP {status}, {found.get('code')}, not 403 DISABLED")
-    return [("disabled", *outcome(problems, "GET and POST: 403 DISABLED")[1:])]
+    return [("disabled", *outcome(problems, "GET and POST: 403 DISABLED"))]
 
 
 def expiry_of(found: dict[str, Any]) -> datetime | None:
@@ -1372,7 +1360,7 @@ def oauth_clients(test: Test) -> list[Row]:
     status, _, _ = test.call("POST", OAUTH_CLIENTS, test.token, body)
     if status != 409:
         problems.append(f"registering it again: HTTP {status}, not 409")
-    rows.append(("crud", *outcome(problems, f"{registered}: registered, listed, no secret")[1:]))
+    rows.append(("crud", *outcome(problems, f"{registered}: registered, listed, no secret")))
     if device is None:
         skipped = (
             "the exports trust the external issuer, or the origins run none, so the origin"
@@ -1495,23 +1483,7 @@ def restart(test: Test) -> list[Row]:
         rows.append(("interrupted", PASS, f"failed: {INTERRUPTED}"))
     why = test.copied("kept", kept, kept)
     rows.append(("credential", FAIL, why) if why else ("credential", PASS, "the copy landed"))
-    forgotten_id = str(forgotten["job_id"])
-    status, _, raw = test.call("DELETE", f"/jobs/{forgotten_id}", test.token)
-    if status is None or not (200 <= status < 300 or status == 409):
-        rows.append(("forgotten", FAIL, f"cancelling it: HTTP {status}, not 2xx or 409: {raw[:120]!r}"))
-        return rows
-    _, after, _ = test.call("GET", f"/jobs/{forgotten_id}", test.token)
-    if after.get("status") != forgotten.get("status"):
-        rows.append(
-            (
-                "forgotten",
-                FAIL,
-                f"cancelling a {forgotten.get('status')} job the restart forgot (HTTP {status})"
-                + f" made it {after.get('status')}",
-            )
-        )
-    else:
-        rows.append(("forgotten", PASS, f"HTTP {status}, still {forgotten.get('status')}"))
+    rows.append(("forgotten", *cancel_kept(test, str(forgotten["job_id"]), forgotten.get("status"))))
     return rows
 
 
@@ -1544,10 +1516,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     The source object is put in place first.
     """
     fed = session.fed
-    for origin in stores.unique(fed.origins):
-        directory = f"{origin.store_of('protected-a')}/data/xfer"
-        if not origin.pstore and not os.path.isdir(directory):
-            die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    stores.require_dirs(fed.origins, ["protected-a"], "data/xfer")
     tokens = session.setup_tokens()
     test = Test(session)
     confined_to = "the exports" if test.confined else "nothing"
@@ -1591,24 +1560,14 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             common.warn(f"could not remove the run's objects: {first(errors)}")
 
 
-def guarded(check: Callable[[Test], Rows], test: Test) -> list[Row]:
-    """Return check(test)'s rows, or one failing row if it raised."""
-    try:
-        found = check(test)
-    except ApiError as e:
-        return [("", FAIL, str(e))]
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # scenario fails, and the rest still run.
-        traceback.print_exc()
-        return [("", FAIL, f"{type(e).__name__}: {e}")]
-    if isinstance(found, list):
-        return found
-    return [("", found[0], found[1])]
+def guarded(check: Callable[[Test], Rows], test: Test) -> Rows:
+    """Return check(test), or one failing row if it raised."""
+    return common.guarded(lambda: check(test), lambda why: [("", FAIL, why)], (ApiError,))
 
 
-def record(results: common.Results, name: str, rows: list[Row]) -> None:
-    """Record rows as scenario name's."""
+def record(results: common.Results, name: str, found: Rows) -> None:
+    """Record found, scenario name's status and note, or its rows."""
+    rows = found if isinstance(found, list) else [("", *found)]
     for case, status, note in rows:
         results.add(f"{name} {case}".strip(), status, note)
 

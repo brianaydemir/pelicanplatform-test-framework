@@ -20,8 +20,8 @@ OSDF does. [Presets](#presets) change this shape.
 
 - Docker Engine 25+ and Docker Compose v2.24+. On Docker Desktop, use
   VirtioFS file sharing.
-- `sh`, `curl`, `openssl`, `python3` (3.10 or later), `ssh-keygen`, and
-  `tar`.
+- `sh`, `curl`, `openssl`, `ssh-keygen`, and `tar`.
+- [uv](https://docs.astral.sh/uv/), which provides the scripts' Python.
 - About 2.5 GB of memory for the containers, or 3.5 GB with
   `-p topo-multi-origin -p topo-multi-cache`.
 - Optional: a Pelican checkout, mounted in the dev container at `/app`.
@@ -100,7 +100,8 @@ afresh.
 
 1. **Test** with `./fed.sh test`. Or open a shell in the dev container
    with `./fed.sh dev`, where this checkout is `/scratch` and your
-   Pelican checkout is `/app`, and run `/scratch/test.py` or the client:
+   Pelican checkout is `/app`, and run `python3.13 /scratch/test.py` or
+   the client:
 
    ```
    /scratch/framework/var/bin/linux/pelican object get \

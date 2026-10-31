@@ -1165,7 +1165,8 @@ fed_origin_exports() {
 # fed_key_make).
 fed_write_issuer_jwks() {
   mkdir -p framework/var/generated/issuer
-  python3 - framework/var/issuer-keys/issuer <<'EOF' \
+  fed_require_python
+  "${fed_python}" - framework/var/issuer-keys/issuer <<'EOF' \
       | fed_write framework/var/generated/issuer/issuer.jwks
 import glob, json, os, sys
 keys = []
@@ -1878,7 +1879,8 @@ fed_generate() {
   # Written in place, so that the provider, which rereads the file when
   # it changes, sees users added while it runs.
   if [ -f local/etc/idp-users.json ]; then
-    fed_idp_users=$(python3 - framework/etc/idp-users.json local/etc/idp-users.json <<'EOF'
+    fed_require_python
+    fed_idp_users=$("${fed_python}" - framework/etc/idp-users.json local/etc/idp-users.json <<'EOF'
 import json, sys
 users = {}
 for path in sys.argv[1:]:
@@ -2463,12 +2465,16 @@ fed_require_lab_key() {
              "run './${progname} init' to create the lab server's key pair"
 }
 
-# framework/init-data.py runs on the host (see README.md, Requirements).
+# Set fed_python to the Python that pyproject.toml requires, in the
+# project's environment, which uv makes, fetching Python if need be.
+# fed.sh runs it straight, not under `uv run`, so that
+# framework/control.py's parent is fed.sh.
 fed_require_python() {
-  command -v python3 >/dev/null 2>&1 \
-      || die "python3 is missing; install Python 3.10 or later"
-  python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
-      || die "python3 is $(python3 -V 2>&1 | cut -d' ' -f2); install Python 3.10 or later"
+  [ -z "${fed_python:-}" ] || return 0
+  command -v uv >/dev/null 2>&1 \
+      || die "uv is missing; see https://docs.astral.sh/uv/"
+  fed_python=$(uv run --quiet --frozen --no-dev python -c 'import sys; print(sys.executable)') \
+      || die "uv cannot provide the Python that pyproject.toml requires"
 }
 
 # The dev container mounts ~/.gitconfig. This is the only file the
@@ -2493,9 +2499,9 @@ fed_dev_up() {
 fed_control_start() {
   fed_require_python
   if [ -n "${1:-}" ]; then
-    python3 framework/control.py serve 2>>"$1" &
+    "${fed_python}" framework/control.py serve 2>>"$1" &
   else
-    python3 framework/control.py serve &
+    "${fed_python}" framework/control.py serve &
   fi
   fed_control_pid=$!
 }
@@ -2582,7 +2588,8 @@ fed_save_logs() {
 
 # Warn (only) if the test data was built for a different shape.
 fed_check_data_shape() {
-  want=$(./framework/init-data.py --print-shape)
+  fed_require_python
+  want=$("${fed_python}" framework/init-data.py --print-shape)
   have=""
   if [ -f framework/var/data/.init-shape ]; then
     have=$(cat framework/var/data/.init-shape)
@@ -2674,11 +2681,12 @@ fed_init() {
     cp framework/var/generated/ssh/id_ed25519.pub framework/var/generated/ssh/authorized_keys
   fi
 
+  want=$("${fed_python}" framework/init-data.py --print-shape)
   if [ -f framework/var/data/.init-shape ] \
-      && [ "$(cat framework/var/data/.init-shape)" = "$(./framework/init-data.py --print-shape)" ]; then
+      && [ "$(cat framework/var/data/.init-shape)" = "${want}" ]; then
     printf 'Keeping the test data in framework/var/data/, built for this shape.\n'
   else
-    ./framework/init-data.py
+    "${fed_python}" framework/init-data.py
   fi
 
   fed_prepare_unprivileged
@@ -2817,7 +2825,7 @@ case "${cmd}" in
       esac
       # RESULTS_TAG goes through, to name the results (see
       # framework/testlib/report.py).
-      set -- env ${RESULTS_TAG:+"RESULTS_TAG=${RESULTS_TAG}"} /scratch/test.py "$@"
+      set -- env ${RESULTS_TAG:+"RESULTS_TAG=${RESULTS_TAG}"} python3.13 /scratch/test.py "$@"
     fi
     [ $# -gt 0 ] || set -- bash -il
     # No TTY unless both ends are a terminal, so output can be captured.
@@ -2869,7 +2877,7 @@ case "${cmd}" in
   control)
     [ $# -eq 0 ] || die_usage "control takes no arguments"
     fed_require_python
-    exec python3 framework/control.py serve
+    exec "${fed_python}" framework/control.py serve
     ;;
 
   status)

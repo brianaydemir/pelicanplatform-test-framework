@@ -49,10 +49,9 @@ the pass's tokens but serves a WLCG token is up, so the row fails, and
 the run goes on.
 """
 
-import json
+import functools
 import os
 import time
-import traceback
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -544,10 +543,9 @@ def discovery(probe: Probe) -> tuple[str, str]:
     answer = web.request("GET", url)
     if answer.status != 200:
         return FAIL, f"{url}: {answer.describe()}"
-    try:
-        served = common.as_object(json.loads(answer.body)) or {}
-    except ValueError:
-        return FAIL, f"{url}: not JSON"
+    served = common.as_object(answer.json())
+    if served is None:
+        return FAIL, f"{url}: not a JSON object"
     wrong = [
         f"{name} is '{served.get(name) or ''}', not '{fed.discovery[name]}'"
         for name in DISCOVERY_FIELDS
@@ -597,10 +595,7 @@ def broker_problems(fed: common.Federation, path: str, namespace: str) -> list[s
         if why:
             problems.append(f"{name}'s X-Pelican-Broker: {why}")
         listed = web.request("GET", f"{url}/api/v1.0/director_ui/servers")
-        try:
-            servers = common.as_array(json.loads(listed.body)) if listed.status == 200 else None
-        except ValueError:
-            servers = None
+        servers = common.as_array(listed.json()) if listed.status == 200 else None
         if servers is None:
             problems.append(f"{name}'s list of servers: {listed.describe()}, not JSON")
             continue
@@ -722,11 +717,8 @@ def hints(probe: Probe) -> tuple[str, str]:
                     )
                 if found.generation_issuer and found.generation_issuer != issuer:
                     problems.append(f"{what}: X-Pelican-Token-Generation names {found.generation_issuer}")
-    if problems:
-        return FAIL, common.first(problems)
-    return (
-        PASS,
-        f"{len(fed.directors)} director(s), {len(probe.session.namespaces)} namespace(s)",
+    return common.outcome(
+        problems, f"{len(fed.directors)} director(s), {len(probe.session.namespaces)} namespace(s)"
     )
 
 
@@ -885,17 +877,16 @@ def redirects(probe: Probe) -> tuple[str, str]:
     for url in asked:
         for namespace in probe.session.namespaces:
             problems += redirect_problems(probe, url, namespace)
-    if problems:
-        return FAIL, common.first(problems)
     where = "a cache"
     if fed.director_default_response == "origin":
         where = "an origin"
     elif not fed.federated_caches:
         where = "an origin, there being no cache"
     balanced = " (the load balancer among them)" if len(asked) > len(fed.directors) else ""
-    return PASS, (
+    return common.outcome(
+        problems,
         f"{len(asked)} director(s){balanced}, {len(probe.session.namespaces)}"
-        f" namespace(s): bare paths to {where}"
+        f" namespace(s): bare paths to {where}",
     )
 
 
@@ -954,14 +945,13 @@ def presence(probe: Probe) -> tuple[str, str]:
     holder = origins[-1]
     namespaces = [ns for ns in probe.session.namespaces if holder.storage_namespace(ns) == ns]
     objects = {ns: os.urandom(8192) for ns in namespaces}
+    rel = f"{probe.base}/only-{holder.svc}"
     for ns, data in objects.items():
-        rel = f"{probe.base}/only-{holder.svc}"
         token, caps = probe.session.setup_token(ns), fed.exports[ns]
         errors = stores.make_dirs([holder], ns, probe.base, token)
         error = errors[0] if errors else stores.seed(holder, ns, rel, data, token, caps)
         if error:
             return FAIL, f"could not put the object at {holder.svc} alone: {error}"
-    rel = f"{probe.base}/only-{holder.svc}"
     found: list[str] = []
 
     def routed() -> bool:
@@ -1101,14 +1091,10 @@ RUN = {
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Put the object in place, run the scenarios, and remove it."""
     fed = session.fed
-    disk = [o for o in stores.unique(fed.origins) if not o.pstore]
-    for origin in disk:
-        for ns in fed.exports:
-            directory = f"{origin.store_of(ns)}/data/federation"
-            if not os.path.isdir(directory):
-                die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    stores.require_dirs(fed.origins, fed.exports, "data/federation")
     # Earlier runs' objects come out first: the disk stores' only, since a
     # pstore origin may not serve yet (that is what `ready` waits for).
+    disk = [o for o in stores.unique(fed.origins) if not o.pstore]
     errors = stores.empty_tree_everywhere(disk, fed.exports, "data/federation", {})
     if errors:
         die(f"could not remove earlier runs' objects: {common.first(errors)}")
@@ -1120,14 +1106,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 # Nothing else can pass if one of these cannot finish.
                 results.add(name, *RUN[name](probe))
                 continue
-            try:
-                status, note = RUN[name](probe)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                status, note = FAIL, f"{type(e).__name__}: {e}"
-            results.add(name, status, note)
+            results.add(name, *common.guarded(functools.partial(RUN[name], probe), lambda why: (FAIL, why)))
     finally:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach; a

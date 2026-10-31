@@ -38,16 +38,15 @@ at each server a second apart, since a server allows an address a login
 a second (Server.UILoginRateLimit), but where it means to exceed that.
 """
 
-import json
 import os
 import re
 import time
-import traceback
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
+from functools import partial
 
 from testlib import accounts, common, credentials, director, jwt, web
-from testlib.common import first
+from testlib.common import outcome
 from testlib.director import expected_targets, listing_problems
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
@@ -61,6 +60,8 @@ from testlib.webapi import (
     Expect,
     Server,
     cookie_header,
+    create_token,
+    delete_token,
     judge,
     made_token,
     other_key,
@@ -315,30 +316,15 @@ def admin_matrix(test: Access) -> list[Row]:
 # api_token/), which its service discovery takes.
 
 
-def create_token(
-    server: Server,
-    name: str,
-    expires: datetime,
-    cookie: str = "",
-    token: str | None = None,
-    scope: str = DISCOVERY_SCOPE,
-) -> web.Response:
-    """POST a request for an API token of scope to server.
+def kept(answer: web.Response, made: list[str]) -> tuple[str, str, str] | None:
+    """Return the API token that answer hands out, if it does (made_token()).
 
-    The token is named name, and expires at expires. The request carries the
-    login cookie, or the bearer token.
+    Its ID goes in made.
     """
-    body = {"name": name, "scopes": [scope], "expiration": common.timestamp(expires)}
-    headers = dict(accounts.JSON)
-    if cookie:
-        headers.update(cookie_header(login=cookie))
-    return web.request(
-        "POST",
-        server.web_url + TOKENS,
-        token=token,
-        upload=json.dumps(body).encode(),
-        headers=headers,
-    )
+    token = made_token(answer)
+    if token:
+        made.append(token[1])
+    return token
 
 
 def discover(server: Server, token: str) -> web.Response:
@@ -401,10 +387,9 @@ def api_tokens(test: Access) -> list[Row]:
     made: list[str] = []
     rows: list[Row] = []
     try:
-        answer = create_token(server, name, datetime.now(timezone.utc) + timedelta(hours=1), cookie)
-        token = made_token(answer)
-        if token:
-            made.append(token[1])
+        expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        answer = create_token(server.web_url, name, [DISCOVERY_SCOPE], expires, cookie)
+        token = kept(answer, made)
         if answer.status not in (200, 201) or token is None:
             return [("create", FAIL, f"{answer.describe()}, with no API token")]
         full, token_id, secret = token
@@ -417,16 +402,12 @@ def api_tokens(test: Access) -> list[Row]:
         rows.append((case, status, note))
         listed = web.request("GET", server.web_url + TOKENS, headers=cookie_header(login=cookie))
         problems = listed_problems(listed, token_id, name, secret)
-        rows.append(("list", FAIL, first(problems)) if problems else ("list", PASS, token_id))
+        rows.append(("list", *outcome(problems, token_id)))
         wrong = f"{token_id}.{os.urandom(32).hex()}"
         bogus = f"{os.urandom(3).hex()[:5]}.{os.urandom(32).hex()}"
         rows.append(judge("wrong-secret", [("discoverServers", discover(server, wrong), (403,))]))
         rows.append(judge("bogus", [("discoverServers", discover(server, bogus), (403,))]))
-        deleted = web.request(
-            "DELETE",
-            f"{server.web_url}{TOKENS}/{token_id}",
-            headers=cookie_header(login=cookie),
-        )
+        deleted = delete_token(server.web_url, token_id, cookie)
         if deleted.ok:
             made.remove(token_id)
         rows.append(
@@ -437,14 +418,13 @@ def api_tokens(test: Access) -> list[Row]:
         )
         rows += expiring_rows(server, cookie, f"{name}-expiring", made)
         answer = create_token(
-            server,
+            server.web_url,
             f"{name}-bearer",
+            [DISCOVERY_SCOPE],
             datetime.now(timezone.utc) + timedelta(hours=1),
             token=test.admin(server),
         )
-        token = made_token(answer)
-        if token:
-            made.append(token[1])
+        kept(answer, made)
         rows.append(judge("bearer-create", [("admin's bearer token", answer, (403,))]))
         # A token keeps a user-grantable scope only while its creator
         # holds it, and a creator who holds server.admin holds them all
@@ -453,15 +433,13 @@ def api_tokens(test: Access) -> list[Row]:
         # it must query the director's Prometheus; a refusal must not be
         # answered 200.
         answer = create_token(
-            server,
+            server.web_url,
             f"{name}-query",
+            [QUERY_SCOPE],
             datetime.now(timezone.utc) + timedelta(hours=1),
             cookie,
-            scope=QUERY_SCOPE,
         )
-        token = made_token(answer)
-        if token:
-            made.append(token[1])
+        token = kept(answer, made)
         if token is None:
             rows.append(("admin-grantable", FAIL, f"{answer.describe()}, with no API token"))
         else:
@@ -475,11 +453,7 @@ def api_tokens(test: Access) -> list[Row]:
             )
     finally:
         for token_id in made:
-            gone = web.request(
-                "DELETE",
-                f"{server.web_url}{TOKENS}/{token_id}",
-                headers=cookie_header(login=cookie),
-            )
+            gone = delete_token(server.web_url, token_id, cookie)
             if not gone.ok:
                 common.warn(f"could not delete API token {token_id}: {gone.describe()}")
     return rows
@@ -492,11 +466,10 @@ def expiring_rows(server: Server, cookie: str, name: str, made: list[str]) -> li
     Its ID goes in made.
     """
     expires = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=API_TOKEN_EXPIRY)
-    answer = create_token(server, name, expires, cookie)
-    token = made_token(answer)
+    answer = create_token(server.web_url, name, [DISCOVERY_SCOPE], expires, cookie)
+    token = kept(answer, made)
     if token is None:
         return [("expired", FAIL, f"making it: {answer.describe()}, with no API token")]
-    made.append(token[1])
     before = discover(server, token[0])
     wait = expires.timestamp() + 2 - time.time()
     if wait > 0:
@@ -697,8 +670,7 @@ def registry_csrf(test: Access) -> list[Row]:
                 rows.append(judge(f"registry-{how}-{case}", [("approve", answer, (404,))]))
             else:
                 problems = check(answer)
-                note = first(problems) if problems else "HTTP 403 (CSRF token invalid)"
-                rows.append((f"registry-{how}-{case}", FAIL if problems else PASS, note))
+                rows.append((f"registry-{how}-{case}", *outcome(problems, "HTTP 403 (CSRF token invalid)")))
     return rows
 
 
@@ -814,13 +786,8 @@ def version(test: Access) -> list[Row]:
     seen = ", ".join(f"{name} {v}" for name, v in versions.items())
     if expected is not None:
         problems += [f"{n} reports {v}, not {expected}" for n, v in versions.items() if v != expected]
-    rows: list[Row] = []
-    if problems:
-        rows.append(("servers", FAIL, first(problems)))
-    elif expected is None:
-        rows.append(("servers", PASS, f"images of your own: {seen}"))
-    else:
-        rows.append(("servers", PASS, f"{len(versions)} server(s), {expected}"))
+    note = f"images of your own: {seen}" if expected is None else f"{len(versions)} server(s), {expected}"
+    rows: list[Row] = [("servers", *outcome(problems, note))]
     by_host = {director.host(s.web_url): s.name for s in test.servers}
     for server in test.servers:
         mine = versions.get(server.name)
@@ -869,7 +836,7 @@ def listing_row(
             )
     if count == 0:
         problems.append("it lists none of the shape's servers")
-    return (case, FAIL, first(problems)) if problems else (case, PASS, f"{count} server(s)")
+    return (case, *outcome(problems, f"{count} server(s)"))
 
 
 RUN: dict[str, Callable[[Access], list[Row]]] = {
@@ -895,15 +862,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     test = Access(session)
     try:
         for name in selected:
-            try:
-                rows = RUN[name](test)
-            except (Missing, accounts.ApiError) as e:
-                rows = [("", FAIL, str(e))]
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                rows = [("", FAIL, f"{type(e).__name__}: {e}")]
+            rows = common.guarded(
+                partial(RUN[name], test), lambda note: [("", FAIL, note)], (Missing, accounts.ApiError)
+            )
             for case, status, note in rows:
                 results.add(f"{name} {case}" if case else name, status, note)
     finally:

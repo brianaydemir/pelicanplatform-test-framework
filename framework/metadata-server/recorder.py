@@ -139,7 +139,7 @@ class Handler(BaseHTTPRequestHandler):
             data += self.rfile.read(size)
             self.rfile.readline()
 
-    def do_GET(self) -> None:  # pylint: disable=invalid-name
+    def do_GET(self) -> None:
         """Answer /healthz with 200 if the upstream's /healthz does."""
         if self.path != "/healthz":
             self.reply(404, b"not found\n")
@@ -163,7 +163,7 @@ class Handler(BaseHTTPRequestHandler):
         except (urllib.error.URLError, OSError) as err:
             return 502, f"verifier unreachable: {err}\n".encode()
 
-    def do_POST(self) -> None:  # pylint: disable=invalid-name
+    def do_POST(self) -> None:
         """Save the event, then fail it on purpose or pass it on."""
         body = self.read_body()
         rid = str(time.time_ns())

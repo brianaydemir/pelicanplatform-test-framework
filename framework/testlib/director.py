@@ -53,6 +53,18 @@ def host(url: str) -> str:
     return urlsplit(url).hostname or ""
 
 
+def served_elsewhere(hosts: Sequence[str], cache: common.Cache) -> str | None:
+    """Return why hosts are not all cache's, or None if they are.
+
+    hosts served a read that named cache, which alone may serve it. A
+    client that fell back to the director's choice would otherwise pass.
+    """
+    if not hosts:
+        return "no server recorded"
+    others = sorted({h for h in hosts if h != host(cache.url)})
+    return f"served by {', '.join(others)}, not {cache.svc}" if others else None
+
+
 @dataclass
 class Answer:
     """Where a director would send a request.

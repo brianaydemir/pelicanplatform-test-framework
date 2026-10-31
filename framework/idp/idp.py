@@ -629,7 +629,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # Routing.
 
-    def do_GET(self) -> None:  # pylint: disable=invalid-name
+    def do_GET(self) -> None:
         """Answer a GET."""
         self.noted = {}
         path = urlsplit(self.path).path
@@ -650,11 +650,11 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.reply_json(404, {"error": "not_found"})
 
-    def do_HEAD(self) -> None:  # pylint: disable=invalid-name
+    def do_HEAD(self) -> None:
         """Answer a HEAD: as a GET, without the body."""
         self.do_GET()
 
-    def do_POST(self) -> None:  # pylint: disable=invalid-name
+    def do_POST(self) -> None:
         """Answer a POST."""
         self.noted = {}
         path = urlsplit(self.path).path

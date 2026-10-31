@@ -111,7 +111,7 @@ for shape in ${shapes}; do
       || die_usage "no such shape: ${shape} (see ./${progname} --names)"
 done
 
-for cmd in docker curl python3; do
+for cmd in docker curl uv; do
   command -v "${cmd}" >/dev/null 2>&1 || die "${cmd} is not in PATH"
 done
 docker info >/dev/null 2>&1 || die "cannot reach the Docker daemon"
@@ -296,9 +296,9 @@ done
 # here replaced its own results; another's, from an earlier run into the
 # same ${log_dir}, are merged too.
 report_ok=yes
-python3 framework/report.py merge "${log_dir}/results"/*/ >"${log_dir}/results.tsv" \
-    && python3 framework/report.py junit "${log_dir}/results.tsv" >"${log_dir}/junit.xml" \
-    && python3 framework/report.py markdown "${log_dir}/results.tsv" >"${log_dir}/summary.md" \
+framework/report.py merge "${log_dir}/results"/*/ >"${log_dir}/results.tsv" \
+    && framework/report.py junit "${log_dir}/results.tsv" >"${log_dir}/junit.xml" \
+    && framework/report.py markdown "${log_dir}/results.tsv" >"${log_dir}/summary.md" \
     || report_ok=""
 
 printf '\n%s' "${summary}"

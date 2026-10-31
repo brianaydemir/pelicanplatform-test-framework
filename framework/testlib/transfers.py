@@ -40,6 +40,7 @@ namespace where /public isn't exported (see placed()).
 
 import dataclasses
 import enum
+import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
@@ -680,15 +681,27 @@ def failure_lines(client: str, text: str) -> list[str]:
     return [line for line in text.splitlines() if re.search(marker, line)]
 
 
-def stats_endpoints(stats: Any) -> list[str]:
-    """Return the host that served each object that stats describes.
+def read_stats(path: str) -> Any:
+    """Return the pelican client's transfer stats (--transfer-stats) at path.
+
+    Returns:
+        A list (of lists) of results, each with its attempts; None if the
+        file is unreadable or not JSON.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def stats_results(stats: Any) -> list[dict[str, Any]]:
+    """Return the results in the pelican client's transfer stats.
 
     Args:
-        stats: The pelican client's transfer stats (--transfer-stats): a
-            list (of lists) of results, each with its attempts, of which
-            the highest-numbered served it.
+        stats: The stats, as read_stats() returns them.
     """
-    hosts: list[str] = []
+    found: list[dict[str, Any]] = []
     pending: list[Any] = [stats]
     while pending:
         item = pending.pop()
@@ -696,14 +709,34 @@ def stats_endpoints(stats: Any) -> list[str]:
         if nested is not None:
             pending.extend(nested)
             continue
-        result = common.as_object(item) or {}
-        attempts = [common.as_object(a) for a in common.as_array(result.get("attempts")) or []]
-        tried = [a for a in attempts if a is not None]
-        if tried:
-            last = max(tried, key=lambda a: int(a.get("attemptNumber") or 0))
-            if last.get("endpoint"):
-                hosts.append(str(last["endpoint"]).partition(":")[0])
-    return hosts
+        result = common.as_object(item)
+        if result is not None and "attempts" in result:
+            found.append(result)
+    return found
+
+
+def attempts_of(result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return a result's attempts, in order."""
+    found = [common.as_object(a) for a in common.as_array(result.get("attempts")) or []]
+    tried = [a for a in found if a is not None]
+    return sorted(tried, key=lambda a: int(a.get("attemptNumber") or 0))
+
+
+def endpoint_host(attempt: Mapping[str, Any]) -> str:
+    """Return the host of an attempt's endpoint, as the stats name it."""
+    return str(attempt.get("endpoint") or "").partition(":")[0]
+
+
+def stats_endpoints(stats: Any) -> list[str]:
+    """Return the host that served each object that stats describes.
+
+    That is, the host of each result's last attempt.
+
+    Args:
+        stats: The stats, as read_stats() returns them.
+    """
+    served = [attempts_of(result)[-1:] for result in stats_results(stats)]
+    return [endpoint_host(last[0]) for last in served if last and last[0].get("endpoint")]
 
 
 def plugin_passed(text: str) -> bool:

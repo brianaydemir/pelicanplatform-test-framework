@@ -99,9 +99,9 @@ def save(path: str, answer: Response) -> None:
 class _Answer(http.client.HTTPResponse):
     """An HTTPResponse that keeps the trailers after a chunked body.
 
-    HTTPResponse reads them and throws them away, in
-    _read_and_discard_trailer() (so named in Python 3.9 through 3.14, at
-    least). Reading the body to its end, with read(), reads them.
+    HTTPResponse reads them and throws them away, in its private
+    _read_and_discard_trailer(), which this overrides. Reading the body
+    to its end, with read(), reads them.
     """
 
     trailers: tuple[tuple[str, str], ...] = ()
@@ -137,6 +137,14 @@ def _failure(status: int | None, error: Exception) -> str:
     status is the one that came before error, if one did.
     """
     return repr(error) if status is None else f"HTTP {status}, then {error!r}"
+
+
+def _with_token(headers: Mapping[str, str] | None, token: str | None) -> dict[str, str]:
+    """Return headers, with token as a bearer token if one is given."""
+    sent = dict(headers or {})
+    if token is not None:
+        sent["Authorization"] = f"Bearer {token}"
+    return sent
 
 
 def _connect(url: str, timeout: float) -> tuple[http.client.HTTPConnection, str]:
@@ -176,9 +184,7 @@ def request(
             Content-Length, as the Pelican client sends it.
     """
     conn, target = _connect(url, timeout)
-    sent = dict(headers or {})
-    if token is not None:
-        sent["Authorization"] = f"Bearer {token}"
+    sent = _with_token(headers, token)
     data: bytes | None = None
     if isinstance(upload, str):
         with open(upload, "rb") as f:
@@ -229,9 +235,7 @@ def timed_get(
     them.
     """
     conn, target = _connect(url, timeout)
-    sent = dict(headers or {})
-    if token is not None:
-        sent["Authorization"] = f"Bearer {token}"
+    sent = _with_token(headers, token)
     started = time.monotonic()
     head: float | None = None
     status: int | None = None
@@ -324,9 +328,7 @@ def read_part(
         The response, with those bytes.
     """
     conn, target = _connect(url, timeout)
-    sent = dict(headers or {})
-    if token is not None:
-        sent["Authorization"] = f"Bearer {token}"
+    sent = _with_token(headers, token)
     status: int | None = None
     try:
         conn.request("GET", target, headers=sent)

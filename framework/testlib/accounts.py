@@ -108,13 +108,7 @@ class Api:
         if self.cookie is not None:
             sent["Cookie"] = f"login={self.cookie}"
         answer = web.request(method, self.url + path, token=self.token, upload=upload, headers=sent)
-        data: Any = None
-        if answer.body:
-            try:
-                data = json.loads(answer.body)
-            except ValueError:
-                data = None
-        return Answer(answer.status, data)
+        return Answer(answer.status, answer.json())
 
 
 def must(answer: Answer, what: str) -> Answer:

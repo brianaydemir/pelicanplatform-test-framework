@@ -50,15 +50,15 @@ tokens either way. `state-survives`, `ad-expiry`, `xrootd-wedged`, and
 alone.
 """
 
-import json
 import os
 import re
 import shutil
 import time
-import traceback
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from functools import partial
 from typing import Any
 
 from testlib import (
@@ -72,9 +72,10 @@ from testlib import (
     stores,
     transfers,
     web,
+    webapi,
 )
 from testlib.accounts import Api
-from testlib.common import die, first, warn
+from testlib.common import die, first, outcome, warn
 from testlib.issuer import User
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -111,7 +112,6 @@ ONE_PROFILE = ("state-survives", "ad-expiry", "xrootd-wedged", "peer-director")
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note.
 Row = tuple[str, str, str]
-Rows = tuple[str, str] | list[Row]
 
 OBJECT_SIZE = 1 << 20
 # How many objects each cache holds across its restart.
@@ -158,15 +158,12 @@ LIVENESS = "xrootd-liveness"
 WEDGED_WAIT = 90
 # A downtime's severity, as the web UI offers it.
 SEVERITY = "Outage (completely inaccessible)"
-# The admin's password (framework/etc/server-web-passwd).
-ADMIN_PASSWORD = "asdf"  # nosec B105
 # The scope of an API token that reads /metrics (promMetricAuthHandler in
 # web_ui/authorization.go takes API tokens).
 SCRAPE_SCOPE = credentials.SCRAPE_SCOPE
 
 LOCAL_METADATA = "/api/v1.0/server/localMetadata"
 REGISTERED_SERVERS = "/api/v1.0/registry_ui/servers"
-TOKENS = "/api/v1.0/tokens"
 DOWNTIME = "/api/v1.0/downtime"
 DIRECTORS = "/api/v1.0/director/directors"
 HEALTH = "/api/v1.0/metrics/health"
@@ -184,14 +181,6 @@ def skip(fed: common.Federation) -> str | None:
     if NAMESPACE not in fed.exports:
         return "this shape does not export /protected-a"
     return None
-
-
-def outcome(problems: Sequence[str], note: str) -> Row:
-    """Return a row with no case.
-
-    It is FAIL with the first of problems, or PASS with note.
-    """
-    return ("", FAIL, first(problems)) if problems else ("", PASS, note)
 
 
 class Test:
@@ -330,26 +319,6 @@ class Test:
         return None
 
 
-def sent_bytes(fed: common.Federation) -> float | None:
-    """Return how many bytes the native origins have sent for GETs, in all.
-
-    Returns:
-        The sum of their pelican_http_bytes_total; None where they keep
-        no such counter, or one did not answer.
-    """
-    if not fed.native_origins:
-        return None
-    total = 0.0
-    for origin in fed.origins:
-        found = metrics.fetch(origin.web_url)
-        if found is None:
-            return None
-        total += found.value(
-            "pelican_http_bytes_total", server_type="origin", direction="out", method="GET"
-        )
-    return total
-
-
 # --------------------------------------------------------------------------
 # cache-restart
 
@@ -392,7 +361,7 @@ def cache_restart(test: Test) -> list[Row]:
                 )
             )
             continue
-        before = sent_bytes(test.fed)
+        before = metrics.origins_sent_bytes(test.fed)
         try:
             control.restart(cache.svc)
         except control.ControlError as e:
@@ -419,21 +388,18 @@ def cache_restart(test: Test) -> list[Row]:
                     problems.append(f"after the restart, {name} came with no Age, so not from its store")
                 else:
                     ages.append(int(age))
-        after = sent_bytes(test.fed)
+        after = metrics.origins_sent_bytes(test.fed)
         if before is not None and after is not None and after - before >= OBJECT_SIZE:
             problems.append(
                 f"the origins sent {after - before:.0f} bytes for GETs across the restart,"
                 + " an object's worth or more"
             )
-        if problems:
-            rows.append((cache.svc, FAIL, first(problems)))
-            continue
         note = f"named again {took:.0f}s after its restart; {len(names)} objects from its store"
         if ages:
             note += f" (Age {min(ages)}..{max(ages)})"
         if before is None:
             note += "; the origins keep no byte counters"
-        rows.append((cache.svc, PASS, note))
+        rows.append((cache.svc, *outcome(problems, note)))
     if not rows:
         return [("", SKIP, "this shape has no cache")]
     return rows
@@ -528,7 +494,7 @@ def issuer_origin(test: Test) -> tuple[common.Origin | None, str]:
 
 def login_cookie(web_url: str) -> str:
     """Return a login cookie of the admin's at web_url."""
-    return accounts.login(web_url, "admin", ADMIN_PASSWORD)
+    return accounts.login(web_url, "admin", webapi.ADMIN_PASSWORD)
 
 
 def record_state(test: Test, found: Recorded) -> list[str]:
@@ -561,24 +527,15 @@ def record_state(test: Test, found: Recorded) -> list[str]:
         accounts.agree_to_aup(admin)
         found.user_id = accounts.ensure_user(admin, f"restart-user-{test.run}")
         found.group_id = accounts.create_group(admin, f"restart-group-{test.run}")
-        cookie = login_cookie(web_url)
-        made = web.request(
-            "POST",
-            web_url + TOKENS,
-            upload=json.dumps(
-                {
-                    "name": f"restart-{test.run}",
-                    "scopes": [SCRAPE_SCOPE],
-                    "expiration": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600)),
-                }
-            ).encode(),
-            headers={**accounts.JSON, "Cookie": f"login={cookie}"},
+        expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        answer = webapi.create_token(
+            web_url, f"restart-{test.run}", [SCRAPE_SCOPE], expires, login_cookie(web_url)
         )
-        token = str((common.as_object(json.loads(made.body or b"{}")) or {}).get("token", ""))
-        if made.status not in (200, 201) or "." not in token:
-            problems.append(f"making an API token: {made.describe()}")
+        made = webapi.made_token(answer)
+        if answer.status not in (200, 201) or made is None:
+            problems.append(f"making an API token: {answer.describe()}")
         else:
-            found.api_token, found.api_token_id = token, token.split(".", 1)[0]
+            found.api_token, found.api_token_id, _ = made
         now = int(time.time() * 1000)
         found.downtime_id = str(uuid.uuid4())
         declared = {
@@ -668,7 +625,7 @@ def state_survives(test: Test) -> list[Row]:
         for key in ("id", "name"):
             if before.get(key) and after.get(key) != before.get(key):
                 problems.append(f"{server.svc}'s {key} is {after.get(key)!r}, was {before.get(key)!r}")
-    rows.append(("ids", *outcome(problems, f"{len(found.metadata)} server(s) unchanged")[1:]))
+    rows.append(("ids", *outcome(problems, f"{len(found.metadata)} server(s) unchanged")))
     if fed.registry_url:
         listed = registered_servers(test)
         problems = list[str]()
@@ -680,12 +637,7 @@ def state_survives(test: Test) -> list[Row]:
             names = [name for _, name in listed]
             if len(set(names)) != len(names):
                 problems.append(f"a server is registered twice: {names}")
-        rows.append(
-            (
-                "registrations",
-                *outcome(problems, f"{len(listed or [])} server(s), none twice")[1:],
-            )
-        )
+        rows.append(("registrations", *outcome(problems, f"{len(listed or [])} server(s), none twice")))
     issuing, why = issuer_origin(test)
     if issuing is None:
         rows.append(("issuer", SKIP, why))
@@ -698,22 +650,22 @@ def state_survives(test: Test) -> list[Row]:
             problems.append("the user is gone, or has another ID")
         if found.group_id and accounts.find_group(admin, f"restart-group-{test.run}") != found.group_id:
             problems.append("the group is gone, or has another ID")
-        rows.append(("accounts", *outcome(problems, "the user and the group are there")[1:]))
+        rows.append(("accounts", *outcome(problems, "the user and the group are there")))
         if found.api_token:
             problems = list[str]()
             scraped = web.request("GET", f"{web_url}/metrics", token=found.api_token)
             if scraped.status != 200:
                 problems.append(f"/metrics with the API token: {scraped.describe()}")
             listed_tokens = web.request(
-                "GET", web_url + TOKENS, headers={"Cookie": f"login={login_cookie(web_url)}"}
+                "GET", web_url + webapi.TOKENS, headers=webapi.cookie_header(login=login_cookie(web_url))
             )
-            ids = [
-                str((common.as_object(e) or {}).get("id"))
-                for e in common.as_array(json.loads(listed_tokens.body or b"[]")) or []
-            ]
-            if found.api_token_id not in ids:
+            listed = common.as_array(listed_tokens.json())
+            ids = [str((common.as_object(e) or {}).get("id")) for e in listed or []]
+            if listed is None:
+                problems.append(f"listing the API tokens: {listed_tokens.describe()}, not a JSON array")
+            elif found.api_token_id not in ids:
                 problems.append(f"the token {found.api_token_id} is not listed")
-            rows.append(("api-token", *outcome(problems, "reads /metrics, and is listed")[1:]))
+            rows.append(("api-token", *outcome(problems, "reads /metrics, and is listed")))
         if found.downtime_id:
             answer = admin.call("GET", DOWNTIME)
             ids = [str((common.as_object(d) or {}).get("id")) for d in answer.array]
@@ -751,11 +703,7 @@ def cleanup_state(test: Test, found: Recorded) -> None:
         if found.downtime_id:
             admin.call("DELETE", f"{DOWNTIME}/{found.downtime_id}", headers=accounts.csrf(admin))
         if found.api_token_id:
-            web.request(
-                "DELETE",
-                f"{web_url}{TOKENS}/{found.api_token_id}",
-                headers={"Cookie": f"login={login_cookie(web_url)}"},
-            )
+            webapi.delete_token(web_url, found.api_token_id, login_cookie(web_url))
         if found.client:
             issuer.delete_client(
                 web_url,
@@ -954,12 +902,7 @@ def backend_outage(test: Test) -> list[Row]:
                     problems.append(f"{method} with {backend} stopped: {answer.describe()}, not 5xx")
                 elif method == "GET" and answer.body == data:
                     problems.append(f"GET with {backend} stopped: 5xx, but with the object's bytes")
-            rows.append(
-                (
-                    "direct",
-                    *outcome(problems, f"GET, HEAD, and PUT: 5xx with {backend} stopped")[1:],
-                )
-            )
+            rows.append(("direct", *outcome(problems, f"GET, HEAD, and PUT: 5xx with {backend} stopped")))
         else:
             rows.append(("direct", SKIP, "/protected-a takes no direct clients"))
         if cache is not None:
@@ -1051,12 +994,7 @@ def backend_outage(test: Test) -> list[Row]:
     ):
         seen = health_component(test, origin, component)
         problems.append(f"{component} is {seen!r} {HEALTH_WAIT}s after {backend} came back")
-    rows.append(
-        (
-            "recovered",
-            *outcome(problems, f"serving again {took:.0f}s after {backend} started")[1:],
-        )
-    )
+    rows.append(("recovered", *outcome(problems, f"serving again {took:.0f}s after {backend} started")))
     return rows
 
 
@@ -1120,7 +1058,7 @@ def wedge(test: Test, svc: str, web_url: str, route: str) -> tuple[str, str]:
     # answers; the directors must route to it again, as before.
     if test.wait_named(route, test.path("wedged"), svc, NAMED_WAIT) is None:
         problems.append(f"{NAMED_WAIT}s after it started again, not every director named it")
-    return outcome(problems, "; ".join(notes))[1:]
+    return outcome(problems, "; ".join(notes))
 
 
 def xrootd_wedged(test: Test) -> list[Row]:
@@ -1182,23 +1120,11 @@ def get_pelican(test: Test, name: str, url: str, direct: bool = False) -> Fetche
         "object",
         cwd=directory,
     )
-    hosts: list[str] = []
-    try:
-        with open(stats, encoding="utf-8") as f:
-            results = json.load(f)
-        pending: list[Any] = [results]
-        while pending:
-            item = pending.pop()
-            nested = common.as_array(item)
-            if nested is not None:
-                pending.extend(nested)
-                continue
-            result = common.as_object(item) or {}
-            attempts = [common.as_object(a) or {} for a in common.as_array(result.get("attempts")) or []]
-            for attempt in sorted(attempts, key=lambda a: int(a.get("attemptNumber") or 0)):
-                hosts.append(str(attempt.get("endpoint") or "").partition(":")[0])
-    except (FileNotFoundError, ValueError):
-        pass
+    hosts = [
+        transfers.endpoint_host(attempt)
+        for result in transfers.stats_results(transfers.read_stats(stats))
+        for attempt in transfers.attempts_of(result)
+    ]
     return Fetched(status, out + err, directory, hosts)
 
 
@@ -1210,17 +1136,11 @@ def get_plugin(test: Test, name: str, url: str, direct: bool = False) -> Fetched
     for it (transfers.DIRECT_QUERY).
     """
     directory = test.directory(name)
-    creds = os.path.join(test.tmp, f"{name}.creds")
-    os.makedirs(creds, exist_ok=True)
-    shutil.copyfile(test.token_file, os.path.join(creds, "scitokens.use"))
-    infile, outfile = (os.path.join(test.tmp, f"{name}.{ext}") for ext in ("in", "ad"))
     if direct:
         url += transfers.DIRECT_QUERY
-    with open(infile, "w", encoding="utf-8") as f:
-        f.write(f'[ Url="{url}"; LocalFileName="object" ]\n')
-    env = dict(test.session.env)
-    env["_CONDOR_CREDS"] = creds
-    status, out, err, ads = test.session.plugin_cmd(infile, outfile, env=env, cwd=directory)
+    status, out, err, ads = test.session.plugin_run(
+        f"restart/{name}", [(url, "object")], creds={"scitokens.use": test.token_file}, cwd=directory
+    )
     output = err or out
     hosts: list[str] = []
     for ad in ads.splitlines():
@@ -1270,44 +1190,45 @@ def unfetched(test: Test, name: str, data: bytes, routes: Sequence[str] = ("",))
     return None
 
 
-def cache_failover(test: Test) -> list[Row]:
-    """Check that the clients get an object while the first cache is away.
+def failover_rows(
+    test: Test,
+    dead: common.Cache | common.Origin,
+    naming: str,
+    probe: str,
+    prefix: str = "",
+    routes: Sequence[str] = ("",),
+) -> list[Row]:
+    """Return a failover scenario's rows, with server dead away.
 
-    With the first federated cache paused (its ports take connections
-    that nothing answers), and then killed (they refuse), `pelican
-    object get` and stash_plugin of an object through the federation
-    must each succeed, served by another cache, while the directors
-    still name the first (before its ad expires), and once they have
-    dropped it. The note says which caches each client tried. Afterward
-    the cache is unpaused, or started, and every director must name it
-    again. First, with every cache up, both clients must get the probe
-    (unfetched()), or the scenario fails at once.
+    dead is paused, and then killed. Each time, while the directors still
+    name it (`early`), and once they have dropped it (`late`), `pelican
+    object get` and stash_plugin each get an object of their own by each
+    of routes (as unfetched() takes them), named
+    <prefix>-<mode>-<when>-<client>-<route>, less any part that is empty.
+    Afterward dead is unpaused, or started (`back`), and every director
+    must name it again.
+
+    Args:
+        naming: The route by which the directors name dead for probe,
+            an object of the run's: `object` or `origin`.
     """
-    fed = test.fed
-    caches = fed.federated_caches
-    if len(caches) < 2:
-        return [("", SKIP, "fewer than two federated caches ('-p topo-multi-cache')")]
-    dead = caches[0]
     host = director.host(dead.url)
-    probe = os.urandom(4096)
-    test.put("probe", probe)
-    path = test.path("probe")
-    why = unfetched(test, "probe", probe)
-    if why:
-        return [("", FAIL, why)]
+    path = test.path(probe)
     rows: list[Row] = []
     for mode, away, back in (
         ("paused", control.pause, control.unpause),
         ("killed", control.kill, control.start),
     ):
-        objects = {
-            f"{mode}-{when}-{client}": os.urandom(OBJECT_SIZE)
+        names = {
+            (when, client, route): "-".join(p for p in (prefix, mode, when, client, route) if p)
             for when in ("early", "late")
             for client in ("pelican", "plugin")
+            for route in routes
         }
+        objects = {name: os.urandom(OBJECT_SIZE) for name in names.values()}
         for name, data in objects.items():
             test.put(name, data)
-        if len(test.named_by("object", path, host)) != len(fed.directors):
+        if len(test.named_by(naming, path, host)) != len(test.fed.directors):
             rows.append((mode, FAIL, f"before {dead.svc} was {mode}, not every director named it"))
             continue
         try:
@@ -1318,7 +1239,7 @@ def cache_failover(test: Test) -> list[Row]:
         try:
             for when in ("early", "late"):
                 if when == "late":
-                    dropped = test.wait_unnamed("object", path, host, AD_LIFETIME + EXPIRY_SLACK)
+                    dropped = test.wait_unnamed(naming, path, host, AD_LIFETIME + EXPIRY_SLACK)
                     if dropped is None:
                         rows.append(
                             (
@@ -1328,7 +1249,7 @@ def cache_failover(test: Test) -> list[Row]:
                             )
                         )
                         continue
-                elif not test.named_by("object", path, host):
+                elif not test.named_by(naming, path, host):
                     rows.append(
                         (
                             f"{mode} early",
@@ -1337,20 +1258,23 @@ def cache_failover(test: Test) -> list[Row]:
                         )
                     )
                     continue
-                problems: list[str] = []
-                tried: list[str] = []
-                for client, runner in (("pelican", get_pelican), ("plugin", get_plugin)):
-                    name = f"{mode}-{when}-{client}"
-                    fetch = runner(test, name, test.url(name))
-                    problems += [
-                        f"{client}: {p}" for p in failover_problems(fetch, objects[name], dead.svc, client)
-                    ]
-                    tried.append(f"{client} tried {fetch.hosts or 'nothing recorded'}")
-                rows.append((f"{mode} {when}", *outcome(problems, "; ".join(tried))[1:]))
+                for route in routes:
+                    problems: list[str] = []
+                    tried: list[str] = []
+                    for client, runner in (("pelican", get_pelican), ("plugin", get_plugin)):
+                        name = names[when, client, route]
+                        fetch = runner(test, name, test.url(name), route == "direct")
+                        problems += [
+                            f"{client}: {p}"
+                            for p in failover_problems(fetch, objects[name], dead.svc, client)
+                        ]
+                        tried.append(f"{client} tried {fetch.hosts or 'nothing recorded'}")
+                    case = f"{mode} {when} {route}" if route else f"{mode} {when}"
+                    rows.append((case, *outcome(problems, "; ".join(tried))))
         finally:
             try:
                 back(dead.svc)
-                took = test.wait_named("object", path, host, NAMED_WAIT)
+                took = test.wait_named(naming, path, host, NAMED_WAIT)
                 if took is None:
                     rows.append(
                         (
@@ -1364,6 +1288,30 @@ def cache_failover(test: Test) -> list[Row]:
             except control.ControlError as e:
                 rows.append((f"{mode} back", FAIL, str(e)))
     return rows
+
+
+def cache_failover(test: Test) -> list[Row]:
+    """Check that the clients get an object while the first cache is away.
+
+    With the first federated cache paused (its ports take connections
+    that nothing answers), and then killed (they refuse), `pelican
+    object get` and stash_plugin of an object through the federation
+    must each succeed, served by another cache, while the directors
+    still name the first (before its ad expires), and once they have
+    dropped it. The note says which caches each client tried. Afterward
+    the cache is unpaused, or started, and every director must name it
+    again. First, with every cache up, both clients must get the probe
+    (unfetched()), or the scenario fails at once.
+    """
+    caches = test.fed.federated_caches
+    if len(caches) < 2:
+        return [("", SKIP, "fewer than two federated caches ('-p topo-multi-cache')")]
+    probe = os.urandom(4096)
+    test.put("probe", probe)
+    why = unfetched(test, "probe", probe)
+    if why:
+        return [("", FAIL, why)]
+    return failover_rows(test, caches[0], "object", "probe")
 
 
 # --------------------------------------------------------------------------
@@ -1394,89 +1342,15 @@ def origin_failover(test: Test) -> list[Row]:
     fed = test.fed
     if len(fed.origins) < 2:
         return [("", SKIP, "fewer than two origins ('-p topo-multi-origin')")]
-    dead = fed.origins[-1]
-    host = director.host(dead.url)
     routes = ["cache"]
     if "DirectReads" in test.caps:
         routes.insert(0, "direct")
     probe = os.urandom(4096)
     test.put("origin-probe", probe)
-    path = test.path("origin-probe")
     why = unfetched(test, "origin-probe", probe, routes)
     if why:
         return [("", FAIL, why)]
-    rows: list[Row] = []
-    for mode, away, back in (
-        ("paused", control.pause, control.unpause),
-        ("killed", control.kill, control.start),
-    ):
-        objects = {
-            f"origin-{mode}-{when}-{client}-{route}": os.urandom(OBJECT_SIZE)
-            for when in ("early", "late")
-            for client in ("pelican", "plugin")
-            for route in routes
-        }
-        for name, data in objects.items():
-            test.put(name, data)
-        if len(test.named_by("origin", path, host)) != len(fed.directors):
-            rows.append((mode, FAIL, f"before {dead.svc} was {mode}, not every director named it"))
-            continue
-        try:
-            away(dead.svc)
-        except control.ControlError as e:
-            rows.append((mode, FAIL, str(e)))
-            continue
-        try:
-            for when in ("early", "late"):
-                if when == "late":
-                    dropped = test.wait_unnamed("origin", path, host, AD_LIFETIME + EXPIRY_SLACK)
-                    if dropped is None:
-                        rows.append(
-                            (
-                                f"{mode} late",
-                                FAIL,
-                                f"{AD_LIFETIME + EXPIRY_SLACK}s after {dead.svc} was {mode}, a director still named it",
-                            )
-                        )
-                        continue
-                elif not test.named_by("origin", path, host):
-                    rows.append(
-                        (
-                            f"{mode} early",
-                            INCONCLUSIVE,
-                            f"the directors had dropped {dead.svc} before the clients ran",
-                        )
-                    )
-                    continue
-                for route in routes:
-                    problems: list[str] = []
-                    tried: list[str] = []
-                    for client, runner in (("pelican", get_pelican), ("plugin", get_plugin)):
-                        name = f"origin-{mode}-{when}-{client}-{route}"
-                        fetch = runner(test, name, test.url(name), route == "direct")
-                        problems += [
-                            f"{client}: {p}"
-                            for p in failover_problems(fetch, objects[name], dead.svc, client)
-                        ]
-                        tried.append(f"{client} tried {fetch.hosts or 'nothing recorded'}")
-                    rows.append((f"{mode} {when} {route}", *outcome(problems, "; ".join(tried))[1:]))
-        finally:
-            try:
-                back(dead.svc)
-                took = test.wait_named("origin", path, host, NAMED_WAIT)
-                if took is None:
-                    rows.append(
-                        (
-                            f"{mode} back",
-                            FAIL,
-                            f"{NAMED_WAIT}s after {dead.svc} came back, not every director named it",
-                        )
-                    )
-                else:
-                    rows.append((f"{mode} back", PASS, f"named again {took:.0f}s after it came back"))
-            except control.ControlError as e:
-                rows.append((f"{mode} back", FAIL, str(e)))
-    return rows
+    return failover_rows(test, fed.origins[-1], "origin", "origin-probe", "origin", routes)
 
 
 # --------------------------------------------------------------------------
@@ -1490,11 +1364,8 @@ def listed_directors(url: str) -> set[str] | None:
         The hosts; None if it gave no list.
     """
     answer = web.request("GET", f"{url}{DIRECTORS}")
-    if answer.status != 200:
-        return None
-    try:
-        found = common.as_array(json.loads(answer.body)) or []
-    except ValueError:
+    found = common.as_array(answer.json())
+    if answer.status != 200 or found is None:
         return None
     return {director.host(str((common.as_object(d) or {}).get("advertise_url", ""))) for d in found}
 
@@ -1556,7 +1427,7 @@ def peer_director(test: Test) -> list[Row]:
 
 # --------------------------------------------------------------------------
 
-RUN: dict[str, Callable[[Test], Rows]] = {
+RUN: dict[str, Callable[[Test], list[Row]]] = {
     "cache-restart": cache_restart,
     "state-survives": state_survives,
     "ad-expiry": ad_expiry,
@@ -1566,20 +1437,6 @@ RUN: dict[str, Callable[[Test], Rows]] = {
     "origin-failover": origin_failover,
     "peer-director": peer_director,
 }
-
-
-def guarded(name: str, test: Test) -> list[Row]:
-    """Return scenario name's rows; one failing row if it raised."""
-    try:
-        found = RUN[name](test)
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # scenario fails, and the rest still run.
-        traceback.print_exc()
-        return [("", FAIL, f"{type(e).__name__}: {e}")]
-    if isinstance(found, list):
-        return found
-    return [("", found[0], found[1])]
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
@@ -1598,7 +1455,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     print(f"Restarts against {fed.url}, objects under /{NAMESPACE}/{test.base}/\n")
     try:
         for name in selected:
-            for case, status, note in guarded(name, test):
+            rows = common.guarded(partial(RUN[name], test), lambda note: [("", FAIL, note)])
+            for case, status, note in rows:
                 results.add(f"{name} {case}".strip(), status, note)
     finally:
         errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/restart", tokens)

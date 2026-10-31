@@ -138,7 +138,7 @@ def register(
         upload=json.dumps({"client_nonce": client_nonce, "pubkey": keyset}).encode(),
         headers=JSON,
     )
-    challenge = common.as_object(parse(first.body)) or {}
+    challenge = common.as_object(first.json()) or {}
     server_nonce = str(challenge.get("server_nonce", ""))
     if first.status != 200 or not server_nonce:
         return first

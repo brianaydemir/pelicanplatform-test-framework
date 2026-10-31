@@ -28,11 +28,7 @@ profile; the objects are put in place, and the federated caches asked
 what they hold, with WLCG tokens either way.
 """
 
-import json
 import os
-import re
-import shutil
-import traceback
 
 from testlib import common, credentials, stores, transfers, web, webdav
 from testlib.common import die, first
@@ -103,16 +99,8 @@ class Test:
 
         On a pstore origin, /public's storage is /protected-a's.
         """
-        target = self.fed.storage_namespace(namespace)
-        token = self.session.setup_token(target)
-        caps = self.fed.exports[target]
         rel = f"{self.base}/{name}"
-        errors: list[str] = []
-        for origin in self.origins:
-            errors += stores.make_dirs([origin], target, rel.rsplit("/", 1)[0], token)
-            if not errors:
-                error = stores.seed(origin, target, rel, data, token, caps)
-                errors += [error] if error else []
+        errors = stores.put_in_place(self.session, self.origins, namespace, rel, data)
         if errors:
             die(f"could not put {rel} in place: {first(errors)}")
         self.objects[name] = data
@@ -129,19 +117,6 @@ class Test:
         if namespace not in self.token_files:
             return []
         return ["--token", self.token_files[namespace]]
-
-
-def served_by_stats(path: str) -> list[str]:
-    """Return the hosts in a `--transfer-stats` file.
-
-    See transfers.stats_endpoints(). There are none if the file is
-    unreadable.
-    """
-    try:
-        with open(path, encoding="utf-8") as f:
-            return transfers.stats_endpoints(json.load(f))
-    except (FileNotFoundError, ValueError):
-        return []
 
 
 def client_get(test: Test, namespace: str, name: str, caches: str) -> tuple[str, str]:
@@ -169,7 +144,7 @@ def client_get(test: Test, namespace: str, name: str, caches: str) -> tuple[str,
         return FAIL, f"exit {code}: {last_line(err or out)}"
     if common.sha256(target) != common.digest(data):
         return FAIL, "the file is not the object"
-    hosts = served_by_stats(stats)
+    hosts = transfers.stats_endpoints(transfers.read_stats(stats))
     if hosts != [test.cache.svc]:
         return FAIL, f"served by {hosts or 'no host recorded'}, not {test.cache.svc}"
     return PASS, f"served by {test.cache.svc}"
@@ -189,23 +164,20 @@ def plugin_get(test: Test, namespace: str) -> tuple[str, str]:
     name = f"plugin-get-{namespace}"
     data = os.urandom(SIZE)
     test.put(namespace, name, data)
-    creds = os.path.join(test.tmp, f"{name}.creds")
-    os.makedirs(creds)
-    if namespace in test.token_files:
-        shutil.copyfile(test.token_files[namespace], os.path.join(creds, "server.use"))
-    infile, outfile = os.path.join(test.tmp, f"{name}.in"), os.path.join(test.tmp, f"{name}.ad")
-    with open(infile, "w", encoding="utf-8") as f:
-        f.write(f'[ Url="{test.url(namespace, name)}"; LocalFileName="{name}" ]\n')
-    env = dict(test.session.env)
-    env["_CONDOR_CREDS"] = creds
-    env["PELICAN_CLIENT_PREFERREDCACHES"] = test.cache.url
-    status, out, err, ad = test.session.plugin_cmd(infile, outfile, env=env, cwd=test.tmp)
+    creds = {"server.use": test.token_files[namespace]} if namespace in test.token_files else {}
+    status, out, err, ad = test.session.plugin_run(
+        f"sitelocal/{name}",
+        [(test.url(namespace, name), name)],
+        creds=creds,
+        cache=test.cache.url,
+        cwd=test.tmp,
+    )
     if not transfers.plugin_passed(ad):
         return FAIL, f"exit {status}: {last_line(err or out or ad)}"
     if common.sha256(os.path.join(test.tmp, name)) != common.digest(data):
         return FAIL, "the file is not the object"
-    endpoints = re.findall(r'Endpoint(\d+) = "([^":]*)', ad)
-    host = max(endpoints, key=lambda e: int(e[0]))[1] if endpoints else ""
+    hosts = transfers.plugin_endpoints(ad)
+    host = hosts[-1] if hosts else ""
     if host != test.cache.svc:
         return FAIL, f"served by {host or 'no host recorded'}, not {test.cache.svc}"
     return PASS, f"served by {test.cache.svc}"
@@ -332,11 +304,7 @@ def listing(test: Test) -> tuple[str, str]:
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, and remove the run's objects."""
     fed = session.fed
-    for origin in stores.unique(fed.origins):
-        for ns in fed.exports:
-            directory = f"{origin.store_of(ns)}/data/sitelocal"
-            if not origin.pstore and not os.path.isdir(directory):
-                die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    stores.require_dirs(fed.origins, fed.exports, "data/sitelocal")
     tokens = session.setup_tokens()
     test = Test(session)
     print(
@@ -358,14 +326,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             if name.endswith("-public") and "public" not in fed.exports:
                 results.add(name, SKIP, "this shape does not export /public")
                 continue
-            try:
-                status, note = scenarios[name]()
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                status, note = FAIL, f"{type(e).__name__}: {e}"
-            results.add(name, status, note)
+            results.add(name, *common.guarded(scenarios[name], lambda note: (FAIL, note)))
     finally:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach.

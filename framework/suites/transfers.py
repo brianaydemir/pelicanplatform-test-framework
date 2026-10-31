@@ -30,7 +30,6 @@ way.
 """
 
 import collections
-import json
 import os
 import random
 import re
@@ -189,11 +188,8 @@ def make_directories(fed: common.Federation, plan: Plan) -> None:
     directory for each scenario. Dies if a store lacks a put scenario's
     collection.
     """
-    for origin in stores.unique(fed.origins):
-        for s in plan.puts:
-            directory = f"{origin.store_of(s.namespace)}/{s.store_dir}"
-            if not origin.pstore and not os.path.isdir(directory):
-                die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    for s in plan.puts:
+        stores.require_dirs(fed.origins, [s.namespace], s.store_dir)
     out = plan.out
     for sub in ("input", "output", "log", "files", "verify"):
         shutil.rmtree(f"{out}/{sub}", ignore_errors=True)
@@ -690,12 +686,7 @@ def served_by(plan: Plan, batch: Batch) -> list[str]:
         except FileNotFoundError:
             return []
 
-    try:
-        with open(f"{plan.out}/output/{batch.id}.json", encoding="utf-8") as f:
-            stats = json.load(f)
-    except (FileNotFoundError, ValueError):
-        return []
-    return transfers.stats_endpoints(stats)
+    return transfers.stats_endpoints(transfers.read_stats(f"{plan.out}/output/{batch.id}.json"))
 
 
 def check_served(fed: common.Federation, plan: Plan, expected: dict[str, Outcome], report: Report) -> bool:

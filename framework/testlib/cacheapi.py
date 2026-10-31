@@ -15,7 +15,6 @@ local_cache/persistent_cache.go), which the introspection routes take
 as `url`.
 """
 
-import json
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
@@ -67,14 +66,6 @@ def object_url(fed: common.Federation, path: str) -> str:
     return f"pelican://{director}{quote(path)}"
 
 
-def decoded(answer: web.Response) -> Any:
-    """Return answer's body as JSON, or None if it is not JSON."""
-    try:
-        return json.loads(answer.body)
-    except ValueError:
-        return None
-
-
 def stats(cache: common.Cache) -> dict[str, Any] | None:
     """Return what cache's /api/v1.0/cache/stats says.
 
@@ -86,7 +77,7 @@ def stats(cache: common.Cache) -> dict[str, Any] | None:
     answer = web.request("GET", cache.web_url + STATS)
     if answer.status != 200:
         return None
-    return common.as_object(decoded(answer))
+    return common.as_object(answer.json())
 
 
 def introspect(cache: common.Cache, token: str, method: str, route: str, **query: str) -> web.Response:
@@ -140,7 +131,7 @@ def blocks_held(cache: common.Cache, token: str, url: str) -> tuple[Blocks | Non
     answer = introspect(cache, token, "GET", "metadata", url=url)
     if answer.status != 200:
         return None, f"introspect/metadata answered {answer.describe()}"
-    found = common.as_object(decoded(answer)) or {}
+    found = common.as_object(answer.json()) or {}
     summary = common.as_object(found.get("block_summary"))
     if summary is None:
         return None, "introspect/metadata gave no block summary"
@@ -170,7 +161,7 @@ def held_inline(cache: common.Cache, token: str, url: str) -> tuple[bool | None,
     answer = introspect(cache, token, "GET", "metadata", url=url)
     if answer.status != 200:
         return None, f"introspect/metadata answered {answer.describe()}"
-    inline = (common.as_object(decoded(answer)) or {}).get("is_inline")
+    inline = (common.as_object(answer.json()) or {}).get("is_inline")
     if not isinstance(inline, bool):
         return None, "introspect/metadata did not say whether it is inline"
     return inline, ""

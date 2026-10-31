@@ -40,14 +40,13 @@ for is the federation, and `keys` and `routing` present none, so the
 three run in the WLCG pass alone.
 """
 
-import json
 import os
 import shutil
 import time
-import traceback
+from functools import partial
 
 from testlib import common, credentials, director, owners, stores, transfers, web
-from testlib.common import die, first
+from testlib.common import die, first, outcome
 from testlib.credentials import ALLOW
 from testlib.owners import CREDENTIALS, OwnerCredential, Pair
 from testlib.report import FAIL, PASS, SKIP, Report, label, record, record_skip
@@ -275,10 +274,7 @@ def keys(test: Test) -> tuple[str, str]:
             answer = web.request("GET", f"{export.issuer}/.well-known/openid-configuration")
             save(f"{test.out}/responses/keys-{export.name}-discovery", answer)
             want = f"{export.issuer}/.well-known/issuer.jwks"
-            try:
-                have = json.loads(answer.body).get("jwks_uri") if answer.status == 200 else None
-            except (ValueError, AttributeError):
-                have = None
+            have = (common.as_object(answer.json()) or {}).get("jwks_uri") if answer.status == 200 else None
             if have != want:
                 problems.append(
                     f"{export.prefix}'s discovery document: {answer.describe()},"
@@ -307,9 +303,7 @@ def keys(test: Test) -> tuple[str, str]:
                 problems.append(why)
             elif kids & owner_kids:
                 problems.append(f"{url} holds {owner.origin.svc}'s keys")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{checked} JWKS"
+    return outcome(problems, f"{checked} JWKS")
 
 
 # --------------------------------------------------------------------------
@@ -367,9 +361,7 @@ def routing(test: Test) -> tuple[str, str]:
     else:
         problems += nested(test, public)
         notes.append("/public/other and its sibling through each cache")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "; ".join(notes)
+    return outcome(problems, "; ".join(notes))
 
 
 def nested(test: Test, pair: Pair) -> list[str]:
@@ -591,11 +583,10 @@ def client_get(
         return f"{what}: exit {code}: {last_line(err or out)}"
     if common.sha256(target) != common.sha256(test.path(test.stores_of(pair, side)[0], pair, side, rel)):
         return f"{what}: not the object"
-    try:
-        with open(stats, encoding="utf-8") as f:
-            hosts = transfers.stats_endpoints(json.load(f))
-    except (FileNotFoundError, ValueError):
+    found = transfers.read_stats(stats)
+    if found is None:
         return f"{what}: no transfer stats"
+    hosts = transfers.stats_endpoints(found)
     servers = (
         {director.host(o.url) for o in test.stores_of(pair, side)}
         if direct
@@ -676,9 +667,7 @@ def client(test: Test, name: str) -> tuple[str, str]:
         problems += [p for p in found if p]
     if not done:
         return SKIP, "origin-2 exports no namespace that takes a token, or writes"
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{done} command(s)"
+    return outcome(problems, f"{done} command(s)")
 
 
 # --------------------------------------------------------------------------
@@ -742,24 +731,19 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         if selected and "ready" not in selected:
             ready(test)
         for name in selected:
-            try:
-                if name in CHECKS:
-                    results.add(name, *CHECKS[name](test))
-                elif name in CLIENT:
-                    results.add(name, *client(test, name))
-                else:
-                    if not header:
-                        print(
-                            f"\n{'credential':<11} {'target':<10} {'ns':<12} {'op':<6}"
-                            + f" {'code':>4}  result"
-                        )
-                        header = True
-                    check_credential(test, owners.BY_NAME[name], results.report)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                results.add(name, FAIL, f"{type(e).__name__}: {e}")
+            if name in CHECKS:
+                results.add(name, *common.guarded(partial(CHECKS[name], test), lambda note: (FAIL, note)))
+            elif name in CLIENT:
+                results.add(name, *common.guarded(partial(client, test, name), lambda note: (FAIL, note)))
+            else:
+                if not header:
+                    print(
+                        f"\n{'credential':<11} {'target':<10} {'ns':<12} {'op':<6}"
+                        + f" {'code':>4}  result"
+                    )
+                    header = True
+                check = partial(check_credential, test, owners.BY_NAME[name], results.report)
+                common.guarded(check, partial(results.add, name, FAIL))
     finally:
         clean_nested(test)
         # The origins' files are theirs, and on a Linux host beyond

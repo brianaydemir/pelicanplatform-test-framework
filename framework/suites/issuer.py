@@ -116,7 +116,6 @@ suite; the users and their groups stay.
 """
 
 import dataclasses
-import json
 import os
 import secrets
 import time
@@ -127,7 +126,7 @@ from urllib.parse import quote
 
 from testlib import accounts, collections, common, credentials, issuer, stores, web
 from testlib.accounts import Api, ApiError, must
-from testlib.common import die, warn
+from testlib.common import die, outcome, warn
 from testlib.credentials import PROTECTED
 from testlib.issuer import (
     ARCHIVE,
@@ -138,9 +137,10 @@ from testlib.issuer import (
     User,
     data_scopes,
     project,
+    refused_with,
     scope,
 )
-from testlib.report import FAIL, PASS, SKIP
+from testlib.report import FAIL, SKIP
 from testlib.session import Session, last_line
 
 SCENARIOS = {
@@ -234,11 +234,6 @@ def personal(role: str) -> str:
 def home(role: str) -> str:
     """Return role's user's home prefix, within the namespace."""
     return f"{BASE}/home/{username(role)}"
-
-
-def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
-    """Return a row: FAIL with the first problem, or PASS with note."""
-    return (FAIL, common.first(problems)) if problems else (PASS, note)
 
 
 def skip(fed: common.Federation) -> str | None:
@@ -898,7 +893,7 @@ def code(test: Test) -> tuple[str, str]:
     wrong_code = a_code(issuer.pkce()[1])
     if wrong_code:
         wrong = issuer.code_tokens(client, wrong_code, issuer.pkce()[0])
-        if wrong.status != 400 or issuer.error_of(wrong) != "invalid_grant":
+        if not refused_with(wrong, 400, "invalid_grant"):
             problems.append(f"the code with a wrong verifier: {wrong.describe()}, not invalid_grant")
     verifier, challenge = issuer.pkce()
     right_code = a_code(challenge)
@@ -906,7 +901,7 @@ def code(test: Test) -> tuple[str, str]:
         right = issuer.code_tokens(client, right_code, verifier)
         if right.status == 200:
             again = issuer.code_tokens(client, right_code, verifier)
-            if again.status != 400 or issuer.error_of(again) != "invalid_grant":
+            if not refused_with(again, 400, "invalid_grant"):
                 problems.append(f"the code replayed: {again.describe()}, not invalid_grant")
         else:
             problems.append(f"the code with the right verifier: {right.describe()}")
@@ -968,7 +963,7 @@ def clients(test: Test) -> tuple[str, str]:
     )
     for what, client, status, error in refused:
         answer = issuer.start_device(client, (f"{R}:/{ARCHIVE}",))
-        if answer.status != status or issuer.error_of(answer) != error:
+        if not refused_with(answer, status, error):
             problems.append(f"{what} starting a device flow: {answer.describe()}, not {error}")
     for what, client, status, error in (
         ("the client", narrow, 400, "unauthorized_client"),
@@ -980,7 +975,7 @@ def clients(test: Test) -> tuple[str, str]:
         ),
     ):
         answer = issuer.post(client, narrow.token_url, {"grant_type": "client_credentials"})
-        if answer.status != status or issuer.error_of(answer) != error:
+        if not refused_with(answer, status, error):
             problems.append(f"{what}'s client_credentials ping: {answer.describe()}, not {error}")
     toks = test.tokens("member", ("offline_access", f"{R}:/{ARCHIVE}"), kind="public")
     if issuer.scopes(toks.access) != frozenset({f"{R}:/{ARCHIVE}"}) or toks.refresh is not None:
@@ -1007,15 +1002,15 @@ def device(test: Test) -> tuple[str, str]:
     if shown.get("client_id") != client.client_id:
         problems.append(f"the consent page names client {shown.get('client_id')!r}")
     polled = issuer.poll(client, device_code)
-    if polled.status != 400 or issuer.error_of(polled) != "authorization_pending":
+    if not refused_with(polled, 400, "authorization_pending"):
         problems.append(f"polling before approval: {polled.describe()}, not authorization_pending")
     polled = issuer.poll(client, device_code)
-    if polled.status != 400 or issuer.error_of(polled) != "slow_down":
+    if not refused_with(polled, 400, "slow_down"):
         problems.append(f"polling again at once: {polled.describe()}, not slow_down")
     issuer.approve(client.url, user_code, member)
     time.sleep(POLL_INTERVAL)
     polled = issuer.poll(test.client("narrow"), device_code)
-    if polled.status != 400 or issuer.error_of(polled) != "invalid_grant":
+    if not refused_with(polled, 400, "invalid_grant"):
         problems.append(f"another client redeeming the code: {polled.describe()}, not invalid_grant")
     time.sleep(POLL_INTERVAL)
     polled = issuer.poll(client, device_code)
@@ -1023,7 +1018,7 @@ def device(test: Test) -> tuple[str, str]:
         problems.append(f"redeeming the approved code: {polled.describe()}")
     time.sleep(POLL_INTERVAL)
     polled = issuer.poll(client, device_code)
-    if polled.status != 400 or issuer.error_of(polled) != "invalid_grant":
+    if not refused_with(polled, 400, "invalid_grant"):
         problems.append(f"redeeming the code again: {polled.describe()}, not invalid_grant")
     again = issuer.decide(client.url, user_code, member, "approve")
     if again.status != 400:
@@ -1033,7 +1028,7 @@ def device(test: Test) -> tuple[str, str]:
     if denied.status != 200 or issuer.decoded(denied).get("status") != "denied":
         problems.append(f"denying a flow: {denied.describe()}")
     polled = issuer.poll(client, str(flow["device_code"]))
-    if polled.status != 403 or issuer.error_of(polled) != "access_denied":
+    if not refused_with(polled, 403, "access_denied"):
         problems.append(f"polling a denied flow: {polled.describe()}, not access_denied")
     flow = issuer.started(issuer.start_device(client, (f"{R}:/{ARCHIVE}",)), client)
     nobody = issuer.consent_page(client.url, str(flow["user_code"]), User())
@@ -1219,10 +1214,10 @@ def refresh(test: Test) -> tuple[str, str]:
         ),
     ):
         answer = issuer.refresh(other, second.refresh or "")
-        if answer.status != status or issuer.error_of(answer) != error:
+        if not refused_with(answer, status, error):
             problems.append(f"the refresh token used by {what}: {answer.describe()}, not {error}")
     answer = issuer.refresh(client, "nonesuch")
-    if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
+    if not refused_with(answer, 400, "invalid_grant"):
         problems.append(f"a refresh token that never was: {answer.describe()}, not invalid_grant")
     return outcome(problems, "new tokens that work; the old one works within its grace period")
 
@@ -1263,7 +1258,7 @@ def revoked(test: Test) -> tuple[str, str]:
     if answer.status != 200:
         problems.append(f"revoking a refresh token: {answer.describe()}")
     answer = issuer.refresh(client, chain.refresh or "")
-    if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
+    if not refused_with(answer, 400, "invalid_grant"):
         problems.append(f"the revoked refresh token: {answer.describe()}, not invalid_grant")
     said = issuer.introspect(client, chain.access)
     if said.get("active") is not False:
@@ -1279,10 +1274,10 @@ def revoked(test: Test) -> tuple[str, str]:
         newer = issuer.tokens_of(issuer.refresh(client, chain.refresh or ""), "the refresh")
         time.sleep(test.lifetimes.grace + 3)
         answer = issuer.refresh(client, chain.refresh or "")
-        if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
+        if not refused_with(answer, 400, "invalid_grant"):
             problems.append(f"a refresh token reused past its grace period: {answer.describe()}")
         answer = issuer.refresh(client, newer.refresh or "")
-        if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
+        if not refused_with(answer, 400, "invalid_grant"):
             problems.append(f"the chain of a refresh token reused late: {answer.describe()}")
         notes.append(f"a reuse {test.lifetimes.grace}s late ends the chain")
     else:
@@ -1334,13 +1329,13 @@ def exchange(test: Test) -> tuple[str, str]:
     except IssuerError as e:
         problems.append(str(e))
     answer = issuer.exchange(client, subject, (f"{R}:/{ARCHIVE}",), "https://elsewhere.invalid")
-    if answer.status != 400 or issuer.error_of(answer) != "invalid_target":
+    if not refused_with(answer, 400, "invalid_target"):
         problems.append(f"an exchange for another audience: {answer.describe()}, not invalid_target")
     answer = issuer.exchange(test.client("device"), subject, (f"{R}:/{ARCHIVE}",))
-    if answer.status != 400 or issuer.error_of(answer) != "unauthorized_client":
+    if not refused_with(answer, 400, "unauthorized_client"):
         problems.append(f"an exchange by the device client: {answer.describe()}, not unauthorized_client")
     answer = issuer.exchange(client, "nonesuch", (f"{R}:/{ARCHIVE}",))
-    if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
+    if not refused_with(answer, 400, "invalid_grant"):
         problems.append(f"an exchange of a token that never was: {answer.describe()}, not invalid_grant")
     return outcome(problems, "narrowed, inherited, and refused as it should be")
 
@@ -1399,7 +1394,7 @@ def expiry(test: Test) -> tuple[str, str]:
         doomed, minted = test.doomed
         time.sleep(max(0.0, minted + lifetimes.refresh + 2 - time.time()))
         answer = issuer.refresh(client, doomed.refresh or "")
-        if answer.status != 400 or issuer.error_of(answer) != "invalid_grant":
+        if not refused_with(answer, 400, "invalid_grant"):
             problems.append(f"the expired refresh token: {answer.describe()}, not invalid_grant")
         notes.append(f"the refresh token expired after {lifetimes.refresh}s")
     return outcome(problems, "; ".join(notes))
@@ -1457,11 +1452,6 @@ def client_scenario(test: Test) -> tuple[str, str]:
 
 # --------------------------------------------------------------------------
 # The issuer's boundaries.
-
-
-def refused_with(answer: web.Response, status: int, error: str) -> bool:
-    """Return whether answer is an OAuth2 error of status and error."""
-    return answer.status == status and issuer.error_of(answer) == error
 
 
 def isolation(test: Test) -> tuple[str, str]:
@@ -1614,7 +1604,7 @@ def admin_clients(test: Test) -> tuple[str, str]:
         if answer.status != 403:
             problems.append(f"deleting a client as test-member: {answer.describe()}, not 403")
         listed = issuer.admin_call(test.web, namespace, admin)
-        rows = common.objects(common.as_array(json_of(listed)) or [])
+        rows = common.objects(common.as_array(listed.json()) or [])
         if listed.status != 200 or made.client_id not in {r.get("client_id") for r in rows}:
             problems.append(f"the admin's list: {listed.describe()}, without the new client")
         shown = issuer.admin_call(test.web, namespace, admin, "GET", made.client_id)
@@ -1660,14 +1650,6 @@ def admin_clients(test: Test) -> tuple[str, str]:
             if failed:
                 warn(f"could not remove the admin-clients client: {failed}")
     return outcome(problems, "admin only; no secrets; narrowed and deleted clients obey")
-
-
-def json_of(answer: web.Response) -> object:
-    """Return the JSON value in answer's body, or None if it holds none."""
-    try:
-        return json.loads(answer.body)
-    except ValueError:
-        return None
 
 
 def narrowed_client_problems(test: Test, made: issuer.Client, refresh_token: str) -> list[str]:

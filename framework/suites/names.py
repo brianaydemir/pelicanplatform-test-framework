@@ -40,16 +40,14 @@ client/director.go), which would hide a name that it mishandles in that
 answer.
 """
 
-import json
 import os
-import shutil
-import traceback
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 from urllib.parse import quote
 
 from testlib import common, digests, director, stores, transfers, web, webdav
-from testlib.common import die, first
+from testlib.common import die, first, outcome
 from testlib.names import NAMES
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, json_objects, last_line
@@ -239,9 +237,7 @@ def origin_put(test: Test) -> tuple[str, str]:
                 why = test.wrong(name, f.read())
             if why:
                 problems.append(f"{origin.svc}: {why}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.origins)} store(s)"
+    return outcome(problems, f"{len(test.origins)} store(s)")
 
 
 def served(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
@@ -264,9 +260,7 @@ def served(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
             why = test.wrong(name, answer.body)
             if why:
                 problems.append(f"{svc}: {why}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(servers)} server(s)"
+    return outcome(problems, f"{len(servers)} server(s)")
 
 
 def origin_get(test: Test) -> tuple[str, str]:
@@ -318,9 +312,7 @@ def director_get(test: Test) -> tuple[str, str]:
             why = test.wrong(name, answer.body)
             if why:
                 problems.append(f"{svc}: {why}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.fed.directors)} director(s), each leading to {kind}"
+    return outcome(problems, f"{len(test.fed.directors)} director(s), each leading to {kind}")
 
 
 def listed(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
@@ -351,9 +343,7 @@ def listed(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
         wrong = webdav.problems(want, got)
         if wrong:
             problems.append(f"{svc}: {'; '.join(wrong)}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(servers)} server(s)"
+    return outcome(problems, f"{len(servers)} server(s)")
 
 
 def origin_list(test: Test) -> tuple[str, str]:
@@ -423,34 +413,47 @@ def ways(test: Test) -> tuple[list[tuple[str, common.Cache | None]], list[str]]:
     return found, notes
 
 
-def served_elsewhere(hosts: list[str], cache: common.Cache | None) -> str | None:
-    """Return which servers other than the named cache served an object.
+def get_by(
+    test: Test,
+    label: str,
+    get: Callable[[str, common.Cache | None, str, str, str], tuple[str | None, list[str]]],
+) -> tuple[str, str]:
+    """Check that a get of each object writes a file of its name.
+
+    A get of each, alone, into a directory for each way a client reaches
+    the objects (see ways()), must write a file of its name, with its
+    bytes, and the directory nothing else (fetched()); and where the way
+    names a cache, that cache alone may serve it (see
+    director.served_elsewhere()).
 
     Args:
-        hosts: The hosts that served it, as the client recorded them.
-        cache: The cache the client named, if any; with none, any may.
-
-    Returns:
-        Who, or None if only the named cache did.
+        test: The test.
+        label: The scenario's name, for its directories and files.
+        get: What gets one object: called with the way's key and the
+            cache it names, the object's name, the directory, and a label
+            for the get's own files, it returns why the get failed, or
+            None, and the hosts that served it.
     """
-    if cache is None:
-        return None
-    others = sorted({h for h in hosts if h != director.host(cache.url)})
-    if hosts and not others:
-        return None
-    return f"served by {', '.join(others) or 'no server recorded'}, not {cache.svc}"
-
-
-def judged(done: dict[str, list[str]], problems: list[str]) -> tuple[str, str]:
-    """Return the status and note of a get by each way.
-
-    Args:
-        done: For each way's key, the names whose gets succeeded.
-        problems: What went wrong.
-    """
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "; ".join(f"{key}: {len(got)} files" for key, got in done.items())
+    found, notes = ways(test)
+    done: dict[str, list[str]] = {}
+    problems: list[str] = []
+    for key, cache in found:
+        target = os.path.join(test.tmp, f"{label}-{key}")
+        os.makedirs(target)
+        got: list[str] = []
+        for n, name in enumerate(NAMES):
+            why, hosts = get(key, cache, name, target, f"{label}-{key}-{n}")
+            if why:
+                problems.append(f"{key}: {name!r}: {why}")
+                continue
+            elsewhere = director.served_elsewhere(hosts, cache) if cache else None
+            if elsewhere:
+                problems.append(f"{key}: {name!r}: {elsewhere}")
+            got.append(name)
+        problems += [f"{key}: {p}" for p in fetched(test, target, got)]
+        done[key] = got
+    status, note = outcome(problems, "; ".join(f"{key}: {len(got)} files" for key, got in done.items()))
+    return status, "; ".join([note, *notes])
 
 
 def client_get(test: Test) -> tuple[str, str]:
@@ -460,45 +463,30 @@ def client_get(test: Test) -> tuple[str, str]:
     directory, must write a file of its name, with its bytes, and the
     directory nothing else, in each of the ways a client reaches an
     object (see ways()): --direct for an origin, and --cache for a
-    cache it names.
+    cache it names. get_by() judges what it writes.
     """
-    found, notes = ways(test)
-    done: dict[str, list[str]] = {}
-    problems: list[str] = []
-    for key, cache in found:
+
+    def get(
+        key: str, cache: common.Cache | None, name: str, target: str, label: str
+    ) -> tuple[str | None, list[str]]:
         flags = ["--direct"] if key == "direct" else ["--cache", cache.url] if cache else []
-        target = os.path.join(test.tmp, f"client-get-{key}")
-        os.makedirs(target)
-        got: list[str] = []
-        for n, name in enumerate(NAMES):
-            stats = os.path.join(test.tmp, f"client-get-{key}-{n}.stats.json")
-            code, out, err = test.session.pelican_cmd(
-                "object",
-                "get",
-                "--token",
-                test.token_file,
-                "--transfer-stats",
-                stats,
-                *flags,
-                f"{test.fed.url}/protected-a/{quote(test.rel(name))}",
-                target,
-            )
-            if code != 0:
-                problems.append(f"{key}: {name!r}: exit {code}: {last_line(err or out)}")
-                continue
-            try:
-                with open(stats, encoding="utf-8") as f:
-                    hosts = transfers.stats_endpoints(json.load(f))
-            except (OSError, ValueError):
-                hosts = []
-            elsewhere = served_elsewhere(hosts, cache)
-            if elsewhere:
-                problems.append(f"{key}: {name!r} {elsewhere}")
-            got.append(name)
-        problems += [f"{key}: {p}" for p in fetched(test, target, got)]
-        done[key] = got
-    status, note = judged(done, problems)
-    return status, "; ".join([note, *notes])
+        stats = os.path.join(test.tmp, f"{label}.stats.json")
+        code, out, err = test.session.pelican_cmd(
+            "object",
+            "get",
+            "--token",
+            test.token_file,
+            "--transfer-stats",
+            stats,
+            *flags,
+            f"{test.fed.url}/protected-a/{quote(test.rel(name))}",
+            target,
+        )
+        if code != 0:
+            return f"exit {code}: {last_line(err or out)}", []
+        return None, transfers.stats_endpoints(transfers.read_stats(stats))
+
+    return get_by(test, "client-get", get)
 
 
 def plugin_one(
@@ -507,11 +495,12 @@ def plugin_one(
     """Run stash_plugin on one transfer, with the token for /protected-a.
 
     The token is the only one in the plugin's credentials directory
-    (_CONDOR_CREDS), and the transfer the only ad in its input.
+    (_CONDOR_CREDS), and the transfer the only ad in its input
+    (Session.plugin_run()).
 
     Args:
         test: The test.
-        label: A name for the plugin's files in test.tmp.
+        label: A name for the plugin's files.
         url: The object's URL.
         local: Its local file.
         upload: Whether to upload, rather than download.
@@ -521,17 +510,14 @@ def plugin_one(
         Whether its result ad says the transfer succeeded, and the ad
         (or, where it wrote none, its output).
     """
-    creds = os.path.join(test.tmp, f"{label}.creds")
-    os.makedirs(creds)
-    shutil.copyfile(test.token_file, os.path.join(creds, "protected-a.use"))
-    infile, outfile = (os.path.join(test.tmp, f"{label}.{ext}") for ext in ("in", "ad"))
-    with open(infile, "w", encoding="utf-8") as f:
-        f.write(transfers.transfer_ad(url, local))
-    env = dict(test.session.env)
-    env["_CONDOR_CREDS"] = creds
-    if cache is not None:
-        env["PELICAN_CLIENT_PREFERREDCACHES"] = cache.url
-    _, out, err, ads = test.session.plugin_cmd(infile, outfile, upload, env, test.tmp)
+    _, out, err, ads = test.session.plugin_run(
+        f"names/{label}",
+        [(url, local)],
+        {"protected-a.use": test.token_file},
+        upload,
+        cache.url if cache else None,
+        cwd=test.tmp,
+    )
     return transfers.plugin_passed(ads), ads or err or out
 
 
@@ -544,30 +530,18 @@ def plugin_get(test: Test) -> tuple[str, str]:
     file is the name's own path, as HTCondor would give it, escaped as a
     ClassAd string.
     """
-    found, notes = ways(test)
-    done: dict[str, list[str]] = {}
-    problems: list[str] = []
-    for key, cache in found:
+
+    def get(
+        key: str, cache: common.Cache | None, name: str, target: str, label: str
+    ) -> tuple[str | None, list[str]]:
         query = transfers.DIRECT_QUERY if key == "direct" else ""
-        target = os.path.join(test.tmp, f"plugin-get-{key}")
-        os.makedirs(target)
-        got: list[str] = []
-        for n, name in enumerate(NAMES):
-            url = f"{test.fed.url}/protected-a/{quote(test.rel(name))}{query}"
-            local = os.path.join(target, name)
-            passed, said = plugin_one(test, f"plugin-get-{key}-{n}", url, local, False, cache)
-            if not passed:
-                why = transfers.plugin_error(said) or last_line(said)
-                problems.append(f"{key}: {name!r}: failed: {why}")
-                continue
-            elsewhere = served_elsewhere(transfers.plugin_endpoints(said), cache)
-            if elsewhere:
-                problems.append(f"{key}: {name!r} {elsewhere}")
-            got.append(name)
-        problems += [f"{key}: {p}" for p in fetched(test, target, got)]
-        done[key] = got
-    status, note = judged(done, problems)
-    return status, "; ".join([note, *notes])
+        url = f"{test.fed.url}/protected-a/{quote(test.rel(name))}{query}"
+        passed, said = plugin_one(test, label, url, os.path.join(target, name), False, cache)
+        if not passed:
+            return f"failed: {transfers.plugin_error(said) or last_line(said)}", []
+        return None, transfers.plugin_endpoints(said)
+
+    return get_by(test, "plugin-get", get)
 
 
 def put_by(test: Test, label: str, put: Callable[[str, str], str | None]) -> tuple[str, str]:
@@ -623,9 +597,7 @@ def put_by(test: Test, label: str, put: Callable[[str, str], str | None]) -> tup
         extra = sorted(held_names - set(NAMES))
         if extra:
             problems.append(f"{origin.svc} also holds {extra}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(files)} files"
+    return outcome(problems, f"{len(files)} files")
 
 
 def client_put(test: Test) -> tuple[str, str]:
@@ -717,10 +689,7 @@ def skip(fed: common.Federation) -> str | None:
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Seed the objects, run the selected scenarios, then remove them."""
     fed = session.fed
-    for origin in stores.unique(fed.origins):
-        directory = f"{origin.store_of('protected-a')}/data/names"
-        if not origin.pstore and not os.path.isdir(directory):
-            die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    stores.require_dirs(fed.origins, ["protected-a"], "data/names")
     tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
@@ -737,15 +706,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         for error in test.unseeded:
             common.warn(error)
         for name in selected:
-            try:
-                status, note = RUN[name](test)
-            except stores.Unreadable as e:
-                status, note = FAIL, f"could not read a store: {e}"
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                status, note = FAIL, f"{type(e).__name__}: {e}"
+            status, note = common.guarded(
+                partial(RUN[name], test), lambda note: (FAIL, note), (stores.Unreadable,)
+            )
             results.add(name, status, note)
     finally:
         # The run's collections are made from the dev container, so on a

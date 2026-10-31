@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --quiet --frozen --no-dev
 """Merge the tests' results and convert them for CI.
 
   framework/report.py merge [NAME=]DIR...  one table from each DIR's *.tsv

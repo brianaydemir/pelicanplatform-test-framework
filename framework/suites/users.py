@@ -63,7 +63,6 @@ import json
 import os
 import stat
 import time
-import traceback
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from functools import partial
@@ -71,7 +70,7 @@ from typing import Any
 from urllib.parse import quote
 
 from testlib import common, control, credentials, director, jwt, stores, web, webdav
-from testlib.common import Findings, die, first, warn
+from testlib.common import Findings, die, first, outcome, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
 
@@ -371,9 +370,7 @@ def uploads_owned(test: Test, name: str, token: str, uid: int) -> Row:
         return INCONCLUSIVE, first(test.unshown)
     found = [owned(o, test.rel(o, name), token, uid) for o in test.origins]
     failed = [note for status, note in found if status != PASS]
-    if failed:
-        return FAIL, first(failed)
-    return PASS, ", ".join(note for _, note in found)
+    return outcome(failed, ", ".join(note for _, note in found))
 
 
 def owner(test: Test) -> dict[str, Row]:
@@ -910,22 +907,6 @@ def serving(test: Test) -> str | None:
     return None
 
 
-def wait(problem: Callable[[], str | None], seconds: float) -> str | None:
-    """Ask problem() what is wrong, every 5 seconds, until it finds nothing.
-
-    Stop asking once seconds have passed.
-
-    Returns:
-        What it last found, or None if it found nothing.
-    """
-    deadline = time.time() + seconds
-    found = problem()
-    while found and time.time() < deadline:
-        time.sleep(5)
-        found = problem()
-    return f"after {seconds}s, {found}" if found else None
-
-
 def restarted_rows(test: Test) -> dict[str, Row]:
     """Return mapfile's `username-claim` and `unmatched` rows, by name.
 
@@ -947,7 +928,7 @@ def restarted_rows(test: Test) -> dict[str, Row]:
     print("\nRestarting the origins with a username claim and no default user")
     try:
         with restarted(test):
-            why = wait(partial(serving_data, test, claim_token), DATA_WAIT)
+            why = control.settle(partial(serving_data, test, claim_token), DATA_WAIT)
             if why:
                 why = f"with the origins restarted, {why}"
                 result = {row: (FAIL, why) for row in RESTARTED}
@@ -963,7 +944,7 @@ def restarted_rows(test: Test) -> dict[str, Row]:
         for row in RESTARTED:
             result.setdefault(row, (FAIL, f"restarting the origins: {e}"))
         warn(f"restarting the origins with a username claim: {e}")
-    why = wait(partial(serving, test), SETTLE_WAIT)
+    why = control.settle(partial(serving, test), SETTLE_WAIT)
     if why:
         warn(f"with the origins restored, {why}")
     return result
@@ -1006,15 +987,7 @@ class SetupError(Exception):
 
 def attempt(check: Callable[[], Row]) -> Row:
     """Return check's row, or a FAIL if it could not set up, or raised."""
-    try:
-        return check()
-    except SetupError as e:
-        return FAIL, str(e)
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # check fails, and the rest still run.
-        traceback.print_exc()
-        return FAIL, f"{type(e).__name__}: {e}"
+    return common.guarded(check, lambda note: (FAIL, note), (SetupError,))
 
 
 def attempt_all(rows: tuple[str, ...], check: Callable[[], dict[str, Row]]) -> dict[str, Row]:
@@ -1022,13 +995,7 @@ def attempt_all(rows: tuple[str, ...], check: Callable[[], dict[str, Row]]) -> d
 
     If it could not set up, or raised, each of rows is a FAIL.
     """
-    try:
-        return check()
-    except SetupError as e:
-        return {row: (FAIL, str(e)) for row in rows}
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        traceback.print_exc()
-        return {row: (FAIL, f"{type(e).__name__}: {e}") for row in rows}
+    return common.guarded(check, lambda note: {row: (FAIL, note) for row in rows}, (SetupError,))
 
 
 # Each scenario takes the Test, and returns its rows (ROWS), by name, each
@@ -1068,10 +1035,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             with contextlib.suppress(OSError):
                 os.remove(f"{staging}/in_progress.users-{session.run}")
 
-    for origin in origins:
-        for namespace in namespaces:
-            if not os.path.isdir(f"{origin.store_of(namespace)}/data/users"):
-                die(f"framework/var/{origin.store_of(namespace)}/data/users is missing; run ./fed.sh init")
+    stores.require_dirs(origins, namespaces, "data/users")
     clean()
     token = session.token(NAMESPACE)
     setup = session.setup_token(NAMESPACE)

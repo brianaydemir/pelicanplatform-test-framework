@@ -55,15 +55,15 @@ objects are put in place, and the stores read, with WLCG tokens.
 import json
 import os
 import time
-import traceback
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
+from functools import partial
 from html.parser import HTMLParser
 from typing import override
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 from testlib import common, credentials, stores, web, webdav
-from testlib.common import die, first, warn
+from testlib.common import die, first, outcome, warn
 from testlib.names import NAMES
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
@@ -368,9 +368,7 @@ def origin_depth_0(test: Test) -> tuple[str, str]:
                     problems.append(f"{origin.svc} {target}: {entry.size} bytes, not {want}")
                 elif want is not None and (why := modified_problem(test, origin, ns, entry)):
                     problems.append(f"{origin.svc} {target}: {why}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.origins)} origin(s)"
+    return outcome(problems, f"{len(test.origins)} origin(s)")
 
 
 def origin_depth_1(test: Test) -> tuple[str, str]:
@@ -386,9 +384,7 @@ def origin_depth_1(test: Test) -> tuple[str, str]:
                 why = test.refusal(url, "1", test.tokens[ns])
             if why:
                 problems.append(f"{origin.svc} {path}/: {why}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.origins)} origin(s)"
+    return outcome(problems, f"{len(test.origins)} origin(s)")
 
 
 def infinity(
@@ -438,9 +434,7 @@ def origin_infinity(test: Test) -> tuple[str, str]:
                 problems.append(f"{origin.svc} {path}/: {why}")
             elif note not in notes:
                 notes.append(note)
-    if problems:
-        return FAIL, first(problems)
-    return PASS, ", ".join(notes)
+    return outcome(problems, ", ".join(notes))
 
 
 def director(test: Test) -> tuple[str, str]:
@@ -461,12 +455,12 @@ def director(test: Test) -> tuple[str, str]:
                 (f"{path}/", "1", path, test.children(ns)),
             ):
                 where = f"{urlsplit(director_url).netloc} {target}"
+                url = f"{director_url}{target}"
                 if not may_list(test.caps(ns), depth, "director"):
-                    answer = webdav.propfind(f"{director_url}{target}", depth, test.tokens[ns])
-                    if answer.status not in REFUSALS:
-                        problems.append(f"{where}: {answer.describe()}, not a refusal (401, 403, or 405)")
+                    if why := test.refusal(url, depth, test.tokens[ns]):
+                        problems.append(f"{where}: {why}")
                     continue
-                answer = webdav.propfind(f"{director_url}{target}", depth, test.tokens[ns])
+                answer = webdav.propfind(url, depth, test.tokens[ns])
                 location = answer.header("Location")
                 if answer.status not in (301, 302, 303, 307, 308) or not location:
                     problems.append(f"{where}: {answer.describe()}, not a redirect")
@@ -490,9 +484,7 @@ def director(test: Test) -> tuple[str, str]:
                         problems.append(f"{where} -> {parts.netloc}: not the object")
                 elif why := test.compare(location, depth, base, want, test.tokens[ns]):
                     problems.append(f"{where} -> {parts.netloc}: {why}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.fed.directors)} director(s)"
+    return outcome(problems, f"{len(test.fed.directors)} director(s)")
 
 
 def cache_depth_0(test: Test) -> tuple[str, str]:
@@ -515,9 +507,7 @@ def cache_depth_0(test: Test) -> tuple[str, str]:
                 problems.append(f"{cache.svc} ({when}): {why}")
             elif set(got) != {""} or got[""].collection or got[""].size != PROBE:
                 problems.append(f"{cache.svc} ({when}): not the {PROBE}-byte object")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.caches)} cache(s)"
+    return outcome(problems, f"{len(test.caches)} cache(s)")
 
 
 def cache_depth_1(test: Test) -> tuple[str, str]:
@@ -548,9 +538,7 @@ def cache_depth_1(test: Test) -> tuple[str, str]:
         wrong = webdav.problems(test.children("protected-a"), got)
         if wrong:
             problems.append(f"{cache.svc}: Depth 1: {'; '.join(wrong)}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.caches)} cache(s)"
+    return outcome(problems, f"{len(test.caches)} cache(s)")
 
 
 def origins_refuse_infinity(test: Test, ns: str) -> bool | None:
@@ -594,9 +582,7 @@ def cache_infinity(test: Test) -> tuple[str, str]:
             problems.append(f"{cache.svc}: {why}")
         else:
             notes.append(f"{cache.svc}: {note}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, ", ".join(notes)
+    return outcome(problems, ", ".join(notes))
 
 
 def cache_body(test: Test) -> tuple[str, str]:
@@ -624,9 +610,7 @@ def cache_body(test: Test) -> tuple[str, str]:
             problems.append(f"{cache.svc}: {why}")
         elif wrong := webdav.problems(test.children("protected-a"), got):
             problems.append(f"{cache.svc}: {'; '.join(wrong)}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.caches)} cache(s)"
+    return outcome(problems, f"{len(test.caches)} cache(s)")
 
 
 def servers(test: Test) -> list[tuple[str, str, str]]:
@@ -655,9 +639,7 @@ def refused_everywhere(test: Test, token: str | None) -> tuple[str, str]:
                     f"{svc} Depth {depth} {target}: {answer.describe()},"
                     + f" not {' or '.join(map(str, allowed))}"
                 )
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(servers(test))} server(s)"
+    return outcome(problems, f"{len(servers(test))} server(s)")
 
 
 def protected_a_no_token(test: Test) -> tuple[str, str]:
@@ -684,9 +666,7 @@ def public_no_token(test: Test) -> tuple[str, str]:
             why = test.refusal(f"{url}{path}/", "1", None)
         if why:
             problems.append(f"{svc}: {why}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(servers(test))} server(s)"
+    return outcome(problems, f"{len(servers(test))} server(s)")
 
 
 def new_object(test: Test) -> tuple[str, str]:
@@ -726,9 +706,7 @@ def new_object(test: Test) -> tuple[str, str]:
         elif ("new" in listed) != ("new" in want):
             listed_or_not = "listed" if "new" in listed else "not listed"
             problems.append(f"`pelican object ls` {when}: {listed_or_not}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "listed at once, and not once removed"
+    return outcome(problems, "listed at once, and not once removed")
 
 
 def collection_get(test: Test) -> tuple[str, str]:
@@ -789,9 +767,7 @@ def collection_get(test: Test) -> tuple[str, str]:
                 f"{cache.svc}: GET {path}/c after the collection: {answer.describe()},"
                 + " or not the object"
             )
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(origins)} origin(s), {len(test.caches)} cache(s)"
+    return outcome(problems, f"{len(origins)} origin(s), {len(test.caches)} cache(s)")
 
 
 class Anchors(HTMLParser):
@@ -1007,9 +983,7 @@ def plain_object_listing(test: Test) -> tuple[str, str]:
         elif listed != {"b": (False, TREE["b"])}:
             problems.append(f"`pelican object ls` of the object listed {listed}")
         note += ", and the client"
-    if problems:
-        return FAIL, first(problems)
-    return PASS, note
+    return outcome(problems, note)
 
 
 RUN = {
@@ -1047,11 +1021,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     Cleaning up removes the run's objects.
     """
     fed = session.fed
-    for origin in stores.unique(fed.origins):
-        for ns in fed.exports:
-            directory = f"{origin.store_of(ns)}/data/listings"
-            if not origin.pstore and not os.path.isdir(directory):
-                die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    stores.require_dirs(fed.origins, fed.exports, "data/listings")
     tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
@@ -1077,15 +1047,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             if name.startswith("cache-") and not test.caches:
                 results.add(name, SKIP, "this shape has no federated cache")
                 continue
-            try:
-                status, note = RUN[name](test)
-            except stores.Unreadable as e:
-                status, note = FAIL, f"could not read a store: {e}"
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                status, note = FAIL, f"{type(e).__name__}: {e}"
+            status, note = common.guarded(
+                partial(RUN[name], test), lambda note: (FAIL, note), (stores.Unreadable,)
+            )
             results.add(name, status, note)
     finally:
         # The run's collections are made from the dev container, so on a

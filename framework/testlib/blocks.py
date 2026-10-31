@@ -312,7 +312,7 @@ def check(data: bytes, request: Request, answer: web.Response) -> str | None:
         if not any(a <= first and last <= b for a, b in covered):
             return f"bytes {first}-{last} did not come back"
     if len(wanted) == 1 and len(parts) == 1:
-        first, last, _ = content_range(parts[0][0]) or (0, 0, 0)
+        first, last = got[0]
         if (first, last) != wanted[0]:
             return f"asked for {wanted[0][0]}-{wanted[0][1]}, got {first}-{last}"
     return None

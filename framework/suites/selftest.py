@@ -26,16 +26,16 @@ removes. Each presents a read token of the session's profile, but
 `restart-cache`, which presents the setup token.
 """
 
+import functools
 import json
 import os
 import threading
 import time
-import traceback
 from concurrent.futures import Future
 from dataclasses import dataclass
 
 from testlib import common, control, credentials, director, jwt, metrics, stores, web
-from testlib.common import die, first, warn
+from testlib.common import die, first, outcome, warn
 from testlib.credentials import R
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
@@ -161,9 +161,7 @@ def trailers(test: Test) -> tuple[str, str]:
             problems.append(f"{cache.svc}: unasked, GET got {why}")
         elif answer.trailers or answer.header("Trailer"):
             problems.append(f"{cache.svc}: unasked, it sent trailers {answer.trailers}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(caches)} cache(s): '{TRANSFER_OK}' when asked, nothing otherwise"
+    return outcome(problems, f"{len(caches)} cache(s): '{TRANSFER_OK}' when asked, nothing otherwise")
 
 
 def claims_problems(ours: dict[str, object], theirs: dict[str, object], profile: str) -> list[str]:
@@ -316,6 +314,10 @@ def restart_cache(test: Test) -> tuple[str, str]:
     host = director.host(cache.url)
     v2 = cache.kind == "v2"
 
+    def unnamed() -> str | None:
+        named = director.naming(fed.directors, "object", path, host)
+        return None if len(named) == len(fed.directors) else f"only {named} named {host}"
+
     why = test.served(web.request("GET", url, token=test.setup))
     if why:
         return FAIL, f"before the restart, GET got {why}"
@@ -328,19 +330,15 @@ def restart_cache(test: Test) -> tuple[str, str]:
         if not common.wait_for(says_held, HELD_WAIT, interval=1):
             return FAIL, f"before the restart, no Age within {HELD_WAIT}s of a whole read"
         held = time.time()
-    named = director.naming(fed.directors, "object", path, host)
-    if len(named) != len(fed.directors):
-        return FAIL, f"before the restart, only {named} named {host}"
+    why = unnamed()
+    if why:
+        return FAIL, f"before the restart, {why}"
 
     control.restart(cache.svc)
     restarted = time.time()
-
-    def all_named() -> bool:
-        return len(director.naming(fed.directors, "object", path, host)) == len(fed.directors)
-
-    if not common.wait_for(all_named, NAMED_WAIT, interval=5):
-        named = director.naming(fed.directors, "object", path, host)
-        return FAIL, f"{NAMED_WAIT}s after the restart, only {named} named {host}"
+    why = control.settle(unnamed, NAMED_WAIT)
+    if why:
+        return FAIL, f"after the restart, {why}"
     took = time.time() - restarted
 
     answer = web.Response(None)
@@ -420,9 +418,7 @@ def pool(_test: Test) -> tuple[str, str]:
             workers.submit(done.append, n)
     if sorted(done) != list(range(10)):
         problems.append(f"left as usual, it had run only tasks {sorted(done)} of 10 as it ended")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"abandoned, it cancelled 8 queued tasks, and ended in {took:.1f}s"
+    return outcome(problems, f"abandoned, it cancelled 8 queued tasks, and ended in {took:.1f}s")
 
 
 # The scenarios, by name: each takes the Test, and returns its result and
@@ -442,10 +438,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     The object is put in place at every origin.
     """
     fed = session.fed
-    for origin in stores.unique(fed.origins):
-        directory = f"{origin.store_of(NAMESPACE)}/data/selftest"
-        if not origin.pstore and not os.path.isdir(directory):
-            die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    stores.require_dirs(fed.origins, [NAMESPACE], "data/selftest")
     tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
@@ -471,13 +464,6 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         if errors:
             die(f"could not put the object in place: {errors[0]}")
         for name in selected:
-            try:
-                status, note = RUN[name](test)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                status, note = FAIL, f"{type(e).__name__}: {e}"
-            results.add(name, status, note)
+            results.add(name, *common.guarded(functools.partial(RUN[name], test), lambda why: (FAIL, why)))
     finally:
         clean("after the run")

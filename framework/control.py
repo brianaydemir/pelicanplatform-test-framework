@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --quiet --frozen --no-dev
 """Control the federation's services for the tests in the dev container.
 
 The dev container has no Docker.

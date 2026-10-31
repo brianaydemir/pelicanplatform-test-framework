@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.13
 """Run the basic functionality tests against the running federation.
 
 Runs every suite that applies to the federation's shape, over every
@@ -325,6 +325,34 @@ def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report,
     return report, error is None
 
 
+def run_passes(chosen: dict[str, list[str]], sessions: list[Session]) -> list[Report]:
+    """Run each chosen suite's pass in each of sessions, in turn.
+
+    Stops once a suite with REQUIRED scenarios does not finish in the
+    first session's pass.
+
+    Returns:
+        Each pass's report, in the order the passes ran.
+    """
+    reports: list[Report] = []
+    for name, selected in chosen.items():
+        for session in sessions:
+            scenarios = in_pass(name, selected, session.profile)
+            if not scenarios:
+                continue
+            report, finished = run_suite(name, scenarios, session)
+            reports.append(report)
+            required = getattr(SUITES[name], "REQUIRED", ())
+            # The first pass shows whether the federation serves at all.
+            if not finished and required and session is sessions[0]:
+                print(
+                    f"\n{common.PROG}: stopping: {name} did not finish, so nothing else can pass",
+                    file=sys.stderr,
+                )
+                return reports
+    return reports
+
+
 def summarize(reports: list[Report], seconds: float) -> None:
     """Print each suite's counts, then every failed or unsure case.
 
@@ -408,32 +436,13 @@ def main() -> int:
             for profile in PROFILES:
                 with contextlib.suppress(FileNotFoundError):
                     os.remove(Report(suite_name(name, profile), RESULTS).path)
-    reports: list[Report] = []
     started = time.monotonic()
     with tempfile.TemporaryDirectory() as tmp:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         first = Session(tmp, profiles[0], run=stamp)
         sessions = [first] + [Session(tmp, p, first.fed, stamp) for p in profiles[1:]]
         print(f"Testing {first.fed.url}: {describe(first.fed)}")
-        stopped = False
-        for name, selected in chosen.items():
-            for session in sessions:
-                scenarios = in_pass(name, selected, session.profile)
-                if not scenarios:
-                    continue
-                report, finished = run_suite(name, scenarios, session)
-                reports.append(report)
-                required = getattr(SUITES[name], "REQUIRED", ())
-                # The first pass shows whether the federation serves at all.
-                if not finished and required and session is first:
-                    print(
-                        f"\n{common.PROG}: stopping: {name} did not finish, so nothing else" + " can pass",
-                        file=sys.stderr,
-                    )
-                    stopped = True
-                    break
-            if stopped:
-                break
+        reports = run_passes(chosen, sessions)
     summarize(reports, time.monotonic() - started)
     status = 1 if any(r.failed for r in reports) else 0
     left = lingering()

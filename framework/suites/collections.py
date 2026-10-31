@@ -93,7 +93,7 @@ from testlib.collections import (
     set_metadata,
     share,
 )
-from testlib.common import die, objects, warn
+from testlib.common import die, objects, outcome, warn
 from testlib.credentials import PROTECTED
 from testlib.issuer import DATA_SCOPES, ClientRun, data_scopes
 from testlib.report import FAIL, PASS, SKIP
@@ -310,11 +310,6 @@ class Test:
 def rfc3339(when: float) -> str:
     """Format when (seconds since the epoch) as a server reads it."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when))
-
-
-def outcome(problems: Sequence[str], note: str) -> tuple[str, str]:
-    """Return a row: the first problem, or note if there were none."""
-    return (FAIL, common.first(problems)) if problems else (PASS, note)
 
 
 # --------------------------------------------------------------------------

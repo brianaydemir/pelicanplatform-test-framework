@@ -42,6 +42,6 @@ The others are framework/init-data.py, control.py, and report.py.
                credentials for it
   webdav       PROPFIND, and reading the listings it gets; COPY and MOVE
 
-The standard library only. The tests, in the dev container, need
-Python 3.12; the scripts on the host that import testlib, 3.10.
+The standard library only, under the Python that pyproject.toml
+requires.
 """

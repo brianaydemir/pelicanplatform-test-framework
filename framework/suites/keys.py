@@ -32,13 +32,13 @@ its one rotation; rows for other profiles end in the profile's name
 (e.g. `new-key origin-0 scitokens`).
 """
 
+import functools
 import glob
 import json
 import os
 import shutil
 import subprocess  # nosec B404
 import time
-import traceback
 from collections.abc import Callable, Sequence
 from urllib.parse import urlsplit
 
@@ -55,7 +55,7 @@ from testlib import (
     stores,
     web,
 )
-from testlib.common import die, first, warn
+from testlib.common import die, first, outcome, warn
 from testlib.issuer import User
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -88,9 +88,8 @@ NAMESPACE = "protected-a"
 # presents every profile's tokens itself.
 ONE_PROFILE = tuple(SCENARIOS)
 # A row: its case (appended to the scenario's name, if any), its status,
-# and its note. A scenario returns its status and note, or its rows.
+# and its note. A scenario returns its rows.
 Row = tuple[str, str, str]
-Rows = tuple[str, str] | list[Row]
 
 # How long the registry and a server's JWKS may take to show a key added
 # or removed: the servers reread their key directories every minute.
@@ -138,14 +137,6 @@ def skip(fed: common.Federation) -> str | None:
     if NAMESPACE not in fed.exports:
         return "this shape does not export /protected-a"
     return None
-
-
-def outcome(problems: Sequence[str], note: str) -> Row:
-    """Return a row with no case: FAIL with problems, or PASS with note.
-
-    A FAIL's note is the first of problems.
-    """
-    return ("", FAIL, first(problems)) if problems else ("", PASS, note)
 
 
 # --------------------------------------------------------------------------
@@ -434,16 +425,30 @@ def hot_add(test: Test) -> list[Row]:
     }
     host = test.origin_host()
     rows: list[Row] = []
-    seen: dict[str, float] = {}
-    dropped: float | None = None
-    started = time.monotonic()
-    while time.monotonic() - started < KEY_WAIT and len(seen) < len(sources):
-        for case, url in sources.items():
-            if case not in seen and kid in (key_ids_at(url) or ()):
-                seen[case] = time.monotonic() - started
-        if dropped is None and len(test.named("origin", host)) != len(fed.directors):
-            dropped = time.monotonic() - started
-        time.sleep(5)
+    # How far into a watch a director first dropped origin-0, if one did.
+    dropped: list[float] = []
+
+    def watch(present: bool) -> dict[str, float]:
+        """Return how soon each source came to list the key (present), or not.
+
+        Each is asked until it does, for KEY_WAIT seconds at most; one
+        whose JWKS does not answer, or holds no key, does neither.
+        """
+        found: dict[str, float] = {}
+        started = time.monotonic()
+        while time.monotonic() - started < KEY_WAIT and len(found) < len(sources):
+            for case, url in sources.items():
+                if case in found:
+                    continue
+                kids = key_ids_at(url)
+                if kids and (kid in kids) == present:
+                    found[case] = time.monotonic() - started
+            if not dropped and len(test.named("origin", host)) != len(fed.directors):
+                dropped.append(time.monotonic() - started)
+            time.sleep(5)
+        return found
+
+    seen = watch(present=True)
     for case in sources:
         if case in seen:
             rows.append((case, PASS, f"the key appeared after {seen[case]:.0f}s"))
@@ -451,22 +456,14 @@ def hot_add(test: Test) -> list[Row]:
             rows.append((case, FAIL, f"the key never appeared in {KEY_WAIT}s"))
     remove_key(test.origin_dirs, name)
     test.added.remove((test.origin_dirs, name))
-    gone: dict[str, float] = {}
-    started = time.monotonic()
-    while time.monotonic() - started < KEY_WAIT and len(gone) < len(sources):
-        for case, url in sources.items():
-            if case not in gone and kid not in (key_ids_at(url) or {kid}):
-                gone[case] = time.monotonic() - started
-        if dropped is None and len(test.named("origin", host)) != len(fed.directors):
-            dropped = time.monotonic() - started
-        time.sleep(5)
+    gone = watch(present=False)
     if len(gone) < len(sources):
         still = [case for case in sources if case not in gone]
         rows.append(("removed", FAIL, f"{KEY_WAIT}s after the key was removed, it is still in {still}"))
     else:
         rows.append(("removed", PASS, f"gone within {max(gone.values()):.0f}s"))
-    if dropped is not None:
-        rows.append(("routing", FAIL, f"a director dropped origin-0 {dropped:.0f}s in"))
+    if dropped:
+        rows.append(("routing", FAIL, f"a director dropped origin-0 {dropped[0]:.0f}s in"))
     elif fed.directors:
         rows.append(("routing", PASS, f"{len(fed.directors)} director(s) named origin-0 throughout"))
     return rows
@@ -869,7 +866,7 @@ def master_key(test: Test) -> list[Row]:
     newest = keys[-1]
     retired = [k for k in keys if k != newest]
     kept = set_aside(test, cache.svc, retired, path)
-    before = sent_bytes(fed)
+    before = metrics.origins_sent_bytes(fed)
     problems: list[str] = []
     try:
         control.stop(cache.svc)
@@ -885,7 +882,7 @@ def master_key(test: Test) -> list[Row]:
                 age = held_with_age(test, cache)
                 if age is None:
                     problems.append("with the old keys retired, it does not serve the probe from its store")
-                after = sent_bytes(fed)
+                after = metrics.origins_sent_bytes(fed)
                 if before is not None and after is not None and after - before >= OBJECT_SIZE:
                     problems.append("with the old keys retired, the origins sent the probe again")
         except control.ControlError as e:
@@ -894,12 +891,7 @@ def master_key(test: Test) -> list[Row]:
         restored = restore_cache(test, cache, dirs, kept, retired)
         if restored:
             problems.append(restored)
-    rows.append(
-        (
-            "retired",
-            *outcome(problems, f"opened its store with {os.path.basename(newest)} alone")[1:],
-        )
-    )
+    rows.append(("retired", *outcome(problems, f"opened its store with {os.path.basename(newest)} alone")))
     return rows
 
 
@@ -1022,33 +1014,8 @@ def pstore_master_key(test: Test) -> list[Row]:
             )
         if why:
             problems.append(why)
-    rows.append(
-        (
-            "retired",
-            *outcome(problems, f"opened its store with {os.path.basename(newest)} alone")[1:],
-        )
-    )
+    rows.append(("retired", *outcome(problems, f"opened its store with {os.path.basename(newest)} alone")))
     return rows
-
-
-def sent_bytes(fed: common.Federation) -> float | None:
-    """Return how many bytes the native origins have sent for GETs.
-
-    Returns:
-        The bytes, or None where they keep no such counter, or one did
-        not answer.
-    """
-    if not fed.native_origins:
-        return None
-    total = 0.0
-    for origin in fed.origins:
-        found = metrics.fetch(origin.web_url)
-        if found is None:
-            return None
-        total += found.value(
-            "pelican_http_bytes_total", server_type="origin", direction="out", method="GET"
-        )
-    return total
 
 
 # --------------------------------------------------------------------------
@@ -1151,33 +1118,19 @@ def backups(test: Test) -> list[Row]:
                 problems.append(f"verify {os.path.basename(path)}: exit {status}: {last_line(err or out)}")
                 break
             verified += 1
-        rows.append((svc, *outcome(problems, f"{verified} encrypted backup(s) verified")[1:]))
+        rows.append((svc, *outcome(problems, f"{verified} encrypted backup(s) verified")))
     return rows
 
 
 # --------------------------------------------------------------------------
 
-RUN: dict[str, Callable[[Test], Rows]] = {
+RUN: dict[str, Callable[[Test], list[Row]]] = {
     "hot-add": hot_add,
     "hot-rotate": hot_rotate,
     "master-key": master_key,
     "pstore-master-key": pstore_master_key,
     "backups": backups,
 }
-
-
-def guarded(name: str, test: Test) -> list[Row]:
-    """Return scenario name's rows, or one failing row if it raised."""
-    try:
-        found = RUN[name](test)
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # scenario fails, and the rest still run.
-        traceback.print_exc()
-        return [("", FAIL, f"{type(e).__name__}: {e}")]
-    if isinstance(found, list):
-        return found
-    return [("", found[0], found[1])]
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
@@ -1190,7 +1143,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     print(f"Keys against {fed.url}, the probe at /{NAMESPACE}/{test.rel}\n")
     try:
         for name in selected:
-            for case, status, note in guarded(name, test):
+            rows = common.guarded(functools.partial(RUN[name], test), lambda why: [("", FAIL, why)])
+            for case, status, note in rows:
                 results.add(f"{name} {case}".strip(), status, note)
     finally:
         put_back(test)

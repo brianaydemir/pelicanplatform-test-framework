@@ -49,14 +49,13 @@ are the run's prefix at the registry and its client of the issuer.
 """
 
 import contextlib
-import json
 import os
 import secrets
 import subprocess  # nosec B404
 import threading
-import traceback
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -73,11 +72,11 @@ from testlib import (
     web,
 )
 from testlib.accounts import Api, ApiError
-from testlib.common import first, warn
+from testlib.common import first, outcome, warn
 from testlib.credentials import PROTECTED
 from testlib.issuer import ARCHIVE, DATA_SCOPES, IssuerError, User, data_scopes, project, scope
 from testlib.oidc import IdpUser, LoginError
-from testlib.report import FAIL, PASS, SKIP
+from testlib.report import FAIL, SKIP
 from testlib.session import Session, last_line
 from testlib.webapi import Server, servers
 
@@ -141,11 +140,6 @@ SETTLE_WAIT = 150
 REGISTER_TIMEOUT = 120.0
 OBJECT_SIZE = 4096
 TOKEN_LIFETIME = 3600
-
-
-def row(case: str, problems: Sequence[str], note: str) -> Row:
-    """Return case's row: FAIL with the first problem, or PASS with note."""
-    return (case, FAIL, first(problems)) if problems else (case, PASS, note)
 
 
 def skip(fed: common.Federation) -> str | None:
@@ -258,7 +252,7 @@ def enabled(test: Test) -> list[Row]:
     for server in test.servers:
         problems: list[str] = []
         answer = web.request("GET", server.web_url + oidc.ENABLED)
-        found = common.as_object(parsed(answer)) or {}
+        found = common.as_object(answer.json()) or {}
         listed = [str(x) for x in common.as_array(found.get("oidc_enabled_servers")) or []]
         if answer.status != 200:
             problems.append(f"GET {oidc.ENABLED}: {answer.describe()}")
@@ -269,7 +263,7 @@ def enabled(test: Test) -> list[Row]:
             started = oidc.begin(server.web_url)
         except LoginError as e:
             problems.append(str(e))
-            rows.append(row(server.name, problems, ""))
+            rows.append((server.name, *outcome(problems, "")))
             continue
         parts = urlsplit(started.authorize_url)
         query = {k: v[0] for k, v in parse_qs(parts.query).items()}
@@ -288,16 +282,10 @@ def enabled(test: Test) -> list[Row]:
             )
         if not query.get("state"):
             problems.append("the login carries no state")
-        rows.append(row(server.name, problems, f"{', '.join(sorted(server.roles))}: to the provider"))
+        rows.append(
+            (server.name, *outcome(problems, f"{', '.join(sorted(server.roles))}: to the provider"))
+        )
     return rows
-
-
-def parsed(answer: web.Response) -> Any:
-    """Return answer's body as JSON, or None if it is none."""
-    try:
-        return json.loads(answer.body) if answer.body else None
-    except ValueError:
-        return None
 
 
 # --------------------------------------------------------------------------
@@ -322,7 +310,7 @@ def login(test: Test) -> list[Row]:
             cookie = test.login(server.web_url, MEMBER)
             again = test.login(server.web_url, MEMBER)
         except LoginError as e:
-            rows.append(row(server.name, [str(e)], ""))
+            rows.append((server.name, FAIL, str(e)))
             continue
         me = oidc.whoami(server.web_url, cookie)
         if me.get("authenticated") is not True or me.get("user") != member.preferred_username:
@@ -360,7 +348,7 @@ def login(test: Test) -> list[Row]:
                 f"the provider logged {exchanges} code exchanges and {asked} userinfo requests"
                 + " for two logins"
             )
-        rows.append(row(server.name, problems, f"{member.preferred_username}, user"))
+        rows.append((server.name, *outcome(problems, f"{member.preferred_username}, user")))
     return rows
 
 
@@ -394,7 +382,7 @@ def callback(test: Test) -> list[Row]:
         problems.append(f"without the session cookie: {answer.describe()}, not 400")
     if answer.cookie("login"):
         problems.append("without the session cookie, a login cookie was set")
-    rows.append(row("no-session", problems, "400"))
+    rows.append(("no-session", *outcome(problems, "400")))
 
     parts = urlsplit(target)
     query = {k: v[0] for k, v in parse_qs(parts.query).items()}
@@ -406,7 +394,7 @@ def callback(test: Test) -> list[Row]:
         problems.append(f"with a forged state: {answer.describe()}, not 400")
     if answer.cookie("login"):
         problems.append("with a forged state, a login cookie was set")
-    rows.append(row("forged-state", problems, "400"))
+    rows.append(("forged-state", *outcome(problems, "400")))
 
     answer = oidc.finish(started.session, target)
     problems = []
@@ -417,7 +405,7 @@ def callback(test: Test) -> list[Row]:
         problems.append(f"the callback again, its code used: {again.describe()}, not an error")
     if again.cookie("login"):
         problems.append("the callback again, its code used, set a login cookie")
-    rows.append(row("used-code", problems, f"logged in once; then {again.describe()}"))
+    rows.append(("used-code", *outcome(problems, f"logged in once; then {again.describe()}")))
     return rows
 
 
@@ -454,7 +442,7 @@ def collision(test: Test) -> list[Row]:
     answer = api.call("GET", accounts.USERS)
     if answer.status not in (401, 403):
         problems.append(f"GET {accounts.USERS} as the user: {answer.describe()}, not refused")
-    return [row("", problems, f"became {me.get('user')}, user")]
+    return [("", *outcome(problems, f"became {me.get('user')}, user"))]
 
 
 # --------------------------------------------------------------------------
@@ -552,7 +540,7 @@ def registry_identity(test: Test) -> list[Row]:
     if approvals != 1:
         problems.append(f"the client announced {approvals} verification URLs, not one")
     stored = web.request("GET", f"{fed.registry_url}{registry.REGISTRY}{prefix}")
-    found = common.as_object(registry.parse(stored.body)) or {}
+    found = common.as_object(stored.json()) or {}
     if stored.status != 200 or not found:
         problems.append(f"GET {registry.REGISTRY}{prefix}: {stored.describe()}, not registered")
     else:
@@ -575,7 +563,7 @@ def registry_identity(test: Test) -> list[Row]:
     note = f"{prefix}: registered as {MEMBER}" + (
         ", owned by the registry's user of that identity" if test.registry_ids.get(MEMBER) else ""
     )
-    return [row("", problems, note)]
+    return [("", *outcome(problems, note))]
 
 
 # --------------------------------------------------------------------------
@@ -708,7 +696,7 @@ def admin_rows(test: Test, when: str) -> list[Row]:
         try:
             cookie = test.login(test.web, name)
         except LoginError as e:
-            rows.append(row(f"{when} {name}", [str(e)], ""))
+            rows.append((f"{when} {name}", FAIL, str(e)))
             continue
         me = oidc.whoami(test.web, cookie)
         role = me.get("role")
@@ -722,7 +710,7 @@ def admin_rows(test: Test, when: str) -> list[Row]:
             problems.append(f"GET {accounts.USERS}: {answer.describe()}, not 200")
         if not expect_admin and answer.status not in (401, 403):
             problems.append(f"GET {accounts.USERS}: {answer.describe()}, not refused")
-        rows.append(row(f"{when} {name}", problems, "admin" if expect_admin else "user"))
+        rows.append((f"{when} {name}", *outcome(problems, "admin" if expect_admin else "user")))
     return rows
 
 
@@ -767,7 +755,7 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
             cookie = test.login(test.web, name)
             granted = issuer.device_tokens(made.client, User(cookie=cookie), DATA_SCOPES)
         except (LoginError, IssuerError) as e:
-            rows.append(row(name, [str(e)], ""))
+            rows.append((name, FAIL, str(e)))
             continue
         tokens[name] = granted.access
         got = data_scopes(granted.access)
@@ -776,7 +764,7 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
             problems.append(f"granted {sorted(got)}, not {sorted(want)}")
         if group not in issuer.groups(granted.access):
             problems.append(f"the token's wlcg.groups {sorted(issuer.groups(granted.access))} lack {group}")
-        rows.append(row(name, problems, f"{group}: {len(want)} scopes"))
+        rows.append((name, *outcome(problems, f"{group}: {len(want)} scopes")))
     problems = []
     try:
         cookie = test.login(test.web, OUTSIDER)
@@ -791,7 +779,7 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
         if got:
             problems.append(f"granted {sorted(got)} to a user in no group")
         note = "a token of no data scope"
-    rows.append(row(OUTSIDER, problems, note))
+    rows.append((OUTSIDER, *outcome(problems, note)))
 
     problems = []
     tok = tokens.get(MEMBER)
@@ -818,7 +806,7 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
         problems.append(f"`pelican object get` with the token: exit {code}: {last_line(err or out)}")
     elif common.sha256(target) != common.digest(data_a):
         problems.append("`pelican object get` with the token: the file is not the object")
-    rows.append(row("data", problems, f"{PROJECT_A}'s object read, {PROJECT_B}'s refused"))
+    rows.append(("data", *outcome(problems, f"{PROJECT_A}'s object read, {PROJECT_B}'s refused")))
     return rows
 
 
@@ -856,7 +844,14 @@ def client_rows(test: Test, made: Restarted) -> list[Row]:
         problems.append("the client started no device flow")
     if common.sha256(target) != common.digest(data):
         problems.append("the file is not the object")
-    return [row("", problems, f"{done.approvals} flow(s) approved as {MEMBER}")]
+    return [("", *outcome(problems, f"{done.approvals} flow(s) approved as {MEMBER}"))]
+
+
+def guarded(check: Callable[[], list[Row]]) -> list[Row]:
+    """Return check()'s rows, or one failing row if it raised."""
+    return common.guarded(
+        check, lambda note: [("", FAIL, note)], (ApiError, stores.Unreadable, IssuerError)
+    )
 
 
 def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Row], None]) -> None:
@@ -880,14 +875,17 @@ def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Ro
     wanted = [s for s in wanted if s == "admin" or not lacking]
     if not wanted:
         return
+    checks: dict[str, Callable[[], list[Row]]] = {"admin": partial(admin_rows, test, "restarted")}
     made: Restarted | None = None
-    try:
-        if not lacking:
+    if not lacking:
+        try:
             made = seed(test)
-    except (ApiError, stores.Unreadable) as e:
-        for scenario in wanted:
-            record(scenario, ("", FAIL, str(e)))
-        return
+        except (ApiError, stores.Unreadable) as e:
+            for scenario in wanted:
+                record(scenario, ("", FAIL, str(e)))
+            return
+        checks["groups"] = partial(group_rows, test, made)
+        checks["client"] = partial(client_rows, test, made)
     print(f"\nRestarting {test.origin.svc} with:\n{RESTART_CONFIG}")
     done: set[str] = set()
     try:
@@ -898,19 +896,7 @@ def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Ro
                     record(scenario, ("", FAIL, f"with {test.origin.svc} restarted, {why}"))
                     done.add(scenario)
                     continue
-                try:
-                    if scenario == "admin":
-                        rows = admin_rows(test, "restarted")
-                    elif scenario == "groups" and made:
-                        rows = group_rows(test, made)
-                    elif made:
-                        rows = client_rows(test, made)
-                    else:
-                        rows = []
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    traceback.print_exc()
-                    rows = [("", FAIL, f"{type(e).__name__}: {e}")]
-                for found in rows:
+                for found in guarded(checks[scenario]):
                     record(scenario, found)
                 done.add(scenario)
     except control.ControlError as e:
@@ -968,15 +954,6 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     for name in selected:
         if name in RUN:
             print(f"  {name} ...")
-            try:
-                rows = RUN[name](test)
-            except (ApiError, stores.Unreadable, IssuerError) as e:
-                rows = [("", FAIL, str(e))]
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                rows = [("", FAIL, f"{type(e).__name__}: {e}")]
-            for found in rows:
+            for found in guarded(partial(RUN[name], test)):
                 record(name, found)
     run_restarted(test, selected, record)

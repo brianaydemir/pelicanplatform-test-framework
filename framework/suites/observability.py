@@ -49,14 +49,13 @@ import json
 import re
 import subprocess  # nosec B404
 import time
-import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlencode
 
 from testlib import accounts, common, credentials, director, jwt, metrics, stores, web, webapi
-from testlib.common import first, warn
+from testlib.common import first, outcome, warn
 from testlib.credentials import RWM, R
 from testlib.director import expected_targets
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
@@ -311,13 +310,7 @@ def parse(answer: web.Response) -> dict[str, Any]:
 
 def guarded(check: Callable[[], list[Row]]) -> list[Row]:
     """Return check()'s rows, or one failing row if it raised."""
-    try:
-        return check()
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # scenario fails, and the rest still run.
-        traceback.print_exc()
-        return [("", FAIL, f"{type(e).__name__}: {e}")]
+    return common.guarded(check, lambda note: [("", FAIL, note)])
 
 
 def each_server(
@@ -333,16 +326,6 @@ def each_server(
         for case, status, note in guarded(functools.partial(check, server)):
             rows.append((case or server.name, status, note))
     return rows
-
-
-def outcome(case: str, problems: Sequence[str], note: str) -> Row:
-    """Return a row for case.
-
-    Returns:
-        FAIL with the first of problems, or PASS with note if there are
-        none.
-    """
-    return (case, FAIL, first(problems)) if problems else (case, PASS, note)
 
 
 def cookie(test: Test, server: Server) -> dict[str, str]:
@@ -549,7 +532,7 @@ def health_metrics(test: Test) -> list[Row]:
         note = f"{len(steady)} component(s) agree"
         if moved:
             note += f"; {', '.join(moved)} changed meanwhile"
-        return [outcome("", problems, note)]
+        return [("", *outcome(problems, note))]
 
     return each_server(test, check)
 
@@ -713,7 +696,7 @@ def scrape_rows(test: Test) -> list[Row]:
     for server in test.servers:
         what = f"itself and {len(targets)} origin(s) and cache(s)"
         note = what if server in directors else "itself"
-        rows.append(outcome(f"{server.name} scrapes", found.get(server.name, []), note))
+        rows.append((f"{server.name} scrapes", *outcome(found.get(server.name, []), note)))
     return rows
 
 
@@ -841,7 +824,7 @@ def http_metrics(test: Test) -> list[Row]:
     if sent < len(data):
         problems.append(f"{BYTES} in, for PUT, rose by {sent:g}, not {len(data)} or more")
     storage(STORAGE_WRITES, problems)
-    rows.append(outcome("put", problems, f"{len(data)} bytes in"))
+    rows.append(("put", *outcome(problems, f"{len(data)} bytes in")))
 
     problems = []
     if got.status != 200 or got.body != data:
@@ -851,13 +834,13 @@ def http_metrics(test: Test) -> list[Row]:
     if served < len(data):
         problems.append(f"{BYTES} out, for GET, rose by {served:g}, not {len(data)} or more")
     storage(STORAGE_READS, problems)
-    rows.append(outcome("get", problems, f"{served:g} bytes out"))
+    rows.append(("get", *outcome(problems, f"{served:g} bytes out")))
 
     problems = []
     if missing.status != 404:
         problems.append(f"the GET of nothing got {missing.describe()}, not 404")
     count("the GET of nothing", "GET", "404", problems)
-    rows.append(outcome("missing", problems, "counted as 404"))
+    rows.append(("missing", *outcome(problems, "counted as 404")))
 
     if public_reads:
         rows.append(("refused", SKIP, f"reads of /{namespace} take no token to refuse"))
@@ -870,7 +853,7 @@ def http_metrics(test: Test) -> list[Row]:
         series = rose(before, after, REQUESTS, server_type="origin", method="GET", code=code)
         if not series:
             problems.append(f"no {REQUESTS} for GET {code} rose")
-    rows.append(outcome("refused", problems, f"counted as {code}"))
+    rows.append(("refused", *outcome(problems, f"counted as {code}")))
     return rows
 
 
@@ -1019,7 +1002,7 @@ def raise_row(test: Test, server: Server) -> tuple[Row, Raised | None]:
         problems.append(f"the level is {now.get('currentLevel')}, not {level}")
     if active(now).get(change) != level:
         problems.append(f"it lists changes {active(now)}, not {change} to {level}")
-    return outcome(case, problems, f"{before} to {level} for {LEVEL_DURATION}s"), found
+    return (case, *outcome(problems, f"{before} to {level} for {LEVEL_DURATION}s")), found
 
 
 def expiry_rows(test: Test, changes: Sequence[Raised]) -> list[Row]:
@@ -1546,8 +1529,8 @@ def xrootd_rows(test: Test, target: XrootdTarget) -> list[Row]:
         problems.append(f"it says requiresRestart {found.get('requiresRestart')!r}")
     seen = watch_restart(test, target, served)
     trouble, outage = restart_problems(seen)
-    rows.append(outcome(case, problems + trouble, f"{target.parameter} to {level}; {outage}"))
-    rows.append(outcome(f"{name} named", named_problems(test, target), "by every director"))
+    rows.append((case, *outcome(problems + trouble, f"{target.parameter} to {level}; {outage}")))
+    rows.append((f"{name} named", *outcome(named_problems(test, target), "by every director")))
 
     deleted = delete_change(test, target.server, change)
     case = f"{name} restored"
@@ -1557,7 +1540,7 @@ def xrootd_rows(test: Test, target: XrootdTarget) -> list[Row]:
     seen = watch_restart(test, target, served)
     trouble, outage = restart_problems(seen)
     trouble += named_problems(test, target)
-    rows.append(outcome(case, trouble, f"back to {current or 'its default'}; {outage}"))
+    rows.append((case, *outcome(trouble, f"back to {current or 'its default'}; {outage}")))
     return rows
 
 

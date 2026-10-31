@@ -35,7 +35,6 @@ topology, whose origin is the whole federation's process, it skips.
 
 import glob
 import os
-import re
 import shutil
 import socket
 import ssl
@@ -43,15 +42,15 @@ import subprocess  # nosec B404
 import sys
 import threading
 import time
-import traceback
 from collections.abc import Callable
+from functools import partial
 from html.parser import HTMLParser
 from http.client import HTTPException, HTTPSConnection
 from typing import override
 from urllib.parse import unquote, urlsplit
 
 from testlib import blocks, common, control, director, metrics, stores, web, webdav
-from testlib.common import die, first, shown, wait_for, warn
+from testlib.common import die, first, outcome, shown, wait_for, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -128,7 +127,10 @@ FINISH_WAIT = 300
 
 
 class CouldNotConnect(Exception):
-    """partial_put()'s failure to connect, or finish the TLS handshake."""
+    """partial_put()'s failure to connect, or finish the TLS handshake.
+
+    Its message says that it could not connect, and why.
+    """
 
 
 def partial_put(
@@ -167,7 +169,7 @@ def partial_put(
     try:
         sock = socket.create_connection((u.hostname, u.port or 443), timeout=60)
     except OSError as e:
-        raise CouldNotConnect(str(e)) from e
+        raise CouldNotConnect(f"could not connect: {e}") from e
     try:
         # TLS over memory buffers, so that the socket can be half-closed
         # without TLS saying goodbye.
@@ -198,7 +200,7 @@ def partial_put(
                         raise OSError("connection closed during the TLS handshake") from None
             flush()
         except OSError as e:  # including ssl.SSLError
-            raise CouldNotConnect(f"TLS handshake: {e}") from e
+            raise CouldNotConnect(f"could not connect: TLS handshake: {e}") from e
 
         target = u.path + (f"?{u.query}" if u.query else "")
         length = f"Content-Length: {total}" if mode == "sized" else "Transfer-Encoding: chunked"
@@ -276,7 +278,6 @@ class Test:
         pelican: The path of the pelican client.
         env: The environment to run the client in.
         origin: The first origin, to which uploads go.
-        origin_web: The first origin's web URL, with no path.
         kind: How uploads are staged: `posc`, `atomic` (XRootD's), or
             `pstore`; or `plain`, for an origin that stages nothing.
         pstore: Whether kind is `pstore`.
@@ -304,7 +305,6 @@ class Test:
         self.pelican = session.pelican
         self.env = session.env
         self.origin = fed.origins[0]
-        self.origin_web = re.sub(r"^(https://[^/]*).*", r"\1", self.origin.url)
         if fed.posc:
             self.kind = "posc"
         elif fed.atomic_uploads:
@@ -504,7 +504,7 @@ class Upload:
         try:
             self.status = test.partial_put(name, mode, total, send, hold, self.sent, self.released)
         except CouldNotConnect as e:
-            self.error = f"could not connect: {e}"
+            self.error = str(e)
         except Exception as e:  # pylint: disable=broad-exception-caught
             # The thread's end: the scenario fails with it.
             self.error = f"{type(e).__name__}: {e}"
@@ -613,7 +613,7 @@ def held_open(test: Test, name: str) -> tuple[str, str]:
     if answer.status != 404:
         return FAIL, f"HEAD got {answer.describe()}, not 404"
     if test.kind == "posc":
-        found = metrics.fetch(test.origin_web) or metrics.EMPTY
+        found = metrics.fetch(test.origin.web_url) or metrics.EMPTY
         if not found.has(POSC_ACTIVE):
             return FAIL, f"/metrics has no {POSC_ACTIVE}"
         if found.value(POSC_ACTIVE) < 1:
@@ -868,7 +868,7 @@ def hidden(test: Test) -> tuple[str, str]:
     entry. The export holds data/, which both must show.
     """
     name = f"{test.run}-hidden"
-    posc_dir = f"{test.origin.store_of('protected-a')}/.pelican-posc"
+    posc_dir = staging_root(test)
     url = f"{test.origin.url}/protected-a/"
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
@@ -919,15 +919,7 @@ class Problem(Exception):
 
 def guarded(check: Callable[[], Row]) -> Row:
     """Return check's row, or a FAIL if it could not set up, or raised."""
-    try:
-        return check()
-    except Problem as e:
-        return FAIL, str(e)
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the row
-        # fails, and the rest still run.
-        traceback.print_exc()
-        return FAIL, f"{type(e).__name__}: {e}"
+    return common.guarded(check, lambda note: (FAIL, note), (Problem,))
 
 
 def staging_root(test: Test) -> str:
@@ -971,7 +963,7 @@ def plant(test: Test, age: float) -> str:
 
 def expired(test: Test) -> float:
     """Return POSC_EXPIRED at the first origin; 0 if it does not answer."""
-    return (metrics.fetch(test.origin_web) or metrics.EMPTY).value(POSC_EXPIRED)
+    return (metrics.fetch(test.origin.web_url) or metrics.EMPTY).value(POSC_EXPIRED)
 
 
 def reaped(test: Test, age: float, timeout: str) -> list[str]:
@@ -1029,9 +1021,7 @@ def expiry_stale(test: Test) -> Row:
     file must be reaped at the next sweep, and counted.
     """
     problems = reaped(test, STALE_AGE, "1h, the default")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"reaped within {REAP_WAIT}s, and counted"
+    return outcome(problems, f"reaped within {REAP_WAIT}s, and counted")
 
 
 def expiry_staging_put(test: Test) -> Row:
@@ -1049,7 +1039,7 @@ def expiry_staging_put(test: Test) -> Row:
     left = f"{staging_root(test)}/{name}"
     if os.path.exists(left):
         problems.append(f"PUT {url} ({answer.describe()}) left {shown(left)}")
-    return (FAIL, first(problems)) if problems else (PASS, answer.describe())
+    return outcome(problems, answer.describe())
 
 
 def expiry_staging_mkcol(test: Test) -> Row:
@@ -1067,7 +1057,7 @@ def expiry_staging_mkcol(test: Test) -> Row:
     left = f"{staging_root(test)}/{name}"
     if os.path.exists(left):
         problems.append(f"MKCOL {url} ({answer.describe()}) made {shown(left)}")
-    return (FAIL, first(problems)) if problems else (PASS, answer.describe())
+    return outcome(problems, answer.describe())
 
 
 def expiry_idle(test: Test) -> Row:
@@ -1113,9 +1103,7 @@ def expiry_idle(test: Test) -> Row:
         problems.append(f"the upload got HTTP {status}, having idled {IDLE}s")
     elif not test.holds(name, data):
         problems.append(f"HTTP {status}, but the object is not the whole upload")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"idled {IDLE}s, past the {FILE_TIMEOUT}s timeout; HTTP {status}, whole"
+    return outcome(problems, f"idled {IDLE}s, past the {FILE_TIMEOUT}s timeout; HTTP {status}, whole")
 
 
 def unrestartable(test: Test) -> str | None:
@@ -1266,16 +1254,10 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 for case, row in posc_expiry(test).items():
                     results.add(f"{name} {case}", *row)
                 continue
-            try:
-                status, note = RUN[name](test)
-            except CouldNotConnect as e:
-                status, note = FAIL, f"could not connect: {e}"
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                status, note = FAIL, f"{type(e).__name__}: {e}"
-            results.add(name, status, note)
+            results.add(
+                name,
+                *common.guarded(partial(RUN[name], test), lambda note: (FAIL, note), (CouldNotConnect,)),
+            )
     finally:
         # Every scenario's objects, and whatever an interrupted upload left;
         # and posc-expiry's own staging directory.

@@ -47,7 +47,6 @@ purges, chaos, and scans are in `purge` and `consistency`.
 import json
 import os
 import time
-import traceback
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
 from typing import Any
@@ -55,7 +54,7 @@ from urllib.parse import quote, urlencode, urlsplit
 
 from testlib import blocks, cacheapi, common, credentials, jwt, metrics, stores, web
 from testlib.blocks import cache_dir, read_cinfo, store_bytes
-from testlib.common import Findings, die, first, warn
+from testlib.common import Findings, first, outcome, warn
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -326,9 +325,7 @@ def prestage_probe(test: Test) -> Row:
             answer = prestage(cache, path, test.read_token)
             if answer.status != 400:
                 problems.append(f"{cache.svc}, {what}: {answer.describe()}, not 400")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
 def prestage_refused(test: Test) -> Row:
@@ -353,9 +350,7 @@ def prestage_refused(test: Test) -> Row:
         found = test.held(cache, rel)
         if found is not False:
             problems.append(f"{cache.svc}: the object is {held_word(found)} afterward")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
 def prestage_object(test: Test) -> Row:
@@ -390,9 +385,7 @@ def prestage_object(test: Test) -> Row:
         why = progress_problem(prestage(cache, test.path(rel), test.read_token))
         if why:
             problems.append(f"{cache.svc}: a second prestage: {why}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
 def prestage_missing(test: Test) -> Row:
@@ -412,9 +405,7 @@ def prestage_missing(test: Test) -> Row:
             problems.append(f"{cache.svc}: {answer.describe()}, not 200: {text(answer)}")
         elif not last.startswith("failure: 404"):
             problems.append(f"{cache.svc}: ending '{last[:200]}', not 'failure: 404(Not Found): ...'")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
 def prestage_name(test: Test) -> Row:
@@ -445,9 +436,7 @@ def prestage_name(test: Test) -> Row:
             found = test.held(cache, rel)
             if found is not want:
                 problems.append(f"{cache.svc}: '{leaf(rel)}' is {held_word(found)} afterward")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
 def whole_at(test: Test, cache: common.Cache, rel: str) -> bool:
@@ -522,9 +511,7 @@ def prestage_client(test: Test) -> Row:
     note = f"{len(test.caches)} cache(s)" + (
         "" if listable else "; no collection, since /protected-a cannot be listed directly"
     )
-    if problems:
-        return FAIL, first(problems)
-    return PASS, note
+    return outcome(problems, note)
 
 
 # --------------------------------------------------------------------------
@@ -610,9 +597,9 @@ def evict_refused(test: Test) -> Row:
             answer = web.request("HEAD", f"{cache.url}{quote(path)}", headers=ONLY_IF_CACHED)
             if answer.status != 200:
                 problems.append(f"{cache.svc}: only-if-cached of {path} got {answer.describe()}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)" + (f"; no /public object: {no_public}" if no_public else "")
+    return outcome(
+        problems, f"{len(test.v2)} V2 cache(s)" + (f"; no /public object: {no_public}" if no_public else "")
+    )
 
 
 def public_object(test: Test) -> tuple[tuple[str, bytes] | None, str]:
@@ -672,9 +659,7 @@ def evict_immediate(test: Test) -> Row:
                 problems.append(
                     f"{cache.svc}, {method}: a GET afterward got {served(answer, objects[rel])}"
                 )
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s), by {', '.join(methods)}"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s), by {', '.join(methods)}")
 
 
 def evict_marked(test: Test) -> Row:
@@ -700,9 +685,7 @@ def evict_marked(test: Test) -> Row:
         if found is not True:
             problems.append(f"{cache.svc}: the object is {held_word(found)} afterward")
         unmark(test, rel)
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
 def unmark(test: Test, rel: str) -> None:
@@ -738,9 +721,7 @@ def evict_prefix(test: Test) -> Row:
             found = test.held(cache, f"{base}/{name}")
             if found is not want_held:
                 problems.append(f"{cache.svc}: {name} is {held_word(found)} afterward")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
 def evict_name(test: Test) -> Row:
@@ -766,9 +747,7 @@ def evict_name(test: Test) -> Row:
                 problems.append(
                     f"{cache.svc}: '{leaf(rel)}' is {held_word(found)} afterward ('{text(answer)}')"
                 )
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
 def client_evict(test: Test, rel: str, immediate: bool) -> tuple[int, str]:
@@ -816,9 +795,7 @@ def evict_client(test: Test) -> Row:
             problems.append(f"{flag}: {', '.join(gone)} lack(s) it afterward")
         if not immediate:
             unmark(test, rel)
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
 # --------------------------------------------------------------------------
@@ -936,10 +913,7 @@ def admin_authz(test: Test, results: common.Results) -> None:
                 if answer.status not in wanted:
                     shown = " or ".join(str(n) for n in wanted)
                     problems.append(f"{what}: {answer.describe()}, not {shown}")
-            if problems:
-                results.add(row, FAIL, first(problems))
-            else:
-                results.add(row, PASS, f"{len(tries)} credentials")
+            results.add(row, *outcome(problems, f"{len(tries)} credentials"))
 
 
 # --------------------------------------------------------------------------
@@ -1050,7 +1024,7 @@ def purge_to_target(test: Test) -> Row:
             continue
         target = usage - 1
         answer = purge_request(test, cache, cacheapi.PURGE_TO_TARGET, {"target_bytes": target})
-        said = common.as_object(cacheapi.decoded(answer)) or {}
+        said = common.as_object(answer.json()) or {}
         freed = said.get("freed_bytes")
         if answer.status != 200 or not isinstance(freed, int) or freed <= 0:
             problems.append(f"{cache.svc}, a target of {target}: {answer.describe()} {text(answer)}")
@@ -1072,9 +1046,7 @@ def purge_to_target(test: Test) -> Row:
                 + f" to a byte below its usage (freed {freed} of {usage} bytes)"
             )
         notes.append(f"{cache.svc} freed {freed} of {usage} bytes")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "; ".join(notes)
+    return outcome(problems, "; ".join(notes))
 
 
 def purge_first(test: Test) -> Row:
@@ -1109,9 +1081,7 @@ def purge_first(test: Test) -> Row:
             found = test.held(cache, rel)
             if found is not (rel != marked):
                 problems.append(f"{cache.svc}: {leaf(rel)} is {held_word(found)} afterward")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "; ".join([f"{len(test.v2)} V2 cache(s)"] + notes)
+    return outcome(problems, "; ".join([f"{len(test.v2)} V2 cache(s)"] + notes))
 
 
 def purge_marked(test: Test, cache: common.Cache, marked: str) -> tuple[str | None, int]:
@@ -1157,9 +1127,7 @@ def purge_all(test: Test) -> Row:
                 problems.append(f"{cache.svc} holds {usage} bytes, above its low water mark of {low}")
                 continue
         notes.append(f"{cache.svc} holds {usage} bytes")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "; ".join(notes)
+    return outcome(problems, "; ".join(notes))
 
 
 # --------------------------------------------------------------------------
@@ -1195,7 +1163,7 @@ def foreign_federation(test: Test) -> Row:
         answer = web.request(
             "GET", data_route(cache, "evil.invalid%3A443", test.path(rel)), token=test.token
         )
-        said = common.as_object(cacheapi.decoded(answer)) or {}
+        said = common.as_object(answer.json()) or {}
         if answer.status != 403 or said.get("error") != "federation_not_allowed":
             problems.append(f"{cache.svc}: {answer.describe()} '{text(answer)[:120]}'")
         if objects[rel] in answer.body:
@@ -1204,9 +1172,7 @@ def foreign_federation(test: Test) -> Row:
         found = test.held(cache, rel)
         if found is not False:
             problems.append(f"{cache.svc}: the object is {held_word(found)} afterward")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s)"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
 def own_federation(test: Test) -> Row:
@@ -1236,9 +1202,7 @@ def own_federation(test: Test) -> Row:
             )
             if answer.status != 200 or answer.body != objects[rel]:
                 problems.append(f"{cache.svc}, as {spelling}: {served(answer, objects[rel])}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(test.v2)} V2 cache(s): {', '.join(spellings)}"
+    return outcome(problems, f"{len(test.v2)} V2 cache(s): {', '.join(spellings)}")
 
 
 # --------------------------------------------------------------------------
@@ -1259,7 +1223,7 @@ def namespace_usage(test: Test, cache: common.Cache) -> tuple[int | None, str]:
     if found is None:
         return None, "its stats answered no JSON object"
     answer = cacheapi.introspect(cache, test.admin(cache), "GET", "stats")
-    names = common.as_object((common.as_object(cacheapi.decoded(answer)) or {}).get("namespace_names"))
+    names = common.as_object((common.as_object(answer.json()) or {}).get("namespace_names"))
     if answer.status != 200 or names is None:
         return None, f"introspect/stats answered {answer.describe()}, with no namespace_names"
     ids = {str(n) for n, prefix in names.items() if prefix == f"/{NAMESPACE}"}
@@ -1278,7 +1242,7 @@ def disk_usage(test: Test, cache: common.Cache) -> int | None:
     None, if it gives none.
     """
     answer = cacheapi.introspect(cache, test.admin(cache), "POST", "disk-usage")
-    found = common.as_object(cacheapi.decoded(answer)) or {}
+    found = common.as_object(answer.json()) or {}
     value = found.get("total_bytes_on_disk")
     return value if answer.status == 200 and isinstance(value, int) else None
 
@@ -1343,9 +1307,7 @@ def usage_accounting(test: Test) -> Row:
             problems.append(
                 f"{cache.svc}: introspect/disk-usage says {measured} bytes, its files {disk_after}"
             )
-    if problems:
-        return FAIL, first(problems)
-    return PASS, "; ".join([f"{len(test.v2)} V2 cache(s), {want} bytes each"] + notes)
+    return outcome(problems, "; ".join([f"{len(test.v2)} V2 cache(s), {want} bytes each"] + notes))
 
 
 def water_marks(test: Test) -> Row:
@@ -1368,9 +1330,7 @@ def water_marks(test: Test) -> Row:
         ]
         if (high, low) not in marks:
             problems.append(f"{cache.svc}: DirStats give {marks}, not {(high, low)}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, f"{len(bounded)} V2 cache(s)"
+    return outcome(problems, f"{len(bounded)} V2 cache(s)")
 
 
 # --------------------------------------------------------------------------
@@ -1478,7 +1438,7 @@ def corrupted(test: Test) -> dict[str, Row]:
             everywhere(f"{cache.svc}: the chaos API got {answer.describe()} {text(answer)}")
             continue
         answer = cacheapi.introspect(cache, admin, "POST", "verify", url=url)
-        said = common.as_object(cacheapi.decoded(answer)) or {}
+        said = common.as_object(answer.json()) or {}
         if answer.status != 200 or not isinstance(said.get("valid"), bool):
             verify.problems.append(f"{cache.svc}: {answer.describe()} {text(answer)}")
         elif said["valid"]:
@@ -1654,16 +1614,7 @@ def run_case(
     if (scenario, name) not in ANY_CACHE and not test.v2:
         results.add(row, SKIP, "this shape has no federated V2 cache")
         return
-    try:
-        status, note = case(test)
-    except stores.Unreadable as e:
-        status, note = FAIL, f"could not read a store: {e}"
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # A bug, or a server answering what the suite can't read: the
-        # case fails, and the rest still run.
-        traceback.print_exc()
-        status, note = FAIL, f"{type(e).__name__}: {e}"
-    results.add(row, status, note)
+    results.add(row, *common.guarded(partial(case, test), lambda note: (FAIL, note), (stores.Unreadable,)))
 
 
 def skip(fed: common.Federation) -> str | None:
@@ -1678,11 +1629,7 @@ def skip(fed: common.Federation) -> str | None:
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, and remove the run's objects."""
     fed = session.fed
-    for origin in stores.unique(fed.origins):
-        for namespace in stores.storage_namespaces(origin, fed.exports):
-            directory = f"{origin.store_of(namespace)}/data/cache-api"
-            if not origin.pstore and not os.path.isdir(directory):
-                die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    stores.require_dirs(fed.origins, fed.exports, "data/cache-api")
     tokens = session.setup_tokens()
 
     def clean(when: str) -> None:
@@ -1699,11 +1646,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 if not test.v2:
                     results.add(scenario, SKIP, "this shape has no federated V2 cache")
                     continue
-                try:
-                    admin_authz(test, results)
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    traceback.print_exc()
-                    results.add(scenario, FAIL, f"{type(e).__name__}: {e}")
+                common.guarded(partial(admin_authz, test, results), partial(results.add, scenario, FAIL))
                 continue
             for name, case in CASES[scenario]:
                 run_case(test, scenario, name, case, results)

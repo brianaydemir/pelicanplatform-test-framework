@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --quiet --frozen --no-dev
 """Create the shape's test objects and the collections the suites write in.
 
   framework/init-data.py                build them

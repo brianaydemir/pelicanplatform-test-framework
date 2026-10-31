@@ -12,16 +12,17 @@ server allows an address a login a second (Server.UILoginRateLimit),
 counted by whole seconds of the clock.
 """
 
+import json
 import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
 
 from . import accounts, common, credentials, director, jwt, web
-from .common import first
-from .report import FAIL, PASS
+from .common import outcome
 from .session import Session
 
 API = "/api/v1.0"
@@ -251,7 +252,7 @@ def judge(case: str, expects: Sequence[Expect], extra: Sequence[str] = ()) -> tu
     ]
     problems += list(extra)
     seen = ", ".join(f"{label} {answer.status}" for label, answer, _ in expects)
-    return (case, FAIL, first(problems)) if problems else (case, PASS, seen)
+    return (case, *outcome(problems, seen))
 
 
 def server_settings(access: Access, server: Server) -> dict[str, Any]:
@@ -279,6 +280,37 @@ def other_key(access: Access, server: Server) -> tuple[str, str]:
         if jwt.public_jwk(other.key) != own:
             return other.key, f"{other.name}'s key"
     return credentials.keys(access.fed)["unknown"], "unknown.pem"
+
+
+def create_token(
+    web_url: str,
+    name: str,
+    scopes: Sequence[str],
+    expires: datetime,
+    cookie: str = "",
+    token: str | None = None,
+) -> web.Response:
+    """POST a request for an API token of scopes to the server at web_url.
+
+    The token is named name, and expires at expires. The request carries
+    the login cookie, or the bearer token. made_token() reads the answer.
+    """
+    body = {"name": name, "scopes": list(scopes), "expiration": common.timestamp(expires)}
+    headers = dict(accounts.JSON)
+    if cookie:
+        headers.update(cookie_header(login=cookie))
+    return web.request(
+        "POST",
+        web_url + TOKENS,
+        token=token,
+        upload=json.dumps(body).encode(),
+        headers=headers,
+    )
+
+
+def delete_token(web_url: str, token_id: str, cookie: str) -> web.Response:
+    """DELETE API token token_id at the server at web_url, logged in."""
+    return web.request("DELETE", f"{web_url}{TOKENS}/{token_id}", headers=cookie_header(login=cookie))
 
 
 def made_token(answer: web.Response) -> tuple[str, str, str] | None:

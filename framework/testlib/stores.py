@@ -283,6 +283,22 @@ def unique(origins: Iterable[common.Origin]) -> list[common.Origin]:
     return found
 
 
+def require_dirs(origins: Iterable[common.Origin], namespaces: Iterable[str], rel: str) -> None:
+    """End the suite unless each disk store has rel in each of namespaces.
+
+    `./fed.sh init` makes them. A pstore origin's store, which only it can
+    change, is not looked at.
+    """
+    wanted = list(namespaces)
+    for origin in unique(origins):
+        if origin.pstore:
+            continue
+        for namespace in wanted:
+            directory = f"{origin.store_of(namespace)}/{rel}"
+            if not os.path.isdir(directory):
+                common.die(f"framework/var/{directory} is missing; run ./fed.sh init")
+
+
 def put(
     origin: common.Origin,
     namespace: str,
@@ -351,6 +367,30 @@ def seed(
     if origin.pstore:
         return f"/{namespace} takes no writes, and {origin.svc}'s store is encrypted"
     return write_file(origin.store_of(namespace), rel, data)
+
+
+def put_in_place(
+    session: Session, origins: Iterable[common.Origin], namespace: str, rel: str, data: bytes
+) -> list[str]:
+    """Seed data at rel in namespace's storage at origins, as setup.
+
+    Its collection is made first. On a pstore origin, /public's storage
+    is /protected-a's. The session's setup token for the storage is
+    presented. Once something goes wrong, no more is seeded.
+
+    Returns:
+        What went wrong; empty if nothing did.
+    """
+    target = session.fed.storage_namespace(namespace)
+    token = session.setup_token(target)
+    caps = session.fed.exports[target]
+    errors: list[str] = []
+    for origin in origins:
+        errors += make_dirs([origin], target, rel.rsplit("/", 1)[0], token)
+        if not errors:
+            error = seed(origin, target, rel, data, token, caps)
+            errors += [error] if error else []
+    return errors
 
 
 def seed_everywhere(

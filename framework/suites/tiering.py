@@ -44,14 +44,13 @@ at the origins with WLCG tokens either way.
 
 import hashlib
 import os
-import shutil
 import time
-import traceback
 from collections.abc import Callable
+from functools import partial
 from urllib.parse import urlsplit
 
 from testlib import blocks, common, digests, director, metrics, stores, transfers, web
-from testlib.common import die, first
+from testlib.common import die, first, outcome
 from testlib.report import FAIL, INCONCLUSIVE, PASS
 from testlib.session import Session, last_line
 
@@ -264,19 +263,17 @@ class Test:
             its result ads (or, where it wrote none, its output).
         """
         work = os.path.join(self.tmp, f"plugin-{cache.svc}-{name}")
-        creds = os.path.join(work, "creds")
-        os.makedirs(creds)
-        shutil.copyfile(self.session.token_file("protected-a"), os.path.join(creds, "server.use"))
+        os.makedirs(work)
         url = f"{self.fed.url}/protected-a/{self.rel(cache, name)}"
-        infile, outfile = (os.path.join(work, f"plugin.{ext}") for ext in ("in", "ad"))
-        with open(infile, "w", encoding="utf-8") as f:
-            f.write(f'[ Url="{url}"; LocalFileName="{transfers.local_name(url)}" ]\n')
-        env = dict(self.session.env)
-        env["_CONDOR_CREDS"] = creds
-        env["PELICAN_CLIENT_PREFERREDCACHES"] = cache.url
-        target = os.path.join(work, transfers.local_name(url))
-        _, out, err, ads = self.session.plugin_cmd(infile, outfile, env=env, cwd=work)
-        return transfers.plugin_passed(ads), target, ads or err or out
+        local = transfers.local_name(url)
+        _, out, err, ads = self.session.plugin_run(
+            f"tiering/plugin-{cache.svc}-{name}",
+            [(url, local)],
+            {"server.use": self.session.token_file("protected-a")},
+            cache=cache.url,
+            cwd=work,
+        )
+        return transfers.plugin_passed(ads), os.path.join(work, local), ads or err or out
 
     def get_tiered(self, cache: common.Cache, name: str, headers: dict[str, str]) -> web.Response:
         """GET cache's tiered object name through cache.
@@ -310,9 +307,7 @@ def each_cache(test: Test, check: Callable[[common.Cache], str | None]) -> tuple
             why = str(e)
         if why:
             problems.append(f"{cache.svc}: {why}")
-    if problems:
-        return FAIL, first(problems)
-    return PASS, ", ".join(f"{c.svc} ({test.target(c).mode})" for c in test.caches)
+    return outcome(problems, ", ".join(f"{c.svc} ({test.target(c).mode})" for c in test.caches))
 
 
 def tiered(test: Test) -> tuple[str, str]:
@@ -693,10 +688,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     Then remove the run's objects from the origins.
     """
     fed = session.fed
-    for origin in stores.unique(fed.origins):
-        directory = f"{origin.store_of('protected-a')}/data/tiering"
-        if not origin.pstore and not os.path.isdir(directory):
-            die(f"framework/var/{directory} is missing; run ./fed.sh init")
+    stores.require_dirs(fed.origins, ["protected-a"], "data/tiering")
     caches = [c for c in fed.caches if c.svc in fed.tiering]
     tokens = session.setup_tokens()
     test = Test(session, caches)
@@ -706,13 +698,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     )
     try:
         for name in selected:
-            try:
-                status, note = RUN[name](test)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                # A bug, or a server answering what the suite can't read:
-                # the scenario fails, and the rest still run.
-                traceback.print_exc()
-                status, note = FAIL, f"{type(e).__name__}: {e}"
+            status, note = common.guarded(partial(RUN[name], test), lambda note: (FAIL, note))
             results.add(name, status, note)
     finally:
         # Only the origins' copies: the caches own the bucket and their
