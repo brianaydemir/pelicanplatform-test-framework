@@ -30,7 +30,7 @@ CONFIG = f"{API}/config"
 TOKENS = f"{API}/tokens"
 
 # The built-in admin's password (README.md), and the ordinary user.
-ADMIN_PASSWORD = "asdf"  # nosec B105
+ADMIN_PASSWORD = "asdf"
 USER = "test-webapi"
 
 # How long the bearer tokens last, in seconds: a whole suite, logins

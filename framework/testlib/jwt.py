@@ -18,7 +18,7 @@ import hmac
 import json
 import os
 import shutil
-import subprocess  # nosec B404
+import subprocess
 import tempfile
 from collections.abc import Mapping
 from typing import Any
@@ -56,9 +56,7 @@ def _openssl(args: list[str], data: bytes = b"") -> bytes:
     """Return what `openssl <args>` writes, given data; it must succeed."""
     if shutil.which("openssl") is None:
         common.die("the openssl command is missing, which signs ES256 and RS256 tokens")
-    done = subprocess.run(  # nosec B603 B607
-        ["openssl", *args], input=data, capture_output=True, check=False
-    )
+    done = subprocess.run(["openssl", *args], input=data, capture_output=True, check=False)
     if done.returncode != 0:
         common.die(f"openssl {args[0]} failed: {done.stderr.decode(errors='replace').strip()}")
     return done.stdout
@@ -285,7 +283,7 @@ def _openssl_verifies(pem: str, signature: bytes, data: bytes) -> bool:
             f.write(pem)
         with open(sig, "wb") as f:
             f.write(signature)
-        done = subprocess.run(  # nosec B603 B607
+        done = subprocess.run(
             ["openssl", "dgst", "-sha256", "-verify", key, "-signature", sig],
             input=data,
             capture_output=True,

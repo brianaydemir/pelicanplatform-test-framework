@@ -37,7 +37,7 @@ import glob
 import json
 import os
 import shutil
-import subprocess  # nosec B404
+import subprocess
 import time
 from collections.abc import Callable, Sequence
 from urllib.parse import urlsplit
@@ -1041,7 +1041,7 @@ def verify_backup(server: str, path: str, env: dict[str, str], cwd: str) -> tupl
         Its exit status (124 if it timed out), stdout, and stderr.
     """
     try:
-        done = subprocess.run(  # nosec B603
+        done = subprocess.run(
             [server, "server", "database", "backup", "verify", path],
             env=env,
             cwd=cwd,

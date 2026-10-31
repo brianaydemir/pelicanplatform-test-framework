@@ -36,7 +36,7 @@ import json
 import os
 import re
 import shutil
-import subprocess  # nosec B404
+import subprocess
 import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -1234,7 +1234,7 @@ def objects_cli(test: Test, path: str) -> Row:
         command = [server, "origin", "object-metadata", *args]
         command += ["--server", test.web, "--token", test.admin_file, "--json"]
         try:
-            done = subprocess.run(  # nosec B603
+            done = subprocess.run(
                 command,
                 env=test.session.env,
                 cwd=test.tmp,

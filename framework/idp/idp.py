@@ -392,7 +392,7 @@ class Provider:
             }
         answer: dict[str, Any] = {
             "access_token": access,
-            "token_type": "Bearer",  # nosec B105
+            "token_type": "Bearer",
             "expires_in": ACCESS_LIFETIME,
             "refresh_token": refresh,
             "scope": " ".join(scope),

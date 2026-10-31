@@ -214,8 +214,8 @@ NESTED_TOKEN_LIFETIME = 600
 # the client's own.
 GATE_URL = "https://webdav-gate:8444"
 GATE_LOG = "data/webdav-gate/access.log"
-TOKEN_FILE = "generated/http-auth-token"  # nosec B105
-TOKEN_FILE_MOUNTED = "/fed/generated/http-auth-token"  # nosec B105
+TOKEN_FILE = "generated/http-auth-token"
+TOKEN_FILE_MOUNTED = "/fed/generated/http-auth-token"
 BACKEND_FILE = "92-backend.yaml"
 # The sizes of the objects the backend scenarios move.
 GATED_SIZE = 40000

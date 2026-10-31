@@ -47,7 +47,7 @@ WLCG pass alone.
 import functools
 import json
 import re
-import subprocess  # nosec B404
+import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -1117,7 +1117,7 @@ def cli_row(test: Test, server: Server) -> Row:
     command = [binary, "server", "set-logging-level", level, f"{LEVEL_DURATION}s"]
     command += ["--server", server.web_url, "--token", token_file]
     try:
-        done = subprocess.run(  # nosec B603
+        done = subprocess.run(
             command,
             env=test.session.env,
             cwd=test.session.tmp,

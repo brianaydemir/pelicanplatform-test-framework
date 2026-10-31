@@ -4117,7 +4117,7 @@ def evict_object(run_id: str, n: int) -> bytes:
     object would take as much memory as the caches' bound. Test data, so
     not a cryptographic generator.
     """
-    return random.Random(f"{run_id}/{n}").randbytes(EVICT_OBJECT)  # nosec B311
+    return random.Random(f"{run_id}/{n}").randbytes(EVICT_OBJECT)
 
 
 def cached(test: Test, cache: common.Cache, rel: str) -> bool | None:

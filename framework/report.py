@@ -17,7 +17,7 @@ The TSV is meant for people as much as for programs:
 import os
 import re
 import sys
-import xml.etree.ElementTree as ET  # nosec B405
+import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from collections.abc import Sequence
 

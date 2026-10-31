@@ -35,7 +35,7 @@ import fcntl
 import json
 import os
 import signal
-import subprocess  # nosec B404
+import subprocess
 import sys
 import time
 from types import FrameType
@@ -77,7 +77,7 @@ def compose(*args: str) -> tuple[bool, str]:
     """
     command = f"docker compose {' '.join(args)}"
     try:
-        done = subprocess.run(  # nosec B603 B607
+        done = subprocess.run(
             ["docker", "compose", *args],
             cwd=TOP,
             stdin=subprocess.DEVNULL,

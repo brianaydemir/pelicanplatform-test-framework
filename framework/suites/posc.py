@@ -38,7 +38,7 @@ import os
 import shutil
 import socket
 import ssl
-import subprocess  # nosec B404
+import subprocess
 import sys
 import threading
 import time
@@ -787,7 +787,7 @@ def client(test: Test) -> tuple[str, str]:
     test.mark()
     with (
         open(log_file, "wb") as log,
-        subprocess.Popen(  # nosec B603
+        subprocess.Popen(
             [test.pelican, *args],
             env=test.env,
             stdin=subprocess.DEVNULL,

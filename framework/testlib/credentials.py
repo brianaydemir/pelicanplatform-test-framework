@@ -43,7 +43,7 @@ profile alone, as Pelican mints them.
 import json
 import os
 import shutil
-import subprocess  # nosec B404
+import subprocess
 import sys
 import time
 import uuid
@@ -484,7 +484,7 @@ def mint(
     command += ["--profile", PELICAN_PROFILES[profile]]
     with open(out, "w", encoding="utf-8") as f:
         try:
-            done = subprocess.run(  # nosec B603
+            done = subprocess.run(
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=f,

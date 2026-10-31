@@ -1518,7 +1518,7 @@ def plant_stray(cache: common.Cache) -> tuple[str | None, str]:
             for part in (name[:2], name[2:4]):
                 parent = os.path.join(parent, part)
                 os.mkdir(parent)
-                os.chmod(parent, 0o777)  # nosec B103
+                os.chmod(parent, 0o777)
         path = os.path.join(parent, name[4:])
         with open(path, "wb") as f:
             f.write(os.urandom(blocks.BLOCK + blocks.TAG))

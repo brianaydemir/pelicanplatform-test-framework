@@ -300,7 +300,7 @@ def loosen(path: str) -> None:
     makes their owner.
     """
     try:
-        os.chmod(path, 0o777)  # nosec B103
+        os.chmod(path, 0o777)
         names = os.listdir(path)
     except OSError:
         return

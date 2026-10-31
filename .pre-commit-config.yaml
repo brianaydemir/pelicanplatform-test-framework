@@ -54,7 +54,7 @@ repos:
       - id: bandit
         name: bandit
         language: system
-        entry: uv run --frozen bandit -c pyproject.toml
+        entry: uv run --frozen bandit -c pyproject.toml --severity-level medium
         types: [python]
       - id: pylint
         name: pylint

@@ -23,7 +23,7 @@ import json
 import os
 import shlex
 import shutil
-import subprocess  # nosec B404
+import subprocess
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -326,7 +326,7 @@ class Session:
     ) -> tuple[int, str, str]:
         """Run command, for pelican_cmd() or plugin_cmd()."""
         try:
-            done = subprocess.run(  # nosec B603
+            done = subprocess.run(
                 command,
                 env=env or self.env,
                 cwd=cwd or self.tmp,

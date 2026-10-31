@@ -55,7 +55,7 @@ put in place, and the stores read, with WLCG tokens either way.
 import os
 import re
 import shutil
-import xml.etree.ElementTree as ET  # nosec B405
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -623,7 +623,7 @@ def lock_timeout(body: bytes) -> str | None:
     That is None if the answer names none.
     """
     try:
-        root = ET.fromstring(body)  # nosec B314
+        root = ET.fromstring(body)
     except ET.ParseError:
         return None
     found = root.find(f".//{webdav.DAV}timeout")
@@ -755,15 +755,15 @@ def make_decoys(test: Test, origin: common.Origin) -> tuple[Decoys, str]:
     )
     shutil.rmtree(decoys.directory, ignore_errors=True)
     os.mkdir(decoys.directory)
-    os.chmod(decoys.directory, 0o777)  # nosec B103
+    os.chmod(decoys.directory, 0o777)
     for path, data in ((decoys.file, decoys.file_bytes), (decoys.inner, decoys.inner_bytes)):
         with open(path, "wb") as f:
             f.write(data)
-        os.chmod(path, 0o666)  # nosec B103
+        os.chmod(path, 0o666)
     links = f"{origin.store_of(NAMESPACE)}/{test.base(origin)}/links"
     shutil.rmtree(links, ignore_errors=True)
     os.makedirs(links)
-    os.chmod(links, 0o777)  # nosec B103
+    os.chmod(links, 0o777)
     os.symlink(os.path.relpath(decoys.file, links), f"{links}/link-file")
     os.symlink(os.path.relpath(decoys.directory, links), f"{links}/link-dir")
     return decoys, links
@@ -912,7 +912,7 @@ def propstat_problems(body: bytes) -> list[str]:
     Each of PROPS must have a propstat, and none may succeed.
     """
     try:
-        root = ET.fromstring(body)  # nosec B314
+        root = ET.fromstring(body)
     except ET.ParseError as e:
         return [f"the answer is not XML ({e})"]
     if root.tag != f"{webdav.DAV}multistatus":

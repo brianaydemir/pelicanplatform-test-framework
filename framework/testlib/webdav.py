@@ -8,7 +8,7 @@ by path. copy_or_move() sends a COPY or a MOVE, and root_url() is where
 OPTIONS of an origin's root goes.
 """
 
-import xml.etree.ElementTree as ET  # nosec B405
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -65,7 +65,7 @@ def parse(body: bytes) -> list[Entry]:
         ValueError: The body is not a well-formed multistatus.
     """
     try:
-        root = ET.fromstring(body)  # nosec B314
+        root = ET.fromstring(body)
     except ET.ParseError as e:
         raise ValueError(f"not XML: {e}") from None
     if root.tag != f"{DAV}multistatus":

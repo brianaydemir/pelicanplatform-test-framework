@@ -36,7 +36,7 @@ simplifies them, and drops any that adds nothing.
 
 import itertools
 import os
-import subprocess  # nosec B404
+import subprocess
 import sys
 import textwrap
 from collections import Counter
@@ -739,7 +739,7 @@ def parse_table(text: str) -> list[SmokeShape]:
 
 def smoke_shapes() -> list[SmokeShape]:
     """Return the shapes that smoke.sh runs."""
-    table = subprocess.run(  # nosec B603 B607
+    table = subprocess.run(
         ["sh", os.path.join(TOP, "smoke.sh"), "--table"],
         check=True,
         capture_output=True,

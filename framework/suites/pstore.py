@@ -63,7 +63,7 @@ import math
 import os
 import re
 import shutil
-import subprocess  # nosec B404
+import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -709,7 +709,7 @@ class Cli:
             command += ["--token", token_file]
         command.append("--json")
         try:
-            done = subprocess.run(  # nosec B603
+            done = subprocess.run(
                 command,
                 env={**self.test.session.env, **(env or {})},
                 cwd=self.test.tmp,
@@ -1634,7 +1634,7 @@ class Restore:
         command = [self.server, "origin", "pstore", *args]
         command += ["--location", os.path.abspath(self.store)]
         try:
-            done = subprocess.run(  # nosec B603
+            done = subprocess.run(
                 command,
                 env={**self.test.session.env, **keys_env(self.test, self.origin)},
                 cwd=self.test.tmp,

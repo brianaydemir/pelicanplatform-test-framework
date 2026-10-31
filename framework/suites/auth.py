@@ -137,12 +137,12 @@ SCENARIOS[AUDIENCE] = "a token for another audience: every origin refuses it, an
 # An audience that no server here answers to.
 OTHER_AUDIENCE = "https://elsewhere.invalid"
 
-QUERY_TOKEN = "query-token"  # nosec B105
+QUERY_TOKEN = "query-token"
 SCENARIOS[QUERY_TOKEN] = (
     "a token in the authz query parameter, bare or after `Bearer `, counts as the header's"
 )
 
-TOKEN_LISTS = "token-lists"  # nosec B105
+TOKEN_LISTS = "token-lists"
 SCENARIOS[TOKEN_LISTS] = "a native origin tries each token of a request, in its header and query, up to 10"
 AUDIENCE_SPECIFIC = "audience-specific"
 SCENARIOS[AUDIENCE_SPECIFIC] = (
@@ -158,7 +158,7 @@ STANDALONE = "standalone-refusals"
 SCENARIOS[STANDALONE] = (
     "a native origin refuses with 401 or 403 and token hints standalone, with 401 and none federated"
 )
-WEB_TOKEN_STRICT = "web-token-strict"  # nosec B105
+WEB_TOKEN_STRICT = "web-token-strict"
 SCENARIOS[WEB_TOKEN_STRICT] = (
     "a server's web API refuses its own token 20s before its nbf or 5s past its exp"
 )
@@ -1292,7 +1292,7 @@ def check_audience_specific(test: Test, fed: common.Federation) -> None:
 MAX_TOKENS = 10
 # What must become of a request whose tokens an origin treats as none: a
 # 401, as for a request with none.
-NO_TOKEN = "no-token"  # nosec B105
+NO_TOKEN = "no-token"
 
 # A way of presenting tokens: its row's name, the headers and the query
 # parameters that carry them, and what must become of the request where a

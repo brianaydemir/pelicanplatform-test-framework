@@ -36,7 +36,7 @@ import hashlib
 import json
 import os
 import secrets
-import subprocess  # nosec B404
+import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -54,7 +54,7 @@ DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 CODE_GRANT = "authorization_code"
 REFRESH_GRANT = "refresh_token"
 EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"
-ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"  # nosec B105
+ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
 
 # The audience the issuer gives every token: the WLCG profile's "any".
 ANY_AUDIENCE = "https://wlcg.cern.ch/jwt/v1/any"
@@ -827,7 +827,7 @@ def run_approving(
         timeout: How long, in seconds, the run may last before it is
             killed.
     """
-    with subprocess.Popen(  # nosec B603
+    with subprocess.Popen(
         [pelican, *args],
         env=env,
         cwd=cwd,

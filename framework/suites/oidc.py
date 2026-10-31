@@ -51,7 +51,7 @@ are the run's prefix at the registry and its client of the issuer.
 import contextlib
 import os
 import secrets
-import subprocess  # nosec B404
+import subprocess
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -477,7 +477,7 @@ def register_with_identity(
     """
     problems: list[str] = []
     approvals = [0]
-    with subprocess.Popen(  # nosec B603
+    with subprocess.Popen(
         [
             test.session.pelican,
             "namespace",

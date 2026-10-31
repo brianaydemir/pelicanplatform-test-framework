@@ -24,6 +24,12 @@ dev = [
 
 [tool.bandit]
 exclude_dirs = [".venv", "dist", "tests"]
+skips = [
+    # chmod: the services, as other users, must write test storage.
+    "B103",
+    # xml.etree parsing: the XML comes from the servers under test.
+    "B314",
+]
 
 [tool.black]
 line-length = 108

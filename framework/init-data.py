@@ -116,7 +116,7 @@ def make_dir(path: str) -> None:
     """
     os.makedirs(path, exist_ok=True)
     # os.makedirs's mode is subject to the umask.
-    os.chmod(path, 0o777)  # nosec B103
+    os.chmod(path, 0o777)
 
 
 def remove_tree(directory: str) -> None:

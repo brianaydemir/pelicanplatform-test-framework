@@ -63,7 +63,7 @@ class Outcome(enum.Enum):
         REFUSED: Every transfer is refused, and nothing moves.
     """
 
-    PASS = "pass"  # nosec B105
+    PASS = "pass"
     NOT_FOUND = "not found"
     REFUSED = "refused"
 

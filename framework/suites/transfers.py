@@ -34,7 +34,7 @@ import os
 import random
 import re
 import shutil
-import subprocess  # nosec B404
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -441,7 +441,7 @@ def transfer(session: Session, plan: Plan, batch: Batch) -> None:
     args, env = command(session, plan, batch)
     with open(f"{plan.out}/log/{batch.id}", "wb") as log:
         try:
-            status = subprocess.run(  # nosec B603
+            status = subprocess.run(
                 args,
                 cwd=f"{plan.out}/files/{batch.id}",
                 env=env,

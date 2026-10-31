@@ -17,7 +17,7 @@ server's ownership of its name forbids it.
 
 import json
 import os
-import subprocess  # nosec B404
+import subprocess
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -46,9 +46,7 @@ DOWNTIME_DELETE = "pelican.downtime_delete"
 
 def _openssl(args: Sequence[str], data: bytes = b"") -> bytes:
     """Return what `openssl <args>` writes, given data; it must succeed."""
-    done = subprocess.run(  # nosec B603 B607
-        ["openssl", *args], input=data, capture_output=True, check=False
-    )
+    done = subprocess.run(["openssl", *args], input=data, capture_output=True, check=False)
     if done.returncode != 0:
         common.die(f"openssl {args[0]} failed: {done.stderr.decode(errors='replace').strip()}")
     return done.stdout
@@ -153,7 +151,7 @@ def register(
         "client_signature": sign_payload(keys[0], payload.encode()),
         "server_payload": challenge.get("server_payload", ""),
         "server_signature": challenge.get("server_signature", ""),
-        "access_token": "",  # nosec B105: none, as without an identity
+        "access_token": "",
         "identity_required": "false",
         "server_id": server_id,
     }

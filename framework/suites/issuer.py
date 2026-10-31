@@ -950,7 +950,7 @@ def clients(test: Test) -> tuple[str, str]:
         ("a client without the device grant", test.client("code"), 400, "unauthorized_client"),
         (
             "a wrong secret",
-            dataclasses.replace(narrow, client_secret="wrong"),  # nosec B106
+            dataclasses.replace(narrow, client_secret="wrong"),
             401,
             "invalid_client",
         ),

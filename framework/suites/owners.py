@@ -720,7 +720,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     os.makedirs(f"{test.out}/responses")
     for storage in test.storages:
         os.makedirs(f"{storage}/{test.base}")
-        os.chmod(f"{storage}/{test.base}", 0o777)  # nosec B103
+        os.chmod(f"{storage}/{test.base}", 0o777)
     print(
         f"Another owner: {', '.join(o.origin.svc for o in fed.owners)}; pairs:"
         + f" {', '.join(f'{p.export.prefix} ~ /{p.like}' for p in test.pairs)}\n"

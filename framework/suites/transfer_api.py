@@ -1287,7 +1287,7 @@ def oauth_clients_disabled(test: Test) -> list[Row]:
         "name": "off",
         "issuer_url": test.fed.issuer_of("protected-a"),
         "client_id": "off",
-        "client_secret": "off",  # nosec B105: no secret, since the route is off
+        "client_secret": "off",
     }
     for method, sent in (("GET", None), ("POST", body)):
         status, found, _ = test.call(method, OAUTH_CLIENTS, test.token, sent)

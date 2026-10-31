@@ -427,7 +427,7 @@ def write_file(store: str, rel: str, data: bytes) -> str | None:
             path = os.path.join(store, *parts[:n])
             if not os.path.isdir(path):
                 os.mkdir(path)
-                os.chmod(path, 0o777)  # nosec B103
+                os.chmod(path, 0o777)
         path = os.path.join(store, *parts)
         with open(path, "wb") as f:
             f.write(data)
@@ -458,7 +458,7 @@ def make_dirs(origins: Iterable[common.Origin], namespace: str, rel: str, token:
                     path = os.path.join(store, *parts[:n])
                     if not os.path.isdir(path):
                         os.mkdir(path)
-                        os.chmod(path, 0o777)  # nosec B103
+                        os.chmod(path, 0o777)
             except OSError as e:
                 errors.append(f"making framework/var/{path}: {e.strerror}")
             continue
