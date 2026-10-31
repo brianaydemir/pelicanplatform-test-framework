@@ -4,13 +4,13 @@ Each batch of objects is one `pelican object get` or `put`. The plugin-*
 scenarios run the same batches through stash_plugin instead, and the
 http-* scenarios as a plain HTTP client, such as curl, which asks the
 director for each object's bare path and follows its redirect (see
-http_transfer()); the direct-* scenarios get from an origin rather
-than a cache, and the cache-* scenarios from the first federated cache,
-which the client names. Then compare every byte moved with the origins'
-stores, and check that no batch left anything else in its directory,
-nor a failed get any file; and outside the tiny topology, check that
-only caches served the downloads meant for one, only an origin the
-direct ones, and only the named cache the named ones.
+http_transfer()). The direct-* scenarios get from an origin rather than
+a cache, and the cache-* scenarios from the first federated cache, which
+the client names. Every byte moved is compared with the origins' stores,
+and no batch may leave anything else in its directory, nor a failed get
+any file. Outside the tiny topology, only caches may serve the
+downloads meant for one, only an origin the direct ones, and only the
+named cache the named ones.
 
 What each scenario expects, how many batches it runs, and how a batch
 is judged, is in framework/testlib/transfers.py. Results go to
@@ -704,11 +704,10 @@ def check_served(fed: common.Federation, plan: Plan, expected: dict[str, Outcome
     They are judged by client and route, by transfers.check_served_by():
     outside `tiny`, a cache must have served every one meant for one, an
     origin every direct one, and every one where there is no cache, and
-    the named cache every named one. A plain HTTP
-    client's bare paths go where the director sends them: to an origin
-    under `-p director-default-origin`, where every one must then come
-    from an origin. Uploads go straight to an origin, so they don't
-    count.
+    the named cache every named one. A plain HTTP client's bare paths go
+    where the director sends them: under `-p director-default-origin`,
+    to an origin, which must then have served every one. Uploads go
+    straight to an origin, so they don't count.
 
     Returns:
         Whether every verdict passed or skipped.

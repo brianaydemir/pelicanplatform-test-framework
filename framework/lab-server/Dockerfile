@@ -1,6 +1,6 @@
 # The lab server: a host that shares /data over SSH without running
-# Pelican. AlmaLinux 9 to match the Pelican images, since the origin
-# copies its own binary here and runs it.
+# Pelican. AlmaLinux, as the Pelican images are, since the origin copies
+# its own binary here and runs it.
 FROM almalinux:9
 
 RUN <<ENDRUN

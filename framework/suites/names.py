@@ -7,10 +7,10 @@ object's own fail, and another's are named.
 Objects go under /protected-a/data/names/<run>/, put at every origin
 with stores.seed(), with the token of the session's profile that every
 request presents, since `origin-put` checks those PUTs; the stores are
-read with WLCG tokens either way. A URL names each with every character
-but letters,
-digits, and `-._~` percent-encoded (stores.url()); the client is given
-it so too. A listing's hrefs are decoded before they are compared.
+read with WLCG tokens. A URL names each with every character but
+letters, digits, and `-._~` percent-encoded (stores.url()), and so does
+what the client is given. A listing's hrefs are decoded before they are
+compared.
 
   origin-put   a PUT of each name lands in each store under that name:
                on disk as a file, and in a pstore origin's catalog as an
@@ -33,11 +33,11 @@ it so too. A listing's hrefs are decoded before they are compared.
   plugin-put   the same as client-put, through stash_plugin
   client-ls    `pelican object ls` lists every name
 
-The client commands, and the plugin's runs, move one object each, since
-the client asks the director once for each namespace, and reuses its
-answer for the rest of the namespace's objects (cachedDirectorInfo in
-Pelican's client/director.go), which would hide a name that the client
-mishandles in the director's answer.
+The client commands, and the plugin's runs, move one object each: the
+client reuses the director's answer for the rest of a namespace's
+objects in a command (cachedDirectorInfo in Pelican's
+client/director.go), which would hide a name that it mishandles in that
+answer.
 """
 
 import json
@@ -216,11 +216,11 @@ def origin_put(test: Test) -> tuple[str, str]:
 
     The PUTs were made as the test began. In a store on disk, each lands
     as a file of that name, with its bytes, and nothing else does; in a
-    pstore origin's catalog, as an entry of that name, which checksums
-    the store recorded of its bytes (catalogued()).
+    pstore origin's catalog, as an entry of that name, whose recorded
+    checksums are its bytes' (catalogued()).
     """
     if "Writes" not in test.caps:
-        return SKIP, "/protected-a takes no writes, so each name was written in each store"
+        return SKIP, "/protected-a takes no writes, so the objects were written straight to each store"
     problems = list(test.unseeded)
     for origin in test.origins:
         if origin.pstore:

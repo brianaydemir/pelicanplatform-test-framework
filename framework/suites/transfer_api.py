@@ -1,38 +1,40 @@
 """The transfer API, which runs transfer jobs on the server.
 
-This covers its authentication, the storage credentials it keeps for
-each user, third-party copies through it, the jobs it reports, and what
-it confines jobs to. It is origin-0's (`-p origin-transfer-api`), or a
-transfer server's own (`-p topo-transfer-server`), in a process of its
-own: generated/transfer-api says which (common.Federation.transfer_api).
+The suite covers the API's authentication, the storage credentials it
+keeps for each user, third-party copies through it, the jobs it
+reports, and what it confines jobs to. The API is origin-0's
+(`-p origin-transfer-api`), or a transfer server's own
+(`-p topo-transfer-server`); generated/transfer-api says which
+(common.Federation.transfer_api).
 
-Its own tokens carry the pelican.transfer scope, from its host's
-issuer, which the suite mints with that host's key: origin-0's, or the
-transfer server's local issuer; storage credentials are the server's
-tokens for /protected-a, of the session's profile, so that the scenarios
-that keep none run in the WLCG pass alone. Objects go under
-/protected-a/data/xfer/<run>/;
-the suite removes them, and the credentials it added, afterward. A job
-of origin-0's API may read or write the origin's own filesystem only
-through an export, so `local-get` and `local-put` check that a job is
-refused one that leaves the exports; a transfer server confines a job
-to nothing (RegisterTransferAPI in Pelican's transfer/transfer.go), so
-there they check that such a job runs, and moves the bytes it names,
-and `path-not-allowed` that a job no export holds is taken and then
-fails.
+The API's own tokens carry the pelican.transfer scope, from its host's
+issuer, which the suite mints with that host's key. Its storage
+credentials are the server's tokens for /protected-a, of the session's
+profile, so the scenarios that store none run in the WLCG pass alone.
+Objects go under /protected-a/data/xfer/<run>/; the suite removes them,
+and the credentials it added, afterward.
+
+Origin-0's API confines a job to its exports: a job may read or write
+the origin's own filesystem only through an export, so `local-get` and
+`local-put` check that a job that leaves the exports is refused. A
+transfer server confines a job to nothing (Pelican's
+docs/transfer-server-design.md), so there they check that such a job
+runs, and moves the bytes it names, and `path-not-allowed` checks that a
+job no export holds is taken and then fails.
 
 The API's edges come after its main paths: tokens whose subjects are
-no usernames (`subjects`), a finished job cancelled (`cancel-finished`),
-a job's event stream (`events`), sources on the origin's own network and
-a prefix that merely begins like an export (`ssrf-and-prefixes`), and
-`pelican transfer credential` (`credential-cli`). Two need configuration
-that no shape has: `enabled-groups` (Transfer.EnabledGroups, a group of
-the run's own) and `oauth-clients` (Transfer.EnableOAuth2Clients), for
-which the suite restarts the API's host once with both, as the last of
-its configuration layers (control.restart_with()), and restores it; and
-`restart`, which restarts the host while a job runs. Each restart needs
-a control helper and a topology other than `tiny`, whose origin is the
-whole federation's process; elsewhere those rows skip, and say why.
+not usernames (`subjects`), a failed job cancelled (`cancel-finished`),
+a job's event stream (`events`), sources on the origin's own network
+and a prefix that merely begins like an export (`ssrf-and-prefixes`),
+and `pelican transfer credential` (`credential-cli`). Two need
+configuration that no shape has: `enabled-groups`
+(Transfer.EnabledGroups, a group of the run's own) and `oauth-clients`
+(Transfer.EnableOAuth2Clients). For those, the suite restarts the API's
+host once with both, as the last of its configuration layers
+(control.restart_with()), and restores it afterward. `restart` restarts
+the host while a job runs. Each restart needs a control helper and a
+topology other than `tiny`, whose origin is the whole federation's
+process; elsewhere those rows skip, and say why.
 """
 
 import contextlib
@@ -146,7 +148,7 @@ EVENT_STREAM = {"Accept": "text/event-stream"}
 CONFIG_FILE = "90-transfer-api.yaml"
 SETTLE_WAIT = 150
 # `subjects`: each case's subject. A URL, one character, and 65 characters
-# are no usernames (ValidateIdentifier in database/identifiers.go);
+# are not valid usernames (ValidateIdentifier in database/identifiers.go);
 # `admin` is the built-in user's.
 SUBJECTS = (
     ("url", "http://cilogon.org/serverA/users/1234"),
@@ -167,9 +169,9 @@ SSRF_SOURCES = (
 EXCHANGE_GRANTS = f"{issuer.EXCHANGE_GRANT} {issuer.REFRESH_GRANT}"
 CREDENTIAL_SCOPES = ("storage.read:/", "storage.create:/", "storage.modify:/", "offline_access")
 # `restart`: Origin.TransferRateLimit, so that a copy of the source object
-# is still under way when origin-0 restarts: a posixv2 origin reads and
-# writes it through one bucket (origin_serve/rate_limited_fs.go), so 8 MiB
-# takes about a minute. Other backends are not slowed.
+# is still under way when the API's host restarts. Only a posixv2 origin
+# is slowed: it reads and writes the object through one bucket
+# (origin_serve/rate_limited_fs.go), so 8 MiB takes about a minute.
 RATE_LIMIT = "256KB/s"
 # What a job interrupted by a restart must say (transfer/recovery.go).
 INTERRUPTED = "interrupted by transfer server restart"
@@ -848,11 +850,11 @@ def subjects(test: Test) -> list[Row]:
     """Check tokens whose subjects are no usernames, or `admin`'s.
 
     They are pelican.transfer tokens whose subjects are a URL, one
-    character, or 65 characters, or the built-in `admin`'s: each must list
-    its jobs (200), run a copy of its own, and see no other subject's job.
-    The API resolves each token's issuer and subject to a user of its own
-    (GetOrCreateUser in database/collection.go, from TransferAuthMiddleware
-    in transfer/auth.go).
+    character, 65 characters, or the built-in `admin`'s. The API must
+    resolve each token's issuer and subject to a user of its own
+    (TransferAuthMiddleware in transfer/auth.go). Each subject must list
+    its jobs (200) and run a copy of its own, and but for `admin`, the
+    suite's own user must not see the subject's job.
     """
     rows: list[Row] = []
     for case, subject in SUBJECTS:
@@ -873,9 +875,9 @@ def subjects(test: Test) -> list[Row]:
         if status != 200 or not mine:
             problems.append(f"the subject's jobs: HTTP {status}, listing {len(mine)}")
         elif case != "admin":
-            # The user's own token is for another subject, so it must see
-            # none of these; `admin`'s record is whoever the API takes the
-            # built-in user to be, which the user is not either.
+            # The user's token is another subject's, so it must not see the
+            # job. `admin` is left out: its record is whichever user the
+            # API takes the built-in admin to be.
             status, _, _ = test.call("GET", f"/jobs/{mine[0]}", test.token)
             if status != 404:
                 problems.append(f"another subject's GET of the job: HTTP {status}, not 404")
@@ -888,9 +890,7 @@ def cancel_finished(test: Test) -> tuple[str, str]:
 
     The job fails since its destination credential may only read. The
     cancel is taken (2xx) or refused as too late (409), and the job must
-    stay `failed`. Pelican's CancelJob counts every transfer of a failed
-    job as cancelled, and the handler then records the job cancelled
-    (client_agent/transfer_manager.go, transfer/handlers.go).
+    stay `failed`.
     """
     stamp = test.session.run
     writer = test.add_credential(f"{stamp}-cancel-src", test.storage)
@@ -1442,11 +1442,10 @@ def restart(test: Test) -> list[Row]:
     The host restarts while a copy runs (origin-0 slowed, where it can
     be): the job must then be `failed`, saying it was interrupted by a
     restart (reconcileInterruptedJobs in transfer/recovery.go), or, if
-    the copy finished first, the row is inconclusive. A credential stored
-    before the restart must still work (`credential`). And a job that
-    finished before the restart, which the manager no longer holds,
-    cancelled, must keep its status (`forgotten`): Pelican records it
-    cancelled instead (handleCancelTransferJob in transfer/handlers.go).
+    the copy finished first, the row is inconclusive (`interrupted`). A
+    credential stored before the restart must still work (`credential`).
+    A job that finished before the restart, which the manager no longer
+    holds, must keep its status once cancelled (`forgotten`).
     """
     why = unconfigurable(test)
     if why:

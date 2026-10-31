@@ -24,17 +24,17 @@ prestage_evict_api.go in Pelican), and what each does:
                        in its store, its scan drops it, and a stray file
                        in its store goes
 
-The caches asked are the federated ones: a site-local cache serves the
-same APIs, and the sitelocal suite asks it for objects. XRootD caches
-serve none of these routes but prestage, through the xrdhttp-pelican
-plugin, so only `prestage client` asks them, and judges them by their
-.cinfo files. Objects go under /protected-a/data/cache-api/<run>/, put at
-every origin (stores.seed_everywhere()), one set per cache, so that each
-is cold where it is first read. The requests that the scenarios check
-present tokens of the session's profile; the objects are put in place,
-the caches filled, and what they hold asked, with WLCG tokens either
-way, so that `purge` and `usage`, which present nothing else but their
-admin's tokens, run in the WLCG pass alone.
+The caches asked are the federated ones; a site-local cache serves the
+same APIs, but no suite asks it for them. XRootD caches serve none of
+these routes but prestage, through the xrdhttp-pelican plugin, so only
+`prestage client` asks them, and judges them by their .cinfo files.
+Objects go under /protected-a/data/cache-api/<run>/, put at every origin
+(stores.seed_everywhere()), one set per cache, so that each is cold
+where it is first read. The requests that the scenarios check present
+tokens of the session's profile; the objects are put in place, the
+caches filled, and what they hold asked, with WLCG tokens either way.
+So `purge` and `usage`, which present only their admin's tokens, run in
+the WLCG pass alone.
 
 The routes that would destroy data are sent, in `admin-authz`, only
 requests that would harm nothing were they let through: chaos aimed at
@@ -911,7 +911,7 @@ def admin_authz(test: Test, results: common.Results) -> None:
             url = cache.web_url + path.format(url=nowhere)
 
             if name == "chaos" and send(route, url, test.admin(cache)).status == 404:
-                results.add(row, SKIP, "no chaos API (Cache.EnableChaosAPI; Pelican v7.27.0 on)")
+                results.add(row, SKIP, "no chaos API (Cache.EnableChaosAPI)")
                 continue
             tries: list[tuple[str, str | None, tuple[int, ...]]] = [
                 ("no token", None, (401,)),
@@ -1472,7 +1472,7 @@ def corrupted(test: Test) -> dict[str, Row]:
             bytes=str(blocks.TAG),
         )
         if answer.status == 404:
-            why = f"{cache.svc} has no chaos API (Cache.EnableChaosAPI; Pelican v7.27.0 on)"
+            why = f"{cache.svc} has no chaos API (Cache.EnableChaosAPI)"
             return {case: (SKIP, why) for case in CORRUPTED_CASES}
         if answer.status != 200:
             everywhere(f"{cache.svc}: the chaos API got {answer.describe()} {text(answer)}")

@@ -2,107 +2,50 @@
 
 Part of [What the tests check](README.md).
 
-The `listings` suite sends PROPFIND straight to every origin, director,
-and federated cache, at depths 0, 1, and infinity, in every namespace,
-over a small tree that it uploads under `/<ns>/data/listings/<run>/`.
-Each namespace's tree also holds an object only it holds, `only-<ns>`,
-so that a server that lists another namespace's lists the wrong tree.
-Of origins that share a store (`-p origin-ssh -p topo-multi-origin`),
-only the first is asked.
-`./fed.sh test -l listings` lists the scenarios.
+The `listings` suite sends PROPFIND straight to every origin, director, and
+federated cache, at depths 0, 1, and infinity, in every namespace. Depth 0
+is a stat, allowed wherever the namespace may be read; deeper is a listing,
+allowed only with `Listings`. An origin answers only direct clients
+(`DirectReads`). A PROPFIND that may not be answered must get 401, 403,
+or 405. Every object listed must have a `getcontentlength`.
 
-- An origin must list the tree exactly (`origin-depth-0`,
-  `origin-depth-1`). It may refuse Depth infinity with 403, as RFC 4918
-  allows, but must not answer it as Depth 1 (`origin-infinity`). An
-  object's `getlastmodified` must be when its file was written, within a
-  minute: on disk, its modification time, and at a pstore origin, as its
-  catalog records it, which its storage API gives ([pstore](pstore.md)).
-  The origins and the tests keep different time zones (`TZ_STORAGE`), so
-  a time rendered in the wrong one is hours off.
-- A director must redirect a PROPFIND to an origin (`director`): Depth 0
-  (a stat) for any namespace that can be read, and deeper only with
-  `Listings` (Pelican's `director/sort.go`). The origin's listing must
-  then be right; where the namespace takes no direct clients, the origin
-  must refuse it instead.
-- A cache must answer Depth 0 of anything it may read, whether it holds
-  it yet or not (`cache-depth-0`), and relay deeper listings through the
-  director to an origin, listing what the origin does (`cache-depth-1`).
-  `cache-body` sends the propfind body that `pelican object ls` sends,
-  which the cache must pass on as it follows the director's redirect: a
-  V2 cache of v26.0.0-rc.3 hands its proxied PROPFIND the request's body
-  as a stream, which Go's client cannot send again after the director's
-  redirect, so it answers with the director's 307 instead, and the row
-  fails there (main reads the body first). A cache may refuse Depth
-  infinity with 403 only if an origin does (`cache-infinity`); where no
-  origin may be asked directly, a 403 is accepted, and the row's note
-  says so.
-- Deeper than Depth 0, any server, directors included, lists only a
-  namespace with `Listings`, and an origin answers only direct clients,
-  which a namespace without `DirectReads` has none of. A PROPFIND that may
-  not be answered must be refused with 401, 403, or 405. The tree holds
-  an empty object, whose PUT an `ssh` origin answers with 405
-  (v26.0.0-rc.3), so there the suite's `setup` fails, and nothing else
-  of it runs.
-- Every object in a listing must have a `getcontentlength`, 0 included.
-- Listing `/protected-a` with no token (`protected-a-no-token`), or one
-  scoped elsewhere (`protected-a-scope`), must be refused by every
-  origin and federated cache; listing `/public` with none must work
-  there (`public-no-token`).
-- `new-object` checks that an object shows up at once, by PROPFIND and
-  with `pelican object ls`, and is gone once removed.
-- `collection-get` asks every server for a collection by GET, as a naive
-  client would, which is no object (Pelican issue #1706): an origin,
-  asked without `Accept: text/html`, refuses (a native origin, 405) or
-  answers a listing (an XRootD origin, HTML), never an object's bytes,
-  and asked with it answers an HTML listing. A federated cache must not
-  keep what an origin answers as the collection's object, which every
-  later request for that path would then get: its answer must be no
-  object's bytes; a V2 cache's 200 must be typed
-  `application/octet-stream`, with `X-Content-Type-Options: nosniff`,
-  so that a browser never runs a listing as a page on the cache's own
-  web origin, and carry no `Age`, on a second GET either, since a V2
-  cache sends `Age` only for an object it holds whole; and the object
-  in the collection must come back intact afterward.
-- `html-links`: a browser user follows the links of an origin's HTML
-  listing, so each must lead to its entry. Under
-  `/protected-a/data/listings/<run>/html/` are the `names` suite's
-  objects, beside their decoys ([names](names.md)), and a collection
-  holding one object. A GET of that collection with `Accept: text/html`
-  goes to each origin, and each link in its answer is followed as a
-  browser follows it: resolved against the listing's URL, without its
-  fragment, and with what a URL may not hold as it is percent-encoded,
-  but a `%` left as it is. A link is known by its text, the entry's
-  name. One to an object must bring its bytes, never a decoy's or a
-  404; one to the collection, or to the parent (`..`), if there is one,
-  an HTML listing that links to what it holds. Every entry must have a
-  link. A native origin's listing must also carry `Cache-Control: no-store`, so that no cache keeps it, as Pelican sends it. Pelican's
-  native origin writes each link as the entry's path in the export,
-  without the namespace, HTML-escaped but not percent-encoded
-  (`streamDirectoryListing` in `origin_serve/handlers.go`), so no link
-  leads to its entry, and the row fails there, on main and v26.0.0-rc.3
-  alike. An XRootD origin writes the whole path, but also not
-  percent-encoded, so the links to `a%20b`, `x%41y`, `hash#tag`, and
-  `what?q=1` bring their neighbors' bytes, and the row fails there too.
-  Of the native origins, only `posixv2`, whose storage is on its own
-  host, answers an HTML listing at all. An origin that answers none is
-  passed over, and named in the note, since `collection-get` fails it;
-  where none answers one, the row skips, as it does where the origins
-  take no direct clients.
-- `plain-object-listing`: a PROPFIND of Depth 1 of an object, which is
-  no collection, must answer as Depth 0 would (RFC 4918, section 9.1):
-  207, listing the object alone, with its size. Every origin and
-  federated cache is asked so of `tree/b` in `/protected-a`, and must
-  answer so, or refuse where it may not list. Then `pelican object ls -l --json` of it must list the object alone, where `/protected-a` has
-  `Listings` (Pelican's `TestListPlainObjectPosixV2`).
-- XRootD falls short of some of this (XRootD 5.9.7, in the v26.0.0-rc.3
-  images), so where it serves the origins or the caches
-  (`-p origin-xrootd`, `-p cache-xrootd`), these rows fail. An XRootD
-  origin answers Depth infinity as Depth 1 would, listing the first
-  level alone (`origin-infinity`, and `cache-infinity` through it), and
-  its HTML listing comes with no `Content-Type` (`collection-get`). An
-  XRootD cache lists no collection: a PROPFIND of one deeper than Depth
-  0 is refused, with 409 (`is a directory`) or 502, whatever the token
-  (`cache-depth-1`, `cache-infinity`, `cache-body`, `public-no-token`,
-  and `new-object`, at the caches); Pelican's own client never asks a
-  cache for a listing. Depth 0 of an object, and Depth 1 of one
-  (`plain-object-listing`), it answers.
+The suite skips where the shape does not export `/protected-a`; its
+`cache-*` scenarios skip without a federated cache. `protected-a-no-token`
+and `public-no-token` run in the WLCG pass alone
+([token profiles](README.md#token-profiles)).
+
+- `origin-depth-0`, `origin-depth-1`: Each origin must list the tree
+  exactly, with each object's `getlastmodified` within a minute of its
+  writing, in the right time zone (`TZ_STORAGE`;
+  [Configuration](../configuration.md#knobs)).
+- `origin-infinity`: Each origin must list the whole tree, or refuse with
+  403 (RFC 4918), but not answer as Depth 1.
+- `director`: Each director must redirect to an origin, which must answer as
+  above. Skips for a standalone origin.
+- `cache-depth-0`: Each cache must answer Depth 0 of an object, before and
+  after it holds it.
+- `cache-depth-1`: Each cache must answer Depth 0 of a collection, and list
+  it at Depth 1 as the origins do.
+- `cache-infinity`: The same at Depth infinity. A cache may refuse with 403
+  only if an origin does, or none may be asked directly.
+- `cache-body`: The same at Depth 1, with the body that `pelican object ls`
+  sends.
+- `protected-a-no-token`, `protected-a-scope`: Every origin and cache must
+  refuse to list `/protected-a` with no token, or one scoped elsewhere.
+- `public-no-token`: Every origin and cache must list `/public` with no
+  token. Skips without `/public`.
+- `new-object`: An object must be listed at once, by PROPFIND and
+  `pelican object ls`, and be gone once removed. Needs `Listings`.
+- `collection-get`: A GET of a collection must bring no object's bytes. An
+  origin must answer `Accept: text/html` with an HTML listing. A cache must
+  not keep the answer as an object; a V2 cache's 200 must be
+  `application/octet-stream`, with `X-Content-Type-Options: nosniff` and no
+  `Age`.
+- `html-links`: Each link in an origin's HTML listing of the
+  [names](names.md) suite's objects, followed as a browser would, must lead
+  to its entry, never a decoy or a 404. Every entry must have a link, and a
+  native origin's listing must carry `Cache-Control: no-store`. Skips where
+  no origin answers an HTML listing, or the origins take no direct clients.
+- `plain-object-listing`: Depth 1 of an object must answer as Depth 0
+  (RFC 4918, section 9.1): 207, the object alone, with its size. So must
+  `pelican object ls -l --json`, given `Listings`.

@@ -805,8 +805,7 @@ if [ "${FEDERATED_CACHE}" = false ]; then
 fi
 
 # Cache tiering is the V2 cache's, here only in the full topology, where
-# the `s3` service holds the tiered objects. Pelican's main has it, but no
-# release yet, and an older cache ignores the setting.
+# the `s3` service holds the tiered objects.
 if [ "${CACHE_TIERING}" = true ]; then
   fed_all_caches_v2 \
       || die "CACHE_TIERING ('cache-tiered') needs every cache V2, but CACHE_VARIANT" \
@@ -816,10 +815,6 @@ if [ "${CACHE_TIERING}" = true ]; then
       || die "CACHE_TIERING ('cache-tiered') needs the 'full' topology, not '${fed_topology}'"
   fed_has_profile s3 \
       || die "CACHE_TIERING needs the S3 server; use '-p cache-tiered'"
-  if [ "${IMAGE_CACHE}" = "${IMAGE_HUB}/cache:${PELICAN_TAG}" ]; then
-    warn "cache tiering is only on Pelican's main, so the released IMAGE_CACHE" \
-         "ignores it, and the tiering suite skips; build one from main"
-  fi
 fi
 
 # The memory cache is the V2 cache's too; either kind's store may be
@@ -1628,17 +1623,17 @@ fed_generate() {
     esac
   done
 
-  # posixv2 multiuser (`origin-multiuser`): each request's filesystem
-  # operations run as the Unix user its token maps to, who must exist in
-  # the origin's image. The tests' tokens map to `pelican` (uid 10941);
-  # any other token, e.g. a director's test, to `xrootd` (10940); and
+  # Multiuser (`origin-multiuser`): each request's filesystem operations
+  # run as the Unix user its token maps to, who must exist in the
+  # origin's image. The tests' tokens map to `pelican` (uid 10941); any
+  # other token, e.g. a director's test, to `xrootd` (10940); and
   # requests without a token run as `nobody`, Pelican's default. The
   # rules after the first are the `users` suite's, for subjects and a
   # group that only its tokens carry: two map to system accounts, which
   # Origin.MultiuserMinID must refuse; the rest map to `pelican`, so that
   # an upload's owner shows that the rule matched, not the default. A
-  # `path` rule is relative to the namespace in XrdSciTokens' mapfile;
-  # the second names the federation's path, in case Pelican reads it so.
+  # `path` rule is relative to the namespace, as in XrdSciTokens' mapfile
+  # format, which Origin.ScitokensNameMapFile follows.
   if [ "${ORIGIN_MULTIUSER}" = true ]; then
     {
       printf '[\n'
@@ -1650,8 +1645,6 @@ fed_generate() {
       printf '   "comment": "the users suite'"'"'s min-id: below Origin.MultiuserMinID"},\n'
       printf '  {"sub": "users-path", "path": "/data/users/mapped", "result": "pelican",\n'
       printf '   "comment": "the users suite'"'"'s mapfile path"},\n'
-      printf '  {"sub": "users-path", "path": "/protected-a/data/users/mapped",\n'
-      printf '   "result": "pelican", "comment": "the users suite'"'"'s mapfile path"},\n'
       printf '  {"group": "xrootd", "result": "pelican",\n'
       printf '   "comment": "the users suite'"'"'s mapfile group"}\n'
       printf ']\n'
@@ -1981,8 +1974,8 @@ fi
 fed_prepare_dirs
 
 #---------------------------------------------------------------------------
-# Released binaries in framework/var/bin/, for use outside the service
-# containers:
+# PELICAN_TAG's binaries in framework/var/bin/, for use outside the
+# service containers:
 #
 #   linux/    the client the tests use in the dev container, and
 #             pelican-server for the server-only commands they run
@@ -2473,9 +2466,9 @@ fed_require_lab_key() {
 # framework/init-data.py runs on the host (see README.md, Requirements).
 fed_require_python() {
   command -v python3 >/dev/null 2>&1 \
-      || die "python3 is missing; install Python 3.9 or later"
-  python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' \
-      || die "python3 is $(python3 -V 2>&1 | cut -d' ' -f2); install Python 3.9 or later"
+      || die "python3 is missing; install Python 3.10 or later"
+  python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
+      || die "python3 is $(python3 -V 2>&1 | cut -d' ' -f2); install Python 3.10 or later"
 }
 
 # The dev container mounts ~/.gitconfig. This is the only file the
@@ -2516,28 +2509,32 @@ fed_control_stop() {
 
 # Copy stdin to stdout with the signature of each JWT in it cut out, as
 # test.py cuts it out of what the tests print (redact() in
-# framework/testlib/report.py): a server's log may quote a token, as
-# XRootD's cache does a client's, which would otherwise be good for as
-# long as it lasts to whoever reads the log.
+# framework/testlib/report.py): a token that a server's log quotes would
+# otherwise be good, for as long as it lasts, to whoever reads the log.
 fed_redact_tokens() {
   sed -E 's/(eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,})\.[A-Za-z0-9_-]{8,}/\1.<signature>/g'
 }
 
-# Keep every service's log in framework/var/logs/$1/, once: <svc>.log,
-# from when its container was created, its tokens' signatures cut out;
-# ps.txt, the containers' states;
-# containers.txt, how each container stands or ended, and whether the
-# kernel killed it for want of memory; stats.txt, what each uses of its
-# memory limit; shape.txt, the presets, topology, profiles, and images;
-# config/, the configuration that fed.sh generated for the shape
-# (framework/var/generated/, but its secrets: keys, tokens, and the
-# OIDC client's secret); results/, the rows of the suites that this run
-# ran; and commands.log (commands-scitokens.log), every client command
-# that each pass of the tests ran, with all it printed; beside test.log,
-# what the tests printed, and control.log, what the control helper did
-# for them (see `test` below). The tests
-# restart services but never recreate them, so a log covers the whole
-# run, and the startup before it.
+# Keep the run's record in framework/var/logs/$1/, once:
+#
+#   <svc>.log       each service's log since its container was created,
+#                   with tokens' signatures cut out
+#   ps.txt          the containers' states
+#   containers.txt  how each container stands or ended, and whether the
+#                   kernel killed it for want of memory
+#   stats.txt       each container's memory use against its limit
+#   shape.txt       the presets, topology, profiles, and images
+#   config/         what fed.sh generated for the shape
+#                   (framework/var/generated/), less keys, tokens, and
+#                   the OIDC client's secret
+#   results/        the rows of the suites that this run ran
+#   commands*.log   every client command of each pass of the tests,
+#                   with all it printed
+#
+# test.log and control.log, what the tests and the control helper
+# printed, are written there as the tests run (see `test` below). The
+# tests restart services but never recreate them, so a log covers the
+# whole run, and the startup before it.
 fed_save_logs() {
   [ -n "$1" ] && [ -z "${fed_logs_saved:-}" ] || return 0
   fed_logs_saved=yes

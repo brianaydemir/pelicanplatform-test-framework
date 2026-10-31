@@ -1,17 +1,17 @@
 """Advertisements, as an origin or a cache posts them to a director.
 
-An ad is a server_structs.OriginAdvertise (registerServerAd in Pelican's
-director/director.go). The token that signs one is signed with the server's
-own key, which the registry holds for its prefix (/origins/<host> or
-/caches/<host>), and has the advertise scope; the director checks it against
-the registry's copy of the key (verifyAdvertiseToken in
-director/origin_api.go).
+An ad is a server_structs.OriginAdvertise (registerServerAd in
+Pelican's director/director.go). The token that comes with one has the
+advertise scope, and is signed with the server's own key, which the
+registry holds for the server's prefix (/origins/<host> or
+/caches/<host>). The director checks the token against the registry's
+copy of the key (verifyAdvertiseToken in director/origin_api.go).
 
-Servers finds each server as the first director describes it, and the key in
-framework/var/issuer-keys/<host>/ that the registry holds for it; ad()
-builds an ad like the server's own from that description, which lasts
-AD_LIFETIME seconds, and the server's next ad, within
-Server.AdvertisementInterval, replaces; and post_ad() posts an ad as a
+Servers finds each server as the first director describes it, and the
+key in framework/var/issuer-keys/<host>/ that the registry holds for
+it. ad() builds an ad like the server's own from that description; it
+lasts AD_LIFETIME seconds, unless the server's next ad, within
+Server.AdvertisementInterval, replaces it. post_ad() posts an ad as a
 server does.
 """
 

@@ -12,8 +12,7 @@
 # issuer; `director-discovery`, since its director is the discovery host
 # already; `origin-broker` and `origin-firewalled`, which broker origin-0
 # in a container of its own; `topo-no-cache`, which is the full
-# topology's; and every preset
-# that adds a service but `origin-metadata`, `origin-metadata-tx`, and
-# `auth-oidc`.
+# topology's; and every preset that adds a service but
+# `origin-metadata`, `origin-metadata-tx`, and `auth-oidc-local`.
 
 TOPOLOGY=tiny

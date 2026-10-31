@@ -28,17 +28,21 @@ director-api, registry, tiering, posc, metadata, users, owners,
 sitelocal, collections, issuer, accounts, oidc, advertise, webapi,
 observability, webdav, auth, transfers, restart, and keys.
 `federation/ready` and `federation/caches` run first whatever is asked
-for, and if the federation never serves, nothing else runs. A suite
-that doesn't apply to the shape, such as pstore without a pstore origin,
-is skipped. Each pass of a suite writes a row per case to
-framework/var/results/<suite>.tsv (or <suite>-scitokens.tsv); a run of
+for; if the federation never serves, nothing else runs. A suite that
+doesn't apply to the shape, such as pstore without a pstore origin, is
+skipped.
+
+Each pass of a suite writes a row per case to
+framework/var/results/<suite>.tsv (or <suite>-scitokens.tsv). A run of
 everything first removes the results of earlier runs with the same
-RESULTS_TAG. A pass that prints nothing for STALL_SECONDS, or runs for
-BUDGET_SECONDS, is abandoned, and recorded as `aborted` (or `setup`,
-if it recorded no case), so that a scenario stuck on a server that
-never answers cannot stall the run; where each of its threads was is
-printed first. Its cleanup, if that too takes over GRACE_SECONDS, is
-interrupted again.
+RESULTS_TAG.
+
+A pass that prints nothing for STALL_SECONDS, or runs for
+BUDGET_SECONDS, is abandoned, so that a scenario stuck on a server that
+never answers cannot stall the run. Where each of its threads was is
+printed, and the pass is recorded as `aborted` (or `setup`, if it
+recorded no case). If its cleanup takes over GRACE_SECONDS, that is
+interrupted too.
 """
 
 import contextlib

@@ -1,33 +1,55 @@
 """Listings, at each origin, each director, and each cache.
 
-The suite checks PROPFIND at depths 0, 1, and infinity, in every
-namespace; who may list /protected-a; an object that comes and goes;
-Depth 1 of an object, which is no collection; a GET of a collection,
-which is no object, and which no cache may keep as one; and the links
-of an origin's HTML listing, which a browser follows, among names that
-a URL must encode.
+The suite sends PROPFIND at depths 0, 1, and infinity, in every
+namespace, over a small tree. It also checks who may list /protected-a,
+a GET of a collection, which is no object, and the links of an origin's
+HTML listing, which a browser follows.
+
+  origin-depth-0        each origin: Depth 0 of an object and of a
+                        collection; the object's getlastmodified is when
+                        its file was written
+  origin-depth-1        each origin lists a collection's members
+  origin-infinity       each origin lists the whole tree, or refuses
+                        (403)
+  director              each director redirects a PROPFIND to an origin,
+                        which lists or refuses
+  cache-depth-0         each cache: Depth 0 of an object it lacks, then
+                        of one it holds
+  cache-depth-1         each cache lists a collection as the origins do
+  cache-infinity        each cache: Depth infinity, refused only if an
+                        origin refuses it
+  cache-body            each cache relays Depth 1 with the propfind body
+                        that the client sends
+  protected-a-no-token  every origin and cache refuses to list
+                        /protected-a with no token
+  protected-a-scope     the same, with a token scoped elsewhere
+  public-no-token       every origin and cache lists /public with no
+                        token
+  new-object            an object is listed at once, and not once
+                        removed
+  collection-get        a GET of a collection brings no object's bytes,
+                        and no cache keeps its answer as an object
+  html-links            each link of an origin's HTML listing leads to
+                        its entry, among names that a URL must encode
+  plain-object-listing  Depth 1 of an object lists it alone, at each
+                        origin and cache, and by `pelican object ls`
 
 Objects go under /<namespace>/data/listings/<run>/, put straight in
-every origin's store, in each namespace's storage (see stores.seed();
-on a pstore origin, /public reads /protected-a's). Each namespace's tree
-also holds an object that only it holds, `only-<namespace>`, so that a
-server that lists another namespace's lists the wrong tree.
-The director redirects a PROPFIND to an origin. A cache answers Depth 0
-from what it holds, or asks an origin, and relays deeper listings to an
-origin.
+every origin's store (stores.seed(); a pstore origin's /public reads
+/protected-a's storage). Each namespace's tree also holds an object of
+its own, `only-<namespace>`, so that a server that lists another
+namespace's tree lists the wrong one.
 
-Every PROPFIND and GET presents a token of the session's profile; the
-objects are put in place, and the stores read, with WLCG tokens either
-way.
+Who may list depends on the namespace's capabilities (may_list()).
+Depth 0 is a stat; anything deeper needs Listings. An origin answers
+only direct clients, which a namespace without DirectReads has none of
+(`-p origin-no-direct`). A director redirects a PROPFIND to an origin. A
+cache answers Depth 0 of anything it may read, and relays deeper
+listings to an origin. A PROPFIND that may not be answered must be
+refused, with 401, 403, or 405.
 
-An object's getlastmodified at an origin must be when its file was
-written (in a pstore origin's catalog, as its storage API says). Who may
-list depends on the namespace's capabilities (see may_list()): an origin
-serves only direct clients, which a namespace without DirectReads has
-none of (`-p origin-no-direct`); a cache answers
-Depth 0 of anything it may read, and a director redirects it; and
-anything deeper, at any server, needs Listings. A PROPFIND that may not
-be answered must be refused, with 401, 403, or 405.
+Every PROPFIND and GET presents a token of the session's profile. The
+objects are put in place, and the stores read, with WLCG tokens.
 """
 
 import json
@@ -712,16 +734,15 @@ def new_object(test: Test) -> tuple[str, str]:
 def collection_get(test: Test) -> tuple[str, str]:
     """Check a GET of a collection, tree/sub, which is no object.
 
-    See Pelican issue #1706. An origin, asked without Accept: text/html,
-    as a client that expects bytes asks, refuses (a native origin, 405)
-    or answers a listing (an XRootD origin, HTML), never an object's
-    bytes; asked with it, answers an HTML listing. A federated cache must
-    not keep what an origin answers as the collection's object: its
-    answer must be no object's bytes, and a V2 cache's 200 must be typed
-    application/octet-stream, with X-Content-Type-Options: nosniff, and
-    carry no Age, on a second GET either; and the object in the
-    collection must come back intact afterward. The origins are asked
-    only if they take direct clients.
+    An origin asked without Accept: text/html, as by a client that
+    expects bytes, may refuse or answer a listing, but never an object's
+    bytes. Asked with it, it must answer an HTML listing. A federated
+    cache must not keep what an origin answers as the collection's
+    object: its answer must be no object's bytes, and a V2 cache's 200
+    must be typed application/octet-stream, with X-Content-Type-Options:
+    nosniff, and carry no Age, on a second GET either. The object in the
+    collection must then come back intact. The origins are asked only if
+    they take direct clients.
     """
     caps = test.caps("protected-a")
     token = test.tokens["protected-a"]
@@ -906,16 +927,14 @@ def html_links(test: Test) -> tuple[str, str]:
 
     The listing (a GET with Accept: text/html) is of a collection that
     holds an object for each of NAMES, decoys among them, and a
-    collection, HTML_SUB. Following each link as a browser does
-    (followed()) must bring the object of its name, never a decoy's
-    bytes or a 404, and the link to HTML_SUB, or to the parent (..), if
-    there is one, its listing. Every entry must have a link. A native
-    origin's listing must carry Cache-Control: no-store, as Pelican sends
-    it, so that no cache keeps it. An origin that answers no HTML
-    listing (of the native origins, only one over storage on its own
-    host answers one) is passed over, and named in the note;
-    collection-get fails it. The origins are asked only if they take
-    direct clients.
+    collection, HTML_SUB. Each link, followed as a browser follows it
+    (followed()), must bring the object of its name, never a decoy's
+    bytes or a 404; the link to HTML_SUB, or to the parent (..), if there
+    is one, must bring its listing. Every entry must have a link. A
+    native origin's listing must carry Cache-Control: no-store, so that
+    no cache keeps it. An origin that answers no HTML listing is passed
+    over, and named in the note, since collection-get fails it. The
+    origins are asked only if they take direct clients.
     """
     caps = test.caps("protected-a")
     if not may_list(caps, "0", "origin"):
@@ -959,9 +978,9 @@ def plain_object_listing(test: Test) -> tuple[str, str]:
 
     A PROPFIND at every origin and cache must answer 207, listing the
     object alone, with its size, as Depth 0 would (RFC 4918, section
-    9.1); or, where the server may not list (may_list()), a refusal. And
-    `pelican object ls -l --json` of it must list it alone, where
-    /protected-a has Listings (Pelican's TestListPlainObjectPosixV2).
+    9.1); or, where the server may not list (may_list()), a refusal.
+    Where /protected-a has Listings, `pelican object ls -l --json` of it
+    must list it alone.
     """
     caps = test.caps("protected-a")
     token = test.tokens["protected-a"]

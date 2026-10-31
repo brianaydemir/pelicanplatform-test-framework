@@ -31,18 +31,18 @@ director checks it against the registry's copy (verifyAdvertiseToken in
 Pelican's director/origin_api.go). The suite signs as each server with
 the key in framework/var/issuer-keys/<host>/ that the registry holds.
 
-The suite posts ads that the directors take, as a server's own, for a
-server that is running, which its next ad, within
-Server.AdvertisementInterval (30 seconds here), replaces: each is built
-from what the director says of the server (/api/v1.0/director_ui/
-servers/<name>), and lasts 90 seconds. After each scenario that does,
-every director must name each server it touched again, within 150
-seconds, or a row of the scenario fails.
+An ad the suite posts that a director takes stands as the server's
+own: built from what the director says of the server
+(/api/v1.0/director_ui/servers/<name>), it lasts 90 seconds, and the
+server's next ad replaces it within Server.AdvertisementInterval (30
+seconds here). After a scenario that posts such ads, every director
+must name each server touched again within 150 seconds, or a row of the
+scenario fails.
 
-It puts an object of its own at every origin, in the first protected
-namespace, or in /public where the origins export only that
-(`-p origin-public`), at data/advertise/<run>-probe, about which it asks
-the directors, and removes it afterward.
+The suite puts a probe object at every origin, at
+data/advertise/<run>-probe in the first protected namespace, or in
+/public where the origins export only that (`-p origin-public`); asks
+the directors about it; and removes it afterward.
 """
 
 import glob
@@ -257,11 +257,7 @@ def forged_ads(test: Test) -> list[Row]:
     them the server's own ad with a token of its key and scope, but for
     another audience, from another issuer, or with no `exp`, which RFC
     7519 (sections 4.1.3 and 4.1.4) and the WLCG token profile say a
-    verifier must refuse. Pelican's director checks an advertise token's
-    signature, against the registry's keys for the server's prefix, and
-    its scope alone (verifyAdvertiseToken in director/origin_api.go),
-    and jwx validates `exp` only if a token has one, so those three rows
-    fail, on v26.0.0-rc.3 and main alike.
+    verifier must refuse.
     """
     fed = test.fed
     origin = test.server("Origin", director.host(fed.origins[0].url))
@@ -388,10 +384,7 @@ def bad_broker_url(test: Test) -> list[Row]:
 
     Post origin-0's own ad, as it, but with a broker URL that Go's
     url.Parse refuses, to every director: each must answer 400, with one
-    JSON body, and then still list its servers, and name origin-0. Pelican
-    writes the 400 and goes on to read the URL it could not parse
-    (finishRegisterServeAd in director/director.go), which panics, and gin
-    recovers.
+    JSON body, and then still list its servers, and name origin-0.
     """
     origin = test.server("Origin", director.host(test.fed.origins[0].url))
     body = ad(origin, **{"broker-url": "http://[::1"})
@@ -468,9 +461,8 @@ def spoofed_status(test: Test) -> list[Row]:
     cacheNotInErrorState). Then, with a second cache's key and prefix, ads
     that name the first: by its name alone (the second's URL), saying each
     status, and with a downtime under way; and by its URL too, saying it
-    is critical. The first must stay named: an advertise token proves a
-    server's prefix, not its name or URL, and the director keeps the ad
-    of a URL, whoever sent it (recordAd in director/cache_ads.go).
+    is critical. The first must stay named, since an advertise token
+    proves a server's prefix, not its name or URL.
     """
     caches = test.caches()
     if not caches:
@@ -678,8 +670,7 @@ def fed_token(test: Test) -> list[Row]:
     then without the host, the server type, or a token; for a director;
     with the cache's key but not the advertise scope; with the cache's
     token for another server; and with a token signed by a key no server
-    knows: each must be refused (403). Pelican answers 500 to a token it
-    cannot verify (getFedToken in director/fed_token.go).
+    knows: each must be refused (403).
     """
     caches = test.caches()
     if not caches:

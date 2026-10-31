@@ -2,9 +2,9 @@
 
 The capabilities are Listings, DirectReads, and Copies (which
 Origin.DisableCopies turns off). The suite also checks a third-party
-COPY's whole contract, its progress and its failures, and what a failed
-one leaves; and a PUT of a multipart body. These are where an origin
-could serve, or destroy, more than its configuration allows.
+COPY's progress, its failures, and what a failed one leaves; and a PUT
+of a multipart body. These are where an origin could serve, or destroy,
+more than its configuration allows.
 
   multipart-put            with metadata off, a PUT typed
                            multipart/form-data is stored as sent, shaped
@@ -47,34 +47,34 @@ could serve, or destroy, more than its configuration allows.
                            starts and serves where each does, and
                            refuses to start where one does not
 
-The capability scenarios, and disable-copies's `disabled` row, need
-capabilities that no shape gives, so the suite restarts every origin to
-give them, as the last of its configuration layers
-(control.restart_with()): fed.sh's Origin.Exports restated, with
-/protected-b (or, where it is not exported, /protected-a) without
-Listings and /public without DirectReads, and Origin.DisableCopies.
-Afterward it restores them. This needs native origins that take direct
-clients, a control helper, and a topology other than `tiny`, whose
-origin is the whole federation's process; elsewhere those rows skip.
-`nested-export` restarts them once more, every origin, XRootD's too,
-with an export of the run's own nested in /public, which no shape has
-either (nest()). The backend scenarios likewise restart the
-origins to reach their backend through the `webdav-gate` service, which
-logs what each request carried (see GATE_LOG); and `sentinel` the first
-origin, of any kind, where /protected-a takes writes from direct
-clients, with a SentinelLocation for every export.
+No shape gives what several scenarios need, so the suite restarts
+origins as the last of their configuration layers
+(control.restart_with()), and restores them afterward:
 
-Each scenario asks only the native origins (origin_serve/ in Pelican)
-but `multipart-put` and disable-copies's `public` row, which ask an
-XRootD origin too, as a control; `nested-export`, which asks every
-origin; and `backend-token`, which asks XRootD's `https` origins too.
-Everything goes under /<namespace>/data/exports/<run>/, which the
-suite removes afterward. A third-party COPY's failing sources are a
-stub HTTP server in the dev container (testlib/stub.py). The requests
-that the scenarios check present tokens of the session's profile, the
-client's token that `backend-passthrough` forwards among them; their
-objects are put in place, and the stores read, with WLCG tokens either
-way.
+  - for RESTARTED, every origin, if all are native and take direct
+    clients, with fed.sh's Origin.Exports restated (/protected-b, or
+    /protected-a, without Listings; /public without DirectReads) and
+    Origin.DisableCopies;
+  - for nested-export, every origin, XRootD's too, with an export of the
+    run's own nested in /public (nest());
+  - for the backend scenarios, the https and httpsv2 origins, reaching
+    their backend through the `webdav-gate` service, which logs what
+    each request carried (GATE_LOG);
+  - for sentinel, the first origin, of any kind, with a SentinelLocation
+    for every export.
+
+Each restart needs a control helper and a topology other than `tiny`,
+whose origin is the whole federation's process; elsewhere its rows skip.
+
+Each scenario asks only the native origins (origin_serve/ in Pelican),
+but multipart-put and disable-copies's `public` row, which ask XRootD
+origins too, as a control; nested-export, which asks every origin; and
+backend-token, which asks XRootD's `https` origins too. Everything goes
+under /<namespace>/data/exports/<run>/, which the suite removes
+afterward. A COPY's failing sources are a stub HTTP server in the dev
+container (testlib/stub.py). The requests that the scenarios check,
+among them the client's that backend-passthrough forwards, present
+tokens of the session's profile; setup presents WLCG tokens either way.
 """
 
 import contextlib
@@ -234,10 +234,9 @@ SENTINEL_WAIT = 120
 # also answer that it does not allow the method (405).
 REFUSED = (401, 403)
 LISTING_REFUSED = (401, 403, 405)
-# What a COPY to an export without Copies must get: a native origin
-# routes COPY only for an export with Copies (RegisterHandlers in
-# origin_serve/handlers.go), so gin answers 404 for the rest; 405 says
-# the same. A COPY to /public may also be refused as a write.
+# What a COPY to an export without Copies must get: 405, or 404, as from
+# an origin that routes no COPY there. A COPY to /public may also be
+# refused as a write.
 NO_COPY = (404, 405)
 PUBLIC_COPY_REFUSED = (401, 403, 404, 405)
 
@@ -443,13 +442,9 @@ def multipart_put(test: Test) -> dict[str, Row]:
       form-shaped     one `file` part, as an HTML form sends
 
     With metadata off, an origin must store each byte for byte as sent,
-    as a PUT stores its body (RFC 9110, section 9.3.4).
-    Pelican's native origin takes every such PUT apart
-    (rewriteMultipartPUT in origin_serve/metadata_multipart.go), gated
-    by Origin.Metadata.AllowMultipart, which is on by default, but not by
-    Origin.Metadata.Enabled, so it stores only the first's `object`
-    part, and refuses the second (400), and the rows fail there. An
-    XRootD origin stores either as sent, and is the control.
+    as a PUT stores its body (RFC 9110, section 9.3.4); taking the parts
+    apart (Origin.Metadata.AllowMultipart) is for metadata publishing
+    alone. XRootD origins are asked too, as a control.
     """
     rows = ROWS["multipart-put"]
     why = test.writable()
@@ -569,8 +564,7 @@ def tpc_body(test: Test) -> dict[str, Row]:
     must get 201, and an answer of Perf Markers whose Stripe Bytes
     Transferred never fall, nor exceed the object, the last the object's
     size, then `success: Created`; and the destination must then hold the
-    object (Pelican's client/http_copy_test.go, TestMonitorTPC). The
-    row's note counts the markers.
+    object. The row's note counts the markers.
     """
     (row,) = ROWS["tpc-body"]
     why = test.native() or test.writable()
@@ -672,9 +666,9 @@ def missing_source(test: Test, found: Findings) -> None:
 
     The Source is in /protected-a, at the first federated cache (or
     another origin, or itself). The COPY must fail, whether by an error
-    status (Pelican's is 502) or a last line of `failure: ...`, and write
-    nothing. Then `pelican object copy` of such an object to /protected-a
-    must exit non-zero, and no origin hold the destination.
+    status or a last line of `failure: ...`, and write nothing. Then
+    `pelican object copy` of such an object to /protected-a must exit
+    non-zero, and no origin hold the destination.
     """
     missing = f"{test.base}/missing"
     for origin in test.fed.origins:
@@ -712,22 +706,18 @@ def missing_source(test: Test, found: Findings) -> None:
 def mid_stream(test: Test, found: Findings) -> None:
     """Check a COPY over an object X from a Source that fails partway.
 
-    The Source is a stub that claims SHORT_CLAIMED bytes and sends
-    SHORT_SENT, then hangs up. The COPY must fail (a 2xx whose last line
-    is `failure: ...`, or an error status), and then:
+    The Source is a stub that claims SHORT_CLAIMED bytes, sends
+    SHORT_SENT, and hangs up. The COPY must fail (an error status, or a
+    2xx whose last line is `failure: ...`), and then:
 
       where uploads are staged (POSC, or a pstore origin)
                      X intact
       elsewhere      X intact, or nothing; never other bytes
 
-    An origin that does not stage an upload opens its destination with
-    O_TRUNC, and so has lost X before it learns that the copy fails;
-    that is accepted, and the row's note says what each origin kept.
-    Pelican aborts a staged upload, which keeps X, but then removes the
-    destination anyway (RemoveAll, in handleCopyTPC's failure path,
-    origin_serve/tpc_handler.go), so the row fails under `-p
-    origin-posc` and `-p origin-pstore`. Under `-p origin-metadata`, an
-    origin that kept X must publish no object.deleted for it.
+    An origin that does not stage an upload writes its destination in
+    place, and so may lose X before it learns that the copy fails; the
+    row's note says what each origin kept. Under `-p origin-metadata`,
+    an origin that kept X must publish no object.deleted for it.
     """
     kept: list[str] = []
     for origin in test.fed.origins:
@@ -788,8 +778,7 @@ def failure_case(test: Test, case: str) -> Row:
 def tpc_failures(test: Test) -> dict[str, Row]:
     """Check each of FAILURE_CASES at each native origin.
 
-    Each case has a row; see its function, and Pelican's
-    origin_serve/tpc_handler_test.go, TestHandleCopyTPCMidTransferFailures.
+    Each case has a row; see its function.
     """
     rows = ROWS["tpc-failures"]
     why = test.native() or test.writable()
@@ -805,12 +794,11 @@ def tpc_failures(test: Test) -> dict[str, Row]:
 def copies_to_public(test: Test) -> Row:
     """Check a third-party COPY to /public at each origin.
 
-    /public takes no writes, and so has no Copies (a native origin turns
-    Copies on only for an export with Writes; server_utils/origin.go).
-    The COPY, from the probe, with /protected-a's `server` token, must be
-    refused (404 or 405, as a native origin routes no COPY there, or 401
-    or 403), and write nothing. An XRootD origin is asked too, as a
-    control.
+    /public takes no writes, and so has no Copies (Origin.DisableCopies
+    gives Copies only to an export with Writes). The COPY, from the
+    probe, with /protected-a's `server` token, must be refused
+    (PUBLIC_COPY_REFUSED), and write nothing. XRootD origins are asked
+    too, as a control.
     """
     if "public" not in test.fed.exports:
         return SKIP, "this shape does not export /public"
@@ -862,7 +850,7 @@ def unrestartable(test: Test) -> str | None:
     """
     fed = test.fed
     if not fed.native_origins:
-        return f"XRootD serves the origins ({fed.origin_variant}); this is Pelican's native origin"
+        return f"XRootD serves the origins ({fed.origin_variant}); the check is of Pelican's native origin"
     if "DirectReads" not in fed.exports[NAMESPACE]:
         return (
             "the origins take no direct clients (Origin.DisableDirectClients), with which Pelican"
@@ -1048,13 +1036,10 @@ def copies_disabled(test: Test, _layout: Layout, _data: Mapping[str, bytes]) -> 
     """Check a native origin's COPY and OPTIONS under Origin.DisableCopies.
 
     At each native origin, a third-party COPY to /protected-a, which
-    takes writes, from the probe, must be refused (404 or 405: Pelican
-    then gives no export Copies, and routes no COPY;
-    server_utils/origin.go, RegisterHandlers in
-    origin_serve/handlers.go), with nothing written; and OPTIONS of the
+    takes writes, from the probe, must be refused (NO_COPY), since no
+    export then has Copies, and write nothing; and OPTIONS of the
     server's root, with no token, must answer 200, with an Allow that
-    names no COPY (registerRootOptions; Pelican's
-    origin_serve/root_options_test.go).
+    names no COPY.
     """
     found = Findings()
     for origin in test.fed.origins:
@@ -1086,11 +1071,9 @@ def listings_capability(test: Test, layout: Layout, data: Mapping[str, bytes]) -
     (401, 403, or 405); a PROPFIND of Depth 0 of the object in it, a
     stat, must answer 207, with its size. A PROPFIND of Depth 1 in
     /protected-a, which keeps Listings, must answer 207, so that a
-    refusal is the export's alone. Nothing in Pelican's origin_serve/
-    reads Listings (authz.go builds its ACLs from PublicReads, Reads, and
-    Writes alone), so the row fails there. The director already sends no
-    deeper PROPFIND to an export without Listings (director/sort.go);
-    this is the origin's own check.
+    refusal is the export's alone. The directors' part, sending no
+    deeper PROPFIND to such an export, is the `listings` suite's; this
+    is the origin's own.
     """
     namespace = layout.listless
     token = test.session.token(namespace)
@@ -1137,9 +1120,7 @@ def direct_reads_capability(test: Test, layout: Layout, data: Mapping[str, bytes
     Origin.DisableDirectClients stays off. A GET of an object in /public
     straight to each native origin must be refused (401 or 403), with
     none of its bytes, while one of the probe in /protected-a is served;
-    and a GET of it through each federated cache must be served. Pelican
-    checks DirectReads only through Origin.DisableDirectClients, and that
-    only at startup (origin_serve/handlers.go), so the row fails there.
+    and a GET of it through each federated cache must be served.
     """
     if layout.directless is None:
         return SKIP, "this shape does not export /public"
@@ -1416,11 +1397,7 @@ def nested_protected(test: Test, prefix: str, data: Mapping[str, bytes], _token:
     """Check that no origin serves the nested export's object to no token.
 
     The export takes a token, though it is nested in /public, which
-    anyone may read. Pelican's native origin grants a token's reads, and
-    a PublicReads export's, by any export that encloses a path (getAcls
-    in origin_serve/authz.go), so it would serve the object to anyone,
-    and the row fail there, were the origin to start; XRootD's
-    authfile denies the inner prefix (xrootd/authorization.go).
+    anyone may read.
     """
     found = nested_refused(test, None, data, "with no token")
     return found.row(f"{prefix}, with no token, at {len(test.fed.origins)} origin(s)")
@@ -1440,29 +1417,18 @@ def nested_export(test: Test) -> dict[str, Row]:
 
     An operator may nest a protected prefix in a public one on one
     origin, as another owner may register one inside it (the `auth`
-    suite's `nested-protected`, under `-p topo-multi-owner`): Pelican
-    picks the export of a path by its longest prefix (LongestNSMatch),
-    and its native origin's authorization speaks of exports nested one
-    inside another (origin_serve/authz.go). So every origin, XRootD's
-    too, is restarted with the shape's exports and one more, nested in
-    /public, /public/<the run's collection>/secret, with /protected-a's
-    capabilities (nested_files()), after the objects it serves are put
-    in /public's storage (seed_nested()); afterward the origins are
-    restored, and the export's registration, which they made as they
-    started, is removed (unregister()). Pelican's native origin
-    registers a route group with a catch-all per export, and its router
-    (gin) refuses a catch-all whose prefix holds another route, so an
-    origin with an export nested in another panics as it starts, and
-    never serves. An XRootD `posix` origin lays each export out as
-    a symbolic link under its export root, at the export's prefix
-    (CheckOriginXrootdEnv in xrootd/xrootd_config.go), so a nested
-    export's link would go inside the outer export's, where its own
-    storage already is, and the origin stops with "file exists". So the
-    restart fails on every origin, and every row with it, on
-    v26.0.0-rc.3 and main alike. Where an origin starts, NESTED_CHECKS
-    run: it must serve /public as before (`served`), the export's object
-    to a token for the export (`token`), and not to a token of its issuer
-    scoped elsewhere (`wrong-scope`), nor to no token (`protected`).
+    suite's `nested-protected`, under `-p topo-multi-owner`); Pelican
+    picks the export of a path by its longest prefix. So every origin,
+    XRootD's too, is restarted with the shape's exports and one more,
+    nested in /public, /public/<the run's collection>/secret, with
+    /protected-a's capabilities (nested_files()), after the objects it
+    serves are put in /public's storage (seed_nested()). Each origin
+    must then serve /public as before (`served`), and the export's
+    object to a token for the export (`token`), but not to a token of
+    its issuer scoped elsewhere (`wrong-scope`), nor to no token
+    (`protected`). Afterward the origins are restored, and the export's
+    registration, which they made as they started, is removed
+    (unregister()).
     """
     rows = ROWS["nested-export"]
     why = unnestable(test)
@@ -1721,12 +1687,11 @@ def log_problems(
 
     entries are what it logged since the origins were restarted. With the
     static token, every request must carry it, and none a client's. With
-    passthrough, each
-    request for a path the test asked an origin for straight (direct)
-    must carry the client's token, and none may carry the static one;
-    the rest (the origin's own probes, and what it fetched for a cache)
-    are counted. Either way, the gate must have seen a GET, a PUT, and
-    a DELETE.
+    passthrough, each request for a path the test asked an origin for
+    straight (direct) must carry the client's token, and none may carry
+    the static one; the rest (the origin's own probes, and what it
+    fetched for a cache) are counted. Either way, the gate must have
+    seen a GET, a PUT, and a DELETE.
     """
     client = test.token
     if not entries:
@@ -1886,9 +1851,7 @@ def with_sentinel(text: str, name: str) -> str:
     """Return text, fed.sh's Origin.Exports, with a SentinelLocation each.
 
     Each export names name, a file in its storage (beneath its
-    StoragePrefix), which the origin reads through itself as it starts,
-    and without which it refuses to (CheckOriginSentinelLocations in
-    server_utils/origin.go).
+    StoragePrefix), without which the origin must refuse to start.
 
     Raises:
         SetupError: text lists no export.

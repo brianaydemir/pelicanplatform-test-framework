@@ -1,7 +1,7 @@
 #!/bin/sh
 #
-# Health check for every Pelican service. The published images define no
-# HEALTHCHECK.
+# Health check for every Pelican service (x-pelican-health in
+# docker-compose.yaml).
 #
 # Any HTTP response counts as healthy: this checks that the web server is
 # up, not that every component is happy. Waiting for component health

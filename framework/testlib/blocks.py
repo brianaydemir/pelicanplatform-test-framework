@@ -382,10 +382,12 @@ def which_version(
 
 
 def freshness(cache_control: str) -> float | None:
-    """Return how many seconds a cache treats an object as fresh.
+    """Return how many seconds a shared cache treats an object as fresh.
 
-    A V2 cache revalidates no-cache after a grace of 5 seconds
-    (local_cache/cache_control.go), and none stores no-store or private.
+    A shared cache takes s-maxage over max-age (RFC 9111, section
+    5.2.2.10), and stores nothing under no-store or private. A V2 cache
+    revalidates a no-cache copy at most every 5 seconds
+    (NoCacheGracePeriod in local_cache/cache_control.go).
 
     Args:
         cache_control: The origin's Cache-Control.
@@ -394,7 +396,7 @@ def freshness(cache_control: str) -> float | None:
         The seconds, or None if cache_control says nothing about that and
         the cache decides for itself.
     """
-    ages: list[float] = []
+    ages: dict[str, float] = {}
     no_cache = False
     for part in cache_control.split(","):
         name, _, value = part.strip().partition("=")
@@ -405,12 +407,12 @@ def freshness(cache_control: str) -> float | None:
             no_cache = True
         elif name in ("max-age", "s-maxage"):
             try:
-                ages.append(float(int(value.strip().strip('"'))))
+                ages[name] = float(int(value.strip().strip('"')))
             except ValueError:
                 pass
     if no_cache:
         return 5.0
-    return max(ages) if ages else None
+    return ages.get("s-maxage", ages.get("max-age"))
 
 
 # An object overwritten at the origins: its size, and by how much the new

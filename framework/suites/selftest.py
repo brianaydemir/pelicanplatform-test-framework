@@ -22,7 +22,8 @@ The suite checks that each does what the suites that use it rely on.
 
 Each but `pool` reads an object of its own under
 /protected-a/data/selftest/<run>/, which the suite puts in place and
-removes, with a read token of the session's profile.
+removes. Each presents a read token of the session's profile, but
+`restart-cache`, which presents the setup token.
 """
 
 import json
@@ -74,10 +75,9 @@ REQUESTS = "pelican_http_requests_total"
 RESTARTED = "cache-0"
 # How long it waits for a V2 cache to say, with Age, that it holds the
 # object whole, and for every director to name the cache, in seconds.
-# A server advertises as it starts, then every minute
-# (Server.AdvertisementInterval); the directors drop a cache that says,
-# as it stops, that it is shutting down, until it advertises again
-# (director/director.go in Pelican).
+# The directors drop a cache that says, as it stops, that it is shutting
+# down, until it advertises again, as it does when it starts and then
+# every 30 seconds here (Server.AdvertisementInterval).
 HELD_WAIT, NAMED_WAIT = 30, 150
 # How long it waits for the cache to serve the object again: a cache
 # just started refuses a namespace's tokens until it has learned the

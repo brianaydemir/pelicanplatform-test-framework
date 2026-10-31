@@ -1,11 +1,11 @@
 """Every server's web API (/api/v1.0/), on its web port, and who may use it.
 
-They are its admin, by a bearer token of the server's own making
-(credentials.mint_user(), as `pelican cache introspect` mints the
-admin's) or by the cookie of a login as `admin`; and an ordinary user,
-`test-webapi`, whom the admin creates at each server once, and later
-runs reuse. Access holds those credentials for every server of a shape.
-The admin, and then the user, agree to each server's AUP first
+Two users may: the server's admin, by a bearer token of the server's
+own making (credentials.mint_user(), as `pelican cache introspect` mints
+the admin's) or by the cookie of a login as `admin`; and an ordinary
+user, `test-webapi`, whom the admin creates at each server once, for
+later runs to reuse. Access holds those credentials for every server of
+a shape. The admin, and then the user, first agree to each server's AUP
 (accounts.agree_to_aup()), without which it refuses them its user
 routes. Access spaces its logins at each server a second apart, since a
 server allows an address a login a second (Server.UILoginRateLimit),

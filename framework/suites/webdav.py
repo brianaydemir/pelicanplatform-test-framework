@@ -2,13 +2,11 @@
 
 These are the methods beyond the GET, HEAD, PUT, DELETE, and PROPFIND that
 the other suites send. Pelican's native origin serves every method through
-golang.org/x/net/webdav, behind its own checks of a request's token
-(getActionFromMethod, which maps POST, MKCOL, LOCK, UNLOCK, PROPPATCH, and
-COPY to storage.create, and MOVE to storage.modify) and of a COPY's or
-MOVE's Destination (checkCopyMoveDestination), both in
-origin_serve/handlers.go. The scenarios that send those methods ask each
-native origin, and skip an XRootD origin; `symlink-writes` and `stored-html`
-ask every origin, so that an XRootD origin is a control.
+golang.org/x/net/webdav, behind its own checks of a request's token and of
+a COPY's or MOVE's Destination (getActionFromMethod and
+checkCopyMoveDestination in origin_serve/handlers.go). `symlink-writes` and
+`stored-html` ask every origin, so that an XRootD origin is a control; the
+other scenarios that ask origins skip XRootD ones.
 
   post-create-only       POST, which x/net serves as GET, with a token
                          of storage.create or storage.read alone:
@@ -16,8 +14,8 @@ ask every origin, so that an XRootD origin is a control.
   copy-move-destination  COPY and MOVE within /protected-a move the
                          bytes; to a Destination in another export,
                          however its `..` is spelled, or outside the
-                         token's scope, refused (403), and with none
-                         (400) or on another server (502), nothing done
+                         token's scope, refused (403); with none (400) or
+                         on another server (502), nothing done
   copy-move-scopes       storage.create may COPY to a new path, but not
                          MOVE, nor COPY over an object; with
                          `Overwrite: F`, neither replaces one (412)
@@ -26,10 +24,10 @@ ask every origin, so that an XRootD origin is a control.
                          body (415)
   lock                   a LOCK with no Timeout is refused, or bounded,
                          and makes no file
-  symlink-writes         writes through a symbolic link in a store that
-                         leads out of it change nothing outside, and
-                         those under a linked directory are refused; a
-                         HEAD reports no digest of what it leads to
+  symlink-writes         writes through a symbolic link that leads out of
+                         a store change nothing outside, and those under
+                         a linked directory are refused; a HEAD reports
+                         no digest of what it leads to
   stored-html            an HTML or SVG object is served with
                          `X-Content-Type-Options: nosniff`, and typed so
                          that a browser does not render it, or as an
@@ -43,16 +41,15 @@ ask every origin, so that an XRootD origin is a control.
                          and LOCK): a V2 cache answers 405, an XRootD
                          cache refuses, and no origin's store changes
 
-Everything goes under /protected-a/data/webdav/<run>/<origin>/, and
-what `cache-methods` sends the caches under .../caches/, which the
-suite removes afterward, with what a Destination could have reached
-in /protected-b and /public. Every token is the origins' own, for
+Everything goes under /protected-a/data/webdav/<run>/<origin>/, and what
+`cache-methods` sends the caches under .../caches/. The suite removes
+it afterward, with whatever a Destination could have reached in
+/protected-b and /public. Every token is the origins' own, for
 /protected-a, of the scopes each scenario names, and of the session's
-profile; in SciTokens', the storage.create token is one of `write`, as
-`pelican token create --write` makes it, which may replace and remove
-too, so `copy-move-scopes` checks what storage.create alone may not do
-in the WLCG pass alone. The objects are put in place, and the stores
-read, with WLCG tokens either way.
+profile. In SciTokens, the storage.create token is one of `write`, which
+may replace and remove too, so `copy-move-scopes` checks what
+storage.create alone may not do in the WLCG pass alone. The objects are
+put in place, and the stores read, with WLCG tokens either way.
 """
 
 import os
@@ -138,13 +135,12 @@ PROPPATCH = (
 )
 
 # What the root's Allow must name. COPY is there because /protected-a
-# takes writes, for which Pelican turns on Copies (registerRootOptions in
-# origin_serve/handlers.go).
+# takes writes (registerRootOptions in origin_serve/handlers.go).
 VERBS = ("OPTIONS", "GET", "HEAD", "PUT", "DELETE", "PROPFIND", "MKCOL", "COPY", "MOVE")
 
 # The methods a cache serves for no one: it serves objects and listings
 # (GET, HEAD, and PROPFIND), and relays a PUT or a DELETE to an origin,
-# and that is all a V2 cache routes, so Gin answers the rest 405
+# and that is all a V2 cache routes, so it answers the rest 405
 # (HandleMethodNotAllowed in Pelican's web_ui/ui.go). Each is sent with
 # the `server` token, which would let an origin honor it, so a cache
 # that relayed one would show.
@@ -369,11 +365,9 @@ def post_create_only(test: Test) -> tuple[str, str]:
     POST an object straight to each native origin, with a token of
     storage.create alone, then of storage.read alone: each must be
     refused, with none of the object's bytes. x/net's handler serves a
-    POST as a GET (webdav.go), but Pelican authorizes POST as a create
-    (getActionFromMethod), so a storage.create token, which may not
-    read, gets the object; and a storage.read token is refused, since
-    a POST counts as a write, which is as it should be. In SciTokens'
-    profile, the tokens are of write and read alone.
+    POST as a GET, which storage.create may not do; and a POST is not a
+    write anyone asked for. In SciTokens, the tokens are of write and
+    read alone.
     """
     why = test.native()
     if why:
@@ -417,10 +411,7 @@ def copy_move_destination(test: Test) -> tuple[str, str]:
       no Destination          400, nothing changed
       another server          502, nothing changed
 
-    x/net's handler neither cleans a Destination nor authorizes it, so
-    Pelican's checkCopyMoveDestination does both (origin_serve/
-    handlers.go), and leaves the last two to x/net. Pelican's own tests:
-    origin_serve/pstore_serving_test.go.
+    The last two are RFC 4918's (sections 9.8 and 9.9).
     """
     why = test.native()
     if why:
@@ -515,13 +506,10 @@ def copy_move_scopes(test: Test) -> tuple[str, str]:
     token, a MOVE must be refused, since it removes its source; a COPY
     to a new path must succeed (201); and a COPY over an object must be
     refused, since replacing an object takes storage.modify (the WLCG
-    token profile). x/net's COPY replaces an object unless sent
-    `Overwrite: F`, though Pelican authorizes every COPY as a create
-    (getActionFromMethod, whose comment says COPY is purely additive).
-    Then, with the `server` token, COPY and MOVE onto an object with
-    `Overwrite: F` must get 412 and change nothing (RFC 4918, section
-    10.6). SciTokens has no storage.create alone, so its pass checks
-    only `Overwrite: F`.
+    token profile). Then, with the `server` token, COPY and MOVE onto an
+    object with `Overwrite: F` must get 412 and change nothing (RFC
+    4918, section 10.6). SciTokens has no storage.create alone, so its
+    pass checks only `Overwrite: F`.
     """
     why = test.native()
     if why:
@@ -599,8 +587,7 @@ def mkcol(test: Test) -> tuple[str, str]:
     collection (201), which a PROPFIND then shows; the same again, 405,
     since it exists; and with a body, 415, making nothing (RFC 4918,
     section 9.3.1). The note says what each origin answered where a
-    collection exists, which some backends answer 201 (MkdirAll, or an
-    object store's marker).
+    collection exists.
     """
     why = test.native()
     if why:
@@ -669,18 +656,14 @@ def bounded(timeout: str | None) -> bool:
 def lock(test: Test) -> tuple[str, str]:
     """Check that a LOCK with no Timeout is refused or bounded.
 
-    At each native origin, with a storage.create token (in SciTokens'
-    profile, a write token) and no Timeout, LOCK a new path and an
-    existing object. Pelican doesn't use locks,
-    but x/net keeps them in memory (webdav.NewMemLS() in origin_serve/
-    handlers.go), forever when no Timeout is given, and makes an empty
-    file for a LOCK of a new path, beside POSC and the metadata events.
-    Each LOCK must be refused, or the lock granted must have a timeout,
-    and the new path must hold nothing. Then, with the `server` token
-    and no lock token, a PUT of the new path and a DELETE of the object
-    (the note says what each got), and an UNLOCK of each lock granted,
-    which must succeed: otherwise the path stays locked until the origin
-    restarts.
+    At each native origin, with a storage.create token (in SciTokens, a
+    write token) and no Timeout, LOCK a new path and an existing object.
+    Pelican uses no locks, and what they should do is not settled. Each
+    LOCK must be refused, or the lock granted must have a timeout, and
+    the new path must hold nothing. Then, with the `server` token and no
+    lock token, PUT the new path and DELETE the object (the note says
+    what each got), and UNLOCK each lock granted, which must succeed:
+    otherwise the path stays locked until the origin restarts.
     """
     why = test.native()
     if why:
@@ -847,11 +830,6 @@ def symlink_writes(test: Test) -> tuple[str, str]:
     (4xx); and a PUT and a DELETE of `link-file` may be refused, or
     replace or remove the link itself, but not what it leads to. Each
     must leave the decoys as they were, and nothing new beside them.
-    Pelican's posixv2 refuses a link that leaves its export
-    (os.Root); an XRootD posix origin follows it; the rclone backends
-    and the lab server skip links. Pelican's own tests:
-    e2e_fed_tests/posixv2_security_test.go, origin_serve/
-    checksum_symlink_test.go.
     """
     origins = [o for o in test.fed.origins if not o.pstore]
     if not origins:
@@ -911,10 +889,7 @@ def stored_html(test: Test) -> tuple[str, str]:
     does not render (INERT_TYPES) or `Content-Disposition: attachment`.
     An origin serves its data on the host and port of its web UI and its
     login cookie, so an object rendered as a page could run script as
-    the origin's web UI, against its admin. x/net's handler types an
-    object by its name's extension (http.ServeContent), and the only
-    nosniff in Pelican is the V2 cache's (local_cache/
-    persistent_cache_api.go).
+    the origin's web UI, against its admin.
     """
     found = Findings()
     for origin in test.fed.origins:
@@ -979,17 +954,15 @@ def webdav_semantics(test: Test) -> tuple[str, str]:
     At each native origin:
 
       OPTIONS of the server's root, with no token: 200, with a DAV
-        header, and an Allow naming VERBS (registerRootOptions in
-        origin_serve/handlers.go; Pelican's
-        origin_serve/root_options_test.go)
+        header, and an Allow naming VERBS
       PUT onto a collection: 405 or 409, with what it holds intact
       PROPPATCH of an object, setting dead properties that no server
         here keeps: 207, with a failing status for each; or refused
         (403, 405, or 501); the object intact
       DELETE of /protected-a's root: 403 or 405, and nothing removed
 
-    The DELETEs come last, at every origin, after everything else, with
-    the `server` token: if one is honored, it takes /protected-a's
+    The root's deletes come last, at every origin, after everything
+    else, with the `server` token: one honored would take /protected-a's
     storage with it.
     """
     why = test.native()

@@ -6,29 +6,29 @@ by which an uploader follows or cancels its event; the events that a
 MOVE, a COPY, and a collection's DELETE send, and those the reconcile
 sweep must not; the first origin's admin APIs over its record of
 objects and its publish queue, and the CLI over the record; and
-refusing uploads while a namespace's queue is full. With publishing
-off, only `queue-admin off` runs: the queue's admin API must say that
-publishing is off.
+refusing uploads while a namespace's queue is full (Pelican's
+docs/metadata-publish-design.md). With publishing off, only
+`queue-admin off` runs: the queue's admin API must say that publishing
+is off.
 
 Objects go under /protected-a/data/metadata/. `fields` and `blob` use
 `pelican object put` through the director; the rest go straight to the
 first origin in framework/var/generated/origins, since the client
 doesn't show the origin's X-Pelican-Metadata-Status. Each upload, MOVE,
-COPY, and DELETE presents a token of the session's profile, but those
-that only put in place what a scenario then asks the admin APIs about,
-or what the reconcile sweep must pass over, which present the setup
-token; the suite cleans up, and sees whether the federation serves
-again, with a WLCG token either way.
+COPY, and DELETE presents a token of the session's profile, but for
+setup: what a scenario puts in place only for the admin APIs to show,
+or for the reconcile sweep to pass over, presents the setup token, as
+does cleaning up.
 
 `queue-admin` and `backpressure` restart the first origin with its
-retries backed off for ten minutes, so that an event the recorder always
-fails stays queued, and in eventual mode with caps on the namespace's
-queue; `catalog`'s reconcile rows restart it with a reconcile sweep
-every few seconds (control.restart_with()). Each restores it afterward,
-and waits until the federation serves again. Without a control helper,
-or in the `tiny` topology, whose origin is the whole federation's
-process, those rows skip, but for `queue-admin`'s, which then run at the
-origin as it is.
+retries put off for ten minutes, so that an event the recorder always
+fails stays queued, and, in eventual mode, with caps on the namespace's
+queue; `catalog`'s reconcile rows restart it with a sweep every few
+seconds (control.restart_with()). Each restores it afterward, and waits
+until the federation serves again. Without a control helper, or in the
+`tiny` topology, whose origin is the whole federation's process, those
+rows skip, but for `queue-admin`'s, which then run at the origin as it
+is, all but `retry`.
 """
 
 import base64
@@ -562,8 +562,9 @@ def update(test: Test) -> tuple[str, str]:
     got = event(capture, "object")
     if not same(got.get("size"), len(data)):
         return FAIL, f"{where} has size {got.get('size')!r}, not the new {len(data)}"
-    # The event's ETag is the backend's, which on POSIXv2 is not the one a
-    # PUT or GET answers with; so it is only checked to have changed.
+    # The event's ETag is the backend's (docs/metadata-publish-design.md),
+    # not necessarily the one a PUT or GET answers with, so it is only
+    # checked to have changed.
     if got.get("etag") and got.get("etag") == created.get("etag"):
         return FAIL, f"{where} has the original's etag, {got.get('etag')}"
     if not same(got.get("step"), "update"):
@@ -829,9 +830,8 @@ def urls_cancel(test: Test) -> Row:
 def status_urls(test: Test) -> dict[str, Row]:
     """Check the URLs by which an uploader follows or cancels its event.
 
-    An eventual-mode upload hands them out whenever its event outlives it
-    (handleMetadataStatus and handleMetadataCancel in
-    origin_serve/metadata_status_api.go).
+    An eventual-mode upload hands them out whenever its event outlives
+    it.
     """
     if test.mode != "eventual":
         why = "transactional mode hands out no status URLs: an event never outlives its upload"
@@ -868,9 +868,7 @@ def catalog_move(test: Test) -> Row:
 
     MOVE an object to a new name: the new path must get an
     object.committed (or object.updated) event, and the old one an
-    object.deleted. Pelican records the rename in its own record of
-    objects, but publishes nothing (aferoFileSystem.Rename in
-    origin_serve/filesystem.go).
+    object.deleted.
     """
     src, dst = f"{test.run}-move-from", f"{test.run}-move-to"
     test.made.add(dst)
@@ -897,7 +895,8 @@ def catalog_copy(test: Test) -> Row:
 
     COPY an object that was uploaded with custom metadata to a new name:
     the copy's object.committed event must carry the source's fields,
-    compared type for type. The COPY carries none of its own.
+    compared type for type, so that the catalog describes the copy as it
+    does the source. The COPY carries none of its own.
     """
     src, dst = f"{test.run}-copy-from", f"{test.run}-copy-to"
     test.made.add(dst)
@@ -922,9 +921,8 @@ def catalog_collection_delete(test: Test) -> Row:
     """Check that a collection's DELETE sends each object an object.deleted.
 
     DELETE a collection that holds two objects: each must get an
-    object.deleted event. Pelican publishes one, for the collection's own
-    path, which the note mentions (aferoFileSystem.RemoveAll in
-    origin_serve/filesystem.go).
+    object.deleted event. The note says whether one came for the
+    collection itself.
     """
     collection = f"{test.run}-collection"
     children = [f"{collection}/one", f"{collection}/two"]
@@ -1046,17 +1044,13 @@ def reconcile_rows(test: Test) -> dict[str, Row]:
     """Check that the reconcile sweep re-enqueues only lost publishes.
 
     The reconcile sweep re-enqueues an object whose publish was lost,
-    as to a crash between the commit and the queue's write
-    (Origin.Metadata.ReconcileEnabled), and only such an object: one this
-    origin wrote, whose event never reached the catalog. Make an event
-    cancelled through its manage URL, one the catalog rejected, and an
-    object the origin did not write but has seen; restart the first origin
-    with the sweep every few seconds; and watch the recorder for
-    RECONCILE_WATCH seconds, in which no delivery for any of them may
-    come. Pelican's sweep takes every live record without a publish of
-    its etag and with no pending queue row (ReconcileCandidates in
-    origin_serve/object_metadata.go), so it is predicted to republish all
-    three, the rejected one at every sweep.
+    as to a crash between the commit and the queue's write, and only
+    such an object: one this origin wrote, whose event never reached the
+    catalog (Origin.Metadata.ReconcileEnabled). Make an event cancelled
+    through its manage URL, one the catalog rejected, and an object the
+    origin did not write but has seen; restart the first origin with the
+    sweep every few seconds; and watch the recorder for RECONCILE_WATCH
+    seconds, in which no delivery for any of them may come.
     """
     if test.mode != "eventual":
         only = "eventual mode only: a transactional event is never cancelled or kept rejected"
@@ -1307,9 +1301,9 @@ def object_metadata_cli(test: Test) -> dict[str, Row]:
 def held_event(test: Test) -> tuple[str, str]:
     """Queue an event that the recorder always fails, in either mode.
 
-    As the first origin publishes object.deleted for what it deletes, it
-    writes an object straight to its store, and DELETEs it through the
-    origin, with the setup token, since this is setup.
+    The first origin publishes object.deleted for what it deletes, so
+    this writes an object straight to its store, and deletes it through
+    the origin, with the setup token, since this is setup.
 
     Returns:
         Its event's ID and object path, once its first delivery has
@@ -1397,9 +1391,6 @@ def queue_retry(test: Test, event_id: str) -> Row:
 
     With the event's next delivery minutes away, the admin's retry must
     answer 200 and have it delivered again within RETRY_WAIT seconds.
-    Pelican's handler moves the row's next attempt to now, but wakes no
-    worker (retryQueueRowHandler in origin_serve/metadata_admin.go), which
-    sleeps until the attempt it last saw due.
     """
     row = test.api("GET", f"{QUEUE}/{quote(event_id)}", test.admin())
     due = go_time(row.object.get("next_attempt_at"))
@@ -1490,8 +1481,7 @@ def past_cap(test: Test, name: str, limit: str, state: str) -> Row:
     With the namespace's queue at its cap, an ordinary upload of object
     name must be refused with a 5xx, which says to come back later, and
     leave nothing; and the origin must count the refusal, for the cap on
-    limit. Pelican returns the close's error, which x/net's WebDAV
-    handler answers with 405.
+    limit.
 
     Args:
         test: The suite's run.
@@ -1548,9 +1538,9 @@ def cap_rows(test: Test, cap: int, filled: list[str]) -> Row:
 def with_blob(boundary: str, metadata: bytes, data: bytes) -> bytes:
     """Return a multipart/form-data body (RFC 7578) of metadata and data.
 
-    Its parts are those Pelican takes apart by name (splitMultipartParts
-    in origin_serve/metadata_multipart.go): `metadata`, whose bytes are
-    metadata, then `object`, data.
+    Its parts are those Pelican takes apart by name
+    (Origin.Metadata.MetadataPartName and ObjectPartName): `metadata`,
+    whose bytes are metadata, then `object`, data.
     """
     body = b""
     for name, part in (("metadata", metadata), ("object", data)):

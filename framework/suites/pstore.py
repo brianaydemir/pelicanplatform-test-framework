@@ -32,33 +32,29 @@ its catalog.
                     the origin, started again, must serve them so
 
 A pstore is an encrypted store that only the running origin can read
-(origin_serve/backend_pstore.go and pstore/ in Pelican). The suite
-writes under /<ns>/data/pstore/<run>/, in the first protected namespace
-that takes writes, at every pstore origin, and removes it afterward. The
-requests that its checks make of the data port present tokens of the
-session's profile; what it puts in place, and the requests that see
-whether the federation serves again, present WLCG tokens either way, so
-that `introspect-cli`, `scheduled-passes`, `corruption`, and `backups`,
-which present nothing else but an admin's tokens, run in the WLCG pass
-alone. `corruption` changes the block file of an object of its own,
+(Pelican's docs/pstore-design.md). The suite writes under
+/<ns>/data/pstore/<run>/, in the first protected namespace that takes
+writes, at every pstore origin, and removes it afterward. Beyond their
+setup, `introspect-cli`, `scheduled-passes`, `corruption`, and
+`backups` present no storage token, so they run in the WLCG pass alone.
+`corruption` changes the block file of an object of its own,
 from the dev container, which can write the stores.
 
-Nothing bounds a store, or backs one up, as the shape is: a bound would
-bound every suite's writes. So for `capacity`, `backups`, and `restore`
-the suite restarts the first origin, once, with its one storage
-directory (Origin.PStoreLocation) bounded at what it holds and a few MiB
-more (Origin.PStoreStorageDirs), and with metadata backups every
-BACKUP_INTERVAL to a directory of the run's own in its state
-(Origin.PStoreMetadataBackup*), as the last of its configuration layers
-(control.restart_with()); and afterward restores it, and waits until the
-federation serves again. `restore` also stops the origin for a while,
-and starts it again on the restored catalog. That needs a control
-helper, and a topology other than `tiny`, whose origin is the whole
-federation's process; otherwise the three skip, and say why. The
-scheduled passes run as the shape is
-(config.d/origin/pstore/50-origin.yaml shortens their intervals), and
-`scheduled-passes` and `corruption` wait for them before the restart,
-which would start them over.
+No shape bounds a store or backs one up, since a bound would bound every
+suite's writes. So for `capacity`, `backups`, and `restore`, the suite
+restarts the first origin once, as the last of its configuration layers
+(control.restart_with()): its one storage directory (Origin.PStoreLocation)
+bounded at what it holds plus HEADROOM (Origin.PStoreStorageDirs), and
+its catalog backed up every BACKUP_INTERVAL to a directory of the run's
+own in its state (Origin.PStoreMetadataBackup*). Afterward it restores
+the origin, and waits until the federation serves again. `restore` also
+stops the origin for a while, and starts it again on the restored
+catalog. The restart needs a control helper, and a topology other than
+`tiny`, whose origin is the whole federation's process; elsewhere the
+three skip. The scheduled passes run as the shape has them
+(config.d/origin/pstore/50-origin.yaml shortens their intervals), so
+`scheduled-passes` and `corruption` run before the restart, which would
+start them over.
 """
 
 import glob
@@ -138,10 +134,9 @@ FILED, INLINED = "obj-3", "obj-0"
 # come (an interval, 1m, after the origin starts), and how long the next,
 # after the objects change, and their reclamation.
 PASSES = ("index_check", "data_scan")
-# The index check's findings must be none, but writes still under way,
-# or abandoned less than 10 minutes ago, which only the janitor reclaims,
-# and which fsck reports only to be seen (PendingInstances in
-# pstore/fsck.go; appendReclaimGrace in gc.go).
+# The index check's findings must be none, but for writes under way or
+# recently abandoned, which fsck reports and never acts on
+# (PendingInstances; docs/pstore-design.md, section 11.2).
 PENDING = "pending_instances"
 FIRST_PASS_WAIT = 150
 NEXT_PASS_WAIT = 150
@@ -207,13 +202,11 @@ BACKUP_MAGIC = b"PELICAN-PSTORE-BACKUP\x00\x01"
 
 # restore: the objects it writes before the backup that it restores, of
 # sizes the store keeps in its catalog (up to blocks.INLINE) and in block
-# files, one past the spill threshold (blocks.SPILL); how long after them
-# a backup taken after them may take to come, an interval, its slack,
-# and the pass itself; and the object written after that backup, which
-# the restored catalog must lack. The store's parts, which the CLI needs
-# beside each other (pstore/recover.go in Pelican): the catalog, the
-# block files, and the master key (local_cache/database.go, storage.go,
-# and encryption.go).
+# files, one past the spill threshold (blocks.SPILL); how long a backup
+# taken after them may take to come (an interval, its slack, and the
+# pass itself); and the object written after that backup, which the
+# restored catalog must lack. Then the store's parts, which the CLI needs
+# side by side: the catalog, the block files, and the master key.
 RESTORE_SIZES = (100, blocks.INLINE, blocks.INLINE + 1, 100000, blocks.SPILL + 5)
 RESTORE_WAIT = BACKUP_INTERVAL + INTERVAL_SLACK + 30
 LATE = "late"
@@ -395,8 +388,8 @@ def absent(test: Test, origin: common.Origin) -> Row:
     """Check that the storage API is absent (404) at origin.
 
     At a native origin whose store is not a pstore, every route of the
-    storage API must be 404, with no token and with the admin's: the
-    origin registers none (RegisterStorageAPI).
+    storage API must be 404, with no token and with the admin's, since
+    the origin serves none.
     """
     problems: list[str] = []
     routes = (
@@ -430,10 +423,7 @@ def authz(test: Test, origin: common.Origin, _objects: Mapping[str, bytes]) -> R
 
     Each route, with no token, must get 401; with the namespace's
     `server` token, which is not of the server's making for its web API,
-    401; as an ordinary user, 403; and as the admin, 200. AuthHandler
-    says who the caller is, and AdminAuthHandler whether they are the
-    admin; registering the second alone would refuse everyone with 401
-    (RegisterStorageAPI in origin_serve/storage_api.go).
+    401; as an ordinary user, 403; and as the admin, 200.
     """
     directory = test.catalog(origin, test.rel("api"))
     routes = (
@@ -585,9 +575,9 @@ def digest(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> R
     """Check that `digest` gives the checksums the store recorded.
 
     `digest` of an object must give the checksums the store recorded as
-    it wrote it (md5, sha, and crc32c; ingestAlgorithms in
-    pstore/checksum.go), each the object's, and each what a HEAD with
-    Want-Digest of it alone gets at the data port; of a collection, 400.
+    it wrote it (md5, sha, and crc32c; docs/pstore-design.md, section
+    11.1), each the object's, and each what a HEAD with Want-Digest of
+    it alone gets at the data port; of a collection, 400.
     """
     admin = test.admin(origin)
     rel = test.rel("api", FILED)
@@ -1022,16 +1012,11 @@ def corrupted_at(test: Test, origin: common.Origin) -> Row:
     the one new file of its size in the store's objects/; then a byte of
     its second block is changed in that file, as a failing disk would
     change it, so that the block's AES-GCM tag no longer matches. The
-    origin must no longer serve the object whole, or the change missed it,
-    and the row is inconclusive. The next data scan to begin after the
-    change, and succeed, must count it
-    (pelican_pstore_data_scan_mismatches_total). The scan reads each
-    object back through the block store, which checks each block's tag
-    before any checksum is compared, and it takes a block that fails as an
-    error reading the object, which it logs, and counts nothing
-    (verifyObjectChecksum in Pelican's local_cache/consistency.go, which
-    pstore/integrity.go runs), so the row fails. Afterward the object is
-    deleted.
+    origin must no longer serve the object whole, or the change missed
+    it, and the row is inconclusive. The next data scan to begin after
+    the change, and succeed, must count it
+    (pelican_pstore_data_scan_mismatches_total; docs/pstore-design.md,
+    section 11.3). Afterward the object is deleted.
     """
     rel = test.rel("corruption", origin.svc)
     data = os.urandom(CORRUPT_SIZE)
@@ -1257,8 +1242,9 @@ class Capacity:
         The PUT sends its headers, with a Content-Length past the room
         left, but not its body, with `Expect: 100-continue` if expect: it
         must get 507, and nothing else first, before the body comes
-        (checkBackendCapacity in origin_serve/handlers.go; HasCapacityFor
-        in pstore/capacity.go).
+        (docs/pstore-design.md, section 7.1). http.client passes over a
+        `100 Continue`, and sends a body whole, hence
+        web.statuses_before_body().
         """
 
         def send(room: int) -> tuple[str | None, str]:
@@ -1277,10 +1263,9 @@ class Capacity:
     def chunked(self, room: int) -> tuple[str | None, str]:
         """PUT more than the room left in chunks, as a send() for refused().
 
-        It must get 507, which the origin must not turn into the WebDAV
-        handler's 405, or a 500 (statusForBackendError in
-        origin_serve/error_handling.go); with no object left, at the data
-        port or in the storage API, and no space held.
+        It must get 507, not 405 or 500 (docs/pstore-design.md, section
+        7.1), with no object left, at the data port or in the storage
+        API, and no space held.
         """
         rel = self.test.rel("capacity", "chunked")
         found, why = usage(self.test, self.origin)
@@ -1578,8 +1563,8 @@ def keys_env(test: Test, origin: common.Origin) -> dict[str, str]:
 
     It has a copy of every key in origin's issuer key directory as its
     own, since the catalog's master key and each backup are sealed to
-    them (openPStoreForCLI in Pelican's cmd/origin_pstore.go). A copy,
-    so that Pelican never writes a key of its own among the origin's.
+    them (docs/pstore-design.md, section 11.4). A copy, so that Pelican
+    never writes a key of its own among the origin's.
     """
     keys = os.path.join(test.tmp, f"restore-keys-{origin.svc}")
     os.makedirs(keys, exist_ok=True)

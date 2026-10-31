@@ -79,10 +79,6 @@ class Snapshot:
         """
         return any(metric == name for metric, _ in self.samples)
 
-    def has_prefix(self, prefix: str) -> bool:
-        """Return whether any metric's name begins with prefix."""
-        return any(metric.startswith(prefix) for metric, _ in self.samples)
-
 
 # No metrics: what a server that did not answer has, where that is not
 # worth telling apart.

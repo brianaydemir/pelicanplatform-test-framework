@@ -192,11 +192,11 @@ def pool(workers: int) -> Generator[ThreadPoolExecutor, None, None]:
     """Run tasks on a pool of worker threads, for the length of a block.
 
     The block waits for every task when it ends, as a ThreadPoolExecutor's
-    own does; but one left by an exception, such as test.py's when it
-    abandons a pass, cancels the tasks not yet started. A
-    ThreadPoolExecutor would run every one of them, in the background,
-    while later suites ran, and the interpreter would wait for them as
-    it exited. The tasks already running end by their own timeouts.
+    own does. Left by an exception, as when test.py abandons a pass, it
+    cancels the tasks not yet started instead: a ThreadPoolExecutor would
+    run them in the background while later suites ran, and the
+    interpreter would wait for them as it exited. Tasks already running
+    end by their own timeouts.
     """
     executor = ThreadPoolExecutor(workers)
     try:
@@ -317,7 +317,7 @@ def empty_dir(path: str) -> None:
 
 
 def storage_namespace(namespace: str, pstore: bool) -> str:
-    """Return the namespace whose storage namespace reads at an origin.
+    """Return the namespace whose storage serves namespace at an origin.
 
     It is namespace's own (e.g. protected-a), but on a pstore origin,
     /public reads /protected-a's, since nothing can write /public
@@ -373,7 +373,7 @@ class Origin:
         return web_url_of(self.url)
 
     def storage_namespace(self, namespace: str) -> str:
-        """Return the namespace whose storage namespace reads here.
+        """Return the namespace whose storage serves namespace here.
 
         See storage_namespace().
         """
@@ -710,7 +710,7 @@ class Federation:
         return self.origin_cache_control if self.native_origins else ""
 
     def storage_namespace(self, namespace: str) -> str:
-        """Return the namespace whose storage namespace reads at an origin.
+        """Return the namespace whose storage serves namespace at an origin.
 
         The origins are all of one ORIGIN_VARIANT (see storage_namespace()).
         """

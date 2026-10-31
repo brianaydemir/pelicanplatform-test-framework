@@ -42,6 +42,6 @@ The others are framework/init-data.py, control.py, and report.py.
                credentials for it
   webdav       PROPFIND, and reading the listings it gets; COPY and MOVE
 
-Python 3.9 and its standard library only: that is what AlmaLinux 9 (the
-dev container) and macOS ship.
+The standard library only. The tests, in the dev container, need
+Python 3.12; the scripts on the host that import testlib, 3.10.
 """

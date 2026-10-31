@@ -1,17 +1,17 @@
 """The origins' embedded OAuth2 issuer: its grants and refresh tokens.
 
-What it grants of what a client asks for, through each of its flows,
-and how its refresh tokens behave. The suite needs the embedded issuer
-(ORIGIN_ENABLE_ISSUER, on by default) and a protected namespace, and
-skips with the issuer off or the external one.
+What the issuer grants of what a client asks for, through each of its
+flows; how its refresh tokens behave; and the boundaries that keep one
+user, client, or namespace from acting as another. The suite needs the
+embedded issuer (ORIGIN_ENABLE_ISSUER, on by default) and a protected
+namespace, and skips with the issuer off or the external one.
 
-What a user may be granted comes from three places, which the suite
-sets up so that each user gets something different: the issuer's
-authorization templates (Issuer.AuthorizationTemplates in
+A user may be granted what the issuer's authorization templates allow
+(Issuer.AuthorizationTemplates in
 framework/config.d/base/40-origin.yaml, whose prefixes are within each
-issuer's namespace, as its tokens' scopes are), the user's collections
-and shares (see the collections suite), and under
-`-p origin-export-templates`, the /protected-b export's templates of
+issuer's namespace, as its tokens' scopes are), and what their
+collections and shares allow (see the collections suite). Under
+`-p origin-export-templates`, the /protected-b export has templates of
 its own, which replace the global ones there. The templates grant:
 
   /data/issuer/home/$USER         read, create, and modify, to
@@ -24,15 +24,14 @@ its own, which replace the global ones there. The templates grant:
 
 The users are records of the issuer origin (origin-0, or `fed`), which
 its admin creates once and later runs reuse: test-analyst, test-member,
-and test-stranger, and the collections suite's test-curator, a
-collection administrator. test-member is in both groups, which the
-admin creates once, eligible to match templates. Each run, test-stranger
-makes a group of their own named like the template's,
-test-project-rogue-<run>, which may not match a template until the
-admin makes it eligible. Each user logs in: the admin mints them a
-password invite, they set a password with it, and their login's cookie
-stands for them, carrying the groups they are in (Issuer.GroupSource),
-as a browser's would. Each run also makes a collection, gamma, under
+test-stranger, and the collections suite's test-curator, a collection
+administrator. test-member is in both groups, which the admin creates
+once, eligible to match templates. Each run, test-stranger makes a
+group named like the template's, test-project-rogue-<run>, which may
+not match a template until the admin makes it eligible. Each user logs
+in with a password set through an invite, and their login's cookie
+stands for them, carrying the groups they are in (Issuer.GroupSource).
+Each run also makes a collection, gamma, under
 /<namespace>/data/issuer/collections/<run>/, which test-stranger may
 read and test-member write, and which test-stranger shares part of
 (gamma/shared) with test-analyst; and an object in each prefix above,
@@ -46,7 +45,7 @@ with decoy/obj in none. So, within the namespace:
 The admin creates the suite's clients through the issuer's admin API
 (testlib/issuer.py): one for the device flow, one for the code flow,
 one allowed only reads and no refresh token, and one for token
-exchange; and the suite also uses the client every issuer seeds for
+exchange. The suite also uses the client every issuer seeds for
 browsers, which has no secret. The scenarios:
 
   discovery   each issuer's discovery document names itself and its
@@ -107,10 +106,10 @@ browsers, which has no secret. The scenarios:
               a short name, and its first user; and manages itself
               (RFC 7592) only with its registration access token
 
-`registration` registers a client, as the Pelican client does in the
-`client` scenario and the collections suite; the issuer allows an
-address five registrations, then one a minute, so it comes last, and
-waits once for the limit if it must.
+`registration` comes last: the issuer allows an address five
+registrations, then one a minute, and the `client` scenario and the
+collections suite register clients too. It waits once for the limit if
+it must.
 
 The run's collection, group, clients, and objects are removed after the
 suite; the users and their groups stay.
@@ -196,14 +195,14 @@ R, M, C = "storage.read", "storage.modify", "storage.create"
 REFUSED = (401, 403, 404)
 OBJECT_SIZE = 4096
 
-# `expiry` waits for the access token to expire, so it runs only where
-# that is soon; and how long past its expiry the origins may still
-# accept it, allowing for clock skew between containers.
+# The longest token or code lifetime that `expiry`, `client`, and
+# `code-expiry` wait out; and how long past its expiry an origin may
+# still accept a token, allowing for clock skew between containers.
 SHORT = 120
 SKEW = 90
-# Longer than this, the refresh token's grace period is not waited out,
-# and a refresh token's expiry, which prepare() leaves tokens for, not
-# waited for.
+# The longest refresh grace period that `revoked` waits out, and the
+# longest refresh token lifetime that `expiry` waits for (prepare()
+# mints the tokens it waits on).
 SHORT_GRACE = 60
 DOOMED_WAIT = 600
 # The device flow's least polling interval (RFC 8628), which the issuer
@@ -856,11 +855,10 @@ def code(test: Test) -> tuple[str, str]:
     The same requests as `requests`, with PKCE; the flow refuses a scope
     the client may not carry. Also a wrong verifier, a replayed code,
     and a wrong redirect URI; and the browsers' public client, which
-    gets no refresh token. A code redeemed with a wrong verifier may be
-    spent, so the right verifier redeems a code of its own; and the
-    public client's request for offline_access may be refused
-    (invalid_scope), rather than granted without it, as RFC 6749
-    allows either, so its flow then asks without it.
+    gets no refresh token. A failed exchange may spend its code, so the
+    right verifier redeems a code of its own. RFC 6749 lets the issuer
+    refuse the public client's offline_access (invalid_scope) rather
+    than drop it; if it does, the flow asks again without it.
     """
     problems: list[str] = []
     client = test.client("code")
@@ -1232,9 +1230,11 @@ def refresh(test: Test) -> tuple[str, str]:
 def revoked(test: Test) -> tuple[str, str]:
     """Check revoked grants and tokens, and a refresh token reused late.
 
-    A refresh gives nothing of a grant once it is revoked. The issuer
-    refuses a revoked refresh token, and the access token issued with
-    it; and a refresh token reused past its grace period ends its chain.
+    A refresh gives nothing of a grant once it is revoked, since it is
+    granted what the collections allow now (Pelican's
+    docs/collections-design.md). The issuer refuses a revoked refresh
+    token, and the access token issued with it; and a refresh token
+    reused past its grace period ends its chain.
     """
     problems: list[str] = []
     client, curator = test.client("device"), test.api("curator")
@@ -1250,10 +1250,7 @@ def revoked(test: Test) -> tuple[str, str]:
         after = issuer.refresh(client, before.refresh)
         got = issuer.tokens_of(after, "the refresh after the revoke")
         if gamma in issuer.scopes(got.access):
-            problems.append(
-                "a refresh after the grant was revoked still gives gamma's read (Pelican's"
-                + " main re-grants a refresh token's scopes without asking the collections)"
-            )
+            problems.append("a refresh after the grant was revoked still gives gamma's read")
     except IssuerError as e:
         problems.append(str(e))
     finally:
@@ -1561,9 +1558,9 @@ def collection_isolation(test: Test, other: str) -> list[str]:
 def device_csrf(test: Test) -> tuple[str, str]:
     """Check that the verification page refuses forged CSRF tokens.
 
-    It refuses an approval, and a denial, whose CSRF token is not both
-    in its cookie and in the body, alike; the flow is still pending
-    after them, and an approval with it still works.
+    It refuses an approval or a denial whose CSRF token is not both in
+    its cookie and in the body; the flow is still pending after them,
+    and an approval with it still works.
     """
     problems: list[str] = []
     client, member = test.client("device"), test.user("member")

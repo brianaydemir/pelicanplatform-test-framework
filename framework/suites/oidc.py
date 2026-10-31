@@ -247,13 +247,12 @@ class Test:
 def enabled(test: Test) -> list[Row]:
     """Check that each server lists its OIDC modules, and begins a login.
 
-    At each server, /api/v1.0/auth/oauth must list each module it runs
-    (listOIDCEnabledServersHandler in web_ui/authentication.go); and a
-    GET of /api/v1.0/auth/oauth/login must answer 307 to the provider's
-    authorization endpoint, asking for a code for the servers' client,
-    to be sent back to the server's callback on
+    At each server, /api/v1.0/auth/oauth must list each module it runs;
+    and a GET of /api/v1.0/auth/oauth/login must answer 307 to the
+    provider's authorization endpoint, asking for a code for the
+    servers' client, to be sent back to the server's callback on
     OIDC.ClientRedirectHostname, with a state, which a session cookie
-    keeps too (handleOAuthLogin).
+    keeps too.
     """
     rows: list[Row] = []
     for server in test.servers:
@@ -373,9 +372,9 @@ def callback(test: Test) -> list[Row]:
     """Check how the issuer origin takes a login's callback.
 
     A callback sent without its session cookie must be refused (400), as
-    must one whose state is not the cookie's (handleOAuthCallback); with
-    the cookie, it must log the user in; sent again, with the code used,
-    it must fail, and log no one in.
+    must one whose state is not the cookie's; with the cookie, it must
+    log the user in; sent again, with the code used, it must fail, and
+    log no one in.
     """
     web_url = test.web
     try:
@@ -430,10 +429,9 @@ def collision(test: Test) -> list[Row]:
     """Check that a user whose preferred_username is `admin` gets no admin.
 
     COLLIDER, whose preferred_username is `admin`, the built-in
-    administrator's, logs in at the issuer origin: the server must walk
-    to the next claim (Server.AutoEnrollUsernameClaims: their email) for
-    the username (LookupOrBootstrapUser in database/collection.go), and
-    give them no admin role, nor the admin's routes.
+    administrator's, logs in at the issuer origin: the server must take
+    the next claim (Server.AutoEnrollUsernameClaims: their email) for
+    the username, and give them no admin role, nor the admin's routes.
     """
     user = test.user(COLLIDER)
     try:
@@ -533,12 +531,11 @@ def registry_identity(test: Test) -> list[Row]:
     """Check `pelican namespace register --with-identity` of a run's prefix.
 
     The registry starts the provider's device flow and hands the client
-    the verification URL (cliRegisterNamespace in registry/registry.go),
-    which the test approves as MEMBER; the client then registers, and
-    the registration must record MEMBER's identity, the provider's
-    userinfo (sub, preferred_username), and name the registry's user of
-    that identity as its owner, where `login` found one. Then
-    `pelican namespace delete` removes it.
+    the verification URL, which the test approves as MEMBER; the client
+    then registers. The registration must record MEMBER's identity, the
+    provider's userinfo (sub, preferred_username), and name the
+    registry's user of that identity as its owner, where `login` found
+    one. Then `pelican namespace delete` removes it.
     """
     fed = test.fed
     if not fed.registry_url:
@@ -697,9 +694,9 @@ def admin_rows(test: Test, when: str) -> list[Row]:
 
     With origin-0 restarted: OWNER, named in Server.UIAdminUsers, must
     be its admin by whoami, and may list its users; ADMIN, whose claimed
-    group test-server-admins is in Server.AdminGroups, likewise
-    (RecordAssertedGroups in web_ui/oauth2_client.go); MEMBER must be no
-    admin, and refused the users. Once restored, OWNER must be no admin.
+    group test-server-admins is in Server.AdminGroups, likewise; MEMBER
+    must be no admin, and refused the users. Once restored, OWNER must
+    be no admin.
     """
     rows: list[Row] = []
     if when == "restored":

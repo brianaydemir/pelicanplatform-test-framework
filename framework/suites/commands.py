@@ -3,35 +3,30 @@
 These are `pelican object ls`, `stat`, `delete`, `copy`, `sync`, and
 `du`, in /public and /protected-a; and `get` and `put` where Pelican's
 docs/object-transfer-semantics.md says what each must do with what
-already exists, a collection, a directory, or a tree (its rows, e.g. G1
-or P4, are named where they are tested). Each is checked against the
-origins' stores, or the local files.
+already exists. That document's rows, e.g. G1 or P4, are named where
+they are tested. Each command is checked against the origins' stores,
+or the local files.
 
-The read-only commands run against a tree uploaded straight to every
-origin, /<namespace>/data/cmd/<run>/tree/, so that they agree whichever
-origin the director picks: in each namespace, the same paths and sizes,
-but bytes of its own; `stat`'s modification time must be when the
-stores wrote it (a pstore origin's, as its storage API says).
-The rest go through the director like any client. Under
-`topo-multi-origin` their effects land on one origin, so a success must
-show in some store, and a refusal in none. /public takes no writes (see
-testlib/credentials.py), so writes to it must be refused, unless
+The read-only commands run against a tree put straight at every origin,
+/<namespace>/data/cmd/<run>/tree/, so that they agree whichever origin
+the director picks: the same paths and sizes in each namespace, but
+bytes of its own. The rest go through the director like any client.
+Under `topo-multi-origin`, a write lands on one origin, so a success
+must show in some store, and a refusal in none. /public takes no writes
+(see testlib/credentials.py), so writes to it must be refused, unless
 `-p origin-public-writes` gives it writes, when they must land.
 Likewise, a command that needs a capability its namespace lacks (see
-NEEDS), e.g. every write under `-p origin-no-direct`, must be refused,
-and change nothing.
+NEEDS) must be refused, and change nothing.
 
 The *-no-token scenarios check that the client itself refuses, for want
-of a token (Error code 4010), before it asks any server; or, at a
-standalone origin, which has no director to say that a token is needed,
-that the origin refuses. Each command's token is of the session's
-profile; the tree is put in place, and the stores checked, with WLCG
-tokens either way.
+of a token (Error code 4010), before it asks any server; at a standalone
+origin, which has no director to say that a token is needed, the origin
+must refuse. The commands present tokens of the session's profile; the
+tree is put in place, and the stores read, with WLCG tokens.
 
-These commands' exit status says little about what went wrong (mostly
-1 or 11), so failures are judged by what they print (see
-testlib/transfers.py's FAILURE_RULES). The run's objects are removed
-afterward, from a pstore origin too.
+The commands' exit status says little about what went wrong, so
+failures are judged by what they print (testlib/transfers.py's
+FAILURE_RULES).
 """
 
 import binascii
@@ -84,7 +79,7 @@ SCENARIOS = {
     "copy-tpc-public": "`copy` from /public to /protected-a: a third-party copy",
     "copy-tpc-direct": "`copy --direct`: a third-party copy from an origin",
     "copy-to-public": (
-        "`copy` to /public: refused; or, where it takes writes (`-p origin-public-writes`)," " stored"
+        "`copy` to /public: refused; or, where it takes writes (`-p origin-public-writes`), stored"
     ),
     "sync-upload": "`sync` of a local tree to a new collection",
     "sync-unchanged": "`sync --dry-run` of a tree the origins already hold lists nothing",
@@ -92,7 +87,7 @@ SCENARIOS = {
     "sync-download": "`sync` of a collection to a local directory",
     "sync-tpc": "`sync` of a collection to another: third-party copies",
     "du-protected-a": (
-        "`du --json`, and `du --count`'s text: bytes, objects, and collections" " per collection"
+        "`du --json`, and `du --count`'s text: bytes, objects, and collections per collection"
     ),
     "du-public": "the same in /public, with no token",
     "du-summarize": "`du -s` gives only the total",

@@ -11,19 +11,23 @@ Run it through fed.sh, whose environment Docker Compose needs.
 in the foreground, for a test.py run by hand in the dev container. One
 serves at a time: another that finds it serving leaves the tests to it.
 
-framework/testlib/control.py describes the requests, which come through
-files under framework/var/control/. Each is done, one at a time, with
-`docker compose <action> <service>`, on the shape's services but `dev`;
-`state` only asks `docker compose ps` what state a container is in, and
-`exited` which containers exited without the tests' stopping or killing
-them; and `freeze-xrootd` and `thaw-xrootd` signal the XRootD daemons in a
-service's container, with `docker compose exec`. On stopping, the
-helper puts back what the tests left: it removes their configuration
-from control/config/, and restarts each service it was in, if running;
-and it starts, unpauses, or thaws what they stopped, killed, paused, or
-froze. On starting, it removes, and restarts for, any configuration
-still left, as by a helper that was killed: what an earlier one did to
-the services, it never knew.
+The requests come through files under framework/var/control/ (see
+framework/testlib/control.py). The helper does each, one at a time, on
+the shape's services but `dev`:
+
+- most with `docker compose <action> <service>`;
+- `state` and `exited` with `docker compose ps`, which says what state
+  a container is in, and which exited without the tests' stopping or
+  killing them;
+- `freeze-xrootd` and `thaw-xrootd` by signaling the XRootD daemons in
+  the service's container, with `docker compose exec`.
+
+On stopping, the helper puts back what the tests left: it removes their
+configuration from control/config/, and restarts each running service
+it was in; and it starts, unpauses, or thaws what they stopped, killed,
+paused, or froze. On starting, it removes any configuration still left,
+as by a helper that was killed, and restarts each running service it
+was in; what else an earlier helper did, it cannot know.
 """
 
 import contextlib

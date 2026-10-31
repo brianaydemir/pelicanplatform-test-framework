@@ -2,95 +2,41 @@
 
 Part of [What the tests check](README.md).
 
-The `names` suite puts objects whose names a URL or a listing must
-encode under `/protected-a/data/names/<run>/`: a space, `%`, `+`, `#`,
-`?`, `&`, `;`, quotes, angle brackets, brackets, `*`, and letters beyond
-ASCII; and two that need no encoding but are easily mishandled, a name
-that begins with a dot and one of 200 characters. Each sits beside
-decoys, whose names a server or client that
-mishandles the encoding would take for its own: `x%41y` beside `xAy`,
-`a+b` and `a%20b` beside `a b`, `hash#tag` beside `hash`, and
-`what?q=1` beside `what`. Every object is a different size. A URL
-percent-encodes every character of a name but letters, digits, and
-`-._~`, and so does what the client is given. Of origins that share a
-store (`-p origin-ssh -p topo-multi-origin`), only the first is asked,
-here and below.
+The `names` suite puts objects in `/protected-a` whose names a URL or a
+listing must encode: a space, `%`, `+`, `#`, `?`, `&`, `;`, quotes,
+angle brackets, brackets, `*`, and letters beyond ASCII. The tests
+percent-encode every byte of a name but RFC 3986's unreserved characters
+(letters, digits, and `-._~`), in URLs and in what they give a client.
+Two more names are easily mishandled: a leading dot, and 200
+characters. Each sits beside decoys that a mishandled encoding would
+fetch instead: `x%41y` beside `xAy`, `a+b` and `a%20b` beside `a b`,
+`hash#tag` beside `hash`, and `what?q=1` beside `what`. Any bytes but
+the object's own fail its row.
+A row's note names the first failure; the log lists them all. The suite
+skips where `/protected-a` is not exported.
 
-- A PUT of each name must land in each store under exactly that name,
-  and nothing else may: in a store on disk as a file, with its bytes;
-  and in a pstore origin's catalog, as its storage API lists it, as an
-  entry of its object's size, whose checksums, as the store recorded
-  them as it wrote it, are its bytes' ([pstore](pstore.md)). After
-  `pelican object put`, or `stash_plugin`'s, of a file of each name,
-  too, no store may hold an object of another name in its collection,
-  a pstore's catalog included.
-- Every origin and cache must serve each object by its name: any bytes
-  but its own fail, and a decoy's are named.
-- Every director, asked for each object by its name through its object
-  route (`/api/v1.0/director/object/`), must send a plain HTTP client to
-  a federated cache, or, with no cache, to an origin, by a redirect
-  whose `Location` names the object again. The director takes the name
-  decoded and encodes it anew (`getRedirectURL` in Pelican's
-  `director/director.go`), so a name it mangled on the way would fetch
-  a decoy, or nothing. The client follows the `Location` as it is, as
-  `curl -L` does, and must get the object's bytes.
-- Every origin and federated cache must list each name once, decoded,
-  with its size, as must `pelican object ls`.
-- `pelican object get` of each object, into a directory, must write a
-  file of its name, with its bytes, and the directory nothing else:
-  through the cache the director picks, direct from an origin
-  (`--direct`) where `/protected-a` takes direct clients, and from each
-  federated cache in turn, named (`--cache`), which alone may serve it,
-  since the client builds that cache's URL of each name itself;
-  `pelican object put` of a file of each name, to its object's URL,
-  must land as the object of that name. Each command moves one object:
-  main's client asks the director once for each namespace in a
-  command, and reuses its answer for the rest of the namespace's
-  objects (`cachedDirectorInfo` in `client/director.go`), so a command
-  of several would hide a name that the client mishandles in the
-  director's answer. Every name is tried every way, and the row's note
-  names the first that failed; the log lists them all.
-- `stash_plugin` must do the same (`plugin-get`, `plugin-put`), one
-  object a run. It reads each transfer from an ad of its input, as
-  HTCondor writes it: the object's URL, encoded as above, with
-  `?directread` for an origin, and its local file, the name's own path,
-  as a ClassAd string, whose `"` and `\` are escaped (`it's "quoted"`
-  needs it). It names a cache by `Client.PreferredCaches`, and the
-  result ad's endpoint must be that cache.
-- Pelican's client fails two of these, on v26.0.0-rc.3 and main alike,
-  and so does `stash_plugin`, which is the same client. It reads the
-  director's `Link` header by splitting it at `;`, so a URL with `;` in
-  it is cut there (and a character more, for the `>` it expects):
-  `semi;colon`, and `<angle>&amp;`, whose `&amp;` ends in one, are
-  fetched, and put, as `.../sem` and `.../<angle>&am` with the object's
-  path appended, which no server holds, and a put lands the object
-  under a collection of that name (`client-get`, `client-put`,
-  `plugin-get`, `plugin-put`). A get from a cache it names is spared,
-  since the client then builds the cache's URL itself.
-  And `pelican object ls` prints a name as it stands in the listing's
-  href, decoded once, but with what a URL may not hold encoded again,
-  `%` excepted: `a b` as `a%20b`, like the decoy `a%20b`, and `hash#tag`
-  as `hash%23tag` (`client-ls`).
-- XRootD mishandles several of these names (XRootD 5.9.7, in the
-  v26.0.0-rc.3 images, and 5.9.8, in main's), so where it serves the
-  origins or the caches (`-p origin-xrootd`, `-p cache-xrootd`), these
-  rows fail. An XRootD origin decodes a PUT's path and then splits it
-  at `?`, so `what?q=1` lands as `what`, over the decoy (`origin-put`,
-  `origin-get`, `client-put`, `plugin-put`); its PROPFIND writes each
-  name into its `href` as it is, not percent-encoded, so `hash#tag`
-  reads as `hash` with a fragment, and `hash` is listed twice
-  (`origin-list`, and `client-ls` with it). An XRootD cache decodes a
-  name a second time as it asks the origin for it: a cold read of `a b`
-  or `hash#tag` gets 403, and one of `x%41y` the decoy `xAy`, or 404
-  (`cache-get`, `director-get`, `client-get`, `plugin-get`); and it
-  lists no collection at all (`cache-list`; see
-  [listings](listings.md)).
-- An `ssh` origin (v26.0.0-rc.3, seen under `-p topo-standalone -p origin-ssh`) gets most of these names wrong between its PUT, its
-  GET, and its listing: its store ends up with files named as the URL
-  encodes them (`%3Cangle%3E&amp;`, `%5Bbrackets%5D`,
-  `caf%C3%A9-%E6%97%A5%E6%9C%AC`, `it%27s%20%22quoted%22`, `star%2A`), a
-  GET of `a b` serves the decoy `a%20b`'s bytes, `x%41y` lands on the
-  decoy `xAy`, and `hash#tag` and `what?q=1` land on `hash` and `what`,
-  cut at the `#` and the `?`; so `origin-put`, `origin-get`,
-  `origin-list`, `client-get`, `client-put`, and `client-ls` fail there.
-  The mechanism is not yet traced.
+- `origin-put`: A PUT of each name must land in each store under exactly
+  that name, and nothing else may; in a pstore origin's catalog, with
+  the object's size and checksums. Skips where `/protected-a` takes no
+  writes.
+- `origin-get`, `cache-get`: Every origin, and every cache, cold, must
+  serve each object by its name. `origin-get` skips where `/protected-a`
+  takes no direct clients.
+- `director-get`: Every director's object route must redirect a plain
+  HTTP client to a federated cache, or with none, to an origin, with a
+  `Location` that, followed as given, gets the object. Skips at a
+  standalone origin.
+- `origin-list`, `cache-list`: Every origin and federated cache must
+  list each name once, decoded, with its size. Each skips where
+  `/protected-a` cannot be [listed](listings.md) there.
+- `client-get`: `pelican object get` of each object must write a file of
+  its name, with its bytes, and nothing else: through the director's
+  cache; direct (`--direct`), where `/protected-a` takes direct clients;
+  and from each federated cache, named (`--cache`).
+- `client-put`: `pelican object put` of a file of each name must land as
+  the object of that name, and nothing else. Skips where `/protected-a`
+  takes no writes.
+- `plugin-get`, `plugin-put`: The same through `stash_plugin`. A named
+  cache must be the result ad's endpoint.
+- `client-ls`: `pelican object ls` must list each name once, decoded,
+  with its size.

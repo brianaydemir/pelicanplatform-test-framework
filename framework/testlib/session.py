@@ -3,18 +3,20 @@
 That is the federation, the client and its environment, tokens, and a
 scratch directory. test.py makes a Session for each token profile
 (credentials.PROFILES), in framework/var, and runs each suite once with
-each in turn: the tests' tokens are of the session's profile. Tokens
-are minted once and kept: the server's own, for a suite's checks, and
-those of the credential table (credentials.CREDENTIALS), which the auth
-and transfers suites both present. A suite's setup, and its checks of
-what the stores hold, use the server's own tokens of the WLCG profile
-whatever the session's (setup_token()), so that each scenario's twin
-tests only the token it presents. The expired ones are minted as the
-session starts, so that they are long past their expiry by the time
-those suites, which run late, present them. Every client command that
-pelican_cmd() or plugin_cmd() runs goes, with all it printed, in the
-pass's commands_log. last_line() and the json_* functions read what a
-client printed.
+each in turn: the tests' tokens are of the session's profile.
+
+Tokens are minted once and kept: the server's own, for a suite's
+checks, and those of the credential table (credentials.CREDENTIALS),
+which the auth and transfers suites both present. A suite's setup, and
+its checks of what the stores hold, use the server's own WLCG tokens
+whatever the session's profile (setup_token()), so that each scenario's
+twin tests only the token it presents. The expired tokens are minted as
+the session starts, so that they are long expired by the time those
+suites, which run late, present them.
+
+pelican_cmd() and plugin_cmd() log each client command, with all it
+printed, in the pass's commands_log. last_line() and the json_*
+functions read what a client printed.
 """
 
 import json
@@ -74,8 +76,8 @@ class Session:
         sync_env: The same, for `object sync`, which wants overwrites off.
         namespaces: The namespaces that the federation exports.
         stale_at: When the last expired token expired.
-        commands_log: Where each client command that pelican_cmd() or
-            plugin_cmd() runs is logged, under framework/var: data/commands.log, or
+        commands_log: Where pelican_cmd() and plugin_cmd() log each
+            client command, under framework/var: data/commands.log, or
             data/commands-<profile>.log in another profile's pass.
     """
 
@@ -324,12 +326,10 @@ class Session:
 def last_line(text: str) -> str:
     """Return the last line of a command's output that says something.
 
-    That is the last that isn't blank, nor the client's "Errors are
-    retryable", which it logs after the error itself (cmd/object_get.go
-    and its kin), and which would otherwise hide it; nor any from a
-    `Usage:` line on, the command's usage, which the client and server
-    print after an error of theirs (cobra). The line is cut to 300
-    characters; "(no output)" if there is none.
+    Passed over are blank lines; the client's "Errors are retryable",
+    which it logs after the error itself; and everything from a `Usage:`
+    line on, which the client and server print after an error. The line
+    is cut to 300 characters; "(no output)" if there is none.
     """
     lines = [line for line in text.strip().splitlines() if line.strip()]
     usage = next((i for i, line in enumerate(lines) if line.strip() == "Usage:"), len(lines))

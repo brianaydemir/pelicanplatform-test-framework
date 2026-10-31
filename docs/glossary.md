@@ -1,34 +1,29 @@
 # Glossary
 
-The terms these docs use, and what they mean here: first what the
-framework tests and what it doesn't, then the parts of the framework,
-then its approach to testing Pelican.
+The terms these docs use: what the framework tests, the parts of the
+framework, and its approach to testing Pelican.
 
 ## Scope
 
-The framework tests Pelican: its servers in full, and its clients only
-as they deal with a federation.
+The framework tests Pelican's servers in full, and its clients as they
+deal with a federation.
 
 ### Pelican server
 
 An origin, cache, director, registry, or transfer server, run from
-Pelican's images (`IMAGE_*`). Pelican's own documentation also calls
-these services; here, a [service](#service) is a container, which may
-hold a server or something else. Everything about a server is in scope:
-its data path, its APIs and web UI, its issuer, its keys and database,
-what it reports of itself, what survives its restart, and the
+Pelican's images (`IMAGE_*`). Pelican's documentation also calls these
+services; here, a [service](#service) is a container. Everything about
+a server is in scope: its data path, APIs and web UI, issuer, keys and
+database, what it reports of itself, what survives its restart, and the
 server-only commands of `pelican-server`, such as `origin collection`.
 
 ### Client
 
-What a federation serves. There are three kinds, and the tests act as
-each: the [Pelican client](#pelican-client),
-[`stash_plugin`](#stash_plugin), and a
-[plain HTTP client](#plain-http-client). A client's dealings with a
-federation are in scope: the requests it makes, what it does with the
-answers, which token it presents, and how it fails over. Anything else
-about it is out of scope: the tests don't check that curl is correct,
-only what a federation tells a client that behaves as curl does. "Both
+What a federation serves. The tests act as each of three kinds: the
+[Pelican client](#pelican-client), [`stash_plugin`](#stash_plugin), and
+a [plain HTTP client](#plain-http-client). In scope are a client's
+dealings with a federation: the requests it makes, what it does with
+the answers, which token it presents, and how it fails over. "Both
 clients" means the Pelican client and `stash_plugin`.
 
 ### Pelican client
@@ -48,16 +43,14 @@ which acts as the plugin when run by that name.
 An HTTP client that knows nothing of Pelican, such as curl: it asks a
 director for an object's bare path, and follows the redirect as
 `curl -L` does. The tests play one themselves
-(`framework/testlib/web.py`), in the HTTP [twins](#twin).
+(`framework/testlib/web.py`).
 
 ### Out of scope and not tested
 
-Out of scope is what the framework has no business testing: a client
-beyond its dealings with a federation, the
-[helper services](#helper-service), and Docker. Not tested is what is
-in scope but has no test, or none that would catch a fault;
-[What is not tested](tests/what-is-not-tested.md) lists what matters
-most.
+Out of scope: a client beyond its dealings with a federation, the
+[helper services](#helper-service), and Docker. Not tested: what is in
+scope but has no test, or none that would catch a fault
+([What is not tested](tests/what-is-not-tested.md)).
 
 ## The federation
 
@@ -82,31 +75,29 @@ recreate them.
 A service beside the federation that stands in for what a site would
 provide, and is not under test: the storage backends (`s3`, `webdav`,
 and the lab server, over SSH), the identity provider (`idp`), the
-metadata recorder, `webdav-gate`, and Grafana. A `with-` preset adds
-one. Not to be confused with the
-[service-control helper](#service-control-helper).
+metadata recorder, `webdav-gate`, and Grafana. Not to be confused with
+the [service-control helper](#service-control-helper).
 
 ### Dev container
 
 The service in which the tests run (`./fed.sh test`, `./fed.sh dev`).
-This checkout is `/scratch` there, and your Pelican checkout `/app`. It
-is no part of the federation, and the service-control helper never
-touches it.
+This checkout is `/scratch` there, and your Pelican checkout is `/app`.
+It is no part of the federation.
 
 ### Discovery host
 
 The host that serves the federation's metadata
 (`/.well-known/pelican-configuration`), which a client looks up from a
-`pelican://` URL: an nginx service, as the OSDF does, or, under
-`-p director-discovery`, director-0 (with `-p director-ha`, the
-directors' load balancer); under `-p topo-tiny`, `fed`, and under
-`-p topo-standalone`, the origin itself.
+`pelican://` URL. By default, it is an nginx service, as the OSDF's is.
+Under `-p director-discovery`, it is director-0 (or, with
+`-p director-ha`, the directors' load balancer); under `-p topo-tiny`,
+`fed`; under `-p topo-standalone`, the origin itself.
 
 ### Namespace
 
 A prefix that the origins export: `/public`, which anyone may read, and
-`/protected-a` and `/protected-b`, which take a token, and each have an
-issuer and a test key of their own; and, under `-p topo-multi-owner`,
+`/protected-a` and `/protected-b`, which take a token, and each have
+their own issuer and test key; and, under `-p topo-multi-owner`,
 origin-2's. Every namespace holds the same [test data](#test-data).
 
 ### Native and XRootD
@@ -114,34 +105,14 @@ origin-2's. Every namespace holds the same [test data](#test-data).
 The two ways Pelican serves an origin or a cache. A native origin
 (`posixv2`, `httpsv2`, `s3v2`, `pstore`, or `ssh`) or a V2 cache is
 Pelican's own code; an XRootD origin (`posix`, `https`, or `s3`) or
-cache puts XRootD in front. Many results differ between them, so a
-suite's page often says which it means.
+cache puts XRootD in front.
 
 ### Topology
 
 Which servers run, and in how many containers: what the `topo-` presets
-choose. Part of the shape.
+choose. Part of the [shape](#shape).
 
 ## Configuring the federation
-
-### Shape
-
-The federation as configured: its topology, the kind of each origin and
-cache, the features each has on, and how it authorizes; everything that
-the presets decide. `fed.sh` remembers the shape between commands, and
-each run's logs record it in `shape.txt`. `smoke.sh` names the shapes it
-runs, each a set of presets, such as `default` and `pelican-defaults`.
-
-### Preset
-
-A named change to the shape, given with `-p`: a short file in
-`framework/presets/`, or `local/presets/`, that sets
-[knobs](#knob). Its name's prefix says what it changes (`topo-`,
-`origin-`, `cache-`, `auth-`, `director-`, `registry-`, `server-`, or
-`with-`). Presets combine, but those that choose among alternatives set
-the same knob, and
-`fed.sh` refuses two of them together
-([README](../README.md#presets)).
 
 ### Knob
 
@@ -149,6 +120,22 @@ A shell variable that `fed.sh` reads, from `framework/environment.cfg`,
 `local/environment.cfg`, the presets, or your environment. Only presets
 may set the knobs that shape the federation; you set the others, such
 as `PELICAN_TAG` and `IMAGE_*` ([Configuration](configuration.md#knobs)).
+
+### Preset
+
+A named change to the shape, given with `-p`: a short file in
+`framework/presets/`, or `local/presets/`, that sets [knobs](#knob).
+Its name's prefix says what it changes (`topo-`, `origin-`, `cache-`,
+`auth-`, `director-`, `registry-`, `server-`, or `with-`)
+([README](../README.md#presets)).
+
+### Shape
+
+The federation as its presets configure it: its topology, the kind of
+each origin and cache, the features each has on, and how it authorizes.
+`fed.sh` remembers the shape between commands, and each run's logs
+record it in `shape.txt`. `smoke.sh` names the shapes it runs, such as
+`default` and `pelican-defaults`.
 
 ### Configuration layer
 
@@ -177,8 +164,13 @@ A named part of a suite, which `test.py` can run alone, e.g.
 One judgment, recorded as a row of results, named `<scenario>` or
 `<scenario> <case>`, with a status of `PASS`, `FAIL`, `SKIP`, or
 `INCONCLUSIVE` ([Results](ci.md#results)). A case that the suite could
-not judge is `INCONCLUSIVE`, with a note saying why, rather than a
-pass.
+not judge is `INCONCLUSIVE`, with a note saying why.
+
+### Token profile
+
+One of the two forms of token that Pelican understands, whose scopes
+differ: the WLCG common JWT profile's and SciTokens 2.0's
+([token profiles](tests/README.md#token-profiles)).
 
 ### Pass
 
@@ -187,13 +179,11 @@ pass, reported as `<suite>`, then the SciTokens pass, as
 `<suite>-scitokens`. A scenario marked `WLCG only` runs in the first
 alone. Not to be confused with a case's `PASS`.
 
-### Token profile
+### Setup token
 
-One of the two forms of token that Pelican understands, whose scopes
-differ: the WLCG common JWT profile's and SciTokens 2.0's. Each suite
-runs once with each, and each row of the second pass must fare as its
-twin in the first does
-([Token profiles](tests/README.md#token-profiles)).
+The WLCG token that a scenario's setup, and its checks of what the
+stores hold, use in either [pass](#pass), so that the SciTokens pass
+tests only what the scenario itself presents.
 
 ### Credential
 
@@ -208,26 +198,26 @@ How a client reaches an object: through the cache a director picks,
 direct from an origin (`--direct`, or `?directread`), or from a cache it
 names (`--cache`).
 
-### Twin
-
-A scenario or row that repeats another with one thing changed: a
-`transfers` scenario's direct, named, plugin, and HTTP twins
-([Test data](tests/test-data.md)), and each row of the SciTokens pass,
-the twin of its row in the WLCG pass.
-
 ### Test data
 
 The objects that `./fed.sh init` puts in each namespace, and those the
 suites write. An object's bytes are its own path in the federation, so
 no two are alike, and a server that answers from the wrong storage is
-caught. Each suite removes what it wrote.
+caught. Each suite removes what it wrote ([test data](tests/test-data.md)).
+
+### Twin
+
+A scenario or row that repeats another with one thing changed: a
+`transfers` scenario's direct, named, plugin, and HTTP twins
+([test data](tests/test-data.md)), and each row of the SciTokens pass,
+the twin of its row in the WLCG pass.
 
 ### Service-control helper
 
 `framework/control.py`, which runs on the host beside the tests, and
 restarts, stops, starts, pauses, and kills services for them, since the
 dev container can't control Docker. Without it, the scenarios that need
-it are skipped ([README](../README.md#service-control)).
+it skip ([README](../README.md#service-control)).
 
 ### Watchdog
 
@@ -244,15 +234,9 @@ destructive ([CI and results](ci.md)).
 ### Smoke matrix
 
 The shapes that `smoke.sh` runs when named none, listed in
-`framework/smoke-shapes.tsv`: as many as are useful, each as simple as
-it can be. Together they make every pair of choices that the presets
-offer, but those that would test nothing; each makes some pair that no
-other does, and at most eight choices. `framework/matrix.py` writes
-them, and checks them
-([Developing the framework](development.md#the-smoke-matrix)). Two
-shapes are baselines, whose failures are none of the presets' doing:
-`default`, the framework's own choices, and `pelican-defaults`,
-Pelican's.
+`framework/smoke-shapes.tsv`. Together they make every pair of choices
+that the presets offer, but those that would test nothing
+([the smoke matrix](development.md#the-smoke-matrix)).
 
 ## The approach
 
@@ -274,15 +258,7 @@ What a suite or scenario does in a shape that lacks what it tests, or
 without what it needs, such as the service-control helper: it runs
 nothing, and says why.
 
-### Expected failure
+### Failure
 
-A row that fails on Pelican as it is. The tests check what Pelican
-should do, and the framework works around no fault of Pelican's, even a
-known one; each suite's page says which of its rows are expected to
-fail.
-
-### Setup token
-
-The WLCG token that a scenario's setup, and its checks of what the
-stores hold, use in either pass, so that the SciTokens pass tests only
-what the scenario itself presents.
+A row whose check Pelican did not meet. The tests define what Pelican
+should do, and the framework works around no fault of Pelican's.

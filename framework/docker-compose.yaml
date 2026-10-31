@@ -264,9 +264,8 @@ services:
 
   # Another director (`-p topo-multi-director`), which must hold
   # director-0's key: both sign as the federation, whose JWKS is
-  # director-0's. `./fed.sh keys` keeps the two in step.
-  # Likewise after director-0, its discovery host under
-  # `-p director-discovery`.
+  # director-0's. `./fed.sh keys` keeps the two in step. It starts after
+  # director-0, its discovery host under `-p director-discovery`.
   director-1:
     hostname: director-1
     networks: [default, firewalled]
@@ -369,7 +368,8 @@ services:
 
   origin-0:
     hostname: origin-0
-    # Behind a firewall (`origin-firewalled`), a network the caches are not on.
+    # Behind a firewall (`origin-firewalled`), a network the caches are
+    # not on.
     networks: ["${ORIGIN_0_NETWORK:?run through ./fed.sh}"]
     image: "${IMAGE_ORIGIN:?run through ./fed.sh}"
     healthcheck: *pelican-health
@@ -479,9 +479,9 @@ services:
   cache-0:
     hostname: cache-0
     image: "${IMAGE_CACHE:?run through ./fed.sh}"
-    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the cache's
-    # own loopback, where nothing listens on its ports, so a connection is
-    # refused at once, as by a firewall that rejects.
+    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the
+    # cache's own loopback, where nothing listens on its ports, so a
+    # connection is refused at once, as by a firewall that rejects.
     extra_hosts: ["${CACHES_BLACKHOLE:?run through ./fed.sh}:127.0.0.1"]
     profiles: ["cache"]
     healthcheck: *pelican-health
@@ -514,9 +514,9 @@ services:
   cache-1:
     hostname: cache-1
     image: "${IMAGE_CACHE:?run through ./fed.sh}"
-    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the cache's
-    # own loopback, where nothing listens on its ports, so a connection is
-    # refused at once, as by a firewall that rejects.
+    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the
+    # cache's own loopback, where nothing listens on its ports, so a
+    # connection is refused at once, as by a firewall that rejects.
     extra_hosts: ["${CACHES_BLACKHOLE:?run through ./fed.sh}:127.0.0.1"]
     profiles: ["multi-cache"]
     healthcheck: *pelican-health
@@ -551,9 +551,9 @@ services:
   cache-2:
     hostname: cache-2
     image: "${IMAGE_CACHE:?run through ./fed.sh}"
-    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the cache's
-    # own loopback, where nothing listens on its ports, so a connection is
-    # refused at once, as by a firewall that rejects.
+    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the
+    # cache's own loopback, where nothing listens on its ports, so a
+    # connection is refused at once, as by a firewall that rejects.
     extra_hosts: ["${CACHES_BLACKHOLE:?run through ./fed.sh}:127.0.0.1"]
     profiles: ["site-local-cache"]
     healthcheck: *pelican-health
@@ -622,9 +622,8 @@ services:
       - ./var/state/transfer:/var/lib/pelican
     <<: *common-secrets
 
-  # Build environment and test client. The image ships no Pelican binary;
-  # the tests use framework/var/bin/linux via the checkout mounted
-  # at /scratch.
+  # Build environment and test client. The tests use the binaries in
+  # framework/var/bin/linux/, through the checkout mounted at /scratch.
   dev:
     hostname: dev
     networks: [default, firewalled]

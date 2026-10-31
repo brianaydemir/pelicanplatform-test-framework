@@ -795,9 +795,7 @@ def share_confinement(test: Test) -> tuple[str, str]:
     test-sharer, who may read alpha, may share only within it: a share
     whose namespace climbs out of alpha, lies beside it, begins like it
     without being in it, or lies outside every export is refused (400),
-    and test-guest's token gets nothing of decoy. Pelican's
-    database.CreateShare cleans the namespace before it compares it with
-    alpha's, so this is a check against regressions.
+    and test-guest's token gets nothing of decoy.
     """
     if test.fed.multiuser:
         return SKIP, "a multiuser origin refuses every share (see `shares`)"
@@ -1048,8 +1046,9 @@ def first_origin(test: Test) -> str | None:
 def cli(test: Test) -> tuple[str, str]:
     """Check that `pelican-server origin collection` manages collections.
 
-    The client lacks the command, which manages them through the issuer's
-    device flow, approved as test-curator, and fails for an ordinary user.
+    The command, which only pelican-server has, manages them through
+    the issuer's device flow, approved as test-curator; it fails for an
+    ordinary user.
     """
     server = test.session.pelican_server
     if server is None:

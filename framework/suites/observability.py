@@ -27,15 +27,15 @@ That is, its health, its metrics, its log level, and its log:
                         serves again, and the directors name it again
 
 The suite acts as each server's admin, and as an ordinary user
-(testlib.webapi.Access), and reads /metrics with tokens of each server's
-own making (credentials.web_token()), since every
-server guards it (Monitoring.MetricAuthorization, on by default).
-`log-level` and `log-redaction` raise each server's log level, each
-change for at most a minute but the one `log-level` deletes at once,
-and delete their changes when they are done. `log-level-xrootd`
-restarts XRootD at the first XRootD origin and cache twice, and waits
-until it serves again. `http-metrics` writes under
-data/observability/<run>/, which the suite removes afterward.
+(testlib.webapi.Access). It reads /metrics with tokens of each server's
+own making (credentials.web_token()), since every server guards it
+(Monitoring.MetricAuthorization, on by default). `log-level` and
+`log-redaction` raise each server's log level, each change for at most
+a minute but the one `log-level` deletes at once, and delete their
+changes when they are done. `log-level-xrootd` restarts XRootD twice at
+the first XRootD origin and cache, and waits until it serves again.
+`http-metrics` writes under data/observability/<run>/, which the suite
+removes afterward.
 
 Only `http-metrics` and `log-redaction` present storage tokens, of the
 session's profile; the rest present tokens of the servers' web APIs,
@@ -157,13 +157,13 @@ MAX_DURATION = 86400
 # there as it is logged (LogRingBuffer.Fire), and XRootD's own lines once
 # Pelican reads them.
 LOG_SETTLE = 3
-# What a change refused may not be: a level, a parameter that is not
-# Pelican's, one outside Logging, and one that is no level, for a second,
-# should it be taken. That one is a string that the server reads only as
-# it starts (StartLogRingBuffer in config/log_buffer.go), so a level
-# there does no harm; a level in a bool would leave every later change
-# of the server's configuration failing (param.MultiSet), until it
-# restarts.
+# What `refusals` asks for, each of which must be refused: a level that
+# is none, a parameter that is no setting, one outside Logging, and one
+# that is no level. NOT_A_LEVEL is asked for a second, should it be
+# taken. It is a string that the server reads only as it starts
+# (StartLogRingBuffer in config/log_buffer.go), so a level there does no
+# harm; a level in a bool would make every later change of the server's
+# configuration fail (param.MultiSet) until it restarts.
 BAD_LEVEL = "loud"
 NO_PARAMETER = "Logging.NoSuchLevel"
 NOT_LOGGING = "Server.WebPort"
@@ -171,14 +171,14 @@ NOT_A_LEVEL = "Logging.Buffer.MaxSize"
 # logrus's levels, least verbose first, as Pelican names them.
 LEVELS = ("panic", "fatal", "error", "warning", "info", "debug", "trace")
 
-# `log-level-xrootd`: how much longer than XRootD's drain period
-# (Xrootd.ShutdownTimeout) its long change lasts, in seconds, long enough
-# to outlast the restart and the directors' naming it again, since the
-# scenario deletes it, which restarts XRootD again; the drain
-# period, if the server won't say; how long XRootD may take to restart
-# and serve again; how long the directors may take to name it again,
-# since it tells them it is shutting down as it restarts, and advertises
-# again once it serves; and how often to look.
+# `log-level-xrootd`'s times, in seconds. Its long change outlasts the
+# drain period (Xrootd.ShutdownTimeout) by XROOTD_EXTRA, enough to
+# outlast the restart and the directors' naming the server again, since
+# the scenario then deletes it, which restarts XRootD again.
+# DRAIN_DEFAULT is the drain period if the server won't say. XRootD has
+# RESTART_WAIT to restart and serve again, and the directors NAMED_WAIT
+# to name the server again, since it tells them it is shutting down as
+# it restarts. RESTART_POLL is how often to look.
 XROOTD_EXTRA = 300
 DRAIN_DEFAULT = 2.0
 RESTART_WAIT = 120
@@ -207,8 +207,8 @@ class Test:
         servers: The federation's servers.
         base: Where `http-metrics` writes, in a namespace.
         subject: The suite's own subject, in its tokens.
-        changes: The IDs of each server's log level changes that the
-            suite made and has not yet deleted, by server name.
+        changes: The IDs of the log level changes that the suite made at
+            each server and has not deleted, by server name.
     """
 
     def __init__(self, session: Session):
@@ -591,11 +591,11 @@ def query(server: Server, promql: str, token: str | None = None, **kw: Any) -> w
 def metrics_access(test: Test, server: Server) -> Row:
     """Check who may read server's /metrics.
 
-    No one with no token (401 or 403; Pelican answers 403); a token of
-    its own issuer with scope monitoring.scrape, as it scrapes itself;
-    not one signed by another key; the admin's login cookie, which
-    carries the scope (setLoginCookie); and not the admin's bearer
-    token, which lacks it (403).
+    No one with no token (401 or 403); a token of its own issuer with
+    scope monitoring.scrape, as it scrapes itself; not one signed by
+    another key; the admin's login cookie, which carries the scope
+    (setLoginCookie); and not the admin's bearer token, which lacks it
+    (403).
     """
     url = server.web_url + "/metrics"
     scrape = test.web_token(server, (credentials.SCRAPE_SCOPE,))

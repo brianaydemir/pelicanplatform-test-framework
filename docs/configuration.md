@@ -1,9 +1,9 @@
 # Configuration
 
 How `fed.sh` configures the federation, in more depth than the
-[README](../README.md#testing-your-changes): how Pelican's configuration
-files layer, the knobs that `fed.sh` reads, writing presets of your own,
-and managing issuer keys.
+[README](../README.md#testing-your-changes): Pelican's configuration
+layers, the knobs that `fed.sh` reads, presets of your own, and issuer
+keys.
 
 ## Pelican configuration
 
@@ -32,124 +32,94 @@ EOF
 ./fed.sh restart director-0
 ```
 
-- `/fed/control.instance` is the tests' own, and empty but while a
+- `/fed/control.instance` is the tests' own. It is empty except while a
   test restarts a service with configuration of its own
-  ([service control](../README.md#service-control)), so it wins over
-  yours then.
+  ([service control](../README.md#service-control)), and then it wins
+  over yours.
 - A later layer replaces a list instead of merging it. `fed.sh`
-  generates `Origin.Exports` from the knobs; to change it, restate the
-  whole list. In `local/config.d/base/`, that replaces origin-2's too
+  generates `Origin.Exports`; to change it, restate the whole list. In
+  `local/config.d/base/`, that replaces origin-2's too
   (`-p topo-multi-owner`).
-- `Origin.EnableIssuer`, `Origin.Posc.Enabled`,
-  `Origin.EnableAtomicUploads`, `Origin.Metadata.{Enabled,TrackAccess,Mode}`,
-  `Origin.CacheControl`, `Origin.DisableDirectClients`, `Origin.Multiuser`,
-  `Origin.EnableStandaloneMode`, `Origin.EnableTransferAPI`,
-  `Server.DropPrivileges`, and cache-2's `Cache.EnableSiteLocalMode` are
-  set by environment variables, which beat files, because `fed.sh` and
-  the tests depend on them. To change one,
-  write a [preset](#presets) of your own. Pelican ignores an empty
-  variable, though, so without `-p origin-max-age`, which leaves
-  `Origin.CacheControl` empty, a file of yours can still set it, and
-  the tests won't know: the `blocks` suite checks what the origins send
-  only when `ORIGIN_CACHE_CONTROL` is set. The `freshness` suite sets it
-  this way itself, for a while, in the tests' own layer
-  ([cache freshness](tests/cache-freshness.md)).
-- No preset slows a server, since every suite would crawl. The
-  `throttling` suite slows the origins (`Origin.TransferRateLimit`) and
-  shrinks the V2 caches' scheduler (`Cache.WorkerCount`,
-  `Cache.Throttle.*`) itself, for as long as it runs, in the tests' own
-  layer ([throttling](tests/throttling.md)).
-- No preset gives an export without `Listings` (but
-  `origin-no-direct`'s, which serves only caches), or one without
-  `DirectReads` beside others with them, or turns copies off
-  (`Origin.DisableCopies`); nor does one give an origin an export
-  nested in another. The `exports` suite restarts the origins
-  so for a while, in the tests' own layer, with `fed.sh`'s
-  `Origin.Exports` restated, which then also replaces any of yours
-  ([exports and copies](tests/exports-and-copies.md)). Nor does one
-  have an `https` or `httpsv2` origin present a token to its backend
-  (`Origin.HttpAuthTokenFile`, `Origin.HttpAuthTokenPassthrough`),
-  which asks for none: the same suite restarts the origins so for a
-  while, reaching the backend through the `webdav-gate` service, which
-  records what they send (`Origin.HttpServiceUrl`).
-- No preset bounds a pstore origin's store (`Origin.PStoreStorageDirs`),
-  which would bound every suite's writes, or backs up its catalog
-  (`Origin.PStoreMetadataBackup*`). The `pstore` suite restarts the
-  first origin so for a while, in the tests' own layer, and stops it
-  meanwhile to restore one of the backups into its store
-  ([pstore](tests/pstore.md)).
-- `framework/config.d/instance/` declares where cache-0, cache-1,
-  origin-0, and origin-1 are (`GeoLocation`), which the directors sort
-  by, and the `routing` suite checks. No preset changes how the
-  directors sort or filter the servers (`Director.CacheSortMethod`,
-  `CheckCachePresence`, `FilteredServers`,
-  `AssumePresenceAtSingleOrigin`, and the response hostnames), or
-  restricts a cache to namespaces (`Cache.PermittedNamespaces`). Under
-  `-p topo-multi-cache`, the `routing` suite restarts the directors so
-  for a while, in the tests' own layer, and then the last cache so
-  restricted ([routing](tests/routing.md)).
-- `framework/config.d/director/default/` (and `instance/fed/`, in
-  `tiny`) names a support contact (`Director.SupportContactEmail` and
-  `SupportContactUrl`), which the `director-api` suite checks
-  ([director APIs](tests/director-apis.md)).
-- Under `-p origin-multiuser`, `fed.sh` generates the mapfile,
-  `framework/var/generated/multiuser-mapfile.json`, and sets
-  `Origin.ScitokensNameMapFile` and `Origin.ScitokensDefaultUser` in
-  `/fed/generated/conf`. The `users` suite adds a rule to the mapfile
-  for a while, in place, and restarts the origins with
-  `Origin.ScitokensUsernameClaim` set and no default user, in the
-  tests' own layer ([Unix users](tests/unix-users.md)).
-- `fed.sh` generates `Logging.Level` (from `PELICAN_LOG_LEVEL`), every
-  server's `EnableOIDC` and, with it, `OIDC.Issuer`, the identity
-  provider's URL (from `-p auth-oidc-local`; `Issuer.GroupSource` stays
-  `internal`, and the `oidc` suite restarts origin-0 with `oidc`, and
-  with `Server.UIAdminUsers`, for a while) or CILogon's (from
-  `-p auth-oidc-cilogon`), the caches'
-  `Cache.MemoryCacheSize` (from `-p cache-memory`),
-  `Director.DefaultResponse` (from
-  `-p director-default-origin`), the registry's
-  `RequireOriginApproval`, `RequireCacheApproval` (from
-  `-p registry-approval`), and `RequireKeyChaining` (off under
-  `-p topo-multi-owner`), the embedded issuer's token and code
-  lifetimes (from `-p origin-short-tokens`), and an ssh origin's
-  `Origin.SSH.TunnelCallback` (from `-p origin-ssh-tunnel`) in
-  `/fed/generated/conf`, and
-  director-0's `Director.EnableFederationMetadataHosting` (from
-  `-p director-discovery`; every director's under `-p director-ha` too)
-  and, under `-p director-ha`, each director's `Server.ExternalWebUrl`
-  (the shared name), `Director.AdvertiseUrl` (its own), and
-  `Xrootd.Sitename` (its own name, which Pelican would otherwise take
-  from the shared name) in its `/fed/generated.instance`, as it does
-  each cache's bound on its store (from `-p cache-small`: a V2 cache's
-  water marks, and an XRootD cache's `Cache.Files{Base,Nominal,Max}Size`
-  beside its water marks, which Pelican then requires), so a file
-  of yours can override them, e.g. for one service; but the tests
-  expect what the presets say. Under `-p origin-export-templates`, the
-  generated `Origin.Exports` gives `/protected-b` authorization
-  templates of its own; under `-p origin-public-writes`, `/public`
-  takes writes, and so an issuer; under `-p origin-public`, it has `/public`
-  alone, whatever `ORIGIN_NAMESPACES` says.
-- No preset names a group in `Transfer.EnabledGroups`, or turns on the
-  transfer API's OAuth2 clients (`Transfer.EnableOAuth2Clients`). Under
-  `-p origin-transfer-api` or `-p topo-transfer-server`, the
-  `transfer-api` suite restarts the API's host so for a while, with a
-  group of the run's own, in the tests' own layer, and restarts it
-  again with a job under way, origin-0 slowed meanwhile
-  (`Origin.TransferRateLimit`) ([transfer API](tests/transfer-api.md)).
-- Under `-p topo-multi-origin`, an origin override usually belongs in
+- Under `-p topo-multi-origin`, an origin's override usually belongs in
   both `origin-0/` and `origin-1/`.
-- `framework/config.d/base/40-origin.yaml` sets the embedded issuer's
+
+### Settings from the environment
+
+`fed.sh` and the tests depend on these, so `fed.sh` sets them by
+environment variables, which beat files. To change one, write a
+[preset](#presets) of your own.
+
+- `Origin.EnableIssuer`, `Origin.Posc.Enabled`,
+  `Origin.EnableAtomicUploads`,
+  `Origin.Metadata.{Enabled,TrackAccess,Mode}`, `Origin.CacheControl`,
+  `Origin.DisableDirectClients`, `Origin.Multiuser`,
+  `Origin.EnableStandaloneMode`, and `Origin.EnableTransferAPI`
+- `Server.DropPrivileges`
+- cache-2's `Cache.EnableSiteLocalMode`
+
+Pelican ignores an empty variable. So, without `-p origin-max-age`, a
+file of yours can set `Origin.CacheControl`, but the tests won't know:
+the `blocks` suite checks what the origins send only when
+`ORIGIN_CACHE_CONTROL` is set.
+
+### Generated settings
+
+`fed.sh` generates these from the presets, in `/fed/generated/conf`, or
+per service in `/fed/generated.instance`. A file of yours can override
+them, e.g. for one service, but the tests expect what the presets say.
+
+| Setting                                                                                                                             | From                                           |
+| ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `Logging.Level`                                                                                                                     | `PELICAN_LOG_LEVEL`                            |
+| `Origin.Exports`                                                                                                                    | the namespaces and their capabilities          |
+| every server's `EnableOIDC` and `OIDC.Issuer`                                                                                       | `-p auth-oidc-local` or `-p auth-oidc-cilogon` |
+| the caches' `Cache.MemoryCacheSize`                                                                                                 | `-p cache-memory`                              |
+| each cache's bound on its store (V2: water marks; XRootD: `Cache.Files*Size`)                                                       | `-p cache-small`                               |
+| `Director.DefaultResponse`                                                                                                          | `-p director-default-origin`                   |
+| `Director.EnableFederationMetadataHosting`                                                                                          | `-p director-discovery`                        |
+| each director's `Server.ExternalWebUrl`, `Director.AdvertiseUrl`, and `Xrootd.Sitename`                                             | `-p director-ha`                               |
+| the registry's `RequireOriginApproval` and `RequireCacheApproval`                                                                   | `-p registry-approval`                         |
+| the registry's `RequireKeyChaining` (off)                                                                                           | `-p topo-multi-owner`                          |
+| the embedded issuer's token and code lifetimes                                                                                      | `-p origin-short-tokens`                       |
+| an `ssh` origin's `Origin.SSH.TunnelCallback`                                                                                       | `-p origin-ssh-tunnel`                         |
+| `Origin.ScitokensNameMapFile` and `Origin.ScitokensDefaultUser`, and the mapfile (`framework/var/generated/multiuser-mapfile.json`) | `-p origin-multiuser`                          |
+
+### Fixed settings
+
+The framework's own layers set these, and the suites depend on them:
+
+- `framework/config.d/base/40-origin.yaml`: the embedded issuer's
   `Issuer.AuthorizationTemplates`, which grant the built-in `admin` and
-  the `issuer` suite's users and groups ([issuer](tests/issuer.md)),
-  takes a web login's groups from the server's own database
-  (`Issuer.GroupSource`), and names `test-curator` in
-  `Server.CollectionAdminUsers`; the `collections` and `issuer` suites
-  depend on these ([collections](tests/collections.md)). It also names
-  the `accounts` suite's authorities: the groups `test-server-admins`
-  in `Server.AdminGroups` and `test-collection-admins` in
-  `Server.CollectionAdminGroups`, whose names each server reserves as
-  it starts, and `test-user-admin` in `Server.UserAdminUsers`
-  ([accounts](tests/accounts.md)).
+  the `issuer` suite's users and groups; `Issuer.GroupSource`
+  (`internal`); `test-curator` in `Server.CollectionAdminUsers`
+  ([collections](tests/collections.md)); and the
+  [accounts](tests/accounts.md) suite's authorities:
+  `test-server-admins` in `Server.AdminGroups`,
+  `test-collection-admins` in `Server.CollectionAdminGroups`, and
+  `test-user-admin` in `Server.UserAdminUsers`.
+- `framework/config.d/instance/`: where cache-0, cache-1, origin-0, and
+  origin-1 are (`GeoLocation`), by which the directors sort
+  ([routing](tests/routing.md)).
+- `framework/config.d/director/default/` (and `instance/fed/`, in
+  `topo-tiny`): a support contact (`Director.SupportContactEmail` and
+  `SupportContactUrl`) ([director APIs](tests/director-apis.md)).
+
+### Settings the suites vary
+
+No preset sets these, since they would slow or limit every suite. The
+suites that test them restart services with them for a while, in the
+tests' own layer, and restore them afterward.
+
+| Suite                                    | Settings                                                                                                                                                                                                |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`freshness`](tests/cache-freshness.md)  | `Origin.CacheControl`                                                                                                                                                                                   |
+| [`throttling`](tests/throttling.md)      | `Origin.TransferRateLimit`; the V2 caches' `Cache.WorkerCount` and `Cache.Throttle.*`                                                                                                                   |
+| [`exports`](tests/exports-and-copies.md) | `Origin.Exports` (restated, replacing yours): no `Listings` or `DirectReads`, and a nested export; `Origin.DisableCopies`; `Origin.HttpAuthTokenFile`, `HttpAuthTokenPassthrough`, and `HttpServiceUrl` |
+| [`pstore`](tests/pstore.md)              | `Origin.PStoreStorageDirs`, `Origin.PStoreMetadataBackup*`                                                                                                                                              |
+| [`routing`](tests/routing.md)            | `Director.CacheSortMethod`, `CheckCachePresence`, `FilteredServers`, `AssumePresenceAtSingleOrigin`, and response hostnames; `Cache.PermittedNamespaces`                                                |
+| [`users`](tests/unix-users.md)           | a mapfile rule, in place; `Origin.ScitokensUsernameClaim`, with no default user                                                                                                                         |
+| [`oidc`](tests/oidc-login.md)            | origin-0's `Issuer.GroupSource` (`oidc`) and `Server.UIAdminUsers`                                                                                                                                      |
+| [`transfer-api`](tests/transfer-api.md)  | `Transfer.EnabledGroups`, `Transfer.EnableOAuth2Clients`, and origin-0's `Origin.TransferRateLimit`                                                                                                     |
 
 ## Knobs
 
@@ -161,16 +131,15 @@ Knobs are shell variables. Later sources win:
 1. the `-p` presets, in order
 1. your environment, e.g. `PELICAN_LOG_LEVEL=debug ./fed.sh up`
 
-The table lists the knobs you set. The rest shape the federation, so
-only presets set them, and `fed.sh` ignores them in your environment.
-`framework/presets/default.sh` lists them. For a shape that the presets
-don't offer, write a [preset](#presets) of your own; to change any other
-Pelican setting, use a [configuration file](#pelican-configuration).
+`framework/presets/default.sh` declares every knob that shapes the
+federation. Only presets may set those; `fed.sh` ignores them in your
+environment. For a shape the presets don't offer, write a
+[preset](#presets) of your own; for any other Pelican setting, use a
+[configuration file](#pelican-configuration).
 
-`default.sh` sets every knob that it lists, so `local/environment.cfg`
-can only set the others: `PELICAN_TAG`, `IMAGE_*`, `PELICAN_DEV_TAG`,
-and `PELICAN_SRC_DIR`. Set `PELICAN_LOG_LEVEL`, the timezones, and the
-memory limits in your environment, or in a preset of your own.
+You set the knobs below. `local/environment.cfg` can set only those that
+`default.sh` doesn't: `PELICAN_TAG`, `IMAGE_*`, `PELICAN_DEV_TAG`, and
+`PELICAN_SRC_DIR`. Set the rest in your environment, or in a preset.
 
 | Knob                | Default                            | Sets                                                                                    |
 | ------------------- | ---------------------------------- | --------------------------------------------------------------------------------------- |
@@ -186,52 +155,41 @@ memory limits in your environment, or in a preset of your own.
 
 ## Presets
 
-The [README](../README.md#presets) lists the presets. Each is a short
-file in `framework/presets/`, so read it for the details, including what
-it refuses. To add your own, write `local/presets/<name>.sh` with a new
-name. It can set any knob in `framework/presets/default.sh`, or call
-`fed_enable_profile` to start optional services.
+The [README](../README.md#presets) lists the presets. To add your own,
+write `local/presets/<name>.sh` with a new name. It can set any knob in
+`framework/presets/default.sh`, or call `fed_enable_profile` to start
+optional services. No smoke shape runs a preset of your own.
 
-- **Coverage.** The shapes that `smoke.sh` runs (`./smoke.sh -l`) make,
-  together, every pair of choices that the presets offer, and rotating
-  every key, which some shapes do before running every suite again.
-  Each makes at most eight choices, and none could be left out, or make
-  one choice fewer, without leaving some pair uncovered
-  ([Developing the framework](development.md#the-smoke-matrix)). The
-  exceptions: `with-grafana`, which needs a data source that the
-  framework lacks; `auth-oidc-cilogon`, which needs a CILogon client of
-  your own; rotated keys with `server-unprivileged`, whose
-  servers' keys the host may not write; and `cache-mixed`,
-  `topo-no-cache`, `auth-oidc-local`, and `topo-transfer-server` with
-  origins other than `posixv2` and `xrootd`, since what the first tests is
-  between the caches, the second how the directors and the clients do
-  without one, the third the servers' web login, which their storage
-  does not change, and the fourth a transfer server's own confinement
-  and issuer, beyond origin-0's API, which runs over every origin;
-  likewise `origin-public`, `origin-public-writes`, and `director-ha`,
-  which test the federation's way with a namespace that has no issuer,
-  or one that anyone reads and a token writes, and the directors behind
-  one name, not the origins' storage. Nor do they run a transfer API
-  (`origin-transfer-api` or `topo-transfer-server`) where `/protected-a`
-  takes no writes (`origin-no-direct` or `origin-public`): the
-  `transfer-api` suite then has nowhere to copy to, and skips. Under
-  `origin-no-direct`, the `posc`, `metadata`, and `users` suites skip
-  too; its pairs with `origin-posc`, `origin-atomic-uploads`,
-  `origin-metadata`, `origin-metadata-tx`, and `origin-multiuser` test
-  reads with those features on. Beyond the pairs, two shapes are
-  baselines, whose failures are none of the presets' doing: `default` makes only the framework's own choices,
-  what `./fed.sh up` runs, and `pelican-defaults` only those that
-  Pelican makes when told nothing. A preset of your own is in no shape,
-  so `smoke.sh` never runs it.
-- **Presets not offered.** The notable choices Pelican offers that no
-  preset makes, and why, are in
-  [What is not tested](tests/what-is-not-tested.md); those that a suite
-  makes itself, for a while, are [above](#pelican-configuration).
+### Coverage
+
+Together, the shapes that `smoke.sh` runs (`./smoke.sh -l`) make every
+pair of choices that the presets offer, including rotating every key
+([the smoke matrix](development.md#the-smoke-matrix)). The exceptions:
+
+- `with-grafana`, which needs a data source that the framework lacks.
+- `auth-oidc-cilogon`, which needs a CILogon client of your own.
+- Rotated keys with `server-unprivileged`, whose servers' keys the host
+  may not write.
+- `cache-mixed`, `topo-no-cache`, `auth-oidc-local`,
+  `topo-transfer-server`, `origin-public`, `origin-public-writes`, and
+  `director-ha` with origins other than `posixv2` and `xrootd`, since
+  what they test doesn't depend on the origins' storage.
+- A transfer API (`origin-transfer-api` or `topo-transfer-server`) where
+  `/protected-a` takes no writes (`origin-no-direct` or
+  `origin-public`), since the `transfer-api` suite then skips.
+
+Two shapes are baselines, whose failures are none of the presets'
+doing: `default`, the framework's own choices, and `pelican-defaults`,
+Pelican's.
+
+[What is not tested](tests/what-is-not-tested.md) lists notable choices
+that no preset makes; [above](#settings-the-suites-vary) are those that
+a suite makes for a while.
 
 ## Issuer keys
 
 Each service reads a directory of keys. Pelican signs with the `.pem`
-that sorts first and publishes them all, so the `NN-` prefix decides
+that sorts first, and publishes them all, so the `NN-` prefix decides
 which key is active.
 
 ```sh
@@ -244,23 +202,17 @@ which key is active.
 `TARGET` is a service (e.g. `director-0` or `fed`), `issuer` (the
 external issuer's), `origins`, `directors`, or `all`. origin-0 and
 origin-1 share a key, as do director-0 and director-1; naming just one
-of them breaks that on purpose. origin-2, another owner, has a key of
-its own, which the `owners` suite signs its tokens with.
+of them breaks that on purpose. origin-2, another owner, has its own.
 
-- Services pick up a new key within a minute, but origins and caches may
+- Servers pick up a new key within a minute, but origins and caches may
   keep a keyset they fetched, even their own, for up to 15 minutes.
   `./fed.sh restart` skips the wait.
 - Database backups and a V2 cache's store are encrypted with the
   service's keys, so a cache must start with the keys that sealed its
   store. `fed.sh` never replaces a key.
-- An empty key directory doesn't simulate a missing key, because Pelican
+- An empty key directory doesn't simulate a missing key, since Pelican
   generates its own.
 - `keys` also lists the four [test keys](tests/authorization.md), which
   `keys init` creates. They are never rotated.
-- The `keys` suite adds and rotates keys itself, as `keys add` and
-  `keys rotate` do, while the federation runs, and puts them back: a key
-  it added is removed, and one it made the signer is renamed to sort
-  last, so it stays as a verify-only key, since a V2 cache must keep the
-  keys that sealed its store ([keys](tests/keys.md)). Its `master-key`
-  scenario also retires a cache's keys for a moment, and restores them
-  with the cache's master key file.
+- The [keys](tests/keys.md) suite adds and rotates keys while the
+  federation runs, and restores them afterward.

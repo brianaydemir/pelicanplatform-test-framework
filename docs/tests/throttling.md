@@ -2,119 +2,71 @@
 
 Part of [What the tests check](README.md).
 
-No server is slow as a shape is, so the `throttling` suite makes them
-so for as long as it runs. It restarts every origin with
-`Origin.TransferRateLimit: 256KB/s` (a KB is 1,024 bytes), and runs
-`range-ahead`; then it restarts every federated V2 cache with a small
-fair scheduler for the rest: `Cache.WorkerCount: 2`,
-`Cache.Throttle.PerOriginStarvingPercent` and `PerOriginActivePercent`
-25, `PerOriginPendingSize` 1, and `RetryAfter` 2s. A cache then fetches
-from one origin one object at a time, queues one more, and sheds the
-rest. Both go in the last of the servers' configuration layers
-([service control](../../README.md#service-control)); afterward the suite
-restores them, and waits, after each restart, until every director names
-every origin and every cache answers, as `freshness` does. The rate limit
-slows only a `posixv2` origin (`origin_serve/rate_limited_fs.go` in
-Pelican), so the suite needs `posixv2` origins, a federated V2 cache,
-and a control helper, and skips the `tiny` topology, whose servers are
-one process. Otherwise it skips, and says why.
+The `throttling` suite makes the servers slow while it runs. For
+`range-ahead`, it restarts every origin with
+`Origin.TransferRateLimit: 256KB/s`. For the rest, it restarts every
+federated V2 cache with a small fair scheduler (`Cache.WorkerCount: 2`;
+`Cache.Throttle.PerOriginStarvingPercent` and `PerOriginActivePercent` 25,
+`PerOriginPendingSize` 1, `RetryAfter` 2s), which fetches one object at a
+time from an origin, queues one more, and sheds the rest. It restores the
+servers afterward ([service control](../../README.md#service-control)).
 
-The limit is one bucket per export, which every read and write of it
-shares, and which lets a second's worth through at once. So the cases
-run one at a time, and the suite writes its objects straight into the
-origin's store on disk, under `/protected-a/data/throttling/<run>/`, a
-set per cache, so that each is cold where it is first read. Only the
-first origin holds them, so that a director with several sends every
-fetch there, and a cache's fetches share one scheduler queue, which is
-per origin host. A scenario with several cases records a row per case,
-named `<scenario> <case>`.
+It needs `posixv2` origins, which alone the rate limit slows, a federated V2
+cache, and a control helper. It skips without them, and under
+`-p topo-tiny`. A case's row is named `<scenario> <case>`.
 
-- `range-ahead`: at each V2 cache, a cold read of a 4 MiB object, which
-  takes about 15 seconds to come, and 2 seconds in, a read of the range
-  from a kilobyte before its last 128 KiB to its end, which crosses the
-  edge of the last of the 128 KiB chunks by which the cache's download
-  tells waiting readers of its progress, and the edges of its 4,080-byte
-  blocks (`local_cache/block_fetcher.go`). A V2 cache holds a reader
-  behind a download that it expects to write the reader's blocks within
-  5 seconds, and otherwise fills the reader's range by a fetch of its
-  own, which the download then passes over (`beginFill` in
-  `local_cache/block_state.go`; Pelican's main, not v26.0.0-rc.3).
-  So the range must come within 5 seconds, as 206 with exactly its
-  bytes; the whole read must then come back as the object, its download
-  having found blocks already written; and so must a warm read. A whole
-  read in under about 7.5 seconds shows nothing, since the origins were
-  not slow, and leaves the row inconclusive. It runs before the caches'
-  scheduler shrinks, which would queue the fill behind the download.
-- `shed-429`: at each V2 cache, 30 reads at once of cold 1 MiB objects,
-  each of which takes the cache seconds to fetch, and half a second in,
-  a read of an object that no origin holds. The cache must shed some:
-  429, with `Retry-After: 2`, and a JSON body whose `error` is
-  `origin_unresponsive`, `origin_slow`, `cache_overloaded`, or
-  `too_many_requests` (`handleError` in
-  `local_cache/persistent_cache_api.go`). Every other read must come
-  back whole. The missing object must be 404: a 429 would have a client
-  come back for ever for what does not exist. Where there is one origin,
-  the director sends the cache to it without asking whether it holds
-  the object (`Director.AssumePresenceAtSingleOrigin`), and the cache
-  then asks its scheduler for a fetch, which it may shed before the
-  origin says 404, so the row may fail there: on v26.0.0-rc.3, in the
-  default shape, it does (`origin_slow`).
-- `client-throttled`: at each V2 cache, a cold read of a 4 MiB object
-  holds the origin's one slot, and another its one place in the queue.
-  Meanwhile, `pelican object get --cache` and `stash_plugin` (with
-  `Client.PreferredCaches`) each download a cold object through that
-  cache alone. Each must fail as shed: error 6008, 6009, or 6010
-  (`Transfer.OriginUnresponsive`, `OriginSlow`, or `CacheOverloaded`,
-  `docs/error_codes.yaml`), exit 11, which says the failure may be
-  retried (`cmd/object_get.go`, `cmd/plugin.go`), and nothing left in
-  its directory. The plugin's ad must say `TransferRetryable = true`,
-  and its error's `DeveloperData` must carry `RetryAfterSeconds = 2` and
-  `ThrottleReason`, the 429's reason. The client does not wait on
-  `Retry-After`, and has no other cache to try, so the test, as a
-  retrier outside it would, tries it again once the reads are done, 2
-  seconds apart, up to five times, and it must then get the object. A
-  client that was never shed leaves its row inconclusive. `pelican object get` first asks for one byte (`Range: bytes=0-0`), which a V2
-  cache serves by fetching only the blocks it reads, and those after it
-  has answered; so whether it sheds that request with a 429 is less
-  plain from the code than for the plugin's whole read: on
-  v26.0.0-rc.3, in the default shape, the `pelican` row fails, the
-  download failing by something other than a shed.
-- `timeout-header`: a client says with `X-Pelican-Timeout` how long it
-  will wait, and a V2 cache waits for a cold object's headers that long
-  less a second, or half of it if under a second, and then answers 504,
-  while the fetch goes on (`serveObject` in
-  `local_cache/persistent_cache_api.go`). At each V2 cache: `short`, a
-  cold read of a 2 MiB object with `20ms` must get 504 within 3 seconds;
-  `queued`, 2 seconds later, while that fetch holds the origin's slot, a
-  cold read of another with `2s`, which must wait behind it, must get
-  504 within 3 seconds (if the cache sheds it instead, or serves it at
-  once, the row is inconclusive); and then the cache must come to hold
-  each object whose read got its 504, as `only-if-cached` shows, and
-  serve it (a read refused, or shed, began no fetch to wait for).
-  `held`: an object the cache holds, with `5s`, must come back.
-  `malformed`: a cold read with `soon`, no duration, must come back, the
-  value ignored.
-- `streaming`: at each V2 cache, a cold read of a 2 MiB object, which
-  takes about 7 seconds to come: its first 4 KiB must come within 5
-  seconds, and in less than half the time of the whole, which must be
-  the object. A cache that sent nothing until it held the whole object
-  would send its first bytes with its last. A whole read in under about
-  3.5 seconds shows nothing, since the origins were not slow, and
-  leaves the row inconclusive.
-- `slow-transfer`: the clients give up on a transfer that stays slower
-  than `Client.MinimumDownloadSpeed` for `Client.SlowTransferWindow`,
-  once `Client.SlowTransferRampupTime` has passed, with error 6002
-  (`Transfer.SlowTransfer`; `downloadHTTP` in `client/handle_http.go`).
-  With `PELICAN_CLIENT_MINIMUMDOWNLOADSPEED=1048576`,
-  `PELICAN_CLIENT_SLOWTRANSFERRAMPUPTIME=2s`, and
-  `PELICAN_CLIENT_SLOWTRANSFERWINDOW=5s`, four times the origins' rate,
-  a 4 MiB object, which would take about 15 seconds: `direct`, `pelican object get --direct` must fail with 6002, exit 11, and leave nothing;
-  `plugin-direct`, `stash_plugin` with `?directread` likewise, its ad
-  saying `TransferSuccess = false`, `TransferRetryable = true`, and an
-  error of `ErrorType = "Transfer"` whose `PelicanErrorCode` is 6002.
-  Both skip where the origins take no direct clients. `default`: with
-  the default thresholds (100 KiB a second, after 100 seconds, for 30),
-  each client must get another such object, direct, or where the
-  origins take no direct clients, through the first V2 cache. `cache`:
-  `pelican object get --cache` through each V2 cache, cold, with the
-  thresholds, must fail as `direct` does.
+- `range-ahead`: At each V2 cache, a cold read of a 4 MiB object (about 15
+  seconds), and 2 seconds in, a read of its last 129 KiB. The range must
+  come within 5 seconds, by a fetch of the cache's own, as 206 with exactly
+  its bytes. The whole read, and a warm read, must return the object.
+
+- `shed-429`: At each V2 cache, 30 cold reads of 1 MiB objects at once, then
+  a read of a missing object. The cache must shed some with 429,
+  `Retry-After: 2`, and a JSON `error` of `origin_unresponsive`,
+  `origin_slow`, `cache_overloaded`, or `too_many_requests`, and serve every
+  other read whole. The missing object must get 404.
+
+- `client-throttled`: At each V2 cache, with the origin's slot and queue
+  place taken, `pelican object get --cache` (`pelican`) and stash_plugin
+  with `Client.PreferredCaches` (`plugin`) each download a cold object. Each
+  must fail as shed, leaving nothing:
+
+  - with error 6008, 6009, or 6010 (Pelican's `docs/error_codes.yaml`);
+  - with its `clientExitCode`: 9 for `pelican`, 11 (retryable) for the
+    plugin;
+  - for the plugin, with an ad saying `TransferRetryable = true`, whose
+    error's `DeveloperData` has `RetryAfterSeconds = 2` and the 429's reason
+    as `ThrottleReason`.
+
+  Once the cache is free, a retry must get the object.
+
+- `timeout-header`: Given `X-Pelican-Timeout`, a V2 cache must wait for a
+  cold object's headers that long less a second (or half, if under a
+  second), then answer 504 and go on fetching. At each V2 cache:
+
+  - `short`: a cold read with `20ms`: 504 within 3 seconds;
+  - `queued`: with that fetch holding the origin's slot, a cold read with
+    `2s`: 504 within 3 seconds;
+  - `held`: a read with `5s` of a held object: served;
+  - `malformed`: a cold read with `soon`: served.
+
+  The cache must then come to hold `short`'s and `queued`'s objects.
+
+- `streaming`: At each V2 cache, a cold read of a 2 MiB object must bring
+  its first 4 KiB within 5 seconds, and in under half the time of the whole.
+
+- `slow-transfer`: The clients must give up with error 6002 on a transfer
+  slower than `Client.MinimumDownloadSpeed` for `Client.SlowTransferWindow`,
+  after `Client.SlowTransferRampupTime`. With these at 1 MiB/s, 5s, and 2s,
+  a 4 MiB read:
+
+  - `direct`: `pelican object get --direct` must fail with 6002, exit 9, and
+    leave nothing;
+  - `plugin-direct`: stash_plugin with `?directread` likewise, but exit 11,
+    its ad saying `TransferSuccess = false` and `TransferRetryable = true`,
+    with a `PelicanErrorCode` of 6002;
+  - `cache`: through each V2 cache, cold, as `direct`;
+  - `default`: with the default thresholds, each client must get such an
+    object, direct where origins take direct clients.
+
+  `direct` and `plugin-direct` skip where origins take no direct clients.

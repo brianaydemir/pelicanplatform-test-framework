@@ -118,14 +118,14 @@ SCENARIOS = {
     ),
     "director-decision": "the plugin records the director's decision when asked",
     "skipstat-failover": (
-        "a direct read with ?skipstat of an object one origin alone holds comes back" " (several origins)"
+        "a direct read with ?skipstat of an object one origin alone holds comes back (several origins)"
     ),
     "multi-source": (
         "`get` and `put` with several sources: a directory, a collection, or refused"
         " (G8-G10, P8-P10); and ?recursive, by the client and the plugin"
     ),
     "preferred-cache-down": (
-        "a preferred cache that is down: with `+`, a director's cache serves; without, a" " contact error"
+        "a preferred cache that is down: with `+`, a director's cache serves; without, a contact error"
     ),
     "async-job": (
         "`get --async` and `copy --async` through the client agent: the bytes, `job status`"
@@ -625,9 +625,7 @@ def endpoint_host(attempt: Mapping[str, Any]) -> str:
 def attempt_failed(attempt: Mapping[str, Any]) -> bool:
     """Return whether the stats say an attempt failed.
 
-    A success's `error` is null; a failure's, the error, which the client
-    writes as `{}`, since none of its fields is exported
-    (TransferAttemptError in client/handle_http.go).
+    A success's `error` is null, and a failure's is not.
     """
     return attempt.get("error") is not None
 
@@ -1012,7 +1010,7 @@ def spoil(test: Test, cache: common.Cache, name: str, block: int) -> str | None:
         bytes=str(blocks.TAG),
     )
     if answer.status == 404:
-        return f"{cache.svc} has no chaos API (Cache.EnableChaosAPI; Pelican v7.27.0 on)"
+        return f"{cache.svc} has no chaos API (Cache.EnableChaosAPI)"
     if answer.status != 200:
         return f"{cache.svc}'s chaos API got {answer.describe()}"
     return None
@@ -1031,9 +1029,7 @@ def failover(test: Test) -> list[Row]:
     to if the ETag changed (downloadObject in client/handle_http.go).
     stash_plugin, with the same preferred caches, must record both
     attempts. With several origins, the director asks them which holds
-    the object (Director.AssumePresenceAtSingleOrigin spares a lone
-    origin the question), and none does once it is removed, so it
-    answers 404, and the scenario skips.
+    the object, and none does once it is removed, so the scenario skips.
     """
     feds = test.fed.federated_caches
     v2 = [c for c in feds if c.kind == "v2"]
@@ -1053,7 +1049,7 @@ def failover(test: Test) -> list[Row]:
             (
                 "",
                 SKIP,
-                "several origins, which the director asks for the object, and which no longer" + " hold it",
+                "several origins, which the director asks for the object, and which no longer hold it",
             )
         ]
     first_cache = v2[0]
@@ -1173,8 +1169,8 @@ def plugin_failover_problems(
 def head_and_get_etag(test: Test, svc: str, url: str, name: str) -> tuple[str, list[str]]:
     """Return the ETag that svc, at url, reports of name, and what is amiss.
 
-    A server may send no ETag at all, as XRootD's HTTP server does; one
-    that it sends by HEAD or by GET, it must send by both, the same.
+    A server may send no ETag at all (RFC 9110, section 8.8.3); one that
+    it sends by HEAD or by GET, it must send by both, the same.
 
     Returns:
         The GET's ETag, or "" if it sent none; and the problems.
@@ -1204,12 +1200,11 @@ def etag_agreement(test: Test) -> tuple[str, str]:
     An object put at every origin: each origin that takes direct
     clients, and each federated cache, must report one ETag for it by
     HEAD and by GET, or none by either (head_and_get_etag()), and a
-    cache's must be one of the origins', since it relays the origin's
-    (local_cache/persistent_cache_api.go). Origins that share a store
-    must agree; those with stores of their own hold copies of their own,
-    and may not, which the note says, as it names the servers that send
-    none, at which a client cannot tell that an object changed between
-    attempts.
+    cache's must be one of the origins'. Origins that share a store must
+    agree. Those with stores of their own hold copies of their own,
+    whose ETags may differ; the note says so, and names the servers that
+    send none, at which a client cannot tell that an object changed
+    between attempts.
     """
     name = "etag"
     test.put(name, os.urandom(OBJECT_SIZE))
@@ -1246,7 +1241,10 @@ def etag_agreement(test: Test) -> tuple[str, str]:
     distinct = len(set(origin_etags.values()))
     note = f"{len(origin_etags)} origin(s), {len(test.fed.federated_caches)} cache(s)"
     if distinct > 1:
-        note += f"; the origins' copies have {distinct} ETags, so a cache filled from one cannot resume at a cache filled from another"
+        note += (
+            f"; the origins' copies have {distinct} ETags, so a client cannot resume at a cache"
+            " filled from another origin"
+        )
     if silent:
         note += (
             f"; {', '.join(silent)} sent no ETag, so a client resuming there cannot tell a changed object"
@@ -1261,8 +1259,8 @@ def etag_agreement(test: Test) -> tuple[str, str]:
 def discovery_get(test: Test, name: str, url: str, env: Mapping[str, str]) -> Fetched:
     """Run `pelican object get` of url, with env, into a new directory.
 
-    Into a directory, since a refusal of a get into a file path shows
-    only as a probe no server answered (see testlib/transfers.py).
+    Into a directory, as the transfers suite gets, so that a refusal
+    reads as testlib/transfers.py expects.
     """
     return test.pelican(name, ["object", "get", url, "."], env)
 
@@ -1339,10 +1337,6 @@ def token_discovery(test: Test) -> list[Row]:
     `prefix-underscore`), which selects `<name>.use` in _CONDOR_CREDS before
     scitokens.use (GetTokenName in pelican_url/parse.go). Each runs by
     `pelican object get`, and again by stash_plugin, as `plugin-<case>`.
-    Neither client honors the prefix on v26.0.0-rc.3: each hands the
-    transfer engine the URL with its scheme normalized (GetRawUrl), so
-    the token generator finds no name and opens scitokens.use first; and
-    `_` in a scheme never parses (docs/tests/client-contracts.md).
     """
     name = "discovery"
     data = os.urandom(OBJECT_SIZE)
@@ -1424,10 +1418,7 @@ def url_forms(test: Test) -> list[Row]:
     takes writes, `pelican object put` to an `osdf:///` URL, with `-f`,
     must land the file at an origin (`put-osdf`). And stash_plugin,
     which HTCondor hands `osdf:///` URLs, with the federation in its
-    environment, must get the object (`plugin-osdf`). Pelican's client
-    applies the federation it is given only to a schemeless URL
-    (handleSchemelessIfNeeded in client/main.go), so the osdf and stash
-    rows go to the OSDF, and fail (docs/tests/client-contracts.md).
+    environment, must get the object (`plugin-osdf`).
     """
     name = "forms"
     data = os.urandom(OBJECT_SIZE)

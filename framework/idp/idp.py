@@ -3,10 +3,10 @@
 It stands in for an identity provider such as CILogon under
 `-p auth-oidc-local`: the servers send their users here to log in
 (OIDC.Issuer), and the registry asks it for a user's identity by the
-device flow (`pelican namespace register --with-identity`). Python's
-standard library alone: the servers read its ID tokens without checking
-their signatures, so it signs them itself, RS256 with a key it makes as
-it starts, and serves the public key as its JWKS.
+device flow (`pelican namespace register --with-identity`). It uses
+Python's standard library alone, so it signs its ID tokens itself:
+RS256, with a key it makes as it starts, whose public key it serves as
+its JWKS.
 
 Users come from a JSON file (IDP_USERS), by username:
 
@@ -17,8 +17,8 @@ Users come from a JSON file (IDP_USERS), by username:
 Every field but the password is optional: preferred_username is the
 username, sub is <issuer>/users/<username>, groups are none, and claims
 are added to what userinfo and the ID token say. The groups come
-whatever the scope, as CILogon's isMemberOf does, since Pelican asks a
-provider it does not know for `openid email profile` alone. One client
+whatever the scope, as CILogon's isMemberOf does, since Pelican asks
+for `openid email profile` alone by default (OIDC.Scopes). One client
 is registered, whose ID and secret are in IDP_CLIENT_ID_FILE and
 IDP_CLIENT_SECRET_FILE (the files that Pelican's servers read), and
 whose redirect URIs are any server's OAuth callback (REDIRECT_URI).
@@ -264,10 +264,9 @@ class Users:
 
         Which claims depends on scope, the scopes granted: profile claims
         with `profile`, and email with `email`; sub, iss, and groups
-        always, since Pelican asks a provider it does not know for
-        `openid email profile` alone (OIDC.Scopes), and reads the groups
-        from whatever claim Issuer.OIDCGroupClaim names, as CILogon sends
-        isMemberOf unasked.
+        always, since Pelican asks for `openid email profile` alone by
+        default (OIDC.Scopes), and reads the groups from whatever claim
+        Issuer.OIDCGroupClaim names, as CILogon sends isMemberOf unasked.
         """
         user = self.load().get(username, {})
         sub = str(user.get("sub") or f"{ISSUER}/users/{username}")

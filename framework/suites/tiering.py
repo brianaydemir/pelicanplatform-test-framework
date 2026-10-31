@@ -6,14 +6,12 @@ framework/var/data/tier/<cache>/, and from then on serves it from
 there: by redirecting the client to a pre-signed URL, or, for a cache
 that proxies (cache-1), itself.
 
-Objects go under /protected-a/data/tiering/<run>/, each cache's its
-own, so that each is cold where it is read. A tiered object is found in
-the bucket by its size and SHA-256, since the cache names it by a hash.
-Only `tampered` touches the bucket, as corruption or a substitution
-there would; nothing touches the caches' stores. Pelican's main has
-tiering, but no release yet; a cache that neither reports tiering
-metrics nor has claimed its prefix in the bucket is taken not to tier,
-and is left out, and where no cache tiers, every scenario skips.
+Every cache that the shape sets to tier is asked. Objects go under
+/protected-a/data/tiering/<run>/, each cache's its own, so that each is
+cold where it is read. A tiered object is found in the bucket by its
+size and SHA-256, since the cache names it by a hash. Only `tampered`
+touches the bucket, as corruption or a substitution there would;
+nothing touches the caches' stores.
 
   tiered       a cold read of an object over the threshold: it lands in
                the bucket, and the cache counts a successful upload
@@ -54,7 +52,7 @@ from urllib.parse import urlsplit
 
 from testlib import blocks, common, digests, director, metrics, stores, transfers, web
 from testlib.common import die, first
-from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
+from testlib.report import FAIL, INCONCLUSIVE, PASS
 from testlib.session import Session, last_line
 
 SCENARIOS = {
@@ -117,16 +115,6 @@ def counted(cache: common.Cache, name: str, **labels: str) -> float:
     The labels are keywords, e.g. result="success".
     """
     return snapshot(cache).value(name, **labels)
-
-
-def tiers(cache: common.Cache, target: common.TierTarget) -> bool:
-    """Return whether the cache tiers at all.
-
-    It does if it reports tiering metrics, or has claimed its prefix in
-    the bucket.
-    """
-    reported = snapshot(cache).has_prefix("pelican_cache_tiering_")
-    return reported or os.path.exists(f"{target.directory}/.pelican-cache-id")
 
 
 class NotTiered(Exception):
@@ -709,13 +697,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         directory = f"{origin.store_of('protected-a')}/data/tiering"
         if not origin.pstore and not os.path.isdir(directory):
             die(f"framework/var/{directory} is missing; run ./fed.sh init")
-    targets = [(c, fed.tiering[c.svc]) for c in fed.caches if c.svc in fed.tiering]
-    caches = [cache for cache, target in targets if tiers(cache, target)]
-    if not caches:
-        why = "no cache's image tiers (Pelican's main only, not a release yet)"
-        for name in selected:
-            results.add(name, SKIP, why)
-        return
+    caches = [c for c in fed.caches if c.svc in fed.tiering]
     tokens = session.setup_tokens()
     test = Test(session, caches)
     print(

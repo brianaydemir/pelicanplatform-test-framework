@@ -1,63 +1,69 @@
 """Authorization at each server directly, in every namespace.
 
-GET, HEAD, PUT, and DELETE go to every origin, and GET and HEAD to every
-cache, once for each credential in the table in
-framework/testlib/credentials.py. A request that should be allowed must
-succeed with the right bytes (a HEAD, with the object's length), or remove
-the object. Any other must get 401 or 403 and change nothing. First, the
-`keys` check fetches each namespace issuer's discovery document and JWKS,
-and the origins' server-wide JWKS, and checks which test keys each
-publishes. Last, the `narrow` check presents a token for the test object
-alone in /protected-a, at every server, for it and then for its sibling; the
-`create-only` and `modify-only` checks present tokens of one storage scope
-each at every origin, which may create an object, replace one, and delete
-one, as the WLCG token profile says; the `traversal` check sends paths that
-climb out of their namespace with `..`, which must reach neither another
-namespace's test object nor a file beyond an export's storage; the `hints`
-check asks each V2 cache for the test object with no token, whose refusal
-must say which namespace it is and name its issuer, as the director's
-redirect does; the `audience` check presents the origins a token like
-`server`'s but for another audience, which they must refuse; and the
-`query-token` check presents the `server` and `unknown` tokens in the authz
-query parameter instead of the header, as XRootD caches forward them, which
-every server must take as it takes the header.
+Each credential of framework/testlib/credentials.py is presented at
+every server, and credentials.expected() says what it should get. Other
+checks present tokens that `pelican token create` cannot make
+(testlib/jwt.py), each wrong in one way. Each namespace has a test
+object of its own bytes (but on a pstore origin, /public reads
+/protected-a's), so a server that answers from another namespace's
+storage is caught. Beyond the credentials, the checks but `keys`,
+`traversal`, `hints`, `web-token-strict`, and `nested-protected` work in
+/protected-a, and skip where it isn't exported.
 
-Other checks present tokens that `pelican token create` cannot make
-(testlib/jwt.py), each wrong in one way, in /protected-a: times ahead
-of the clock or past it (`time-claims`), and a token presented before
-and after it expires (`expired-in-use`, which runs in a thread of its
-own beside the rest, since it takes three minutes); claims missing or
-malformed, and signatures by none or HS256 (`malformed-claims`); an
-audience of one origin (`audience-specific`); and to a server's own web
-API, which allows no clock skew (`web-token-strict`). `narrow-climb`
-climbs out of a narrow token's scope with `..`; `nested-protected` asks
-for a protected prefix inside a public one (/public/secret, under
-`-p topo-multi-owner`); `token-lists` presents several tokens at once,
-and in the query, to the native origins; and `standalone-refusals`
-checks how a native origin refuses, and what it tells a client,
-standalone and federated.
+  <credential>      GET, HEAD, PUT, and DELETE at every origin, and GET
+                    and HEAD at every cache, in every namespace: an
+                    allowed request returns, stores, or removes the
+                    object; a refused one gets 401 or 403, and changes
+                    nothing
+  keys              each issuer's discovery document and JWKS, and the
+                    server-wide JWKS, publish the right test keys
+  narrow            a token for the test object alone may GET it, but not
+                    its sibling
+  create-only       storage.create may create an object, but not replace
+                    or delete one
+  modify-only       storage.modify may create, replace, and delete
+  traversal         `..` in a path, however spelled, and a symbolic link
+                    in a store reach neither another namespace's test
+                    object nor beyond an export's storage
+  hints             a V2 cache's refusal of a request with no token names
+                    the namespace and its issuer
+  audience          every origin refuses a token for another audience
+  query-token       a token in the authz query parameter, bare or after
+                    `Bearer `, counts as one in the header
+  token-lists       a native origin tries each token of a request, in its
+                    header and query, up to 10
+  audience-specific a token for the first origin's audience is taken
+                    there alone; one that also lists `any`, everywhere
+  time-claims       nbf or iat more than 60s ahead is refused, less is
+                    not; an exp past is refused
+  malformed-claims  no exp, kid, or aud, an unknown kid, or a signature by
+                    none or HS256 is refused
+  standalone-refusals
+                    a native origin refuses with 401, or 403 and token
+                    hints standalone, and with 401 and no hints federated
+  web-token-strict  a server's web API takes its own tokens with no clock
+                    skew
+  expired-in-use    a token in use as it expires is taken before, and
+                    refused from 70s after
+  narrow-climb      a token for one collection reaches nothing beside it
+                    with `..`, however spelled
+  nested-protected  a protected prefix inside a public one
+                    (/public/secret, `-p topo-multi-owner`) is served to
+                    no one without a token
 
-Each namespace has storage of its own, and a test object of its own
-bytes (but on a pstore origin, /public reads /protected-a's), so a
-server that answers from another namespace's is caught.
+`expired-in-use` takes three minutes, so it runs in a thread of its own
+beside the rest, and records its rows last. Responses go to
+framework/var/data/auth-test/, and a row per request to the results (per
+server and kind, for `expired-in-use`, `traversal`, and `narrow-climb`).
 
-What each namespace should allow comes from credentials.expected(): a read
-of /public is allowed whatever the token, a write to a namespace without
-Writes (/public, unless `-p origin-public-writes` gives it writes) is
-refused whatever the token, and so is every request straight to an origin in
-a namespace without DirectReads (`-p origin-no-direct`). The test objects
-are put in place with stores.seed(), so the last needs no writes. Responses
-go to framework/var/data/auth-test/, and a row per request to the results
-(per server, for `expired-in-use` and each kind of climb).
-
-Every token the checks present is of the session's profile, and must get
-what its twin of the other profile gets: SciTokens' read: and write:
-scopes are storage.read's and storage.modify's. SciTokens has no scope
-of create alone, so `create-only` runs in the WLCG pass alone, and so do
-the checks that present no storage token: `keys`, `none`, `hints`, and
-`web-token-strict`, whose tokens are a server's own. The test objects are
-put in place, and the stores read, with WLCG tokens either way. The
-SciTokens pass keeps its responses in data/auth-test-scitokens/.
+Every token presented is of the session's profile, and must fare as its
+twin of the other profile does: SciTokens' read: and write: stand for
+storage.read and storage.modify. `create-only`, which SciTokens cannot
+express, runs in the WLCG pass alone, as do the checks that present no
+storage token: `keys`, `none`, `hints`, and `web-token-strict`. The test
+objects are put in place, and the stores read, with WLCG tokens either
+way. The SciTokens pass keeps its responses in
+data/auth-test-scitokens/.
 """
 
 import json
@@ -87,7 +93,7 @@ EXPIRED_IN_USE = "expired-in-use"
 
 SCENARIOS = {
     KEYS: "each issuer's discovery document and JWKS, and the server-wide JWKS",
-    EXPIRED_IN_USE: ("a token in use as it expires: taken before, refused from 70s past its expiry on"),
+    EXPIRED_IN_USE: "a token in use as it expires: taken before, refused from 70s past its expiry on",
 }
 SCENARIOS.update(
     {
@@ -103,16 +109,14 @@ SCENARIOS[NARROW] = "a token for the test object alone: it may GET the object, n
 SCENARIOS.update(
     {
         "create-only": "storage.create alone: it may create an object, not replace or delete one",
-        "modify-only": (
-            "storage.modify alone (or write, of SciTokens): it may create, replace, and delete" " an object"
-        ),
+        "modify-only": "storage.modify alone (or SciTokens' write): it may create, replace, and delete an object",
     }
 )
 
 # The checks of one storage scope each: the `pelican token create` flag
 # that grants it, and whether it may replace or delete an object (the WLCG
-# token profile; storage.modify implies storage.create). Of SciTokens, the
-# flag grants write, which may do all three.
+# token profile; storage.modify implies storage.create). In SciTokens,
+# the flag grants write, which may do all three.
 SCOPES = {"create-only": ("write", False), "modify-only": ("modify", True)}
 
 TRAVERSAL = "traversal"
@@ -121,7 +125,7 @@ SCENARIOS[TRAVERSAL] = (
     " namespace, nor beyond an export's storage"
 )
 
-# Spellings of a step up a path: each server must keep a request within
+# Spellings of a step up a path. Each server must keep a request within
 # the namespace that its path begins with, however it is spelled.
 STEPS = ("..", "%2e%2e", "%2E%2E", ".%2e", "%252e%252e")
 
@@ -166,13 +170,11 @@ SCENARIOS[NESTED] = (
 )
 
 # The checks that present no storage token, or none of a profile but
-# WLCG's: there is no SciTokens scope of create alone (see
-# suites/__init__.py).
+# WLCG's: SciTokens has no scope of create alone (see suites/__init__.py).
 ONE_PROFILE = (KEYS, "none", HINTS, WEB_TOKEN_STRICT, "create-only")
 
 # The checks, beyond the credentials, that ask for /protected-a's test
-# object or write beside it, so that a shape that doesn't export it skips
-# them.
+# object or write beside it, and so skip where it isn't exported.
 PROTECTED_A_CHECKS = (
     EXPIRED_IN_USE,
     NARROW,
@@ -346,10 +348,10 @@ class Test:
         self.row(target, namespace, "put", cred.name, answer, "; ".join(problems))
 
     def check_delete(self, target: str, origin: common.Origin, namespace: str, cred: Credential) -> None:
-        """DELETE an object uploaded to origin for the purpose.
+        """DELETE an object put at origin for the purpose.
 
-        If the DELETE should succeed and the origin's storage cannot
-        delete, skip the row instead.
+        Skip the row if the DELETE should succeed but the origin's storage
+        cannot delete.
         """
         cannot_delete = stores.cannot(self.session.fed, "delete")
         if cannot_delete and credentials.expected(cred, self.caps(namespace), "delete", True) == ALLOW:
@@ -440,10 +442,10 @@ def check_keys(fed: common.Federation, report: Report, out: str) -> None:
     """Check the keys that the origins publish, keeping responses in out.
 
     First the server-wide JWKS, then each exported protected namespace's
-    discovery document and JWKS. /public has no issuer, unless it takes
-    writes (`-p origin-public-writes`): then its JWKS must hold the
-    server-wide keys, and neither protected namespace's own, which would
-    otherwise write it.
+    discovery document and JWKS. Where /public has an issuer
+    (`-p origin-public-writes`), its JWKS must hold the server-wide keys,
+    and neither protected namespace's own, whose tokens could otherwise
+    write it.
     """
     if not credentials.namespace_issuers(fed):
         why = (
@@ -521,7 +523,7 @@ def targets(fed: common.Federation) -> list[tuple[str, str, bool]]:
     """Return every origin and cache.
 
     Returns:
-        Each one's name in the rows, its data URL, and whether it is an
+        For each, its name in the rows, its data URL, and whether it is an
         origin.
     """
     return [(label(o.svc, "origin"), o.url, True) for o in fed.origins] + [
@@ -573,8 +575,8 @@ def check_scope(test: Test, fed: common.Federation, name: str) -> None:
 
     name is one of SCOPES. With the token, PUT a new object, PUT over an
     object, and DELETE one, each object new for the purpose (see
-    scope_write()). In SciTokens' profile, `modify-only`'s token is one
-    of write alone, which grants as much.
+    scope_write()). In SciTokens, `modify-only`'s token is of write
+    alone, which grants as much.
     """
     flag, replaces = SCOPES[name]
     token = credentials.mint_server(
@@ -683,8 +685,8 @@ def scope_problem(
 def climbing(start: str, levels: int, rest: str) -> list[str]:
     """Return paths that climb out of namespace start, then go down rest.
 
-    They step up levels times, one in each spelling of STEPS, and one
-    more in steps that end in an encoded slash.
+    Each steps up levels times: one path for each spelling of STEPS, and
+    one in steps that end in an encoded slash.
     """
     paths = [f"/{start}/" + "/".join([step] * levels) + f"/{rest}" for step in STEPS]
     paths.append(f"/{start}/" + "..%2f" * levels + rest)
@@ -752,9 +754,8 @@ def symlink_climbs(
     protected namespace's storage, under data/auth/: one to sentinel_file,
     beside the exports' storage, by a relative path, and one to each
     origin's signing key, by the absolute path its container sees. A
-    backend that follows links would serve what they point to (Pelican's
-    posixv2 refuses one that leaves the export; XRootD's posix follows
-    it).
+    backend that follows links out of its export would serve what they
+    point to.
 
     Returns:
         The climbs, each with the namespace's `server` token of the
@@ -787,8 +788,8 @@ def check_traversal(test: Test, fed: common.Federation) -> None:
     """Send each climb of the traversal check to every origin and cache.
 
     The climbs are traversal_climbs()'s and symlink_climbs()'s, each sent
-    as is (http.client normalizes nothing). Each must not come back with
-    the bytes it climbs toward. A row per server and kind of climb.
+    as is (http.client normalizes nothing). None may come back with the
+    bytes it climbs toward. A row per server and kind of climb.
     """
     sentinel_file = f"traversal-{test.run}"
     written: dict[str, bytes] = {}
@@ -833,13 +834,12 @@ def check_hints(test: Test, fed: common.Federation) -> None:
     """GET the test object at each V2 cache in each protected namespace.
 
     Send no token. The refusal must carry what the director's redirect
-    does: X-Pelican-Namespace, naming the namespace and that it takes a
-    token, and X-Pelican-Authorization, naming its issuer (see
-    director.hints()). A client that named the cache itself
-    (Client.PreferredCaches) has heard neither from a director, and has
-    nowhere else to learn where to get a token (Pelican's
-    local_cache/persistent_cache_api.go, on its main). An XRootD cache
-    sends none, and is passed over.
+    does (Pelican's docs/pelican-http-headers.md; director.hints()):
+    X-Pelican-Namespace, naming the namespace and that it takes a token,
+    and X-Pelican-Authorization, naming its issuer. A client that named
+    the cache itself (Client.PreferredCaches) has heard neither from a
+    director, and has nowhere else to learn where to get a token. XRootD
+    caches are skipped.
     """
     namespaces = [ns for ns in PROTECTED if ns in fed.exports]
     why = ""
@@ -878,12 +878,10 @@ def check_hints(test: Test, fed: common.Federation) -> None:
 
 # --------------------------------------------------------------------------
 # The audience check: a resource server must check a token's audience
-# against its own (the WLCG token profile). Pelican's origins accept their
-# own URL and the profiles' wildcards, which every other token here names
-# (origin_serve/authz.go, and the audience in the scitokens configuration
-# of an XRootD origin). Only the origins are asked: a cache serves tokens
-# minted for any origin, so what it should make of an audience is not
-# settled.
+# against its own (the WLCG token profile). An origin takes its own
+# audience and the profiles' "any", which every other token here names.
+# Only the origins are asked: a cache serves tokens minted for any
+# origin, so what it should make of an audience is not settled.
 
 
 def check_audience(test: Test, fed: common.Federation) -> None:
@@ -891,8 +889,8 @@ def check_audience(test: Test, fed: common.Federation) -> None:
 
     Each request is in /protected-a, with a token like `server`'s but for
     OTHER_AUDIENCE: each must be refused, and the PUT store nothing.
-    Where the origins take no direct clients, they refuse everything
-    direct anyway, so the rows are skipped.
+    Skip where the origins take no direct clients, since they refuse
+    everything direct anyway.
     """
     caps = fed.exports["protected-a"]
     token = credentials.mint_server(
@@ -925,13 +923,11 @@ def check_audience(test: Test, fed: common.Federation) -> None:
 
 # --------------------------------------------------------------------------
 # The query-token check: XRootD caches forward a client's token to an
-# origin as ?authz=Bearer%20<token> (and older ones bare), and a director's
-# redirect carries it the same way, so every server must take a token in
-# the authz query parameter, with or without the `Bearer ` prefix, as it
-# takes one in the Authorization header (Pelican's origin_serve/handlers.go
-# and local_cache/persistent_cache_api.go; XRootD's XrdSciTokensAccess).
-# The space is sent as %20, as they send it: XRootD strips a literal
-# `Bearer%20`, so a form-encoded `Bearer+` would hide the token from it.
+# origin in the authz query parameter, and a director's redirect carries
+# it there too, so every server must take a token in authz, bare or after
+# `Bearer `, as it takes one in the Authorization header. The space is
+# sent as %20, as they send it: XRootD strips a literal `Bearer%20`, so a
+# form-encoded `Bearer+` would hide the token from it.
 
 QUERY_FORMS = {"bare": "{}", "bearer": "Bearer {}"}
 
@@ -968,7 +964,7 @@ def check_query_token(test: Test, fed: common.Federation) -> None:
 
 # --------------------------------------------------------------------------
 # Tokens that `pelican token create` cannot make (testlib/jwt.py), and
-# what a server should make of a read.
+# what a server should make of a read with one.
 
 
 def raw_token(
@@ -982,9 +978,8 @@ def raw_token(
     """Return a token like `server`'s for /protected-a, but altered.
 
     Its claims are as credentials.server_claims() has them in the
-    session's profile, minted now.
-    It is signed with the origins' key, as its header's alg says: HS256
-    with secret, and `none` not at all.
+    session's profile, minted now. It is signed with the origins' key, as
+    its header's alg says: HS256 with secret, and `none` not at all.
 
     Args:
         test: The test, under whose header the token is signed unless
@@ -1040,19 +1035,17 @@ def read_either(answer: web.Response, data: bytes) -> tuple[str, str]:
 
 
 # --------------------------------------------------------------------------
-# The expired-in-use check: Pelican's native origin and V2 cache remember
-# what a token authorizes for 5 minutes, check its expiry only when they
-# first see it, and keep it another 5 minutes each time it is used
-# (origin_serve/authz.go and local_cache/cache_authz.go: a ttlcache, whose
-# Get extends an entry's life), so a token in use may never expire there.
+# The expired-in-use check: a server that has taken a token must refuse it
+# once it expires, however recently it was used, even where the server
+# remembers what the token authorizes.
 
 # How long the check's token lasts, and when, in seconds after it is
 # minted, each server is asked with it: every 30 seconds for three
 # minutes.
 IN_USE_LIFETIME = 30
 IN_USE_TIMES = tuple(range(0, 181, 30))
-# How long past its expiry a server may still take a token: native servers
-# allow 60 seconds of clock skew.
+# How long past its expiry a server may still take a token: 60 seconds of
+# clock skew, and a margin.
 STALE_AFTER = 70
 
 
@@ -1149,9 +1142,8 @@ class InUse:
 
 
 # --------------------------------------------------------------------------
-# The time-claims check: native servers allow 60 seconds of clock skew on
-# each of a token's times (ClockSkewLeeway in Pelican's
-# token/token_verify.go, as the WLCG token profile recommends), and no
+# The time-claims check: a server should allow 60 seconds of clock skew on
+# each of a token's times, as the WLCG token profile recommends, and no
 # more.
 
 # Each token: its row's name, its times (see raw_token()), and whether a
@@ -1184,12 +1176,9 @@ def check_time_claims(test: Test, fed: common.Federation) -> None:
 
 # --------------------------------------------------------------------------
 # The malformed-claims check. The WLCG token profile requires `exp` and
-# `aud`, as SciTokens 2.0 does. Pelican's native servers verify a token
-# with jwx (token/token_verify.go), which checks `exp` only if a token has
-# one, and refuses a token without a `kid`, or of one their keys lack, and
-# checks its signature by the alg of the key, not the token; a native
-# origin checks `aud` only if a token has one (origin_serve/authz.go), and
-# a V2 cache not at all (local_cache/cache_authz.go).
+# `aud`, as SciTokens 2.0 does. A server must also refuse a token with no
+# `kid`, or one that no key has, and must check a signature by its key's
+# alg, not the token's.
 
 
 # Each profile's version that it does not define: its row's name, and the
@@ -1213,7 +1202,7 @@ def malformed_tokens(test: Test, fed: common.Federation) -> list[tuple[str, str,
     head = test.header
     no_kid = {k: v for k, v in head.items() if k != "kid"}
     # The origins' public key, as a JWK: what an attacker would key HS256
-    # with, hoping that a server verifies with its key's bytes whatever
+    # with, hoping that a server verifies with the key's bytes whatever
     # the token's alg.
     secret = json.dumps(
         {**jwt.public_jwk(fed.origin_key), "kid": head.get("kid")}, separators=(",", ":")
@@ -1255,10 +1244,8 @@ def check_malformed(test: Test, fed: common.Federation) -> None:
 
 # --------------------------------------------------------------------------
 # The audience-specific check: an origin takes a token for its own
-# audience, Origin.TokenAudience, whose default is Origin.Url, and the
-# profiles' wildcards (origin_serve/authz.go, and the audience in an XRootD
-# origin's scitokens configuration); and a token is for every audience it
-# lists.
+# audience, Origin.TokenAudience, whose default is Origin.Url; and a token
+# is for every audience it lists.
 
 
 def audience_of(origin: common.Origin) -> str:
@@ -1277,10 +1264,7 @@ def check_audience_specific(test: Test, fed: common.Federation) -> None:
     In /protected-a, the tokens are like `server`'s but for the first
     origin's audience alone, which only it may take; and for the
     profile's "any" audience and OTHER_AUDIENCE, which every origin must
-    take. Only
-    the origins are asked, as in check_audience(); and where they take no
-    direct clients, they refuse everything direct anyway, so the rows are
-    skipped.
+    take. Only the origins are asked, and skipped as in check_audience().
     """
     caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
@@ -1318,12 +1302,12 @@ def check_audience_specific(test: Test, fed: common.Federation) -> None:
 # (RFC 6750, section 2.3) and authz query parameters, each of which may
 # repeat; tries each in turn; and treats a request with more than
 # MAX_TOKENS as having none (extractTokens in Pelican's
-# origin_serve/handlers.go; its main caps them, v26.0.0-rc.3 does not).
-# A V2 cache and XRootD take one token, from the header or authz.
+# origin_serve/handlers.go). A V2 cache and XRootD take one token, from
+# the header or authz, and are not asked.
 
 MAX_TOKENS = 10
-# What an origin must make of a request whose tokens it treats as none: a
-# 401, which says the request had none.
+# What must become of a request whose tokens an origin treats as none: a
+# 401, as for a request with none.
 NO_TOKEN = "no-token"  # nosec B105
 
 # A way of presenting tokens: its row's name, the headers and the query
@@ -1353,8 +1337,8 @@ def token_forms(server: str, unknown: str) -> list[TokenForm]:
 def check_token_lists(test: Test, fed: common.Federation) -> None:
     """Present tokens in each of token_forms() at every native origin.
 
-    Each GETs the test object in /protected-a. An XRootD origin is passed
-    over.
+    Each GETs the test object in /protected-a. XRootD origins are
+    skipped.
     """
     caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
@@ -1431,9 +1415,9 @@ def check_standalone(test: Test, fed: common.Federation) -> None:
     and `server`'s, and for the missing one with `server`'s: the first
     must get 401; the second 403 from a standalone origin and 401 from a
     federated one; the third the object; and the last 404. Each answer's
-    hints must be as hint_problems() says. An XRootD origin is passed
-    over, and so is an origin that takes no direct clients, which refuses
-    every request alike.
+    hints must be as hint_problems() says. XRootD origins are skipped,
+    and so are origins that take no direct clients, which refuse every
+    request alike.
     """
     caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
@@ -1474,10 +1458,9 @@ def check_standalone(test: Test, fed: common.Federation) -> None:
 
 
 # --------------------------------------------------------------------------
-# The web-token-strict check: a server verifies the tokens of its own web
-# API with no clock skew, since it alone mints and checks them
-# (VerifyWithKeysetStrict in Pelican's token/token_verify.go, which
-# extractUserFromBearerToken in web_ui/authentication.go calls).
+# The web-token-strict check: a server should verify the tokens of its own
+# web API with no clock skew, since it alone mints and checks them
+# (VerifyWithKeysetStrict in Pelican's token/token_verify.go).
 
 
 def web_servers(fed: common.Federation) -> list[tuple[str, str, str]]:
@@ -1537,9 +1520,7 @@ def check_web_token_strict(test: Test, fed: common.Federation) -> None:
 
 # --------------------------------------------------------------------------
 # The narrow-climb check: a token for one collection must reach nothing
-# beside it, however a path climbs out of it. Pelican cleans a request's
-# path before it authorizes it, and so authorizes a climb as where it
-# leads (authMiddleware and hasPathPrefix in origin_serve/).
+# beside it, however a path climbs out of it.
 
 
 def climbs_from(scope: str, rest: str) -> list[str]:
@@ -1612,9 +1593,9 @@ def climb(
 ) -> None:
     """Send op (get, put, or delete) by each of climbs_from() scope.
 
-    Send it to the server at url, origin if it is one, with token, a
-    token for scope alone; and record a row. A GET climbs to the test
-    object; a PUT to a new object; and a DELETE to one put there first.
+    Send it to the server at url (origin, if it is one) with token, a
+    token for scope alone, and record a row. A GET climbs to the test
+    object; a PUT, to a new object; and a DELETE, to one put there first.
     """
     data = test.object_bytes["protected-a"]
     setup = test.setup_tokens["protected-a"]
@@ -1662,12 +1643,8 @@ def climb(
 # --------------------------------------------------------------------------
 # The nested-protected check: under `-p topo-multi-owner`, origin-2 exports
 # /public/secret, which a token protects, inside the origins' /public,
-# which anyone may read (fed_owner_exports in fed.sh). A V2 cache grants
-# the read of every public namespace on its whole path, and authorizes a
-# path by any grant that encloses it (getAcls and authorize in Pelican's
-# local_cache/cache_authz.go), so it may serve /public/secret to anyone.
-# An XRootD cache's authfile denies the inner prefix outright
-# (constructAuthEntry in xrootd/authorization.go).
+# which anyone may read (fed_owner_exports in fed.sh). No server may let
+# the public prefix's reads reach the protected one inside it.
 
 # How many times the owner tries to read the object through a cache, and
 # the seconds between tries: a cache learns of a namespace from the
@@ -1729,7 +1706,8 @@ def check_nested(test: Test, fed: common.Federation) -> None:
     rel = f"data/auth/{test.run}-nested"
     path = f"{export.prefix}/{rel}"
     data = os.urandom(65536)
-    # The owner's puts the object in place, and has each cache hold it.
+    # The owner's token puts the object in place, and has each cache hold
+    # it.
     owner_token = nested_token(test, export, "owner", owner.key, RWM, credentials.WLCG)
     # Each token presented: its row's name, and the token.
     unknown = nested_token(test, export, "unknown", "test-keys/unknown.pem", R, test.profile)
@@ -1889,7 +1867,7 @@ def put_test_objects(test: Test, fed: common.Federation, narrow: bool) -> None:
 def cache_sibling(test: Test, fed: common.Federation) -> None:
     """GET the object's sibling through each cache, with the server's token.
 
-    That way, `narrow-out` asks each cache for an object it holds.
+    Then `narrow-out` asks each cache for an object it holds.
     """
     for cache in fed.caches:
         answer = web.request(

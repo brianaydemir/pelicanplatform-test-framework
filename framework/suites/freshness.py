@@ -39,8 +39,8 @@ runs the cases that need it, and restores the origins. Only native
 origins send Origin.CacheControl, and ORIGIN_CACHE_CONTROL beats a
 configuration file, so the restarts need native origins, no
 ORIGIN_CACHE_CONTROL, a control helper, and a topology other than
-`tiny`, whose origin is the whole federation's process; otherwise their
-cases skip, and say why.
+`tiny`, whose origin is the whole federation's process; otherwise, their
+cases skip.
 
 The caches asked are the federated ones (a site-local cache's upstream
 is another cache, which sends Cache-Control of its own). XRootD caches
@@ -102,8 +102,7 @@ CONFIG_FILE = "90-freshness.yaml"
 
 # A V2 cache's freshness for an object whose origin sends no
 # Cache-Control (LocalCache.DefaultMaxAge, 24 hours), less up to its
-# jitter (LocalCache.RevalidationJitter, 10%), per object
-# (DefaultFreshness in local_cache/cache_control.go).
+# jitter (LocalCache.RevalidationJitter, 10%), per object.
 DEFAULT_MAX_AGE = 86400
 DEFAULT_MIN_AGE = DEFAULT_MAX_AGE * 9 // 10
 # How far an Age may stray from the time that has passed: it is whole
@@ -637,10 +636,11 @@ def no_negative_cache(test: Test, _value: str) -> Row:
     """Check that each cache and director serves an object once it exists.
 
     An object that no origin holds yet: each cache, and each director's
-    bare path, followed, must answer 404 (a V2 cache's body JSON with
-    `not_found`). Once every origin holds it, each must serve it at once;
-    or, where there are several origins, within PRESENCE_WAIT seconds,
-    since a director keeps an origin's 404 for a minute.
+    bare path, followed, must answer 404 (a V2 cache's with a JSON body
+    whose `error` is `not_found`). Once every origin holds it, each must
+    serve it at once; or, where there are several origins, within
+    PRESENCE_WAIT seconds, since a director keeps an origin's 404 for a
+    minute.
     """
     rel = test.rel("no-negative-cache", "object")
     data = os.urandom(HELD_SIZE)
@@ -662,8 +662,7 @@ def no_negative_cache(test: Test, _value: str) -> Row:
                 kind = (common.as_object(json.loads(answer.body)) or {}).get("error")
             except ValueError:
                 kind = None
-            # `not_found` on main; v26.0.0-rc.3 writes the reason phrase.
-            if str(kind).lower().replace(" ", "_") != "not_found":
+            if kind != "not_found":
                 problems.append(f"{cache.svc}: a 404 whose body is not JSON with not_found")
     for url in directors:
         answer, where = bare_get(url, test, rel)
@@ -958,7 +957,7 @@ def must_revalidate(test: Test, value: str) -> Row:
 
 
 def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> Row:
-    """Check what each V2 cache serves of a stale copy with every origin down.
+    """Check what each V2 cache serves of a stale copy, every origin down.
 
     At each V2 cache, an object read whole, which it holds, and another
     it never read. Once the first is stale (max-age), every origin is
@@ -1119,9 +1118,7 @@ def ranged(data: bytes, request: blocks.Request, answer: web.Response) -> tuple[
     Returns:
         What is wrong with answer for an object holding data
         (blocks.check()), or None; and whether the server answered it
-        whole, with `Accept-Ranges: none`, which is not wrong: a V2
-        cache passing through an object it may not store does so, as
-        RFC 9110 allows.
+        whole, with `Accept-Ranges: none`, which RFC 9110 allows.
     """
     why = blocks.check(data, request, answer)
     if (

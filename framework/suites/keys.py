@@ -1,52 +1,35 @@
-"""What happens when a server's issuer keys change while it runs.
+"""Issuer keys changed while the servers run.
 
-This covers the registry learning a key the origins add, the directors
-going on accepting the origins' and a cache's advertisements once each
-signs with a new key, every server taking tokens signed with it, the
-issuer's own tokens carrying its kid, the master keys of a V2 cache and
-of a pstore origin, each sealed with its keys, and the database backups
-that every server writes. The suite writes keys into the services' key
-directories under framework/var/issuer-keys/ (the dev container mounts
-the checkout read-write), as `./fed.sh keys add` and `keys rotate` do,
-and puts them back as they were: a key it added is removed, and a key
-it made the signer is made verify-only, by its prefix, since a V2 cache
-and a pstore origin must keep the keys that sealed their stores. It
-runs last: a rotation takes a server out of every director's routing
-until each is put back, and what it leaves in the servers' key caches
-lasts up to 15 minutes. It skips under `-p server-unprivileged`, whose
-servers' keys the host may not write, and the tiny topology, whose one
-process holds every key. The scenarios:
+The suite adds and rotates keys in the services' key directories under
+framework/var/issuer-keys/, as `./fed.sh keys add` and `keys rotate`
+do, and restores them afterward. A key it made the signer is kept as a
+verify-only key, since V2 caches and pstore origins need the keys that
+sealed their stores. It runs last, since servers cache keys for up to
+15 minutes, so its changes outlast it. It skips under
+`-p server-unprivileged`, whose servers' keys the host may not write,
+and the tiny topology, whose one process holds every key.
 
-  hot-add      a verify-only key added to the origins shows in
-               origin-0's JWKS, and the registry's for the namespace and
-               for origin-0, within 2 minutes, and goes when it is
-               removed; no director drops origin-0 meanwhile
-  hot-rotate   a new signing key on the origins, and another on the first
-               V2 cache, for 3 minutes: whether every director goes on
-               naming origin-0 and the cache (they don't), how
-               soon each origin and cache takes tokens signed with the
-               origins' new key, that each takes the old key's
-               throughout, how soon the issuer's tokens carry the new
-               kid, and whether the registry learns each new key
-  master-key   a V2 cache's master key must be sealed with each of its
-               keys, before and after a restart (it is not); and,
-               destructively, with every key but the newest retired,
-               the cache must still open its store; afterward the keys
-               and the master key file are put back
+  hot-add      a verify-only key added to the origins appears in
+               origin-0's JWKS and the registry's within 2 minutes, and
+               disappears once removed; no director drops origin-0
+  hot-rotate   new signing keys on the origins and a V2 cache: every
+               director keeps naming both; each origin and cache accepts
+               tokens of the new key and of the old; the issuer's tokens
+               carry the new kid; the registry learns each new key
+  master-key   a V2 cache's master key is sealed with each of its keys,
+               before and after a restart; destructively, with every
+               key but the newest retired, the cache still opens its
+               store
   pstore-master-key
-               the same of a pstore origin's master key, whose store
-               holds the only copy of its objects (it is not sealed so,
-               either)
-  backups      every server writes an encrypted backup of its database
-               (Server.DatabaseBackup), which `pelican-server server
-               database backup verify` opens with the server's keys
+               the same for a pstore origin, whose store holds the only
+               copy of its objects
+  backups      every server writes an encrypted database backup that
+               `pelican-server server database backup verify` opens
 
-Every scenario runs in the WLCG pass alone, since another pass would
-change the keys again while the servers still hold what the first left.
-`hot-rotate` presents tokens of every profile in its one rotation
-instead: its rows for a profile but WLCG's end in the profile's name
-(e.g. `new-key origin-0 scitokens`). The probe is put in place, and
-`master-key` reads it, with WLCG tokens.
+Every scenario runs in the WLCG pass alone, since a second pass would
+change the keys again. `hot-rotate` presents tokens of every profile in
+its one rotation; rows for other profiles end in the profile's name
+(e.g. `new-key origin-0 scitokens`).
 """
 
 import glob
@@ -101,8 +84,8 @@ SCENARIOS = {
 }
 
 NAMESPACE = "protected-a"
-# Every scenario (see suites/__init__.py, and above): hot-rotate presents
-# every profile's tokens itself.
+# Every scenario runs in one pass (see suites/__init__.py): hot-rotate
+# presents every profile's tokens itself.
 ONE_PROFILE = tuple(SCENARIOS)
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note. A scenario returns its status and note, or its rows.
@@ -110,8 +93,7 @@ Row = tuple[str, str, str]
 Rows = tuple[str, str] | list[Row]
 
 # How long the registry and a server's JWKS may take to show a key added
-# or removed: the servers reread their key directories every minute
-# (LaunchIssuerKeysDirRefresh in launcher_utils/).
+# or removed: the servers reread their key directories every minute.
 KEY_WAIT = 120
 # How long hot-rotate watches, and how often it asks.
 ROTATE_WINDOW = 180
@@ -121,22 +103,21 @@ ROTATE_INTERVAL = 15
 NAMED_WAIT = 150
 # How long a V2 cache may take to say, with Age, that it holds an object.
 HELD_WAIT = 30
-# How long a V2 cache may take to serve the probe again: hot-rotate's
-# disruption can leave it without the namespace's issuer for a while.
+# How long master-key waits for a V2 cache to serve the probe, which a
+# failed hot-rotate can keep it from for a while.
 PROBE_WAIT = 150
 # How a server answers the probe for a token (Test.probe()): it serves
 # the probe, or refuses the token, by one of REFUSALS.
 SERVED, REFUSED = "served", "refused"
 REFUSALS = (401, 403)
-# A V2 cache's master key file, under its store (local_cache/encryption.go);
-# and a pstore origin's, under its /data, in its store
-# (Origin.PStoreLocation, /data/pstore, in
-# config.d/origin/pstore/50-origin.yaml), which pstore/ keeps alike.
+# The master key file of a V2 cache, under its store, and of a pstore
+# origin, under its /data (Origin.PStoreLocation, /data/pstore, in
+# config.d/origin/pstore/50-origin.yaml).
 MASTER_KEY = "persistent-cache/masterkey.json"
 PSTORE_MASTER_KEY = "pstore/masterkey.json"
-# Where each service backs its database up (Server.DatabaseBackup.Location
-# in config.d/base/20-server.yaml), under its state; each backup is PEM
-# (database/backup.go).
+# Where each service backs up its database, under its state
+# (Server.DatabaseBackup.Location in config.d/base/20-server.yaml), and
+# how a backup, which is PEM, and a plain SQLite file begin.
 BACKUPS = "backups"
 BACKUP_MAGIC = b"-----BEGIN "
 SQLITE_MAGIC = b"SQLite format 3"
@@ -431,15 +412,13 @@ def put_back(test: Test) -> None:
 def hot_add(test: Test) -> list[Row]:
     """Check that a verify-only key added to the origins comes and goes.
 
-    The key is written into the origins' key directories so that it sorts
-    last. Within KEY_WAIT seconds, origin-0's own JWKS must list it
-    (`origin-jwks`), and so must the registry's for the namespace
-    (`registry-namespace`) and for origin-0's own prefix
-    (`registry-server`), since an origin pushes its keys to the registry
-    when they change (updateNamespacesPubKey in launcher_utils/, which signs
-    the update with a key the registry already holds); meanwhile no director
-    may drop origin-0 (`routing`). Then the key is removed, and each must be
-    rid of it as soon (`removed`).
+    The key sorts last in the origins' key directories. Within KEY_WAIT
+    seconds, it must appear in origin-0's JWKS (`origin-jwks`), and in
+    the registry's for the namespace (`registry-namespace`) and for
+    origin-0's own prefix (`registry-server`), since an origin pushes
+    its keys to the registry when they change. Once the key is removed,
+    each must drop it as soon (`removed`). No director may drop origin-0
+    meanwhile (`routing`).
     """
     fed = test.fed
     if not fed.registry_url:
@@ -500,28 +479,18 @@ def hot_add(test: Test) -> list[Row]:
 def hot_rotate(test: Test) -> list[Row]:
     """Check new signing keys on the origins and the first V2 cache.
 
-    The keys are watched for ROTATE_WINDOW seconds, every ROTATE_INTERVAL:
-    every director must go on naming origin-0 and the cache (`directors`),
-    each origin and cache must come to take tokens signed with the origins'
-    new key (`new-key`), and must take the old key's throughout (`old-key`:
-    a refusal, by one of REFUSALS, fails it; any other answer but the
-    probe leaves it inconclusive, since the server neither took nor
-    refused the token), and the issuer's tokens must come to carry the
-    new kid (`issuer-kid`);
-    the registry must come to list the origins' new key (`registry-origins`)
-    and the cache's (`registry-cache`). A director checks an ad against the
-    keys it fetched for the server's prefix up to Director.AdvertisementTTL
-    (15 minutes) before, and never refetches for a kid it lacks
-    (verifyAdvertiseToken in director/origin_api.go), so once their ads
-    carry the new kid the directors refuse them, and drop origin-0 and the
-    cache; and a cache never pushes a new key to the registry. A V2 cache
-    trusts the issuers of the namespaces the director lists, which it asks
-    for every minute (updateConfig in local_cache/persistent_cache.go), so
-    within a minute of that, it refuses every token for its namespaces.
-    Origins and caches keep a namespace's keyset for up to 15 minutes too
-    (origin_serve/authz.go, local_cache/cache_authz.go), so `new-key` is
-    inconclusive if the window is not enough. The tokens of each key are
-    of every profile, each with rows of its own.
+    The keys are watched for ROTATE_WINDOW seconds, every
+    ROTATE_INTERVAL. Every director must keep naming origin-0 and the
+    cache (`directors`). Each origin and cache must come to take tokens
+    signed with the origins' new key (`new-key`; inconclusive if the
+    window ends first, since servers cache a namespace's keys for up to
+    15 minutes), and must take the old key's throughout (`old-key`; a
+    refusal, by one of REFUSALS, fails it, and any other answer but the
+    probe leaves it inconclusive). The issuer's tokens must come to
+    carry the new kid (`issuer-kid`). The registry must come to list the
+    origins' new key (`registry-origins`) and the cache's
+    (`registry-cache`). Tokens of every profile are presented, each
+    profile in rows of its own.
     """
     fed = test.fed
     if not fed.registry_url or not fed.directors:
@@ -557,7 +526,7 @@ def hot_rotate(test: Test) -> list[Row]:
         cache_kid = jwt.key_id(os.path.join(cache_dirs[0], cache_name_on_disk))
     new_tokens = {p: test.signed_with(new_origin_key, p) for p in credentials.PROFILES}
     # Under the external issuer, the exports trust none of the origins'
-    # keys, so no token of either says anything.
+    # keys, so neither key's tokens can show anything.
     data_servers = [] if fed.external_issuer else test.data_servers()
     watched = [("origin-0", "origin", test.origin_host())]
     if test.cache:
@@ -566,7 +535,8 @@ def hot_rotate(test: Test) -> list[Row]:
     # By server and profile.
     accepted: dict[tuple[str, str], float] = {}
     refused_old: dict[tuple[str, str], float] = {}
-    # The first answer to an old key's token that was neither.
+    # The first answer to an old key's token that was neither the probe
+    # nor a refusal.
     unanswered_old: dict[tuple[str, str], tuple[float, str]] = {}
     issuer_kid_at: float | None = None
     registry_at: dict[str, float] = {}
@@ -638,7 +608,7 @@ def hot_rotate(test: Test) -> list[Row]:
                     (
                         f"new-key {case}",
                         INCONCLUSIVE,
-                        f"refused it for all {ROTATE_WINDOW}s (its keyset may be cached for up to 15 minutes)",
+                        f"did not take it in {ROTATE_WINDOW}s (servers may cache keys for 15 minutes)",
                     )
                 )
             if key in refused_old:
@@ -833,8 +803,8 @@ def held_with_age(test: Test, cache: common.Cache) -> int | None:
 def hold_probe(test: Test, cache: common.Cache) -> str | None:
     """Have cache hold the probe, by reading it whole.
 
-    The cache may refuse it for up to PROBE_WAIT seconds, as after
-    hot-rotate, and must then say, with Age, that it holds it.
+    The cache has PROBE_WAIT seconds to serve it, and must then say,
+    with Age, that it holds it.
 
     Returns:
         Why it does not hold it, or None if it does.
@@ -860,17 +830,13 @@ def master_key(test: Test) -> list[Row]:
 
     The first V2 cache's master key file must seal the master key with
     each of the cache's keys, a verify-only key the suite adds included,
-    before a restart (`sealed`) and after one (`sealed-after-restart`):
-    Pelican re-seals it only through a key-change callback that the
-    launcher registers for its local cache module, not for the cache
-    server, and loading never re-saves it. Then, destructively, once
-    the cache holds the probe (hold_probe(); `retired` is inconclusive
-    if it never does), with every key but the newest removed from the
-    cache's key directory, the cache restarted must still open its
-    store, and serve the probe it held, with Age, fetching nothing
-    (`retired`): a master key it cannot unseal is replaced by a new
-    one, with which its store cannot be read. Afterward the keys and
-    the master key file are put back, and the cache restarted again.
+    before a restart (`sealed`) and after one (`sealed-after-restart`).
+    Then, destructively, once the cache holds the probe (hold_probe();
+    `retired` is inconclusive if it never does), every key but the
+    newest is removed from the cache's key directory. The cache,
+    restarted, must still open its store, and serve the probe it held,
+    with Age, fetching nothing (`retired`). Afterward the keys and the
+    master key file are put back, and the cache restarted again.
     """
     fed = test.fed
     cache = test.cache
@@ -989,24 +955,17 @@ def pstore_master_key(test: Test) -> list[Row]:
 
     As master_key() checks a V2 cache's, at the first pstore origin,
     whose store is encrypted with a master key that the master key file
-    in it seals with each of the origin's keys (pstore/ keeps it as the
-    cache does, in local_cache/encryption.go). Given a verify-only key
+    in it seals with each of the origin's keys. Given a verify-only key
     on the origins, which the suite adds if hot-rotate left none, the
     file must seal the master key with every key in the origin's key
     directory, before a restart (`sealed`) and after one
-    (`sealed-after-restart`): the launcher registers the callback that
-    re-seals the file for its local cache module alone
-    (launchers/launcher.go), a pstore registers none, and opening the
-    store never re-saves it. Then, destructively, with every key but the
-    newest removed from the origin's own key directory (a replica keeps
-    them), the origin restarted must still open its store, and its
-    storage API stat the probe, for its admin, by a token signed with
-    that key (`retired`): a master key that the origin cannot unseal is
-    replaced by a new one, with which its catalog cannot be opened, so
-    the origin does not start, and the store, which holds the only copy
-    of its objects, is lost. Afterward the keys and the master key file
-    are put back, and the origin restarted again, whose storage API must
-    then stat the probe.
+    (`sealed-after-restart`). Then, destructively, every key but the
+    newest is removed from the origin's own key directory (a replica
+    keeps them). The origin, restarted, must still open its store, keep
+    its master key file, and have its storage API stat the probe for
+    its admin, by a token signed with that key (`retired`). Afterward
+    the keys and the master key file are put back, and the origin
+    restarted again, whose storage API must then stat the probe.
     """
     origin = next((o for o in test.fed.origins if o.pstore), None)
     if origin is None:
@@ -1134,11 +1093,11 @@ def backups(test: Test) -> list[Row]:
     """Check each server's backups of its database.
 
     They are under framework/var/state/<service>/backups/
-    (Server.DatabaseBackup.Location): at least one, since a server with
-    none makes one as it starts (LaunchPeriodicBackup in
-    database/backup.go); each PEM, never a plain SQLite file; and each
-    opened by `pelican-server server database backup verify`, given a
-    copy of the server's keys, which skips without a pelican-server.
+    (Server.DatabaseBackup.Location). There must be at least one, since
+    a server with none makes one as it starts. Each must be PEM, never a
+    plain SQLite file, and open with `pelican-server server database
+    backup verify`, given a copy of the server's keys; without a
+    pelican-server, that check is left out.
     """
     rows: list[Row] = []
     server = test.session.pelican_server

@@ -5,18 +5,23 @@ The tests log in as a browser would, through the provider
 provider offers the tests: its users, and approving a device flow
 there.
 
-A server sends a user to the provider from its login route
-(/api/v1.0/auth/oauth/login; handleOAuthLogin in Pelican's
-web_ui/oauth2_client.go): a redirect to the provider's authorization
-endpoint, naming the server's client, its callback, and a state, which
-the server keeps in a session cookie too. The user logs in at the
-provider, which sends them back to the callback with a code; the server
-checks the state against its cookie, trades the code for tokens at the
-provider's token endpoint, asks its userinfo endpoint who the user is,
-finds or makes its record of them, and sets its login cookie
-(handleOAuthCallback). The callback is at OIDC.ClientRedirectHostname,
-localhost and the server's published port, for a browser on the host;
-the tests follow it to the server's own host instead.
+A login goes in three steps (handleOAuthLogin and handleOAuthCallback
+in Pelican's web_ui/oauth2_client.go):
+
+1. The server's login route (/api/v1.0/auth/oauth/login) redirects the
+   user to the provider's authorization endpoint, naming the server's
+   client, its callback, and a state, which the server also keeps in a
+   session cookie.
+2. The user logs in at the provider, which sends them back to the
+   callback with a code.
+3. The server checks the state against its cookie, trades the code for
+   tokens at the provider's token endpoint, asks its userinfo endpoint
+   who the user is, finds or makes its record of them, and sets its
+   login cookie.
+
+The callback is at OIDC.ClientRedirectHostname, localhost and the
+server's published port, for a browser on the host; the tests follow it
+to the server's own host instead.
 """
 
 import json

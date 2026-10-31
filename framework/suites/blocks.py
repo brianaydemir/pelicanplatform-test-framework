@@ -1,46 +1,103 @@
 """Objects and byte ranges at the block boundaries of pstore and caches.
 
-That is, at those of pstore (an origin's encrypted store), the V2 cache,
-and the XRootD cache: write objects of sizes on either side of each
-boundary, then read them back, whole and in ranges, from each origin,
-through each cache, through each director's redirect as a plain HTTP
-client follows it, and through both clients; the digests that each
-server reports of them, asked for by default or several at once, and an
-upload the client must verify by one; conditional reads and writes, and
-the ETags they name, which every method must report alike; and objects
-that caches read in overlapping pieces or give up on, that are
-overwritten once cached, that are corrupted in a cache's store, or that
-are written through a cache; and an object past 4 GiB, as a sparse file,
-whose length and whose ranges across 2 GiB and 4 GiB every server must
-get right. Also the signals by which a client trusts what a cache gives
-it: the X-Transfer-Status trailer, which reports a failure after the
-headers; the digests a V2 cache relays from the origins, and its refusal
-to keep an object whose bytes fail them; and that a cache fetches an
-object that many clients read at once from the origins once.
+The suite writes objects of sizes on either side of the block boundaries
+of pstore (an origin's encrypted store), the V2 cache, and the XRootD
+cache, and reads them back, whole and in ranges, from each origin,
+through each cache and director, and with both clients.
+framework/testlib/blocks.py lists the sizes and ranges, and the layout
+facts behind them. Around these reads, the suite checks digests, ETags,
+conditional requests, the X-Transfer-Status trailer, and what caches do
+with partial reads, overwrites, corruption, and eviction.
 
-The sizes, ranges, and the layout facts behind them are in
-framework/testlib/blocks.py. Objects go under
-/protected-a/data/blocks/<run>/, uploaded straight to every origin, in
-four sets, each first read a different way, since how a V2 cache first
-sees an object decides how it fills: `whole` (uploaded with a
-Content-Length; first read whole through each cache), `ranged` (uploaded
-in chunks with no length, as the client uploads; first read in ranges),
-`client` (uploaded with a length; first read by `pelican object get`),
-and `plugin` (likewise, first read by stash_plugin). Both clients also
-upload every size. On a pstore origin, /metrics must show each upload in
-the tier its size predicts. The overlap, assemble, abandon, overwrite,
-and write-through scenarios upload objects of their own, a set per cache,
-so that each is cold where it is read. Where /protected-a takes no
-writes, every object is put straight in each origin's store instead
-(see stores.seed()), and the uploads themselves are skipped; where it
-takes no direct clients, the origins are read only through the caches,
-and a direct read must be refused.
+  put-declared       every size uploaded to each origin with a
+                     Content-Length; at a pstore origin, each lands in
+                     the tier its size predicts
+  put-chunked        the same, in chunks with no length
+  put-client         every size uploaded by `pelican object put`
+  put-plugin         every size uploaded by stash_plugin
+  put-checksum       `pelican object put --require-checksum` succeeds
+                     where the storage reports a digest, and fails
+                     elsewhere
+  origin-read        each origin returns every object whole and every
+                     range
+  client-get         `pelican object get` of every size, through a
+                     cache, direct, and from each federated cache, named
+  plugin-get         the same by stash_plugin
+  cache-whole-first  each cache: a cold whole read, a warm one, then
+                     every range
+  director-read      each director's redirect, followed by a plain HTTP
+                     client, leads to every object and range
+  cache-range-first  each cache: a cold range, then every range, then
+                     the whole
+  cache-stored       each XRootD cache's store on disk holds the
+                     objects' bytes
+  cache-overlap      each cache: ranges that overlap what it holds, in
+                     turn and at once
+  coalescing         each federated cache, read cold by many clients at
+                     once, fetches the object from the origins once
+  cache-assemble     each cache: ranges that cover an object leave it
+                     holding all of it
+  cache-abandoned    each cache: a cold read given up on spoils nothing
+  cache-corrupted    each V2 cache never serves a block corrupted or cut
+                     from its store
+  transfer-status    each federated cache, asked, ends a GET with an
+                     X-Transfer-Status trailer of `200: OK`
+  transfer-status-failure
+                     each federated V2 cache reports a block it cannot
+                     repair in the trailer, and the clients fail
+  origin-transfer-status
+                     each origin, asked, sends the trailer too
+  digests            every digest a server reports is the object's; the
+                     origins and V2 caches report the storage's
+  digest-overwrite   each origin's digests and ETag follow overwrites
+  digest-defaults    each origin's digests unasked, asked for two, and
+                     asked with q-values
+  digest-relay       each federated V2 cache relays the origins' digests
+                     to HEAD, GET, and the client
+  digest-range-first
+                     the same, of an object it first read in a range
+  stale-origin-digest
+                     each federated V2 cache neither passes off as good
+                     nor keeps an object that fails the origins' digests
+  past-end           a range at or past an object's end gets 416
+  empty              a 0-byte object comes back with no body
+  huge-ranges        an object past 4 GiB: its length, and ranges across
+                     2 GiB and 4 GiB, at every server and by the client
+  conditional        a conditional GET gets 304 only if its condition
+                     holds
+  conditional-put    a conditional PUT is refused (412) unless its
+                     condition holds
+  etag-agreement     each origin reports one ETag for one version, by
+                     every method, and honors it in conditions
+  conditional-edges  each origin: conditions on a missing object,
+                     invalid or combined conditions, and racing PUTs
+  mixed-version      each cache serves an object overwritten mid-read
+                     as one version
+  overwrite-cached   each cache serves an object it holds, once
+                     overwritten, as one version
+  overwrite-range-first
+                     the same, of an object it first read in a range
+  write-through      each V2 cache relays a PUT and a DELETE; an XRootD
+                     cache refuses them
+  cache-evicted      each bounded cache (`-p cache-small`) evicts the
+                     oldest objects, and still serves every one
 
-Every request and client run presents a token of the session's
-profile, as do the uploads of `put-declared` and `put-chunked`, which
-the other sets' reads need; the scenarios' own objects are put in
-place, and the stores and caches checked and cleaned, with WLCG tokens
-either way.
+Objects go under /protected-a/data/blocks/<run>/ in four sets, each
+first read a different way, since that decides how a V2 cache fills:
+`whole` (first read whole through each cache), `ranged` (first read in
+ranges), `client` (first read by `pelican object get`), and `plugin`
+(first read by stash_plugin). `ranged` is uploaded in chunks with no
+length, as the clients upload; the rest, with a Content-Length. The
+other cache scenarios upload objects of their own, one per cache, so
+that each is cold where it is read. Where /protected-a takes no writes,
+the objects are put straight in each store (stores.seed()), and the
+upload scenarios skip. Where it takes no direct clients, the origins are
+read only through the caches, and a direct read must be refused.
+
+Requests, client runs, and the uploads of `put-declared` and
+`put-chunked` present tokens of the session's profile. The scenarios'
+own objects are put in place, and the stores and caches checked and
+cleaned, with WLCG tokens.
 """
 
 import base64
@@ -82,49 +139,40 @@ SCENARIOS = {
     "put-chunked": "upload every size in chunks, with no length, to every origin",
     "put-client": "`pelican object put` of every size",
     "put-plugin": "stash_plugin's upload of every size",
-    "put-checksum": "`pelican object put --require-checksum` succeeds only where the origin reports a digest",
+    "put-checksum": "`pelican object put --require-checksum` succeeds only where a digest is reported",
     "origin-read": "each origin returns every object whole and every range",
-    "client-get": (
-        "`pelican object get` of every size, through a cache, with --direct, and from each"
-        " federated cache, named"
-    ),
-    "plugin-get": (
-        "stash_plugin's download of every size, through a cache, direct, and from each"
-        " federated cache, preferred"
-    ),
+    "client-get": "`pelican object get` of every size: through a cache, direct, and from each cache",
+    "plugin-get": "stash_plugin's download of every size: through a cache, direct, and from each cache",
     "cache-whole-first": "each cache: a cold whole read, a warm one, then every range",
-    "director-read": (
-        "each director's object route, followed as a plain HTTP client: every object whole,"
-        " and every range, from the cache (or, with none, the origin) it leads to"
-    ),
+    "director-read": "each director's redirect, followed by a plain HTTP client: every object and range",
     "cache-range-first": "each cache: a cold range first, then every range, then the whole",
     "cache-stored": "each XRootD cache's store on disk holds every object's bytes, block by block",
     "cache-overlap": "each cache: ranges that overlap what it holds, in turn and at once",
-    "coalescing": "each federated cache: concurrent cold reads of an object fetch it from the origins once",
+    "coalescing": "each federated cache: concurrent cold reads of an object fetch it from an origin once",
     "cache-assemble": "each cache: ranges that add up to an object leave it holding all",
     "cache-abandoned": "each cache: a cold read that its client gives up on spoils nothing",
     "cache-corrupted": "each V2 cache: a block corrupted or cut from its store is never served",
-    "transfer-status": "each federated cache, asked, ends a GET with an X-Transfer-Status trailer of 200: OK",
-    "transfer-status-failure": "each federated V2 cache reports a block it cannot repair in the trailer, and the clients fail",
-    "origin-transfer-status": "each origin, asked, ends a GET with an X-Transfer-Status trailer of 200: OK",
+    "transfer-status": "each federated cache, asked, ends a GET with an X-Transfer-Status trailer, 200: OK",
+    "transfer-status-failure": "each federated V2 cache reports a block it cannot repair; the clients fail",
+    "origin-transfer-status": "each origin, asked, ends a GET with an X-Transfer-Status trailer, 200: OK",
     "digests": "every digest that a server reports (Want-Digest) is the object's",
     "digest-overwrite": "each origin's digests and ETag of an object follow its overwrites",
     "digest-defaults": "each origin's digests asked for by default, by two algorithms, and by q-values",
-    "digest-relay": "each federated V2 cache relays the origins' digests, cold and warm, to HEAD, GET, and the client",
-    "digest-range-first": "each federated V2 cache relays the origins' digests of an object it first read through a range",
-    "stale-origin-digest": "each federated V2 cache keeps and passes on nothing whose bytes fail the origins' digest",
+    "digest-relay": "each federated V2 cache relays the origins' digests to HEAD, GET, and the client",
+    "digest-range-first": "each federated V2 cache relays digests of an object it first read in a range",
+    "stale-origin-digest": "each federated V2 cache keeps and passes on nothing that fails its digests",
     "past-end": "a range that starts at or past an object's end: 416, not bytes",
     "empty": "a 0-byte object: 200 with no body; a range of it gets no bytes",
-    "huge-ranges": "an object past 4 GiB: its length, and ranges across 2 GiB and 4 GiB, at every server and by the client",
-    "conditional": "a GET with If-None-Match or If-Modified-Since: 304 only when the condition holds",
-    "conditional-put": "a PUT with If-Match or If-None-Match: refused (412) unless the condition holds",
-    "etag-agreement": "each origin gives one version one ETag, by every method, and honors it in conditions",
-    "conditional-edges": "each origin: conditions on a missing object, invalid or combined, and racing PUTs",
+    "huge-ranges": "an object past 4 GiB: its length, and ranges across 2 and 4 GiB, everywhere",
+    "conditional": "a GET with If-None-Match or If-Modified-Since: 304 only if the condition holds",
+    "conditional-put": "a PUT with If-Match or If-None-Match: refused (412) unless its condition holds",
+    "etag-agreement": "each origin gives a version one ETag, by every method, and honors it in conditions",
+    "conditional-edges": "each origin: conditions on a missing object, invalid, or combined; racing PUTs",
     "mixed-version": "each cache: an object overwritten mid-way comes back as one version",
     "overwrite-cached": "each cache: an object it holds, overwritten, comes back as one version",
     "overwrite-range-first": "the same, for an object it first read through a range",
-    "write-through": "each V2 cache relays a PUT and a DELETE, and serves the result at once; an XRootD cache refuses",
-    "cache-evicted": "each bounded cache: objects past its bound evict, oldest first, and every one still comes back",
+    "write-through": "each V2 cache relays a PUT and a DELETE; an XRootD cache refuses them",
+    "cache-evicted": "each bounded cache evicts its oldest objects, and every one still comes back",
 }
 
 # The scenarios that read through each cache, and so have nothing to test
@@ -631,13 +679,12 @@ def put_plugin(test: Test) -> tuple[str, str]:
 def put_checksum(test: Test) -> tuple[str, str]:
     """Check `pelican object put --require-checksum` of every size.
 
-    The client verifies each upload against a digest the origin reports (a
-    HEAD with Want-Digest after the PUT; client/handle_http.go in
-    Pelican), asking for the first algorithm the origins' storage reports
-    (it asks for crc32c otherwise), so it must succeed, and leave the
-    objects intact, for the objects whose digests the storage reports
-    (stores.has_digests(); the client declares no length), and fail for
-    the rest, rather than report an unverified upload as a success.
+    The client checks each upload against a digest that the origin
+    reports after the PUT, by the first algorithm the origins' storage
+    reports (crc32c otherwise). The command must succeed, leaving the
+    objects intact, where the storage reports the object's digest
+    (stores.has_digests(); the client declares no length). Elsewhere it
+    must fail, rather than report an unverified upload as a success.
     """
     if not test.writes:
         return SKIP, NO_WRITES
@@ -1133,11 +1180,10 @@ def summary(test: Test, cache: common.Cache, rel: str) -> tuple[cacheapi.Blocks 
 def assembled_part(test: Test, cache: common.Cache, rel: str, found: Findings) -> bool:
     """Check a V2 cache's blocks after cache_assemble's first range.
 
-    The cache fetches that range block by block (initObjectFromStat in
-    local_cache/persistent_cache.go): its introspection must show the
-    range's blocks held, and none before them but block 0, since it fills
-    no object from the start for a range in its middle; block 0 it may
-    hold, as the byte its stat of the origin probed for.
+    A V2 cache fetches a range's blocks rather than fill the object from
+    its start (initObjectFromStat in local_cache/persistent_cache.go). Its
+    introspection must show the range's blocks held, and none before them
+    but block 0.
 
     Returns:
         Whether its introspection said: if not, the caller falls back to
@@ -1150,8 +1196,8 @@ def assembled_part(test: Test, cache: common.Cache, rel: str, found: Findings) -
     start, end = blocks.ASSEMBLE[0]
     wanted = range(start // blocks.BLOCK, end // blocks.BLOCK + 1)
     lacking = [n for n in wanted if n in held.missing]
-    # Block 0 it may hold too: a V2 cache stores the byte that its stat of
-    # the origin probes for (the client's Range: bytes=0-0), observed.
+    # Block 0 it may hold: its stat of the origin reads the first byte
+    # (Range: bytes=0-0), and it may store the block that holds it.
     before = [n for n in range(1, wanted[0]) if n not in held.missing]
     if lacking:
         found.fail(f"{cache.svc}: after the first range, it lacks its block {lacking[0]}")
@@ -1258,19 +1304,18 @@ def cache_assemble(test: Test) -> tuple[str, str]:
 # coalescing's object, and how many clients read it at once.
 COALESCE_SIZE = 4 << 20
 COALESCE_READERS = 16
-# What a native origin counts of the GETs it serves (metrics/http_metrics.go
-# in Pelican): the bytes it sent, and the requests, by the username of the
-# token that each presented (the tests', for a cache's fetch on a client's
-# behalf).
+# What a native origin counts of the GETs it serves
+# (metrics/http_metrics.go): the bytes it sent, and the requests, by the
+# username of the token each presented (the tests', for a cache's fetch on
+# a client's behalf).
 SENT_BYTES = "pelican_http_bytes_total"
 SENT = {"server_type": "origin", "direction": "out", "method": "GET"}
 GETS = "pelican_http_requests_total"
 OUR_GETS = {"server_type": "origin", "method": "GET", "username": credentials.SUBJECT}
-# How many GETs a V2 cache may make of the origins for the cold reads,
-# besides one of a byte at each origin, by which the client it fetches
-# through ranks them (sortAttempts in Pelican's client/handle_http.go): it
-# fetches a whole object in one (downloadObject in
-# local_cache/persistent_cache.go), and may need a second.
+# How many GETs a V2 cache may make of the origins for the cold reads. It
+# fetches a whole object in one, and may need a second. Besides these, the
+# client it fetches through ranks the origins by a one-byte GET at each
+# (sortAttempts in client/handle_http.go).
 COALESCE_GETS = 2
 # How many bytes the origins may send while the reads are warm: the
 # directors' health tests fetch a small object from each origin every 15
@@ -1383,16 +1428,16 @@ def coalesced(test: Test, cache: common.Cache, rel: str, data: bytes, found: Fin
 def coalescing(test: Test) -> tuple[str, str]:
     """Check that concurrent cold reads of an object fetch it only once.
 
-    Each federated cache: COALESCE_READERS cold whole reads of an object
-    of its own, all at once, must have the origins send it about once, as
-    their counters show (SENT_BYTES): not once per reader, which a cache
-    is there to spare them. A V2 cache fetches an object whole in one GET,
-    and may make no more than COALESCE_GETS for it under the tests'
-    username (GETS), besides one at each origin; an XRootD cache fetches it block by block, so only
-    the bytes are judged. Then as many warm reads must have the origins
-    serve no GET of the tests', and send no more than the directors'
-    health tests do (WARM_SLACK). Only a native origin keeps the counters.
-    A site-local cache reads through another cache, and is passed over.
+    Each federated cache gets COALESCE_READERS cold whole reads of an
+    object of its own, all at once. The origins' counters (SENT_BYTES)
+    must show it sent about once, not once per reader: a cache is there
+    to spare the origins. A V2 cache may make no more than COALESCE_GETS
+    under the tests' username (GETS), besides one at each origin. An
+    XRootD cache fetches block by block, so only its bytes are judged.
+    Then as many warm reads must have the origins serve no GET of the
+    tests', and send no more than the directors' health tests do
+    (WARM_SLACK). Only a native origin keeps the counters. A site-local
+    cache reads through another cache, and is passed over.
     """
     if not test.fed.native_origins:
         return SKIP, f"XRootD serves the origins ({test.fed.origin_variant}), not Pelican"
@@ -1481,8 +1526,7 @@ def abandoned_blocks(test: Test, cache: common.Cache, rel: str, notes: list[str]
 
 # A V2 cache's chaos API (Cache.EnableChaosAPI, which config.d/cache/v2
 # turns on): an admin may corrupt a block of an object in its store, or
-# cut bytes from the end of one of its chunk files
-# (local_cache/persistent_cache_api.go in Pelican).
+# cut bytes from the end of one of its chunk files.
 CHAOS_PATH = "/api/v1.0/cache/introspect/chaos"
 # How long a cache may take to serve a spoiled object again, in seconds.
 REPAIR_WAIT = 30
@@ -1545,10 +1589,9 @@ def never_spoiled(
     """Read request of rel through cache, then the whole object.
 
     rel is in /protected-a, and holds data. Each read must be the object's
-    bytes, or fail, but never be other bytes; and within REPAIR_WAIT
-    seconds the whole object must come back intact, the cache having
-    fetched the spoiled blocks again (a V2 cache repairs a block that
-    fails its authentication tag; local_cache/range_reader.go).
+    bytes or fail, never other bytes. Within REPAIR_WAIT seconds the
+    whole object must come back intact: a V2 cache fetches again a block
+    that fails its authentication tag.
 
     Returns:
         What went wrong, or None if nothing did.
@@ -1630,10 +1673,7 @@ def cache_corrupted(test: Test) -> tuple[str, str]:
             try:
                 spoil(test, cache, token, rel, op, **params)
             except NoChaos as e:
-                return (
-                    SKIP,
-                    f"{e}; Cache.EnableChaosAPI is in Pelican v7.27.0 and v26.0.0-rc.0 on",
-                )
+                return SKIP, f"{e}; it needs Cache.EnableChaosAPI"
             except ValueError as e:
                 problems.append(str(e))
                 continue
@@ -1646,17 +1686,16 @@ def cache_corrupted(test: Test) -> tuple[str, str]:
 
 
 # What a client sends to learn how a transfer ended once its headers have
-# gone out (docs/pelican-http-headers.md in Pelican): the server then sends
-# the body in chunks, announces `Trailer: X-Transfer-Status`, and ends with
-# that trailer, `<status>: <text>`.
+# gone out (docs/pelican-http-headers.md in Pelican's repository). The
+# server then announces `Trailer: X-Transfer-Status`, and ends the body
+# with that trailer, `<status>: <text>`.
 ASK_STATUS = {"X-Transfer-Status": "true", "TE": "trailers"}
 STATUS_OK = "200: OK"
 # transfer-status's objects: one of several V2 blocks, and one under 4,096
 # bytes, which a V2 cache keeps inline in its database. Each read is of an
 # object of its own, so that it is cold the first time: the whole object;
-# a range across the second and third blocks, and the last 1,000 bytes, as
-# Pelican's own tests ask (e2e_fed_tests/transfer_status_test.go); and the
-# small object.
+# a range across the second and third blocks; the last 1,000 bytes; and
+# the small object.
 STATUS_SIZE = 16384
 STATUS_READS: dict[str, tuple[int, blocks.Request | None]] = {
     "whole": (STATUS_SIZE, None),
@@ -1724,16 +1763,15 @@ def read_status(
 def transfer_status(test: Test) -> tuple[str, str]:
     """Check that each federated cache, asked, ends a GET with its status.
 
-    Each federated cache, V2 or XRootD, asked for a transfer's status
-    (local_cache/persistent_cache_api.go in Pelican; XrdHttpReq.cc in
-    XRootD, 5.6 on): each of STATUS_READS, cold and then warm, must
-    announce the trailer and end with it, STATUS_OK (read_status()).
+    Each federated cache, V2 or XRootD, is asked for each of
+    STATUS_READS, cold and then warm, with the transfer's status: each
+    must announce the trailer and end with it, STATUS_OK (read_status()).
     Unasked, a GET of the whole object must come with no trailer. A HEAD
-    so asked has no body, and so no trailer, but must be answered as any
-    HEAD, with the object's length. A site-local cache reads through
-    another cache, and is passed over. Each V2 cache's introspection must
-    then say that it holds the small object inline, which is the path
-    that read is for; if it says otherwise, the row is inconclusive.
+    so asked has no body, and so no trailer, but must answer 200, with
+    the object's length if it gives one. A site-local cache reads
+    through another cache, and is passed over. Each V2 cache's introspection must then say that it
+    holds the small object inline, the path that read is for; if not,
+    the row is inconclusive.
     """
     caches = test.fed.federated_caches
     if not caches:
@@ -1792,12 +1830,10 @@ def transfer_status(test: Test) -> tuple[str, str]:
 def origin_transfer_status(test: Test) -> tuple[str, str]:
     """Check that each origin, asked, ends a GET with its status.
 
-    Each origin is asked for a transfer's status, by a GET of a whole
-    object of the run's (read_status()): Pelican's
-    docs/pelican-http-headers.md says that caches and origins alike send
-    the trailer. XRootD's origins do (XrdHttpReq.cc); nothing in Pelican's
-    origin_serve/ does, so the row fails at a native origin. The origins
-    are asked only if they take direct clients.
+    Pelican's docs/pelican-http-headers.md has origins send the trailer,
+    as caches do. Each origin gets a GET of a whole object, asking for
+    the transfer's status (read_status()). The origins are asked only if
+    they take direct clients.
     """
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
@@ -1853,10 +1889,10 @@ def plugin_failed(test: Test, cache: common.Cache, rel: str, name: str) -> tuple
     """Check that stash_plugin's download of rel through cache fails.
 
     The plugin reads rel in /protected-a through cache alone, into a
-    directory of its own, name: it must say that the transfer failed, and
-    leave nothing; and, unless it found no such object (as where the
-    director, asking every origin, found none), that the failure may be
-    retried, since it came after the transfer began.
+    directory of its own, name. It must say that the transfer failed,
+    and leave nothing. Its ad must say that the failure may be retried,
+    since it came after the transfer began, unless the plugin found no
+    such object (as where the director, asking every origin, found none).
 
     Returns:
         What is wrong, or None if nothing is; and how it failed.
@@ -1947,17 +1983,15 @@ def unrepairable(
 def transfer_status_failure(test: Test) -> tuple[str, str]:
     """Check that a block a V2 cache cannot repair fails the transfer.
 
-    Each federated V2 cache: once it holds an object of its own whole, its
-    chaos API corrupts block FAILED_BLOCK in its store (see spoil()), and
-    every origin's copy is removed, so that it cannot repair the block,
-    which it otherwise would. A GET asked for the transfer's status must
-    then end with a trailer that reports a failure (Pelican sends
-    `500: ...`), since the headers, 200, went out before the cache read
-    the block; or, as where the cache revalidates first, fail before the
-    body. Through that cache alone, `pelican object get` must then fail,
-    by something other than a refusal, and leave nothing; and so must
-    stash_plugin, whose ad must say the failure may be retried, unless it
-    found no such object (plugin_failed()). A cache that serves the object
+    Each federated V2 cache holds an object of its own whole. Its chaos
+    API corrupts block FAILED_BLOCK in its store (see spoil()), and every
+    origin's copy is removed, so that the cache cannot repair the block.
+    A GET asking for the transfer's status must then end with a trailer
+    that reports a failure, since the headers (200) went out before the
+    cache read the block; or, as where the cache revalidates first, fail
+    before the body. Through that cache alone, `pelican object get` must
+    then fail, by something other than a refusal, and leave nothing; so
+    must stash_plugin (plugin_failed()). A cache that serves the object
     intact never read the block, as where it holds it in memory, and
     leaves the row inconclusive.
     """
@@ -1981,7 +2015,7 @@ def transfer_status_failure(test: Test) -> tuple[str, str]:
                 found,
             )
         except NoChaos as e:
-            return SKIP, f"{e}; Cache.EnableChaosAPI is in Pelican v7.27.0 and v26.0.0-rc.0 on"
+            return SKIP, f"{e}; it needs Cache.EnableChaosAPI"
     return found.verdict()
 
 
@@ -2031,12 +2065,11 @@ def server_digests(test: Test, url: str, origin: bool, relays: bool = False) -> 
     """Check the digests that url's server reports of the sets' objects.
 
     The objects are those of DIGEST_SIZES in the `whole` and `ranged`
-    sets, and the server is asked by HEAD for each of digests.ALGORITHMS
-    in turn, and by GET for crc32c, the client's default. An origin must
-    report each of those its storage holds for the object (test.digests,
-    where stores.has_digests() says so for its size and how it was
-    uploaded); so must a server that relays the origins' (a V2 cache), of
-    the `whole` set, which it holds, if at all, as it read it whole.
+    sets. The server is asked by HEAD for each of digests.ALGORITHMS in
+    turn, and by GET for crc32c, the client's default. An origin must
+    report each digest its storage holds of the object (test.digests,
+    where stores.has_digests() says so for its size and upload). So must
+    a server that relays the origins' (a V2 cache), of the `whole` set.
 
     Args:
         test: The test.
@@ -2080,13 +2113,13 @@ def server_digests(test: Test, url: str, origin: bool, relays: bool = False) -> 
 def digests_scenario(test: Test) -> tuple[str, str]:
     """Check that every digest that a server reports is the object's.
 
-    Each server's digests (see server_digests()): every one it reports
-    must be the object's, as the client checks it. Each origin must report
-    stores.ORIGIN_DIGESTS of each object, but for those its storage cannot
-    (stores.digests()); so must a federated V2 cache of the `whole` set,
-    since it relays the origins' (digest_relay()). An object of the
-    `ranged` set that a V2 cache first read through a range comes with
-    none (digest_range_first()), so of it, as of any object at an XRootD
+    Every digest a server reports must be the object's, as the client
+    checks it (server_digests()). Each origin must report
+    stores.ORIGIN_DIGESTS of each object, but for those its storage
+    cannot (stores.digests()). So must a federated V2 cache, of the
+    `whole` set, since it relays the origins' (digest_relay()). The
+    `ranged` set, which a V2 cache first read through a range, is
+    digest_range_first's to judge; of it, as of any object at an XRootD
     or site-local cache, a cache need report none. The note names the
     servers that report none. The origins are asked only if they take
     direct clients.
@@ -2173,14 +2206,13 @@ def digests_after_writes(test: Test, origin: common.Origin, rel: str) -> tuple[l
 def digest_overwrite(test: Test) -> tuple[str, str]:
     """Check that each origin's digests and ETags follow overwrites.
 
-    Each origin, once it has reported the digests of an object of its own:
-    after a PUT of another version, at once, and in a store on disk, after
-    a write there a second later, which it must notice (a native origin
-    keeps digests by the file's modification time, to the second;
-    origin_serve/checksum.go). Each time, the digests it reports must be
-    those of the version it serves, and its ETag, if it sends one, must
-    differ from every earlier version's, since by it a cache tells that an
-    object has changed.
+    Each origin reports the digests of an object of its own. Another
+    version is then PUT at once, and, in a store on disk, written there a
+    second later, which the origin must notice: it may keep digests by
+    the file's modification time, to the second. Each time, the digests
+    it reports must be those of the version it serves. Its ETag, if it
+    sends one, must differ from every earlier version's, since by it a
+    cache tells that an object has changed.
     """
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
@@ -2201,10 +2233,8 @@ def digest_overwrite(test: Test) -> tuple[str, str]:
     return PASS, ", ".join(notes)
 
 
-# The algorithms the client knows (ChecksumType in client/handle_http.go),
-# each told by its digest: the client's stats number them by ChecksumType,
-# whose iota counts the three constants before it in its const block, so
-# that md5 is 3 and sha 6; the number is not relied on.
+# The algorithms the client knows (ChecksumType in client/handle_http.go).
+# Each is told by its digest, not by the number the client's stats give it.
 CLIENT_ALGORITHMS = ("md5", "crc32c", "crc32", "sha")
 # How long a V2 cache may take to record the origins' digests of an object
 # it has read whole: it asks an origin for them once the body has come.
@@ -2369,20 +2399,16 @@ def relayed_at(test: Test, cache: common.Cache, rel: str, data: bytes) -> tuple[
 def digest_relay(test: Test) -> tuple[str, str]:
     """Check that each federated V2 cache relays the origins' digests.
 
-    Each federated V2 cache relays the origins' digests of an object of
-    its own, as an RFC 3230 Digest (local_cache/persistent_cache_api.go in
-    Pelican), so that a client can check what it downloads through a
-    cache: a cold HEAD, from the origin's answer, and once the cache has
-    read the object whole, a HEAD and a GET, from what it recorded, must
-    each report the digests that the origins' storage holds
-    (test.digests), each the object's, whatever Want-Digest asks for
-    (relay_problem()). A cold GET may come before the cache knows them,
-    and the note says whether it carried them. Then
-    `pelican object get --cache` must get them from the cache
-    (client_digests()). Over XRootD origins, which answer a Want-Digest of
-    several algorithms with one, the cache, which asks for all at once,
-    relays only that one to a cold HEAD, and the row fails there. A
-    site-local cache reads through another cache, and is passed over.
+    A V2 cache relays the origins' digests as an RFC 3230 Digest, so that
+    a client can check what it downloads through the cache. Of an object
+    of each federated V2 cache's own, a cold HEAD, and once the cache has
+    read the object whole, a HEAD and a GET, must each report the digests
+    that the origins' storage holds (test.digests), each the object's,
+    whatever Want-Digest asks for (relay_problem()). A cold GET may come
+    before the cache knows them; the note says whether it carried them.
+    Then `pelican object get --cache` must get them from the cache
+    (client_digests()). A site-local cache reads through another cache,
+    and is passed over.
     """
     caches = [c for c in test.fed.federated_caches if c.kind == "v2"]
     if not caches:
@@ -2410,15 +2436,10 @@ def digest_relay(test: Test) -> tuple[str, str]:
 def digest_range_first(test: Test) -> tuple[str, str]:
     """Check a V2 cache's digests of an object it first read in a range.
 
-    Each federated V2 cache relays the origins' digests (relay_problem())
-    of an object of its own that it first read through a range, of its
-    second block: by HEAD once it has, and again once it has read the
-    object whole, and holds it all (it sends Age). A V2 cache fills a
-    range of an object it lacks block by block, and records only what the
-    origin's stat says of it (initObjectFromStat in
-    local_cache/persistent_cache.go), which asks for no digest; so it
-    relays none of that object, and the row fails, on main and
-    v26.0.0-rc.3 alike.
+    Each federated V2 cache first reads an object of its own through a
+    range, of its second block. A HEAD must then report the origins'
+    digests (relay_problem()), and again once the cache has read the
+    object whole and holds it all (it sends Age).
     """
     caches = [c for c in test.fed.federated_caches if c.kind == "v2"]
     if not caches:
@@ -2459,15 +2480,15 @@ def digest_range_first(test: Test) -> tuple[str, str]:
 
 # The extended attributes in which a posixv2 origin keeps an object's
 # digests, each with the file's modification time, to the second, in
-# XRootD's format (origin_serve/checksum.go in Pelican).
+# XRootD's format (origin_serve/checksum.go).
 CHECKSUM_XATTRS = (
     "user.XrdCks.md5",
     "user.XrdCks.crc32c",
     "user.XrdCks.crc32",
     "user.XrdCks.sha1",
 )
-# What a V2 cache asks an origin for (client.KnownChecksumTypes in
-# Pelican), so that every digest that the origin then reports is stale.
+# What a V2 cache asks an origin for (client.KnownChecksumTypes), so that
+# every digest the origin then reports is stale.
 EVERY_DIGEST = "md5,crc32c,crc32,sha"
 
 
@@ -2583,22 +2604,21 @@ def stale_digest(test: Test, cache: common.Cache, rel: str, a: bytes, found: Fin
 def stale_origin_digest(test: Test) -> tuple[str, str]:
     """Check that a V2 cache keeps and serves nothing that fails its digest.
 
-    Each federated V2 cache, reading an object of its own that the origins
-    serve with digests that are not its own, must neither pass it off as
-    good nor keep it (Pelican's
-    TestTransferStatus_Failure_OriginChecksumMismatch). A posixv2 origin
-    keeps an object's digests in its file's extended attributes, with the
-    file's modification time, to the second, and reports them while that
-    is unchanged; so each origin records the digests of one version, and
-    the test then writes another of the same size over it in the store,
-    and restores its time (stale_trap()). A GET through the cache, asked
-    for the transfer's status, must then report a failure in its trailer,
-    or fail; a GET with only-if-cached must get 504, within 10 seconds;
-    and `pelican object get --cache` must fail, by something other than a
+    Each federated V2 cache reads an object of its own that the origins
+    serve with digests of another version. It must neither pass the
+    object off as good nor keep it. A posixv2 origin keeps an object's
+    digests in its file's extended attributes, and reports them while
+    the file's modification time, to the second, is unchanged. So each
+    origin records the digests of one version; the test then writes
+    another of the same size over it in the store, and restores its time
+    (stale_trap()). A GET through the cache, asking for the transfer's
+    status, must then report a failure in its trailer, or fail; within
+    10 seconds, a GET with only-if-cached must get 504; and
+    `pelican object get --cache` must fail, by something other than a
     refusal, and leave nothing. Where the store keeps no extended
     attributes, or the origin notices the overwrite, the row is
-    inconclusive. The origins are first asked directly, so it skips where
-    they take no direct clients.
+    inconclusive. The origins are asked first, directly, so it skips
+    where they take no direct clients.
     """
     if test.fed.origin_variant != "posixv2":
         return SKIP, (
@@ -2743,11 +2763,10 @@ def digests_rewritten(test: Test, origin: common.Origin, rel: str, data: bytes, 
 
     rel is in /protected-a, holds data, and the origin has recorded its
     digests. Write bytes of the same length over it in the store, and give
-    the file back its modification time. The origin keeps digests by that
-    time, to the second (origin_serve/checksum.go), so it may report the
-    old version's, which is accepted, as XRootD does the same; or the new
-    bytes', if it noticed. Any other digest, or none, is a problem. The
-    note says which.
+    the file back its modification time. An origin that keeps digests by
+    that time, to the second, cannot see such a rewrite, so it may report
+    the old version's digests, or the new bytes' if it noticed. Any other
+    digest, or none, is a problem. The note says which.
     """
     target = stores.url(origin, "protected-a", rel)
     path = f"{origin.store_of('protected-a')}/{rel}"
@@ -2904,7 +2923,7 @@ def empty(test: Test) -> tuple[str, str]:
     """Check that every server answers an empty object's GET with no body.
 
     It must answer with 200, and a range of it with 200 and no body
-    (RFC 7233 lets it ignore Range) or with 416, since no range of it is
+    (RFC 9110 lets it ignore Range) or with 416, since no range of it is
     satisfiable. The origins are asked only if they take direct clients.
     """
     if why := test.not_uploaded(True, False):
@@ -3861,8 +3880,6 @@ def mixed_version(test: Test) -> tuple[str, str]:
     return PASS, ", ".join(notes)
 
 
-# The overwrite scenarios' objects: one keeps its size, one grows, and one
-# shrinks, by blocks.OVERWRITE_CHANGE.
 # How long past an object's freshness a cache may take to serve the new
 # version: requests are 3 seconds apart, and it revalidates by fetching
 # the object again.
@@ -3871,6 +3888,9 @@ REVALIDATION_MARGIN = 45
 
 class Versions:
     """Two versions of each cache's objects for the overwrite scenarios.
+
+    One object keeps its size, one grows, and one shrinks, by
+    blocks.OVERWRITE_CHANGE.
 
     Attributes:
         CHANGES: How much longer v2 is than v1, by kind of change.
@@ -4153,16 +4173,15 @@ def refused_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> str
 def write_through(test: Test) -> tuple[str, str]:
     """Check that V2 caches relay writes, and XRootD caches refuse them.
 
-    Each V2 cache takes writes of /protected-a, which it relays to an
-    origin through the director, and then drops its copy (proxyWrite in
-    Pelican's local_cache/persistent_cache_api.go). Of an object it holds:
-    a PUT with a read-only token must be refused, and change nothing; one
-    with the server's token must reach an origin; and once every origin
-    holds what was written, the cache must serve it at once. Then likewise
-    a DELETE, after which the cache must serve nothing, unless the
-    origins' storage cannot delete. Where /protected-a takes no writes,
-    the PUT must be refused. An XRootD cache takes no writes, so its PUT
-    must be refused, and change no origin.
+    A V2 cache relays a write of /protected-a to an origin through the
+    director, and drops its own copy. Of an object each holds, a PUT
+    with a read-only token must be refused, and change nothing; one with
+    the server's token must reach an origin; and once every origin holds
+    what was written, the cache must serve it at once. Then likewise a
+    DELETE, after which the cache must serve nothing, where the origins'
+    storage can delete. Where /protected-a takes no writes, the PUT must
+    be refused. An XRootD cache takes no writes, so its PUT must be
+    refused, and change no origin.
     """
     base = f"{test.base}/write-through"
     v1 = {c.svc: os.urandom(blocks.OVERWRITE_SIZE) for c in test.caches}
@@ -4265,15 +4284,14 @@ def lru_order(
 
     The LRU_NEWEST objects read last must still be held, and at least two
     of the oldest (1 to again - 1) gone. Object 0, read again after again
-    objects, while held (was_held), may be held or gone: a V2 cache
-    records an access for its LRU at most once in ten minutes (UpdateLRU's
-    debounce in local_cache/database.go), so the read again may move it
-    nowhere.
+    objects while held (was_held), may be held or gone: a V2 cache
+    records an access for its LRU order at most once in ten minutes
+    (UpdateLRU in local_cache/database.go).
 
-    An XRootD cache need only have evicted several: it purges the oldest
-    by its .cinfo's mtime, in whole seconds (FPurgeState in XrdPfc),
-    which it writes some seconds after a read, and not after every one,
-    so its order does not follow reads a second apart.
+    An XRootD cache need only have evicted at least two. It purges the
+    oldest by its .cinfo's mtime, in whole seconds (FPurgeState in
+    XrdPfc), which it writes some seconds after a read, and not after
+    every one, so its order does not follow reads a second apart.
 
     Returns:
         What is wrong, or None if nothing is; and a note of what the cache
@@ -4289,14 +4307,14 @@ def lru_order(
     if cache.kind == "xrootd":
         gone = [n for n in range(count) if not found[n]]
         if len(gone) < 2:
-            return f"{len(gone)} of the {count} objects are gone, not several", ""
+            return f"{len(gone)} of the {count} objects are gone, not at least two", ""
         return None, f"{len(gone)} of {count} gone, in an order not checked (see lru_order())"
     lost = [n for n in range(count - LRU_NEWEST, count) if not found[n]]
     if lost:
         return f"object {lost[0]}, among the {LRU_NEWEST} read last, is gone", ""
     gone = [n for n in range(1, again) if not found[n]]
     if len(gone) < 2:
-        return f"{len(gone)} of objects 1 to {again - 1}, the oldest, are gone, not several", ""
+        return f"{len(gone)} of objects 1 to {again - 1}, the oldest, are gone, not at least two", ""
     then = {True: "held", False: "gone", None: "unknown"}[was_held]
     now = "held" if found[0] else "gone"
     return None, (
@@ -4378,18 +4396,18 @@ def evicted(test: Test, cache: common.Cache, base: str, count: int) -> tuple[str
 def cache_evicted(test: Test) -> tuple[str, str]:
     """Check that a bounded cache evicts the oldest objects first.
 
-    Each cache whose store is bounded (`-p cache-small`), of either kind:
-    a cold whole read of each of enough objects of EVICT_OBJECT bytes to
-    exceed its high water mark by half, reading the first again once as
-    many as fit under the mark have been read (reread_at()); then, within
+    Each cache whose store is bounded (`-p cache-small`), of either kind,
+    reads cold and whole enough objects of EVICT_OBJECT bytes to exceed
+    its high water mark by half. It reads the first again once as many
+    as fit under the mark have been read (reread_at()). Within
     EVICT_WAIT seconds for its kind, its store must have come back under
-    the mark, and not below its low one by more than an object; it must
+    the mark, and not below its low one by more than an object. It must
     have evicted the oldest objects and kept the newest, or, an XRootD
-    cache, several objects (lru_order()); and every object must still
-    come back whole and in a range, as must
-    the first by `pelican object get --cache`. The objects are one set,
-    read cold by each cache. An XRootD cache's marks are the bounds on
-    its files (Cache.FilesMaxSize and Cache.FilesBaseSize; see fed.sh).
+    cache, at least two objects (lru_order()). Every object must still
+    come back whole and in a range, and the first by
+    `pelican object get --cache`. The objects are one set, read cold by
+    each cache. An XRootD cache's marks are the bounds on its files
+    (Cache.FilesMaxSize and Cache.FilesBaseSize; see fed.sh).
     """
     caches = [c for c in test.caches if c.svc in test.fed.eviction]
     if not caches:

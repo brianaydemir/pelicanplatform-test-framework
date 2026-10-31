@@ -1,87 +1,52 @@
 """The federation itself: it serves, and its servers know of each other.
 
-test.py runs `ready` and `caches` before any other suite, whatever it is
-asked for, since nothing else can pass without them; and it stops if
-`ready` can't pass, or `caches` finds no cache that serves.
+The suite puts a probe at every origin, in each exported namespace,
+under /<namespace>/data/federation/<run>/, and removes the run's objects
+afterward. test.py runs `ready` and `caches` before any other suite,
+whatever it is asked for, and stops the run if `ready` never passes, or
+`caches` finds no cache that serves.
 
-The suite puts an object in place at every origin's store, under
-/<namespace>/data/federation/<run>/, and reads it back:
-
-  ready      through the federation (the director and a cache), with
-             `pelican object get`: 20 tries, 15 seconds apart, since
+  ready      the probe comes back through the federation by `pelican
+             object get`, within 20 tries, 15 seconds apart, since
              servers just started take a while to find each other
-  caches     straight from each cache, with the server's token: 20
-             tries, 15 seconds apart, while it fails or does not answer,
-             since a new cache refuses a namespace's tokens (403) until
-             it has learned the namespace's issuers from the director
-  approval   under `-p registry-approval`, where nothing serves until
-             an administrator approves its registration, `ready`
-             approves every pending one through the registry's admin
-             API before each of its tries, and first asks the directors
-             where they would send the object: none may name a server
-             whose registration was still pending; inconclusive where
-             none was, as on a rerun
-  directors  each director must name every federated cache for it, and
-             no site-local one, and every origin; and, for a client's
-             direct read (?directread), every origin, or where the
-             namespace takes no direct clients, no origin, answering 405;
-             within 60 seconds (not in the tiny topology)
-  discovery  where a Pelican server serves the federation's discovery
-             document (a director under `-p director-discovery`, the
-             tiny topology's director, or a standalone origin), it names
-             the federation's servers as fed.sh does, and its jwks_uri
-             the server's own keys
+  caches     each cache serves the probe, asked straight with the
+             `server` token, within 20 tries, 15 seconds apart, since a
+             new cache refuses a namespace's tokens (403) until it has
+             learned the namespace's issuers from the director
+  approval   under `-p registry-approval`, `ready` approves every
+             pending registration before each try; no director named a
+             server whose registration was pending
+  directors  each director names every federated cache, no site-local
+             one, and every origin; for a direct read (?directread),
+             every origin where the namespace takes direct clients, and
+             otherwise none (405); with no cache, an origin in a
+             cache's place
+  discovery  a Pelican server's discovery document names the
+             federation's servers as fed.sh does, and its jwks_uri
+             serves the server's own keys
   broker     under `-p origin-broker`, each director names origin-0's
-             connection broker, for an origin, and so does its list of
-             servers, which names none for a cache; within 60 seconds;
-             and behind a firewall (`-p origin-firewalled`), the origin
-             must have counted connections made in reverse, and object
-             requests over them, since `caches` could have fetched the
-             probe only through the broker
-  hints      each director's redirect, for a cache and for an origin, in
-             each namespace, tells the client the namespace, whether it
-             takes a token, and its issuer (the X-Pelican-Namespace,
-             X-Pelican-Authorization, and X-Pelican-Token-Generation
-             headers), by which the client picks a token
-  redirects  a plain HTTP client, which follows a director's redirect
-             and presents its token again where it lands, as curl does:
-             in each namespace, at each director (and at the load
-             balancer, under `-p director-ha`), a GET and a HEAD of
-             the object's bare path must land at a cache, or at an
-             origin under `-p director-default-origin`
-             (Director.DefaultResponse); one with ?directread at an
-             origin, where the namespace takes direct clients, and
-             otherwise find none; the object and origin routes at a
-             cache and an origin; and a bare-path PUT, with the
-             namespace's token, at an origin, where the namespace
-             takes writes, and otherwise nowhere that takes it. What
-             lands at a cache must be served, and what lands at an
-             origin only where the namespace takes direct clients
-  presence   with several origins of stores of their own, an object
-             that one of them alone holds: each director must send an
-             origin's read of it, plain and for a client's direct read,
-             to that origin alone, by asking the origins which has it
-             (Director.CheckOriginPresence, on by default), or where the
-             namespace takes no direct clients, find none (405) for the
-             direct read; and it must come back through each cache, and
-             by `pelican object get`, through a cache, and direct where
-             the namespace takes direct clients
-  downtime   a server's admin declares it down through its web API, as
-             before maintenance: within 150 seconds no director may
-             name it, and once the downtime is ended, every director
-             must again, as soon; the last federated cache, and with
-             several origins, the last origin
+             connection broker, and no cache's; behind a firewall
+             (`-p origin-firewalled`), the origin counts what came
+             through it
+  hints      each director's redirect tells the client the namespace,
+             whether it takes a token, and its issuer
+  redirects  a plain HTTP client that follows each director's
+             redirects, as curl does, lands where the namespace allows
+             and is served there; a bare-path PUT is stored only where
+             the namespace takes writes
+  presence   an object that one origin alone holds: each director sends
+             an origin's reads of it there, and each cache and both of
+             the client's routes serve it
+  downtime   a server that its admin declares down is named by no
+             director within 150 seconds, and by every one again once
+             it is up
 
-Its data, under each origin's data/federation/, on a pstore origin too,
-is removed after the suite.
-
-Its SciTokens pass presents SciTokens where the WLCG pass presents its
-own: its probes are put in place with WLCG tokens either way. Once
-`ready` or `caches` has passed, neither waits again in a later pass:
-the federation is no longer starting. In a pass of another profile
-alone (`--profile scitokens`), a federation that refuses the pass's
-tokens but serves a WLCG token is up, so the row fails, and the run
-goes on.
+The SciTokens pass presents SciTokens where the WLCG pass presents WLCG
+tokens; the probes are put in place with WLCG tokens either way. Once
+`ready` or `caches` has passed, a later pass tries it once. In a pass of
+another profile alone (`--profile scitokens`), a federation that refuses
+the pass's tokens but serves a WLCG token is up, so the row fails, and
+the run goes on.
 """
 
 import json
@@ -111,7 +76,7 @@ from testlib.session import Session, last_line
 
 SCENARIOS = {
     "ready": "an object uploaded to every origin comes back through the federation",
-    "caches": "each cache serves it with the server's token (a new one refuses at first)",
+    "caches": "each cache serves it, asked straight with the namespace's `server` token",
     "approval": (
         "under `-p registry-approval`, no director named a server before its registration"
         " was approved, which `ready` does"
@@ -143,8 +108,7 @@ ONE_PROFILE = ("approval", "directors", "discovery", "broker", "hints", "downtim
 
 # How long `ready` and `caches` wait: tries, and seconds between them.
 TRIES, INTERVAL = 20, 15
-# Which of them has passed, in an earlier pass of the run, after which it
-# tries once.
+# Those of them that passed in an earlier pass of the run, and so try once.
 SETTLED: set[str] = set()
 # How long `directors` and `broker` wait, in seconds.
 DIRECTORS_WAIT = 60
@@ -293,9 +257,8 @@ class Probe:
 def pending_registrations(api: accounts.Api) -> list[tuple[str, str]]:
     """Return each pending registration's ID and prefix.
 
-    Pending is each awaiting approval, whether Incomplete, as a server's
-    own registration starts (Pelican's registry/registry.go, since
-    v26.0.0-rc.1), or Pending, as one whose form has been filled in does.
+    A registration awaiting approval is Incomplete, as a server's own
+    registration starts, or Pending, once its form has been filled in.
 
     Raises:
         accounts.ApiError: The registry did not list them.
@@ -357,12 +320,11 @@ def ready(probe: Probe) -> tuple[str, str]:
     """Check that the object comes back through the federation.
 
     Where the registry requires approval, each try first approves what is
-    pending, since a server registers once it is up. Once it has passed,
+    pending, since a server registers once it is up. Once it has passed
     in an earlier pass of the run, it tries once, and fails rather than
-    dies; so it does in a pass of another profile alone, where the
-    federation refuses the session's token but serves a WLCG one, since
-    the refusal is its verdict on the profile, not a federation that is
-    down.
+    dies. It also fails in a pass of another profile alone, where the
+    federation refuses the session's token but serves a WLCG one: the
+    refusal is a verdict on the profile, not a federation that is down.
 
     Raises:
         Died: The federation never serves: nothing after it could pass.
@@ -396,8 +358,7 @@ def ready(probe: Probe) -> tuple[str, str]:
 def cache_problem(probe: Probe, cache: common.Cache, answer: web.Response) -> str | None:
     """Return what is wrong with answer, cache's to a GET of the object."""
     if answer.status != 200:
-        # What the cache says of its failure, e.g. that its director
-        # serves no federation metadata, tells why.
+        # The cache's own account of its failure tells why.
         said = last_line(answer.body.decode(errors="replace"))[:200]
         return f"{cache.svc}: {answer.describe()}" + (f" ({said})" if said else "")
     if answer.body != probe.data[probe.namespace]:
@@ -488,17 +449,14 @@ def approval(probe: Probe) -> tuple[str, str]:
 def directors(probe: Probe) -> tuple[str, str]:
     """Check where each director would send a GET of the object.
 
-    Its lists for a cache (`object`) and for an origin must name every one.
-    The `origin` route is also how caches reach origins, so without
-    ?directread it names origins whether or not they take direct clients.
-    Only with ?directread, a client's direct read, does the director check
-    DirectReads (originSupportsQuery() in Pelican's director/sort.go):
-    then it must name every origin where the namespace takes direct
-    clients, and elsewhere find none (405), and name none. Where the
-    federation has no cache (`-p topo-no-cache`), the `object` route must
-    fall back to an origin, where the namespace takes direct clients
-    (redirectToCache in director/director.go), and name only origins; and
-    elsewhere find none (404).
+    Its answers for a cache (`object`) and for an origin must name every
+    one. Caches reach origins by the `origin` route too, so it names
+    every origin whether or not the namespace takes direct clients. With
+    ?directread, a client's direct read, it must name every origin where
+    the namespace takes direct clients, and otherwise find none (405).
+    Where the federation has no cache (`-p topo-no-cache`), the `object`
+    route must fall back to an origin where the namespace takes direct
+    clients, and otherwise find none (404).
     """
     fed = probe.fed
     if fed.standalone:
@@ -568,14 +526,13 @@ def directors(probe: Probe) -> tuple[str, str]:
 def discovery(probe: Probe) -> tuple[str, str]:
     """Check the discovery document, where a Pelican server serves it.
 
-    One does where it is the discovery host: director-0 under
-    `-p director-discovery` (Director.EnableFederationMetadataHosting), or
-    the directors' load balancer under `-p director-ha` too, the tiny
-    topology's one server, or a standalone origin. Each of
+    A Pelican server is the discovery host as director-0 under
+    `-p director-discovery` (Director.EnableFederationMetadataHosting),
+    or as the directors' load balancer under `-p director-ha` too; as the
+    tiny topology's one server; or as a standalone origin. Each of
     DISCOVERY_FIELDS must be as fed.sh has it (an empty one may be
-    missing), and the jwks_uri serve the server's own keys, by which the
-    federation's tokens are checked. Elsewhere, the discovery host serves
-    fed.sh's own document.
+    missing), and the jwks_uri must serve the server's own keys.
+    Elsewhere, the discovery host serves fed.sh's own document.
     """
     fed = probe.fed
     host = director.host(str(fed.discovery["discovery_endpoint"]))
@@ -615,10 +572,10 @@ def discovery(probe: Probe) -> tuple[str, str]:
 def broker_problems(fed: common.Federation, path: str, namespace: str) -> list[str]:
     """Return what is wrong with what each director says of the broker.
 
-    That is the connection broker that it names for an origin's read of
-    path, in namespace, the one the brokered origin exports, in the
-    X-Pelican-Broker header; and in its list of servers, each one's broker
-    URL.
+    Each must name origin-0's connection broker in the X-Pelican-Broker
+    header of its answer for an origin's read of path, in namespace; and
+    in its list of servers, as each origin's broker URL, and as no
+    cache's.
     """
     want = urlsplit(str(fed.discovery["broker_endpoint"]))
     origin = director.host(fed.origins[0].url)
@@ -661,7 +618,7 @@ def broker_problems(fed: common.Federation, path: str, namespace: str) -> list[s
 
 # The origin's counters of what came through the broker: the connections
 # it made in reverse, and the object requests they carried
-# (metrics/server.go in Pelican, counted in origin/broker_client.go).
+# (metrics/server.go in Pelican).
 BROKER_CONNECTIONS = "pelican_broker_connections_total"
 BROKER_OBJECTS = "pelican_broker_object_requests_total"
 
@@ -729,10 +686,10 @@ def hints(probe: Probe) -> tuple[str, str]:
     Each director's redirect of a GET of the object, for a cache
     (`object`) and for an origin, in each exported namespace, must say
     which namespace it is and whether it takes a token
-    (X-Pelican-Namespace), and name its issuer, where it has one, and no
-    other (X-Pelican-Authorization; X-Pelican-Token-Generation, if sent,
-    names it too): the client chooses its token by these (see
-    director.hints()).
+    (X-Pelican-Namespace). It must name the namespace's issuer, where it
+    has one, and no other (X-Pelican-Authorization;
+    X-Pelican-Token-Generation, if sent, must name it too). The client
+    chooses its token by these (see director.hints()).
     """
     fed = probe.fed
     if fed.standalone:

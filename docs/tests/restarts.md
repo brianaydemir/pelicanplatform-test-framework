@@ -2,148 +2,70 @@
 
 Part of [What the tests check](README.md).
 
-Production servers restart and fail all the time. The `restart` suite
-takes servers away in the middle of a run, through the control helper
-([service control](../../README.md#service-control)), and checks what
-survives and what the rest of the federation does meanwhile; it puts
-each back, even after a failure, and comes after every other suite but
-`keys`. It needs a control helper, and skips the tiny topology, whose
-servers are one process. Its objects go under
-`/protected-a/data/restart/<run>/`, put at every origin, and are
-removed afterward. A scenario with several cases records a row per
-case, named `<scenario> <case>`, or `<scenario> <service>`. The
-`transfer-api` suite's `restart` covers a transfer job interrupted by a
-restart, and `freshness`'s `stale-if-error` a stale copy served while
-every origin is stopped.
+The `restart` suite takes servers away mid-run and checks what survives and
+what the rest of the federation does meanwhile. It puts each server back,
+even after a failure, and runs after every other suite but
+[`keys`](keys.md). It needs a control helper
+([service control](../../README.md#service-control)), and skips under
+`-p topo-tiny`. A case's row is named `<scenario> <case>`, or
+`<scenario> <service>`. `state-survives`, `ad-expiry`, `xrootd-wedged`, and
+`peer-director` run in the WLCG pass only
+([token profiles](README.md#token-profiles)).
 
-- `cache-restart`: each cache, the site-local one included, holds three
-  1 MiB objects read whole (a V2 cache says so with `Age`), and every
-  director must name a federated one (within 150 seconds, since
-  `state-survives` restarts director-0, in the pass before). Restarted,
-  and once every director names it again (within 150 seconds, timed in
-  the note), it must serve each from its store, intact, with `Age` for
-  a V2 cache (`selftest`'s `restart-cache` does the same for cache-0
-  and one object), and the native origins must have sent less than an
-  object's worth of bytes for GETs meanwhile
-  (`pelican_http_bytes_total`). An XRootD cache sends no `Age`, so
-  there the origins' counters alone tell; over XRootD origins, which
-  keep none, the bytes alone must be right.
-- `state-survives`: before origin-0, director-0, and the registry
-  restart, the suite records each origin's and cache's ID and name, as
-  it records them itself (`/api/v1.0/server/localMetadata`), and the
-  servers the registry lists; and at the issuer origin, with the
-  origins' own issuer (with the external one, or none, the `issuer` row
-  skips, and the rest below are left out), it makes a user, a group, an
-  API token of the `monitoring.scrape` scope, a downtime declared for
-  tomorrow, a client of the namespace issuer's, and a refresh token
-  through it. Each restart but the registry's must end with every
-  director naming origin-0 again within 150 seconds (`restarts`).
-  Afterward each server's ID and name must be as recorded (`ids`); the
-  registry must list the same servers, none twice (`registrations`);
-  the user and the group must be there, with their IDs (`accounts`);
-  the API token must still read `/metrics` and be listed (`api-token`);
-  the downtime must still be declared (`downtime`); and the refresh
-  token must refresh, with the client's secret (`issuer`): the issuer
-  signs its tokens with a key it derives from a master key in its
-  database (`oauth2/issuer/provider.go`).
-  What the suite made is removed afterward.
-- `ad-expiry`: the first federated cache, and with several origins the
-  last origin, once every director names it (within 150 seconds, since
-  `state-survives` has just restarted director-0), killed (SIGKILL, so
-  it says nothing to the directors):
-  within `Server.AdLifetime` (90 seconds here) and 30 more, no director
-  may name it, since its ad has expired (the directors keep ads in a
-  cache with that TTL, `director/cache_ads.go`; under
-  `-p topo-multi-director`, a peer's forwarded ad must not keep it
-  alive); started again, every director must name it within 150
-  seconds. The note times both.
-- `backend-outage`, where the origins' storage is a service of the
-  framework's (`s3` under `-p origin-s3v2` or `-p origin-s3`, `webdav`
-  under `-p origin-httpsv2` or `-p origin-https`, `lab-server` under
-  `-p origin-ssh`): with it stopped, at origin-0, where it takes direct
-  clients, a GET and a HEAD of an object, and a PUT of a new one, must
-  each get a server error (5xx), never 404 or 405, nor the object's
-  bytes (`direct`); through the first federated cache, a GET of an
-  object it does not hold must get a server error too, not 404
-  (`cache`); and an `ssh` origin's health must say its `ssh-backend` is
-  not ok within 60 seconds (`health`; the other backends have no
-  component). Once the service is back, the origin must serve the
-  object again within 120 seconds, without a restart, and its HEAD, a
-  PUT, and the cache's read must work (`recovered`), and the health
-  component say ok. An `httpsv2`
-  origin whose `OPTIONS` probe of its backend fails takes it for a
-  plain HTTP server, and so answers a missing backend as missing
-  objects (`probeBackendMode` in `origin_serve/backend_https.go`),
-  so its `direct` and `cache` rows are expected to fail; this comes
-  from reading the code, not from a run. An `ssh` origin answers a GET
-  with its storage host stopped 404 too, and then, once its five tries
-  to connect again are spent (`Origin.SSH.MaxRetries`, about 13
-  seconds), exits for good ("SSH connection failed after max
-  retries"), so no health report says anything, and nothing serves
-  again when the lab server is back: `direct`, `health`, and
-  `recovered` fail there (seen with v26.0.0-rc.3, under
-  `-p topo-standalone -p origin-ssh`). The suite then asks the control
-  helper what state the origin's container is in, and starts it again
-  if it has exited, saying so in `recovered`'s note, so that the rest
-  of the run finds the origin serving; `recovered` still fails, since the origin
-  should have come back without a restart. How XRootD's S3 and HTTPS
-  plugins (`-p origin-s3`, `-p origin-https`) answer with their backend
-  gone, no run has yet shown. It skips where the origin stores on its
-  own disk.
-- `xrootd-wedged`, where XRootD serves the origins or a federated
-  cache: a server probes its own XRootD, by a TLS handshake that XRootD
-  itself must answer, and once XRootD has answered none for
-  `Xrootd.LivenessMaxUnresponsiveTime`, shuts it down, and ends with it,
-  so that what runs the server can start it afresh
-  (`xrootd/liveness.go`; Pelican's main, not v26.0.0-rc.3). Origin-0,
-  if XRootD serves it, and the first federated XRootD cache are each
-  restarted with the probe's timings shortened, from a minute between
-  probes, three minutes for one, and ten without an answer, to 2
-  seconds, 3, and 20. Once its health says `xrootd-liveness` is `ok`,
-  the control helper stops its XRootD daemons (SIGSTOP), which leaves
-  their port taking connections, from the kernel's backlog, but
-  answering nothing. Its health must then say `warning` or `critical`,
-  and within 90 seconds its container must have exited; the note times
-  both. It is then started again as it was, and every director must
-  name it again within 150 seconds. A row per server, named after it.
-  It presents no storage token, and runs in the WLCG pass alone.
-- `cache-failover`, with several federated caches: the first is paused
-  (its ports take connections that nothing answers), and then killed
-  (they refuse). Each time, `pelican object get` and stash_plugin of an
-  object of their own through the federation must succeed, served by
-  another cache, while the directors still name the first (`early`;
-  inconclusive if they had already dropped it), and once they have
-  dropped it, within `Server.AdLifetime` and 30 more (`late`). The note
-  says which caches each client tried: the client probes each endpoint
-  for a second before it downloads, so a cache that answers nothing may
-  be tried last rather than fail. Afterward the cache is unpaused, or
-  started, and every director must name it again within 150 seconds
-  (`back`). Each row's case begins with `paused` or `killed`, as in
-  `paused early`. First, with every cache up, both clients must get a
-  probe through the federation; if one can't, it can't with a cache away
-  either, and the scenario fails at once, in a row of its own.
-- `origin-failover`, with several origins, each holding every object
-  (`-p topo-multi-origin`): the last is paused, and then killed. Each
-  time, `pelican object get` and stash_plugin must each get an object of
-  their own, direct from an origin (`--direct`, or `?directread`; not
-  under `-p origin-no-direct`) and through a cache (or, with none, from
-  whichever origin the directors send them to), served by a server other
-  than the one away, while the directors still name it for an origin's
-  read (`early`; inconclusive if they had already dropped it), and once
-  they have dropped it, within `Server.AdLifetime` and 30 more (`late`).
-  Until its ad expires, the directors still list the origin from its ad,
-  but a director that has the namespace's token stats the origins before
-  it redirects (`Director.CheckOriginPresence`), and so sends a client
-  to the one that answers; a cache fetches from the origins as a client
-  does, with the client's token, and must get the object too. The note
-  says which servers each client tried. Afterward the origin is
-  unpaused, or started, and every director must name it again within 150
-  seconds (`back`). Each row's case is `paused` or `killed`, `early` or
-  `late`, and `direct` or `cache`, as in `killed late direct`. First,
-  with every origin up, both clients must get a probe by each route, or
-  the scenario fails at once, as `cache-failover` does.
-- `peer-director`, with several directors: the second killed, the first
+- `cache-restart`: Each cache, site-local included, restarted, must serve
+  the objects it held from its store, intact: native origins send under an
+  object's worth of bytes (`pelican_http_bytes_total`), and a V2 cache sends
+  `Age`. Every director must name a federated cache again within 150
+  seconds. A row per cache.
+
+- `state-survives`: Origin-0, director-0, and the registry restart; after
+  each but the registry, every director must name origin-0 within 150
+  seconds (`restarts`). Then each server's ID and name (`ids`), and the
+  registry's servers, none twice (`registrations`), must be as before. So
+  must, at origin-0, a user's and group's IDs (`accounts`), an API token
+  that reads `/metrics` (`api-token`), a downtime (`downtime`), and a
+  refresh token of the namespace's issuer (`issuer`). Without the origins'
+  own issuer, `issuer` skips, and the three before it are left out.
+
+- `ad-expiry`: The first federated cache, and with several origins the last
+  origin, is killed (SIGKILL). No director may name it after
+  `Server.AdLifetime` (90 seconds here) and 30 more, even under
+  `-p topo-multi-director`, whose peers forward ads. Restarted, it must be
+  named again within 150 seconds. A row per server.
+
+- `backend-outage`: The origins' storage service (`s3`, `webdav`, or
+  `lab-server`, by the `-p origin-*` preset) is stopped. Meanwhile, a GET,
+  HEAD, or PUT at origin-0 (`direct`, where it takes direct clients), and a
+  cache miss through the first federated cache (`cache`), must get a server
+  error, never 404, 405, or the object; an `ssh` origin's health must report
+  `ssh-backend` not ok within 60 seconds (`health`). With the service back,
+  the origin must serve again within 120 seconds, without a restart, and its
+  health say ok (`recovered`); if the origin exited, the suite restarts it,
+  and `recovered` fails. Skips where the origin stores on its own disk.
+
+- `xrootd-wedged`: A server whose XRootD answers no liveness probe for
+  `Xrootd.LivenessMaxUnresponsiveTime` must shut XRootD down and exit.
+  Origin-0, if XRootD serves it, and the first federated XRootD cache
+  restart with that set to 20 seconds, then their XRootD is stopped
+  (SIGSTOP). Health must turn `warning` or `critical`, and the container
+  exit, within 90 seconds. Restarted, the server must be named by every
+  director within 150 seconds. A row per server.
+
+- `cache-failover`: With several federated caches, the first is paused, then
+  killed. Each time, `pelican object get` and stash_plugin must get an
+  object through another cache, while the directors still name the first
+  (`early`), and once they have dropped it, within `Server.AdLifetime` and
+  30 more (`late`). Restored, it must be named again within 150 seconds
+  (`back`). Cases are named like `paused early`.
+
+- `origin-failover`: The same with the last of several origins
+  (`-p topo-multi-origin`), by two routes: direct (`direct`; not under
+  `-p origin-no-direct`), and through a cache (`cache`). A director with the
+  namespace's token must stat origins before redirecting
+  (`Director.CheckOriginPresence`). Cases are named like
+  `killed late direct`, besides `paused back` and `killed back`.
+
+- `peer-director`: With several directors, the second is killed. The first
   must list only itself at `/api/v1.0/director/directors` within
-  `Server.AdLifetime` and 30 more, since its peer's ad has expired
-  (`director/director_advertise.go`); once the second starts again,
-  the first must list both within 150 seconds. The note times both.
+  `Server.AdLifetime` and 30 more, and both within 150 seconds of the
+  second's restart.

@@ -1,24 +1,28 @@
 """Uploads interrupted, or racing, and what an origin keeps of them.
 
-POSC (`-p origin-posc`): interrupt uploads to an origin, or race two, and
-check what its store shows, and what it serves meanwhile. The same for
-XRootD's atomic uploads (`-p origin-atomic-uploads`), which stage each
-upload beside the exports' storage rather than inside it, and for a pstore
-origin (`-p origin-pstore`), which commits a new version only when an upload
-completes, judged by what the origins serve. Every other origin stages
-nothing (`plain`): the same interruptions, judged by what the stores show
-of the object itself, since an upload cut short must leave no object, an
-overwrite cut short the old one, and a reader never a half-written one;
-an origin that writes an upload into place as it comes fails them, which
-is what they are there to show.
+The suite interrupts uploads to the first origin, or races two, and
+checks what its store shows, and what it serves meanwhile. It judges
+each by the staging that the shape has (Test.kind):
 
-Uploads go straight to the first origin in
-framework/var/generated/origins, under /protected-a/data/posc/, with a
-token of the session's profile; what the stores hold is read, and
-removed, with a WLCG token either way. Only `client` goes through the
-director. An interruption is judged only once
-the upload is seen under way: a new staging file, or growth in
-pstore/objects on pstore. Afterward, /protected-a/data/posc is emptied on
+  posc     POSC (`-p origin-posc`): a staging file under .pelican-posc
+  atomic   XRootD's atomic uploads (`-p origin-atomic-uploads`): a
+           staging file beside the exports' storage (ATOMIC_DIR)
+  pstore   a pstore origin (`-p origin-pstore`), which commits a new
+           version only once an upload completes: what the origins serve
+  plain    every other origin, which stages nothing: what the stores
+           show of the object itself
+
+Whatever the staging, an upload cut short must leave no object, an
+overwrite cut short the old one, and a reader must never see a
+half-written one.
+
+Uploads go straight to the first origin in framework/var/generated/origins,
+under /protected-a/data/posc/, with a token of the session's profile;
+what the stores hold is read, and removed, with a WLCG token either way.
+Only `client` goes through the director. An interruption is judged only
+once the upload is seen under way: by a new staging file, by growth in
+pstore/objects on pstore, or, on a plain origin, by the object
+appearing or growing. Afterward, /protected-a/data/posc is emptied on
 every store.
 
 `posc-expiry` checks the native POSC's reaping of abandoned staging
@@ -103,7 +107,7 @@ POSC_EXPIRED = "pelican_origin_posc_expired_total"
 # restart's FileTimeout and KeepaliveInterval, in seconds, how old a file
 # it plants is, stale under that timeout but not the default, and how
 # long its upload idles, past the timeout; and how long the reaper, which
-# sweeps every 5 seconds (expireLoop in origin_serve/posc.go), may take.
+# sweeps every 5 seconds (docs/v2-origin-posc-and-metadata.md), may take.
 STALE_AGE = 2 * 3600
 FILE_TIMEOUT = 20
 KEEPALIVE = 5
@@ -861,9 +865,7 @@ def hidden(test: Test) -> tuple[str, str]:
     It lists the export while an upload is held open, so that .pelican-posc
     is there to hide: by PROPFIND (Depth 1), as `pelican object ls` does,
     and as a browser does, by a GET for HTML, whose listing links to each
-    entry. The export holds data/, which both must show. Pelican hides the
-    staging directory from PROPFIND, but its HTML listing reads the
-    directory itself and shows it, so the row fails there.
+    entry. The export holds data/, which both must show.
     """
     name = f"{test.run}-hidden"
     posc_dir = f"{test.origin.store_of('protected-a')}/.pelican-posc"
@@ -1002,8 +1004,8 @@ def expiry_mode(test: Test) -> Row:
     """Check that a complete upload's object has mode 0644, as without POSC.
 
     0644 is the 0666 with which the WebDAV handler opens a PUT's file, less
-    the origin's umask, 022. POSC opens its staging file with the mode asked
-    for, and renames it into place (TestPoscFinalPermMatchesRequested). This
+    the origin's umask, 022. POSC gives its staging file the mode asked for
+    as it renames it into place (docs/v2-origin-posc-and-metadata.md). This
     upload, the scenario's first, also makes POSC's staging directory, if
     there is none yet.
     """
@@ -1024,8 +1026,7 @@ def expiry_stale(test: Test) -> Row:
     """Check that a staging file abandoned two hours ago is reaped.
 
     Two hours is past the default Origin.Posc.FileTimeout of an hour, so the
-    file is reaped at the next sweep, and counted (expireFiles in
-    origin_serve/posc.go).
+    file must be reaped at the next sweep, and counted.
     """
     problems = reaped(test, STALE_AGE, "1h, the default")
     if problems:
@@ -1054,7 +1055,7 @@ def expiry_staging_put(test: Test) -> Row:
 def expiry_staging_mkcol(test: Test) -> Row:
     """Check that a MKCOL straight into the staging directory makes nothing.
 
-    POSC refuses it (poscFileSystem.Mkdir's EIO), so the origin must answer
+    POSC makes nothing in its staging directory, so the origin must answer
     405, and make nothing there.
     """
     name = f"{test.run}-mkcol"
@@ -1076,8 +1077,8 @@ def expiry_idle(test: Test) -> Row:
     KEEPALIVE seconds: a planted staging file, stale under that timeout but
     not the default, is reaped, so the restart's timeout is in force; and an
     upload that sends half its bytes, then idles IDLE seconds, past the
-    timeout, keeps its staging file, whose keepalive refreshes its mtime
-    (touchOpenFiles), and completes whole once it sends the rest.
+    timeout, keeps its staging file, whose mtime POSC's keepalive
+    refreshes, and completes whole once it sends the rest.
     """
     problems = reaped(test, SHORT_STALE_AGE, f"{FILE_TIMEOUT}s")
     if problems:

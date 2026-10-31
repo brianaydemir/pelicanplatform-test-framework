@@ -21,8 +21,8 @@ of that profile, whose tokens the scenarios present. A scenario's setup,
 and its checks of what the stores hold, use the session's setup tokens,
 which are WLCG's in either pass, so that a pass tests only the tokens
 that the scenario presents. A suite may name ONE_PROFILE scenarios,
-which run in WLCG's pass alone: those that present no storage token of
-the tests' own minting but their setup's (none at all, or only
+which run in WLCG's pass alone. They are those that present no storage
+token of the tests' own minting but their setup's (none at all, or only
 Pelican's: its web API's, its issuer's, or a server's own), and those
 whose check no other profile can make. Each pass is reported as a suite
 of its own: <suite>, and <suite>-scitokens. Only the first pass of a
@@ -39,10 +39,10 @@ each):
                  a cache's copy of an object of its own, which the cache
                  then drops
   transfer-api   restarts the transfer API's host (the first origin, or
-                 `transfer`), with the API configured otherwise, and
-                 while a job runs, a posixv2 first origin slowed
-                 meanwhile, and waits until every director names the
-                 first origin again
+                 `transfer`) with the API configured otherwise, and
+                 again while a job runs, with a posixv2 first origin
+                 slowed; it waits until every director names the first
+                 origin again
   listings, names, blocks
                  restart nothing
   freshness      restarts the origins, to change the Cache-Control they
@@ -79,8 +79,8 @@ each):
                  says so. posc restarts the first origin with a short
                  staging timeout; metadata restarts it with retries put
                  off and its publish queue capped, and again with a
-                 frequent reconcile sweep; users restarts the
-                 origins with a username claim; each restores what it
+                 frequent reconcile sweep; users restarts the origins
+                 with a username claim; each restores what it
                  restarted. accounts ends by putting up a new AUP at the
                  issuer origin, which for a moment gates its every user,
                  and restores the old
@@ -105,9 +105,8 @@ each):
   restart        restarts, kills, and pauses servers, and stops the
                  origins' storage service, and puts each back
   keys           last: adds and rotates the origins' and a cache's keys,
-                 which takes them out of the directors' routing until it
-                 puts the keys back, and leaves what the servers cached
-                 of the keys for up to 15 minutes
+                 and puts them back, but the servers keep what they
+                 cached of the keys for up to 15 minutes
 """
 
 from . import (

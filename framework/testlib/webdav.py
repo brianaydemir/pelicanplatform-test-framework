@@ -93,7 +93,8 @@ def parse(body: bytes) -> list[Entry]:
                         raise ValueError(f"{href}: getcontentlength '{length}'") from None
                 date = prop.findtext(f"{DAV}getlastmodified")
                 if date is not None and date.strip():
-                    # An HTTP date (RFC 4918 says so; RFC 9110 names the form).
+                    # An HTTP date (RFC 4918 says so; RFC 9110 names
+                    # the form).
                     try:
                         modified = parsedate_to_datetime(date.strip())
                     except (TypeError, ValueError):

@@ -25,14 +25,14 @@ class Unreadable(Exception):
     """An origin could not say what it holds."""
 
 
-# What an origin's storage cannot do, by ORIGIN_VARIANT, and why. XRootD's
-# S3 plugin implements no unlink, and neither it nor the HTTPS plugin can
-# give a checksum (Lfn2Pfn), as the xrootd-s3-http plugins stand. Of the
+# What an origin's storage cannot do, by ORIGIN_VARIANT, and why.
+# `checksum` is for a storage that reports none, and an algorithm's name
+# for one it alone lacks. XRootD's S3 plugin implements no unlink, and
+# neither it nor the HTTPS plugin can give a checksum (Lfn2Pfn). Of the
 # native backends, httpsv2 and ssh compute none, since their storage is
 # remote (origin_serve/backend_https.go, ssh_posixv2/origin_filesystem.go
 # in Pelican), and s3v2 reports only the MD5 that the S3 service holds
-# (backend_blob.go). `checksum` is for a storage that reports none, and an
-# algorithm's name for one it alone lacks.
+# (backend_blob.go).
 LIMITS: dict[str, dict[str, str]] = {
     "s3": {
         "delete": "XRootD's S3 plugin (libXrdS3) cannot delete",

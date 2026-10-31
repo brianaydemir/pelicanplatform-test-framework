@@ -1,10 +1,10 @@
 """What the directors publish, and whether it is true of the shape.
 
-They publish, about the federation, their lists of servers and of
-namespaces, the namespace a path falls in, their health tests of each
-server and the file they serve the caches for them, their stat of an
-object at the origins, their metrics, their comparison of the
-federation's metadata, and the ads they forward to one another.
+The directors publish their lists of servers and of namespaces, the
+namespace a path falls in, their health tests of each server and the
+file they serve the caches for them, their stat of an object at the
+origins, their metrics, and their comparison of the federation's
+metadata; and they forward ads to one another.
 
   servers           director_ui's list of servers, whole, by type, and
                     one at a time, with each one's namespaces; its list
@@ -34,12 +34,12 @@ A server advertises to every director it hears of, from its
 configuration, the discovery document, and each director's list of
 directors (doDiscovery in Pelican's server_utils/director_discovery.go),
 so no configuration keeps a server's ads from any director. `forwarding`
-posts the first cache's own ad instead, signed as the cache would sign
-it, to one director alone, and looks for it at the other. It waits
+instead posts the first cache's own ad, signed as the cache would sign
+it, to one director alone, and looks for it at the other. It then waits
 until the cache's own ads have restored both.
 
 `origin-stat` puts an object in /public at one origin, under
-data/director-api/<run>/, and the suite removes it afterward. Only
+data/director-api/<run>/, which the suite removes afterward. Only
 `metrics`'s client requests present a storage token, of the session's
 profile; the rest present an admin's tokens, or the servers' own.
 """
@@ -672,11 +672,10 @@ def servers(test: Test) -> list[Row]:
 def v2_problems(test: Test, url: str) -> list[str]:
     """Return what is wrong with the director at url's listNamespaces.
 
-    It must list every export, once per origin that exports it, with its
-    capabilities and its issuer (none for one without), and
-    /pelican/monitoring, which anyone may read, and nothing else. A
-    cache learns a namespace's issuer here, so a wrong one breaks every
-    protected read through it.
+    It must list every export, with its capabilities and its issuer
+    (none for one without), and /pelican/monitoring, which anyone may
+    read, and nothing else. A cache learns a namespace's issuer here, so
+    a wrong one breaks every protected read through it.
     """
     name = director.host(url)
     answer = web.request("GET", f"{url}{LIST_NAMESPACES}")
@@ -957,8 +956,7 @@ def health_test_file(test: Test) -> list[Row]:
     timestamp: a GET gets the body; a HEAD its length; and a PROPFIND a
     multistatus naming the file and its length. A name whose timestamp
     is none gets 400. A directory whose name holds `&` and `<` must come
-    back escaped in the PROPFIND's XML: Pelican escapes the path, but
-    writes it as it was, so the `escaped` row fails there.
+    back escaped in the PROPFIND's XML.
     """
     stamp = utc_stamp()
     name = f"director-test-{stamp}.txt"
@@ -1085,9 +1083,7 @@ def origin_stat(test: Test) -> list[Row]:
     Without credentials, it answers 401; as its admin, of an object one
     origin alone holds, that origin; with min_responses above
     max_responses, 400; and for a namespace no origin exports, 404 (see
-    unknown_statuses()), as one JSON document. Pelican writes the 404
-    and goes on to ask no origin, which it answers with another, so the
-    `unknown-namespace` row fails there.
+    unknown_statuses()), as one JSON document.
     """
     held, why = put_held(test)
     cases: dict[str, list[str]] = {c: [] for c in ("no-auth", "admin", "bad-bounds", "unknown-namespace")}
@@ -1349,11 +1345,9 @@ class Forwarding:
     def ads_seen(self, url: str) -> float | None:
         """Return how many of the cache's ads the director at url has taken.
 
-        Each of its namespaces' series counts every ad, once for each
-        time the ad lists the namespace: a cache lists one once for
-        each origin exporting it (listNamespacesFromOrigins in
-        director/director.go), so each series is divided by that.
-        Return None if it won't say.
+        A director counts an ad in each namespace's series once for each
+        time the ad lists the namespace, so each series is divided by
+        that number in the cache's ad. Return None if it won't say.
         """
         found = metrics.fetch(url)
         if found is None:
@@ -1428,14 +1422,11 @@ def shutdown_lifted(f: Forwarding) -> Row:
 
     The cache's own ad saying it is shutting down is posted to the
     second director, which must then filter it (shutdownFiltered, which
-    its API lists as director.SHUTDOWN_FILTERED); then
-    its ad saying its status, posted to the first alone, which forwards
-    it, must lift that within FORWARD_WAIT seconds, as it would have,
-    had the cache posted it to the second. Only an ad posted to a
-    director lifts it (registerServerAd), not a forwarded one
-    (finishRegisterServeAd), so the row fails there. If the cache's own
-    ad reached the second meanwhile, which would lift it, the row can't
-    tell.
+    its API lists as director.SHUTDOWN_FILTERED). Then its ad saying its
+    status, posted to the first alone, which forwards it, must lift that
+    within FORWARD_WAIT seconds, as it would have, had the cache posted
+    it to the second. If the cache's own ad reached the second
+    meanwhile, which would lift it, the row can't tell.
     """
     second = director.host(f.second)
     if not f.fresh(f.second):

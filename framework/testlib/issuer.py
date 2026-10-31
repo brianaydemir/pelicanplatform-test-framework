@@ -8,24 +8,22 @@ exchange it (RFC 8693), revoke it (RFC 7009), and introspect it (RFC
 
 A client asks the issuer to start a flow. In the device flow, it polls
 for the token while the user approves the flow at the issuer's
-verification page; in the code flow, the user is sent back from the
-issuer's authorization endpoint with a code, which the client trades
-for the token. Here the tests play the user too: both endpoints take
-the same credentials as the server's web API, a bearer token
+verification page. In the code flow, the issuer's authorization
+endpoint sends the user back with a code, which the client trades for
+the token. The tests play the user too: both endpoints take the same
+credentials as the server's web API, a bearer token
 (credentials.mint_user()) or the cookie of a web login
-(accounts.login()), so the tests approve with one, as Pelican's own
-integration tests do (oauth2/issuer/integration_test.go). The issuer
-grants what the user is allowed, narrowed to what the client asked for
-and may carry (handleDeviceVerifySubmit and handleAuthorize in
+(accounts.login()). The issuer grants what the user is allowed,
+narrowed to what the client asked for and may carry
+(handleDeviceVerifySubmit and handleAuthorize in
 oauth2/issuer/handlers.go).
 
 A client that registers itself (RFC 7591) is bound to the first user
 who approves a flow for it, and the issuer allows an address five
 registrations, then one a minute (oauth2/issuer/rate_limit.go). So the
-tests' clients are made otherwise: the server's admin creates the
-clients they need through the issuer's admin API, and every user uses
-them. register() and configuration() are for testing registration
-itself.
+server's admin creates the tests' clients through the issuer's admin
+API, and every user uses them. register() and configuration() test
+registration itself.
 
 An origin serves an issuer for each export that has one, at
 <web URL>/api/v1.0/issuer/ns<prefix>, and a local issuer for its own

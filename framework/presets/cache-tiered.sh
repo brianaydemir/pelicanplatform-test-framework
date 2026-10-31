@@ -7,10 +7,8 @@
 # local copy, and from then on redirects clients to it, or, for cache-1,
 # proxies it. The tiering suite tests it.
 #
-# Tiering is on Pelican's main only: build the cache image from it (see
-# the README's Server images). An older cache ignores the setting, and
-# the suite then skips. Remove framework/var/data/tier along with the
-# caches' stores (./reset.sh does), or a cache refuses its old target.
+# Remove framework/var/data/tier along with the caches' stores
+# (./reset.sh does), or a cache refuses its old target.
 
 CACHE_TIERING=true
 

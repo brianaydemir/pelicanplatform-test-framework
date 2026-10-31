@@ -5,23 +5,30 @@ it, runs them, and judges the results with it; framework/init-data.py
 writes the objects that the gets fetch.
 
 A scenario is a set of transfers through one client, in one namespace,
-with one credential. Each runs through `pelican object get` or `put`,
-again through stash_plugin as plugin-<scenario>, and again as a plain
-HTTP client, such as curl, as http-<scenario>, with the same batches.
-Each get also has a direct-<scenario> twin, which asks the director for
-an origin instead of a cache, and a cache-<scenario> twin, which names
-the first federated cache (`--cache`, or Client.PreferredCaches for the
-plugin) and takes the objects from it, asking the director only what
-the namespace wants: the three ways a client can reach an object. The
-plain HTTP client asks the director for the object's bare path, which
-it sends to a cache (or, under `-p director-default-origin`, to an
-origin), or with `?directread`, which it sends to an origin; names a
-cache by asking it straight; and PUTs to the bare path, which the
-director sends to an origin. It follows each redirect as curl does
-(see HTTP_HOPS): to the Location as given, whose `authz` carries the
-token, without the Authorization header, which curl drops when the
-host changes. A batch is one client invocation, of as many objects as
-the next of LOAD's sizes (see make_batches() and batch_count()).
+with one credential. Each runs through `pelican object get` or `put`;
+again through stash_plugin, as plugin-<scenario>; and again through a
+plain HTTP client, such as curl, as http-<scenario>, with the same
+batches. Each get has two more twins, for the three ways a client can
+reach an object:
+
+  <scenario>         through a cache, which the director picks
+  direct-<scenario>  from an origin, which the director picks
+  cache-<scenario>   from the first federated cache, which the client
+                     names (`--cache`, or Client.PreferredCaches for the
+                     plugin), asking the director only what the
+                     namespace wants
+
+The plain HTTP client asks the director for the object's bare path,
+which it sends to a cache (or, under `-p director-default-origin`, to an
+origin), or for the path with `?directread`, which it sends to an
+origin. It asks a named cache straight, and PUTs to the bare path,
+which the director sends to an origin. It follows each redirect as curl
+does (see HTTP_HOPS): to the Location as given, whose `authz` carries
+the token, without the Authorization header, which curl drops when the
+host changes.
+
+A batch is one client invocation, of as many objects as the next of
+LOAD's sizes (see make_batches() and batch_count()).
 
 What a scenario should do depends on the namespace's capabilities in
 the shape (see outcome()). /public, which has no keys of its own, gets
@@ -134,9 +141,9 @@ def outcome(scenario: Scenario, exports: Exports) -> Outcome:
     with no token expects no refusal but that one.
 
     The Pelican clients send no token for a read of /public, so a bad one
-    cannot break it; a plain HTTP client sends whatever it is given, and
-    the director refuses an expired token it is shown, whatever the
-    namespace (validateClientToken in director/director.go), while the
+    cannot break it. A plain HTTP client sends whatever it is given. A
+    director refuses any expired token it is shown, whatever the
+    namespace (validateClientToken in director/director.go), and the
     servers ignore a token on a public read. So `http-get-public-expired`
     and its direct twin are refused, and its named twin, which asks no
     director, is not.
@@ -529,25 +536,22 @@ def make_batches(
 # failure_lines() picks from the pelican client's log or the plugin's
 # result ads. The first rule whose patterns all match wins.
 #
-# A server's refusal reads differently depending on where it came.
-# `pelican object get` into a directory, as every batch here is, stats
-# each object before fetching it, asking the director without a token
-# (client/main.go in Pelican), so a refused get fails at the stat, with
-# "HTTP 403: the server refused the credential" (client/acquire_token.go),
-# and the director never sees its token. A get into a file path skips
-# the stat, and a refusal then reads only as a probe that no server
-# answered (error 2000), which no rule takes for one.
-# Transfers say "request failed (HTTP status 403)", "permission denied",
-# or "server returned 401 Unauthorized" (client/handle_http.go,
-# error_helpers.go).
+# A refusal reads differently depending on where it came. `pelican
+# object get` into a directory, as every batch here is, stats each
+# object before fetching it, asking the director without a token, so a
+# refused get fails at the stat with "HTTP 403: the server refused the
+# credential", and the director never sees its token. A get into a file
+# path skips the stat, and a refusal then reads only as a probe that no
+# server answered (error 2000), which no rule takes for one. A refused
+# transfer says "request failed (HTTP status 403)", "permission denied",
+# or "server returned 401 Unauthorized".
 #
 # A 401 or 403 doesn't make a refusal of a line that also shows a failure
 # no refusal explains (NOT_REFUSAL): a server error, a timeout, a server
 # that couldn't be reached, no such object, or a broken transfer (error
 # 6xxx). Nor does "permission denied" from the local filesystem
-# (LOCAL_DENIAL), e.g. `open <path>: permission denied` (os.PathError in
-# Go), or the client's own wrapping of one (client/main.go,
-# handle_http.go), which classify() ignores.
+# (LOCAL_DENIAL), e.g. `open <path>: permission denied`, or the client's
+# own wrapping of one, which classify() ignores.
 
 NOT_REFUSAL = (
     r"HTTP (status )?5\d\d\b|(server returned|status code) 5\d\d\b"
@@ -572,9 +576,9 @@ FAILURE_RULES = (
     ("server",      (rf"^(?!.*({NOT_REFUSAL}))",
                      r"HTTP (status )?40[13]\b|server returned 40[13]\b|permission denied"),
                                                                 "an origin or cache answered 401 or 403"),
-    # With several origins, the director checks that one has the object.
-    ("not found",   (r"Error code 5011|No sources reported possession of the object",),
-                                                                "there is no such object"),
+    # Specification.FileNotFound (Pelican's docs/error_codes.yaml), whoever
+    # found the object missing.
+    ("not found",   (r"Error code 5011",),                      "there is no such object"),
 )
 # fmt: on
 REFUSALS = {"client", "director", "unsupported", "server"}
@@ -863,20 +867,21 @@ def check_served_by(
 ) -> tuple[str, str]:
     """Return the verdict on the hosts that served route's downloads.
 
-    A director that routes around its caches would pass every scenario,
-    so every download through a cache must have been served by one
-    (`cache-<N>`): a director sends a client to an origin in a cache's
-    place only where no cache can serve the namespace (redirectToCache
-    in Pelican's director/director.go), and the client tries only the
-    servers that the director names. A direct download must come from an
-    origin, as must every download where there is no cache (cacheless),
-    and a plain HTTP client's download of a bare path where the director
-    sends those to an origin (`-p director-default-origin`), which the
-    suite passes as cacheless too.
-    A named download must come from the cache the client named (named,
-    its host), and from nowhere else: a client that fell back to the
-    director's choice would pass otherwise. In the tiny topology, one
-    host is everything, so none of these says anything.
+    A director that routed around its caches would pass every scenario,
+    so every download through a cache must come from one (`cache-<N>`).
+    A director sends a client to an origin in a cache's place only where
+    no cache can serve the namespace (redirectToCache in Pelican's
+    director/director.go), and the client tries only the servers that
+    the director names.
+
+    A direct download must come from an origin. So must every download
+    where there is no cache (cacheless), and a plain HTTP client's
+    download of a bare path where the director sends those to an origin
+    (`-p director-default-origin`), which the suite passes as cacheless
+    too. A named download must come from the named cache alone, or a
+    client that fell back to the director's choice would pass. In the
+    tiny topology, one host is everything, so none of this says
+    anything.
 
     Args:
         route: "cache", "direct", or "named".

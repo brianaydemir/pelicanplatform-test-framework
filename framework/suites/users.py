@@ -12,7 +12,7 @@ files they leave in the store.
                     the `xrootd` user (uid 10940),
                     Origin.ScitokensDefaultUser
   primary-group     with the tests' token, which names no group: the
-                    pelican group (gid 10941), not root's
+                    pelican group (gid 10941)
   public-tokenless  under multiuser, a GET and a Depth 1 PROPFIND of
                     /public with no token are served, as `nobody`
   bypass            under multiuser, the xrootd user learns nothing of
@@ -39,14 +39,14 @@ it, for a subject of the run's, and restores it afterward. Its
 `username-claim` and `unmatched` rows restart every origin, as the last
 of its configuration layers (control.restart_with()), with
 Origin.ScitokensUsernameClaim set and Origin.ScitokensDefaultUser
-unset; afterward it restores them. They need a control helper, and a
+unset, and restore them afterward. They need a control helper, and a
 topology other than `tiny`, whose origin is the whole federation's
 process.
 
 The stores are bind mounts, and whether one shows a file's owner
-depends on the host: the suite first gives a file of its own to the
-`pelican` user, and if the store does not show that, the rows that
-depend on owners are inconclusive. Objects go under
+depends on the host. The suite first gives a file of its own to the
+`pelican` user; if the store does not show that, the rows that depend
+on owners are inconclusive. Objects go under
 /protected-a/data/users/<run>/, and mapfile's `path` row's under
 /protected-a/data/users/mapped/; public-tokenless's object under
 /public/data/users/<run>/.
@@ -131,23 +131,23 @@ PELICAN_GID = 10941
 # Origin.MultiuserMinID's default.
 MIN_ID = 1000
 
-# The subjects of fed.sh's mapfile rules for this suite (fed.sh), and the
-# group of its `group` rule. Each maps to the pelican user, but min-id's,
-# which map to system accounts; any other subject maps to the xrootd
-# user, the default.
+# The subjects of fed.sh's mapfile rules for this suite, and the group of
+# its `group` rule. Each maps to the pelican user, but min-id's, which map
+# to system accounts; any other subject maps to the xrootd user, the
+# default.
 MIN_ID_SUBJECTS = {"root": "users-root", "daemon": "users-daemon"}
 PATH_SUBJECT = "users-path"
 GROUP_SUBJECT = "users-group"
 MAPPED_GROUP = "xrootd"
-# Where the `path` rules map users-path to pelican, under /protected-a.
+# Where the `path` rule maps users-path to pelican, under /protected-a.
 MAPPED_DIR = "data/users/mapped"
 
 # fed.sh's mapfile, under framework/var, which the `edited` row changes
 # in place.
 MAPFILE = "generated/multiuser-mapfile.json"
-# How long an edited mapfile may take to apply: Pelican rereads it every
-# Origin.UserMapfileRefreshInterval (1m by default), and XRootD its
-# configuration every 60 seconds; and how often to try.
+# How long an edited mapfile may take to apply, and how often to try:
+# Pelican rereads it every Origin.UserMapfileRefreshInterval (1m by
+# default), and XRootD its configuration every 60 seconds.
 EDIT_WAIT = 150
 EDIT_INTERVAL = 10
 
@@ -179,9 +179,7 @@ PROBE_SIZE = 5000
 # permissions on the file do not, may be: 403, or 404 from a permission
 # error.
 REFUSED = (403, 404)
-# What the restart's unmatched token may get: 401 from a federated
-# native origin, which drops the token; 403 from a standalone one, or
-# from XRootD.
+# What the restart's unmatched token must get: a refusal.
 UNAUTHORIZED = (401, 403)
 
 
@@ -263,9 +261,9 @@ def unmapped(origin: common.Origin, rel: str, token: str) -> str | None:
     """PUT a new object with a token that a mapfile rule does not map.
 
     This is a control for the rule. The PUT, at rel in /protected-a, goes
-    straight to origin. The default user, xrootd, may own the object, or the
-    PUT may be refused: under POSC, the xrootd user may be unable to stage
-    (see posc_multiuser()).
+    straight to origin. The control asks only that the pelican user not
+    own what the PUT leaves; whether the default user may upload is for
+    default_user() and posc_multiuser() to check.
 
     Returns:
         Why the pelican user owns what the PUT leaves, or None if it does
@@ -346,10 +344,10 @@ class Test:
     def mint(self, subject: str, extra: Mapping[str, Any] | None = None) -> str:
         """Return a token like the tests' for /protected-a, but for subject.
 
-        It also has the claims in extra. Each call's is new, since an origin
-        maps a token to a user once, and keeps it. It is signed with the
-        origins' key under the tests' token's header, whose kid is the key's
-        in the issuer's JWKS.
+        It also has the claims in extra. Each call's is new, since an
+        origin maps a token to a user once, and keeps it. It is signed
+        with the origins' key under the tests' token's header, whose kid
+        is the key's in the issuer's JWKS.
         """
         claims = credentials.server_claims(
             self.fed, NAMESPACE, subject=subject, profile=self.session.profile
@@ -394,9 +392,8 @@ def default_user(test: Test) -> dict[str, Row]:
 def primary_group(test: Test) -> dict[str, Row]:
     """Check that the tests' upload is in the pelican user's own group.
 
-    The tests' token names no group. A native multiuser origin takes the
-    group to act as from the token's first group, and acts as gid 0 if it
-    has none (resolveIdentity in origin_serve/multiuser_fs.go).
+    The tests' token names no group, so the origin must act as the
+    user's own.
     """
     if test.unshown:
         return {"primary-group": (INCONCLUSIVE, first(test.unshown))}
@@ -427,11 +424,8 @@ def public_tokenless(test: Test) -> dict[str, Row]:
     Under multiuser, at each origin, with no token: a GET of an object
     in /public must serve its bytes, and a Depth 1 PROPFIND of its
     collection must answer 207 and name it. Pelican's documentation says
-    such requests run as `nobody` (Origin.ScitokensUnauthenticatedUser);
-    a native origin attaches a user only from a token
-    (authorizeWithContext in origin_serve/authz.go), and its filesystem
-    refuses a request without one (resolveIdentity in
-    origin_serve/multiuser_fs.go). An XRootD origin is the control.
+    such requests run as `nobody` (Origin.ScitokensUnauthenticatedUser).
+    An XRootD origin is the control.
     """
     rows = ROWS["public-tokenless"]
     why = test.multiuser()
@@ -508,14 +502,11 @@ def bypass(test: Test) -> dict[str, Row]:
       html-listing   a GET of the directory for HTML: no listing of it
       if-none-match  a GET with `If-None-Match: *`: no 304, and no ETag
       digest         a HEAD with `Want-Digest: crc32c`: no Digest
-      staging        under POSC, the same three, of POSC's staging
+      staging        under POSC, the last three, of POSC's staging
                      directory for the pelican user, and a file in it
 
-    A native origin answers each from os.Root, as its own process, before
-    it asks the filesystem, which acts as the user (handleGetWithETag,
-    streamDirectoryListing, and handleHeadWithChecksum in
-    origin_serve/handlers.go). An XRootD origin is the control, but for
-    `staging`, which is native POSC's.
+    An XRootD origin is the control, but for `staging`, which is native
+    POSC's.
     """
     rows = ROWS["bypass"]
     why = test.multiuser()
@@ -574,13 +565,12 @@ def staging_hidden(test: Test) -> Row:
     """Return bypass's `staging` row.
 
     Under POSC, at each origin, a file the suite makes (0600) in POSC's
-    staging directory for the pelican user, <storage>/.pelican-posc/pelican/
-    (0700), which an upload of the pelican user's first makes, if there is
-    none. The xrootd user must be refused an HTML listing of that directory,
-    and the file with `If-None-Match: *`, and with `Want-Digest: crc32c`,
-    and learn nothing of it, as bypass's other rows say. Pelican's POSC
-    hides the staging directory from its filesystem, but the paths of bypass
-    read the store themselves.
+    staging directory for the pelican user,
+    <storage>/.pelican-posc/pelican/ (0700), which an upload of the
+    pelican user's first makes, if there is none. The xrootd user must be
+    refused an HTML listing of that directory, and the file with
+    `If-None-Match: *`, and with `Want-Digest: crc32c`, and learn nothing
+    of it, as bypass's other rows say.
 
     Raises:
         SetupError: The file could not be written.
@@ -637,14 +627,6 @@ def posc_multiuser(test: Test) -> dict[str, Row]:
       read-only-dir  an upload with the tests' token to a directory of the
                      pelican user's, mode 0500, is refused (403), and
                      lands nothing
-
-    POSC sits beneath the multiuser filesystem, so the first upload makes
-    the staging directory and its parent, .pelican-posc, as its user, both
-    0700 (ensureUserDir in origin_serve/posc.go), which locks the second
-    user out of it. The rename into place, when the upload completes,
-    runs as the origin's own process (poscFile.Close), which may write
-    where the user may not. read-only-dir uploads as the pelican user,
-    who can stage, rather than as the xrootd user, who may not.
     """
     rows = ROWS["posc-multiuser"]
     why = test.multiuser()
@@ -719,11 +701,9 @@ def min_id(test: Test) -> dict[str, Row]:
     """Check that tokens mapped to root and daemon are refused.
 
     Under multiuser, at each origin, an upload with a token that the
-    mapfile maps to `root`, and one to `daemon`, must be refused (403),
-    and leave no file, owned by anyone below Origin.MultiuserMinID or
-    not; under POSC, nor a staging directory for the user. Pelican's
-    lookup refuses the user (identity.WithMinID in
-    origin_serve/handlers.go).
+    mapfile maps to `root`, and one to `daemon`, both below
+    Origin.MultiuserMinID, must be refused (403), and leave no file, nor,
+    under POSC, a staging directory for the user.
     """
     rows = ROWS["min-id"]
     why = test.multiuser()
@@ -771,9 +751,8 @@ def mapfile(test: Test) -> dict[str, Row]:
                       matches no rule, with no default user: refused
                       (401 or 403), with nothing written
 
-    A native origin maps a token to a user with no path, so `path`
-    rules never match (UserMapper.MapTokenToUser in
-    origin_serve/user_mapfile.go).
+    The `path` rule's path is relative to the namespace, as in
+    XrdSciTokens' mapfile.
     """
     rows = ROWS["mapfile"]
     why = test.multiuser()
@@ -810,9 +789,8 @@ def mapped_path(test: Test) -> Row:
 def grouped(test: Test) -> Row:
     """Return mapfile's `group` row (see mapfile()).
 
-    The group is a Unix group (gid 10940), since a native origin acts as
-    the token's first group, and refuses one that it can't find
-    (resolveIdentity). Its claim is the one the origins read
+    The group is a Unix group (gid 10940), since a multiuser origin acts
+    as the token's first group. Its claim is the one the origins read
     (Origin.ScitokensGroupsClaim's default), whatever the profile.
     """
     token = test.mint(GROUP_SUBJECT, {"wlcg.groups": [MAPPED_GROUP]})
@@ -995,10 +973,8 @@ def claimed(test: Test, token: str) -> Row:
     """Return mapfile's `username-claim` row.
 
     An upload with token, whose username claim names the pelican user, is
-    the pelican user's. Pelican's documentation says that the claim
-    overrides Origin.ScitokensDefaultUser (docs/parameters.yaml); a native
-    origin with a mapfile takes it only where a rule maps it
-    (UserMapper.MapTokenToUser).
+    the pelican user's: the claim overrides Origin.ScitokensDefaultUser
+    (Pelican's docs/parameters.yaml).
     """
     return uploads_owned(test, "username-claim", token, PELICAN_UID)
 
@@ -1008,8 +984,7 @@ def unmatched(test: Test) -> Row:
 
     An upload with a token whose subject matches no rule, and which has no
     username claim, with no default user, is refused (401 or 403), and
-    writes nothing. A native origin drops the token (authConfig.loader in
-    origin_serve/authz.go); XRootD refuses it for lacking the claim.
+    writes nothing.
     """
     token = test.mint(UNMATCHED_SUBJECT)
     found = Findings()

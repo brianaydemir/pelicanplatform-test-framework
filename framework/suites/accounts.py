@@ -17,6 +17,7 @@ a login, with a password set through an invite. Tokens for data come
 from the namespace's issuer through its device flow, approved as the
 user, with a client that the admin creates. Collections are the admin's,
 under /<namespace>/data/accounts/<run>/.
+
 framework/config.d/base/40-origin.yaml names the suite's authorities:
 the groups test-server-admins (Server.AdminGroups) and
 test-collection-admins (Server.CollectionAdminGroups), which the origin
@@ -622,14 +623,12 @@ def scope_grants(test: Test) -> list[Row]:
 
         A user granted server.collection_admin asks for an API token of
         that scope from their login cookie (POST /tokens), and must be
-        refused (403): the route is the admin's alone (AdminAuthHandler
-        in web_ui/ui.go), on v26.0.0-rc.3 and main alike, though
-        api_token/api_token.go would limit any creator's token to the
-        scopes the creator holds (intersectWithUserScopes). The admin,
-        logged in, makes one, which creates a collection, and which is
-        refused once deleted. The admin holds the scope by implication
-        (server.admin implies server.collection_admin), so no revoked
-        grant can be tried.
+        refused (403), since API key creation is the admin's alone
+        (Pelican's docs/user-group-design.md). The admin, logged in,
+        makes one, which creates a collection, and which is refused once
+        deleted. The admin holds the scope by implication (server.admin
+        implies server.collection_admin), so no revoked grant can be
+        tried.
         """
         username = test.name("tokencurator")
         user_id = make_user(test, username)
@@ -723,10 +722,9 @@ def authority_groups(test: Test) -> list[Row]:
     which the origin reserved as it started: nobody may create or delete
     one (409); a member is a collection administrator, or a server
     administrator, once they log in again, and not once removed and
-    logged in again; nor once removed, with the login cookie from before
-    (a cookie keeps the groups it was minted with, so this fails). The
-    configured user administrator (Server.UserAdminUsers) manages users,
-    and grants nothing.
+    logged in again; nor once removed, with the login cookie from
+    before. The configured user administrator (Server.UserAdminUsers)
+    manages users, and grants nothing.
     """
     admin = test.api("admin")
     reserved: dict[str, str] = {}
@@ -849,10 +847,10 @@ def authority_groups(test: Test) -> list[Row]:
 def id_keyed_grants(test: Test) -> list[Row]:
     """Check that grants are kept by the IDs of users and groups, not names.
 
-    See Pelican issues #3752 and #3753. A deleted group's go with it, and
-    a new group of its name gets none; a new user of a deleted user's name
-    gets none of theirs; and a renamed group and user keep theirs, while
-    the names they leave grant nothing.
+    A deleted group's grants go with it, and a new group of its name
+    gets none; a new user of a deleted user's name gets none of theirs;
+    and a renamed group and user keep theirs, while the names they leave
+    grant nothing (Pelican's docs/user-group-design.md).
     """
     admin = test.api("admin")
     rows: list[Row] = []

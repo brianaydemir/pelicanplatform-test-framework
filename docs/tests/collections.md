@@ -2,117 +2,69 @@
 
 Part of [What the tests check](README.md).
 
-A collection is a prefix of an exported namespace with access control
-of its own (Pelican's `docs/collections-design.md`): an owner, an admin
-group, groups and users that may read or write, and a visibility.
-Collections live in an origin's database, and the origin's embedded
-OAuth2 issuer turns them into storage scopes: a token it mints for a
-user carries `storage.read` (and, for a writer, `storage.modify` and
-`storage.create`) of each collection the user may use, and nothing for
-the rest of the namespace. The `collections` suite needs that issuer
-(`ORIGIN_ENABLE_ISSUER`, on by default) and a protected namespace, and
-skips with the issuer off (`-p auth-no-issuer`) and with the external
-issuer (`-p auth-external-issuer`).
+A collection is a prefix of a namespace with access control of its own
+(Pelican's `docs/collections-design.md`). The `collections` suite checks the
+origin's collection API, and the storage scopes its issuer grants for
+collections. It skips under `-p auth-no-issuer` and
+`-p auth-external-issuer` ([presets](../../README.md#presets)), and runs in
+the WLCG pass only ([token profiles](README.md#token-profiles)). A row per
+scenario.
 
-The suite's users are records of the issuer origin (origin-0, or `fed`),
-which its admin creates once and later runs reuse: `test-curator`, whom
-`Server.CollectionAdminUsers` in `framework/config.d/base/40-origin.yaml`
-makes a collection administrator, and seven ordinary users, `test-owner`,
-`test-writer`, `test-reader`, `test-outsider`, `test-sharer`, `test-guest`,
-and `test-heir`. The suite acts as each through a bearer token that the
-origin's web API takes as theirs: signed with the origin's own key and
-naming its local issuer, as `pelican cache introspect` mints the admin's
-(`credentials.mint_user()`), so no login or identity provider is needed.
-The admin, and then each user, first agree to the origin's acceptable
-use policy, without which it refuses them its routes for users and
-groups ([web API](web-api.md)).
-For data, each user gets tokens from the namespace's issuer through its
-device flow (RFC 8628), which the suite approves at the issuer's
-verification page as the user, as Pelican's own tests do
-(`framework/testlib/issuer.py`). Since the issuer binds a client that
-registers itself to the first user who approves a flow for it, and
-allows an address five registrations, then one a minute, the suite
-registers none: the admin creates one client of each issuer through the
-issuer's admin API. The `client` and `cli` scenarios register two each,
-as the Pelican client and CLI do that themselves.
+Its users, `test-<role>`, get only what collections grant; `test-curator` is
+a collection administrator (`Server.CollectionAdminUsers`). Each run makes
+`alpha`, private, with sharing on, readers (`test-reader`, `test-sharer`),
+writers (`test-writer`), and an admin group; `beta`, public; both
+`test-owner`'s; and `decoy/obj` beside them.
 
-The embedded issuer's `Issuer.AuthorizationTemplates`, which grant a
-user beyond their collections, grant only the built-in `admin` and the
-`issuer` suite's users and groups (`40-origin.yaml`), so that this
-suite's users get only what collections grant them.
-
-Each run makes groups of its own, owned by `test-owner`
-(`test-readers-<run>`, `test-writers-<run>`, and `test-admins-<run>`, for
-`test-heir`), and collections under `/<namespace>/data/collections/<run>/`:
-`alpha`,
-private, `test-owner`'s, with the admins group as its admin group, the
-readers allowed to read and the writers to write, and sharing on; and
-`beta`, public, `test-owner`'s, which every authenticated user may read.
-Each gets an object (`alpha/shared/obj` too, for a share), and `decoy/obj`
-sits beside them in no collection. `./fed.sh test -l collections` lists
-the scenarios. In short:
-
-- `users`, `create`, `visibility`, `acl`, `manage`, and `ownership`
-  check the collections API, through the origin's web API: who may
-  create a collection (a collection administrator, with a namespace
-  within an export), see it (anyone, if public; otherwise its owner,
-  admin group, and grantees), change, rename, and describe it (owner,
-  admin group, and writers), grant and revoke access (owner and admin
-  group), delete it (the owner alone), and hand it on (the owner alone,
-  by setting its owner, or by an invite that one user redeems once).
-  A collection one may not see is "not found" (404), so its existence
-  is hidden. Where a scenario changes things, it makes a collection of
-  its own.
-- `tokens` checks what the issuer mints: the storage scopes of each
-  user's collections alone, within the namespace, and from the origin's
-  local issuer `collection.create` only for a collection administrator,
-  which the collections API honors. The local issuer grants
-  `collection.create:/` to any user (`test-outsider`'s token carries
-  it), and the API refuses the token anyway, since it checks the user's
-  standing itself (403, "you must hold server.collection_admin"), so
-  the row fails, on v26.0.0-rc.3 and main alike.
-- `data` presents those tokens, straight to every origin (where the
-  namespace takes direct clients) and through the federation with
-  `pelican object`: reads and writes within a collection, and nothing
-  beside it. `client` has `pelican object get` acquire its own token
-  from the issuer, approved as the user; `test-outsider`'s gets nothing.
-- `share-confinement`: `test-sharer` may share only within `alpha`: a
-  share whose namespace climbs out of it (`<alpha>/../decoy`), lies
-  beside it (`decoy`), begins like it without lying in it (`alphax`), or
-  lies outside every export is refused (400), and `test-guest`'s token
-  gets nothing of `decoy`. Pelican cleans the namespace before it
-  compares it with the collection's (`CreateShare` in
-  `database/collection.go`), so this guards against a regression. It
-  runs before `shares`, which leaves `test-sharer` unable to read
-  `alpha`, and skips for a multiuser origin, which refuses every share.
-- `shares`: `test-sharer`, who may read `alpha`, shares `alpha/shared`
-  with `test-guest`, whose token then carries `share.access:/<share>` and
-  the share's `storage.read`, and whose access is the lesser of the
-  share's and `test-sharer`'s own: write on the share grants nothing
-  until `test-sharer` may write `alpha`, and nothing at all once
-  `test-sharer` may not read it. A share of a share, and a share of a
-  collection with sharing off, are refused; a multiuser origin
-  (`-p origin-multiuser`) refuses every share (409), since its data path
-  cannot act as the share's owner.
-- `expiry` and `revoke`: a grant with an expiry grants nothing after it,
-  and a revoked grant is gone from the next token. The old token keeps
-  its access until it expires, by design: a token is not revoked with
-  the grant it came from.
-- `cli`: `pelican-server origin collection` creates, lists, changes,
-  grants on, and deletes a collection through the device flow, approved
-  as `test-curator`, and fails for `test-outsider`. The command is
-  server-only: Pelican's client lacks it. The scenario runs the dev
-  container's own `pelican-server`, if it has one, and otherwise
-  `framework/var/bin/linux/pelican-server`, which `./fed.sh init`
-  fetches, and skips if there is neither. The CLI manages the first
-  origin the director lists, so the scenario skips where that is not
-  the issuer origin; it and `client` skip for a standalone origin,
-  which has no director. The CLI asks the origin's local issuer for
-  `collection.read:/` or `collection.create:/`, the path form, and the
-  v26.0.0-rc.3 origin's web API wants the scope bare (`collection.read`),
-  so it refuses the token ("Token does not contain any of the scopes:
-  [web_ui.access collection.read]"), and every command fails there;
-  main's CLI says the path form is the one its server takes.
-
-The run's collections, groups, and objects are removed after the suite;
-the users stay.
+- `users`: The admin lists the suite's users; an ordinary user may not
+  create one (403), nor join a group they do not own.
+- `create`: A collection administrator creates (201) and deletes a
+  collection, private and their own; an ordinary user may not (403). A
+  namespace outside every export, climbing out of one, or with a space, and
+  an unknown visibility, are 400.
+- `visibility`: A private collection is hidden (404, unlisted) from users
+  without access, and visible to its readers, writers, admin group, owner,
+  and collection administrators; `canEdit` is true for the admin group and
+  owner alone. A public one is visible to all, but unchangeable without
+  access (404).
+- `acl`: A writer may not grant (404); a grant of role `owner`, or to a
+  missing group, is 400. The ACL lists exactly the owner's grants, one with
+  an expiry. The admin group may revoke.
+- `tokens`: The namespace's issuer grants each user their collections'
+  storage scopes alone. The local issuer grants `collection.read:/` to all,
+  and `collection.create:/` only to a collection administrator, whose token
+  creates a collection (201); another user's is 403.
+- `data`: At every origin taking direct reads, and through the federation,
+  tokens read and write within their collections and nothing beside:
+  `test-reader` reads `alpha` and `beta` but may not write; `test-outsider`
+  reads `beta` alone; `test-writer` writes in `alpha`; none reaches `decoy`.
+- `client`: `pelican object get` of `alpha/obj` with no token acquires one,
+  approved as the user: `test-reader`'s succeeds, `test-outsider`'s fails.
+  Skips for a standalone origin.
+- `share-confinement`: A share must lie within its collection. One that
+  climbs out (`<alpha>/../decoy`), lies beside it (`decoy`), begins like it
+  (`alphax`), or lies outside every export is 400, and grants nothing. Skips
+  under `-p origin-multiuser`.
+- `shares`: A share of `alpha/shared` gives `test-guest`
+  `share.access:/<share>` and its `storage.read`, and the lesser of the
+  share's access and `test-sharer`'s: no write until `test-sharer` may
+  write, and nothing once they may not read. Sharing by a non-reader (404),
+  of a share, or with sharing off (409) is refused, as is every share under
+  `-p origin-multiuser` (409).
+- `expiry`: A grant grants nothing after its expiry.
+- `revoke`: A revoked grant leaves the ACL and the next token. The old token
+  keeps its access until it expires, by design.
+- `manage`: The owner, admin group, and writers may rename and describe a
+  collection. Otherwise (404 each): the admin group may neither hand it on
+  nor delete it; a writer may neither clear its admin group, grant, nor
+  delete; a reader may change neither it nor its metadata. The owner sets
+  metadata, which a reader lists, deletes it, then deletes the collection.
+- `ownership`: A writer may not take a collection (404). The owner hands it
+  on, after which they may not delete it (404). The new owner hands it on by
+  an invite, which one user redeems, and no other.
+- `cli`: `pelican-server origin collection`, approved as `test-curator`,
+  creates, lists, shows, changes, grants on, sets and gets metadata of, and
+  deletes a collection; as `test-outsider`, it may not create one. Needs
+  `pelican-server` ([client binary](../../README.md#client-binary)). Skips
+  unless the director lists the issuer origin first, since the CLI manages
+  that one.

@@ -79,7 +79,7 @@ SCENARIOS = {
 
 # The scenarios that run with the origins slowed, and the caches'
 # scheduler as the shape has it: the small one lets a cache fetch from
-# an origin once at a time, which would queue range-ahead's fill behind
+# an origin one at a time, which would queue range-ahead's fill behind
 # the download it is ahead of.
 SCHEDULER_AS_IS = ("range-ahead",)
 
@@ -604,7 +604,7 @@ def streaming(test: Test) -> Row:
 
 
 def range_ahead(test: Test) -> Row:
-    """Check that each V2 cache serves a range far ahead of a read under way.
+    """Check that each V2 cache serves a range ahead of a read under way.
 
     At each, a cold whole read of an object that takes many seconds to
     fetch; AHEAD_DELAY seconds in, a range from AHEAD_START to the end,
@@ -717,12 +717,15 @@ SLOW_ENV = {
 # rate, and so is cut off as slow after about 7.
 SLOW_TRANSFER_SIZE = 4 << 20
 SLOW_TRANSFER = 6002
-# The error codes of an attempt that a cache shed: Transfer.OriginUnresponsive,
-# Transfer.OriginSlow, and Transfer.CacheOverloaded (docs/error_codes.yaml).
+# The error codes of an attempt that a cache shed (docs/error_codes.yaml):
+# Transfer.OriginUnresponsive, OriginSlow, and CacheOverloaded.
 THROTTLED = {6008, 6009, 6010}
-# The exit status of a client that failed in a way it may retry: the
-# plugin's `Retryable` (cmd/plugin.go), which `pelican object get` shares.
+# stash_plugin's exit status for a failure it may retry (`Retryable` in
+# cmd/plugin.go).
 RETRYABLE_EXIT = 11
+# `pelican object get`'s exit status for 6002 and 6008-6010: their
+# clientExitCode in docs/error_codes.yaml.
+TRANSFER_EXIT = 9
 
 
 def client_env(test: Test, slow: bool) -> dict[str, str]:
@@ -830,8 +833,8 @@ def plugin_problems(fetch: Fetched, codes: set[int]) -> list[str]:
 def pelican_problems(fetch: Fetched, codes: set[int]) -> list[str]:
     """Return what is wrong with `pelican object get`'s failed download.
 
-    It must have failed with one of codes, in a way it may retry: it
-    says so, and exits RETRYABLE_EXIT (cmd/object_get.go).
+    It must have failed with one of codes, and exited with their
+    clientExitCode, TRANSFER_EXIT.
     """
     problems: list[str] = []
     if fetch.status == 0:
@@ -839,8 +842,8 @@ def pelican_problems(fetch: Fetched, codes: set[int]) -> list[str]:
     if not fetch.codes() & codes:
         problems.append(f"it failed, but not with {' or '.join(map(str, sorted(codes)))}:")
         problems[-1] += f" {last_line(fetch.said)}"
-    if fetch.status != RETRYABLE_EXIT:
-        problems.append(f"exit {fetch.status}, not {RETRYABLE_EXIT} (retryable)")
+    if fetch.status != TRANSFER_EXIT:
+        problems.append(f"exit {fetch.status}, not {TRANSFER_EXIT}")
     why = fetch.leftovers()
     if why:
         problems.append(why)
@@ -943,7 +946,7 @@ def client_throttled(test: Test) -> dict[str, Row]:
     next. Meanwhile, `pelican object get` and stash_plugin each download
     a cold object through that cache alone. Each must fail as the cache
     shed it, with Transfer.OriginUnresponsive, OriginSlow, or
-    CacheOverloaded (6008-6010), in a way it may retry (exit 11), and
+    CacheOverloaded (6008-6010), and exit with its documented code, and
     leave nothing; the plugin's ad must also say TransferRetryable =
     true, and carry the cache's Retry-After and reason. The client does
     not wait on Retry-After, and has no other cache to try; so the test,
@@ -962,7 +965,7 @@ def slow_transfer(test: Test) -> dict[str, Row]:
     The transfers are of objects of SLOW_TRANSFER_SIZE:
 
     direct         `pelican object get --direct`, with SLOW_ENV, must
-                   fail with Transfer.SlowTransfer (6002), exit 11, and
+                   fail with Transfer.SlowTransfer (6002), exit 9, and
                    leave nothing (handle_http.go's downloadHTTP)
     plugin-direct  stash_plugin, with ?directread, likewise, its ad
                    saying TransferRetryable = true

@@ -25,17 +25,17 @@ The suite acts at each server as its admin, with a bearer token that the
 server takes as theirs (credentials.mint_user(), as `pelican cache
 introspect` mints the admin's), or with the cookie of a login as `admin`;
 and as an ordinary user, `test-webapi`, whom the admin creates at each
-server once, and later runs reuse. Each agrees to the server's AUP first
+server once, and later runs reuse. Each first agrees to the server's AUP
 (accounts.agree_to_aup()), which every server has by default, and
-without which it refuses them its user routes, as an admin's first login
-would. As the admin, it sends no admin route
-that would change anything, but those that make `test-webapi` and API
-tokens, and the registry's on a registration and a server that do not
-exist; and, with no credentials or the user's, the
-routes that restart a server and change its configuration and AUP, which
-must refuse them. It spaces its logins at each server a second apart,
-since a server allows an address a login a second
-(Server.UILoginRateLimit), but where it means to exceed that.
+without which it refuses them its user routes.
+
+As the admin, the suite sends no admin route that would change anything,
+but those that make `test-webapi` and API tokens, and the registry's for
+a registration and a server that do not exist. It sends the routes that
+restart a server and change its configuration and AUP only with no
+credentials or the user's, which they must refuse. It spaces its logins
+at each server a second apart, since a server allows an address a login
+a second (Server.UILoginRateLimit), but where it means to exceed that.
 """
 
 import json
@@ -94,8 +94,7 @@ DIRECTOR_SERVERS = f"{API}/director_ui/servers"
 # An origin that is none of the federation's, as a cross-site page has.
 EVIL = "https://evil.invalid"
 
-# How long the login cookie lasts, in seconds (setLoginCookie in
-# Pelican's web_ui/authentication.go).
+# How long the login cookie lasts, in seconds: 16 hours.
 COOKIE_MAX_AGE = 57600
 # How long the expiring API token lasts, in seconds.
 API_TOKEN_EXPIRY = 10
@@ -164,7 +163,7 @@ def unknown_ids(test: Access, server: Server) -> tuple[str, str]:
 
 # --------------------------------------------------------------------------
 # admin-matrix: the admin routes of AuthHandler, AdminAuthHandler,
-# UserAdminAuthHandler, and LogReadAuthHandler (web_ui/ in Pelican), and
+# UserAdminAuthHandler, and LogReadAuthHandler (Pelican's web_ui/), and
 # the registry's.
 
 
@@ -192,8 +191,7 @@ def strange_tokens(test: Access, server: Server) -> list[tuple[str, str, str, tu
     Returns:
         For each token, its row's case, what it is, the token, and the
         statuses it may get at an admin route: 401, or for the subject
-        without a record, 401 or 403, since the server takes such a subject
-        for a user of no standing (AuthHandler).
+        without a record, 401 or 403, either of which grants nothing.
     """
     head, claims = jwt.decode(test.admin(server))
     now = int(time.time())
@@ -230,8 +228,7 @@ def registry_rows(test: Access, server: Server) -> list[Row]:
     Each is sent for a registration and a server that the registry does not
     hold, with a CSRF token that it takes (see accounts.csrf()), so that
     only the credentials decide: none must get 401, the user 403, and the
-    admin 404, or for the server, which the registry deletes without asking
-    whether it exists (deleteServerHandler), 404, 200, or 204.
+    admin 404.
     """
     admin, user = test.admin(server), test.user(server)
     guard = accounts.csrf(accounts.Api(server.web_url, admin))
@@ -239,11 +236,10 @@ def registry_rows(test: Access, server: Server) -> list[Row]:
     rows: list[Row] = []
     for case, method, path in REGISTRY_ROUTES:
         url = server.web_url + path.format(ns=ns_id, server=server_id)
-        found = (404, 200, 204) if case == "delete-server" else (404,)
         expects: list[Expect] = [
             ("none", web.request(method, url, headers=guard), (401,)),
             ("user", web.request(method, url, token=user, headers=guard), (403,)),
-            ("admin", web.request(method, url, token=admin, headers=guard), found),
+            ("admin", web.request(method, url, token=admin, headers=guard), (404,)),
         ]
         rows.append(judge(f"{server.name} {case}", expects))
     return rows
@@ -261,8 +257,7 @@ def matrix_rows(test: Access, server: Server) -> list[Row]:
             continue
         public = case == "health" and settings.get("HealthMonitoringPublic") is True
         if case == "tokens":
-            # API tokens are managed only through a login (token.Cookie in
-            # createApiToken and listApiTokens).
+            # API tokens are managed only through a login.
             as_admin = web.request("GET", url + path, headers=cookie_header(login=test.cookie(server)))
         else:
             as_admin = web.request("GET", url + path, token=admin)
@@ -316,9 +311,8 @@ def admin_matrix(test: Access) -> list[Row]:
 
 
 # --------------------------------------------------------------------------
-# api-tokens: a director's API tokens (createApiToken, listApiTokens,
-# and deleteApiToken in web_ui/ui.go, and api_token/api_token.go), which
-# its service discovery takes (discoverOriginCache in director/director.go).
+# api-tokens: a director's API tokens (Pelican's web_ui/ui.go and
+# api_token/), which its service discovery takes.
 
 
 def create_token(
@@ -453,12 +447,11 @@ def api_tokens(test: Access) -> list[Row]:
             made.append(token[1])
         rows.append(judge("bearer-create", [("admin's bearer token", answer, (403,))]))
         # A token keeps a user-grantable scope only while its creator
-        # holds it (validateScopesForCreator and intersectWithUserScopes
-        # in api_token/api_token.go), and a creator who holds server.admin
-        # holds them all (Pelican's main since October 2026, #3814). So
-        # the admin must be able to mint a token of monitoring.query,
-        # which no role derives, and it must query the director's
-        # Prometheus; a refusal must not be answered 200.
+        # holds it, and a creator who holds server.admin holds them all
+        # (Pelican's docs/user-group-design.md). So the admin must be able
+        # to mint a token of monitoring.query, which no role derives, and
+        # it must query the director's Prometheus; a refusal must not be
+        # answered 200.
         answer = create_token(
             server,
             f"{name}-query",
@@ -513,9 +506,8 @@ def expiring_rows(server: Server, cookie: str, name: str, made: list[str]) -> li
 
 
 # --------------------------------------------------------------------------
-# login: loginHandler, logoutHandler, and whoamiHandler in
-# web_ui/authentication.go, and loginRateLimitMiddleware in
-# web_ui/middleware.go.
+# login: logging in and out, /whoami, and the login rate limit (Pelican's
+# web_ui/authentication.go and web_ui/middleware.go).
 
 
 def set_cookie(answer: web.Response, name: str) -> tuple[str, dict[str, str]] | None:
@@ -653,9 +645,9 @@ def login(test: Access) -> list[Row]:
 
 
 # --------------------------------------------------------------------------
-# csrf: the registry's CSRF tokens (gorilla/csrf, from config/csrf.go,
-# before every route of registry/registry_ui.go's), and isSameOriginRequest
-# in web_ui/authentication.go, before every AuthHandler route.
+# csrf: the registry's CSRF tokens (gorilla/csrf, before every route of
+# its web UI's API), and the same-origin check before every AuthHandler
+# route.
 
 
 def csrf_refused(answer: web.Response) -> list[str]:
@@ -753,7 +745,7 @@ def csrf(test: Access) -> list[Row]:
 
 
 # --------------------------------------------------------------------------
-# malformed-path: rejectInvalidPathMiddleware in web_ui/middleware.go.
+# malformed-path: paths that are not UTF-8 (Pelican's web_ui/middleware.go).
 
 
 def malformed_path(test: Access) -> list[Row]:
@@ -775,8 +767,8 @@ def malformed_path(test: Access) -> list[Row]:
 
 
 # --------------------------------------------------------------------------
-# version: getVersionHandler in web_ui/ui.go, ServerHeaderMiddleware in
-# web_ui/middleware.go, and the directors' list of servers.
+# version: /api/v1.0/version, the Server header, and the directors' list
+# of servers.
 
 
 def reported_version(server: Server) -> tuple[str | None, str]:

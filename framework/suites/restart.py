@@ -1,32 +1,31 @@
 """What survives when a server restarts, stops, or loses its backend.
 
-That is a cache's store, every server's identity and database, the
-issuer's refresh tokens and clients, the directors' view of a server
-that has gone, and an origin's answers while its storage is
+That is a cache's store; every server's identity and database; the
+issuer's refresh tokens and clients; the directors' view of a server
+that has gone; and an origin's answers while its storage is
 unreachable. The suite controls the services through the control helper
 (testlib/control.py), so it needs one, and skips the tiny topology,
 whose servers are one process. It comes after every other suite but
 `keys`, since it takes servers away for a while. Its objects go under
-/protected-a/data/restart/<run>/, put at every origin, and are removed
-afterward. A scenario with several cases records a row per case, named
-`<scenario> <case>`, or `<scenario> <service>`. The scenarios:
+/protected-a/data/restart/<run>/, at every origin, and are removed
+afterward. A case's row is named `<scenario> <case>`, or
+`<scenario> <service>`.
 
   cache-restart    each cache, restarted, serves the objects it held
                    from its store, with Age for a V2 cache, and the
                    origins send nothing for them
   state-survives   each server's ID and registration, and at the issuer
                    origin a user, a group, an API token, a downtime, a
-                   refresh token, and a client's secret, are as they
-                   were once origin-0, director-0, and the registry have
-                   restarted
+                   refresh token, and a client's secret, outlive
+                   restarts of origin-0, director-0, and the registry
   ad-expiry        a cache, and with several origins an origin, killed
                    without a word: every director drops it once its ad
                    expires (Server.AdLifetime), and names it again once
                    it advertises again
-  backend-outage   an origin whose storage service is stopped (`s3`,
-                   `webdav`, or `lab-server`) refuses with a server error,
-                   never a missing object, and serves again once it is
-                   back; its health says so meanwhile
+  backend-outage   an origin whose storage service (`s3`, `webdav`, or
+                   `lab-server`) is stopped answers with a server error,
+                   never as for a missing object, and serves again once
+                   the service is back; an `ssh` origin's health says so
   xrootd-wedged    the first XRootD origin, and the first federated
                    XRootD cache, whose XRootD is stopped (SIGSTOP), say
                    so in their health, and shut down once it has
@@ -142,11 +141,12 @@ BACKENDS = {
 }
 # The health component of each, where there is one (metrics/health.go).
 BACKEND_COMPONENTS = {"ssh": "ssh-backend"}
-# xrootd-wedged: the probe of a server's own XRootD, shortened from a
-# minute between probes, three minutes for one, and ten unanswered
-# before XRootD is shut down; its health component; and how long the
-# server may take to exit once XRootD stops: the window, a probe, and
-# Xrootd.ShutdownTimeout (config.d/base/60-xrootd.yaml), with room.
+# xrootd-wedged: the probe of a server's own XRootD, shortened from its
+# defaults (a minute between probes, three minutes for one, and ten
+# unanswered before XRootD is shut down); its health component; and how
+# long the server may take to exit once XRootD stops: the window, a
+# probe, and Xrootd.ShutdownTimeout (config.d/base/60-xrootd.yaml), with
+# room.
 LIVENESS_FILE = "90-liveness.yaml"
 LIVENESS_CONFIG = (
     "Xrootd:\n"
@@ -361,9 +361,9 @@ def cache_restart(test: Test) -> list[Row]:
     with Age). Restarted, and once every director names it again, it
     must serve each from its store, intact, with Age for a V2 cache, and
     the native origins must have sent less than an object for GETs
-    meanwhile. An XRootD cache sends no Age, so there only the origins'
-    counters tell; over XRootD origins, which keep none, the bytes alone
-    must be right.
+    meanwhile. Age is checked at a V2 cache alone; at an XRootD cache,
+    the origins' counters alone tell, and over XRootD origins, which
+    keep none, only the bytes are checked.
     """
     rows: list[Row] = []
     for cache in test.fed.caches:
@@ -382,8 +382,7 @@ def cache_restart(test: Test) -> list[Row]:
         federated = not cache.site_local
         path = test.path(names[0])
         # A director restarted just before (by state_survives(), in the
-        # pass before this one) learns of the cache again only from its
-        # next ad.
+        # pass before) learns of the cache again only from its next ad.
         if federated and test.wait_named("object", path, host, NAMED_WAIT) is None:
             rows.append(
                 (
@@ -638,8 +637,8 @@ def state_survives(test: Test) -> list[Row]:
     group must be there (`accounts`), the API token must still read
     /metrics and be listed (`api-token`), the downtime must still be
     declared (`downtime`), and the refresh token must refresh, with the
-    client's secret (`issuer`): the issuer's HMAC key is derived from a
-    master key kept in its database (oauth2/issuer/provider.go).
+    client's secret (`issuer`), whose HMAC key the issuer derives from a
+    master key in its database (oauth2/issuer/provider.go).
     """
     fed = test.fed
     test.put("probe", os.urandom(4096))
@@ -650,8 +649,9 @@ def state_survives(test: Test) -> list[Row]:
         rows.append(("setup", FAIL, first(problems)))
     origin = fed.origins[0]
     origin_host = director.host(origin.url)
-    # Each service restarted, and whether the directors must then name
-    # origin-0 again (after the registry's restart, nothing changes).
+    # Each service restarted, and the route by which every director must
+    # then name origin-0 again: none after the registry's, which takes
+    # no server out of routing.
     restarted = [(origin.svc, "origin")]
     if fed.directors:
         restarted.append((director.host(fed.directors[0]), "origin"))
@@ -780,10 +780,9 @@ def ad_expiry(test: Test) -> list[Row]:
 
     The first federated cache, and with several origins the last origin,
     is killed (SIGKILL, so it says nothing): within Server.AdLifetime
-    and some slack, no director may name it, since its ad has expired
-    (the directors keep ads in a cache with that TTL,
-    director/cache_ads.go); started again, every director must name it
-    within NAMED_WAIT seconds. The note times both.
+    and EXPIRY_SLACK, no director may name it, since its ad has expired;
+    started again, every director must name it within NAMED_WAIT
+    seconds. The note times both.
     """
     fed = test.fed
     if not fed.directors:
@@ -885,10 +884,8 @@ def restart_backend(backend: str) -> str | None:
 def revived(svc: str) -> str | None:
     """Start svc again if its container has exited, and say so.
 
-    An origin that cannot reach its storage may give up and exit, as an
-    ssh origin does once Origin.SSH.MaxRetries is spent, and nothing
-    would start it again; so that the rest of the run finds it serving,
-    this does.
+    An origin that gives up on its storage and exits would stay down for
+    the rest of the run.
 
     Returns:
         What happened to svc, if its container was not running, or it
@@ -917,7 +914,8 @@ def backend_outage(test: Test) -> list[Row]:
     (`cache`); and for an `ssh` origin, its health must say its backend
     is not ok within HEALTH_WAIT seconds (`health`). Once the service is
     back, the origin must serve the object again within BACKEND_WAIT
-    seconds, without a restart, as must the cache (`recovered`).
+    seconds, without a restart, as must the cache, and the health
+    component must say ok again (`recovered`).
     """
     fed = test.fed
     backend = BACKENDS.get(fed.origin_variant)
@@ -1002,9 +1000,9 @@ def backend_outage(test: Test) -> list[Row]:
     if started_again:
         rows.append(("recovered", FAIL, started_again))
         return rows
-    # An origin that gave up on its storage and exited would not serve
-    # again, nor would the rest of the run find it; put it back, and say
-    # so, since the row asks for a recovery without a restart.
+    # An origin that exited would stay down for the rest of the run: start
+    # it again, and fail the row, which asks for a recovery without a
+    # restart.
     exited = revived(origin.svc)
     if exited:
         rows.append(("recovered", FAIL, f"with {backend} stopped, {exited}"))
@@ -1128,17 +1126,16 @@ def wedge(test: Test, svc: str, web_url: str, route: str) -> tuple[str, str]:
 def xrootd_wedged(test: Test) -> list[Row]:
     """Check that a server whose XRootD stops answering shuts itself down.
 
-    Pelican probes its own XRootD, and once XRootD has answered no probe
-    for Xrootd.LivenessMaxUnresponsiveTime, shuts it down, and the server
-    ends with it, so that what runs the server can start it afresh
-    (xrootd/liveness.go; Pelican's main, not v26.0.0-rc.3). At each of
-    xrootd_targets(), restarted with the probe's timings shortened
-    (LIVENESS_CONFIG), once its health says `xrootd-liveness` is `ok`,
-    its XRootD daemons are stopped (SIGSTOP), which leaves their port
-    taking connections, but answering nothing; its health must then say
-    `warning` or `critical`, and within WEDGED_WAIT seconds its container
-    must have exited. It is then started again, as it was, and every
-    director must name it again.
+    Once its own XRootD has answered no liveness probe for
+    Xrootd.LivenessMaxUnresponsiveTime, a server must shut XRootD down
+    and end with it, so that what runs the server can start it afresh.
+    At each of xrootd_targets(), restarted with the probe's timings
+    shortened (LIVENESS_CONFIG), once its health says `xrootd-liveness`
+    is `ok`, its XRootD daemons are stopped (SIGSTOP), which leaves
+    their port taking connections, but answering nothing. Its health
+    must then say `warning` or `critical`, and within WEDGED_WAIT
+    seconds its container must have exited. It is then started again,
+    as it was, and every director must name it again.
     """
     targets = xrootd_targets(test.fed)
     if not targets:
@@ -1383,15 +1380,16 @@ def origin_failover(test: Test) -> list[Row]:
     (`--direct`, or `?directread`), where the namespace takes direct
     clients, and through a cache (or, with none, from whichever origin
     the directors send them to), served by a server other than the one
-    away, while the directors still name it for an origin's read, as
-    they do until its ad expires (before its ad expires, a director
-    that has a token stats the origins, and sends a client elsewhere;
-    a cache fetches from the origins as a client does, and must get
-    the object too), and once they have dropped it. The note says which
-    servers each client tried. Afterward the origin is unpaused, or
-    started, and every director must name it again. First, with every
-    origin up, both clients must get the probe by each route
-    (unfetched()), or the scenario fails at once.
+    away. That holds while the directors still name it for an origin's
+    read, as they do until its ad expires, and once they have dropped
+    it. Meanwhile a director that has the namespace's token stats the
+    origins before it redirects (Director.CheckOriginPresence), and a
+    cache fetches with the client's token, so each must reach an origin
+    that answers. The note says which servers each client tried.
+    Afterward the origin is unpaused, or started, and every director
+    must name it again. First, with every origin up, both clients must
+    get the probe by each route (unfetched()), or the scenario fails at
+    once.
     """
     fed = test.fed
     if len(fed.origins) < 2:
@@ -1505,10 +1503,10 @@ def peer_director(test: Test) -> list[Row]:
     """Check that a director killed drops from its peer's list, and returns.
 
     With several directors, the second killed: within Server.AdLifetime
-    and some slack, the first must list only itself at
-    /api/v1.0/director/directors, since its peer's ad has expired
-    (director/director_advertise.go); once the second starts again, the
-    first must list both within NAMED_WAIT seconds.
+    and EXPIRY_SLACK, the first must list only itself at
+    /api/v1.0/director/directors, since its peer's ad has expired; once
+    the second starts again, the first must list both within NAMED_WAIT
+    seconds.
     """
     fed = test.fed
     if len(fed.directors) < 2:

@@ -1,6 +1,5 @@
 # Pelican's reference receiver for origin metadata events,
-# cmd/sample_metadata_server, built from PELICAN_TAG's source: no release
-# ships it.
+# cmd/sample_metadata_server, built from PELICAN_TAG's source.
 
 FROM golang:1.26 AS build
 ARG PELICAN_TAG

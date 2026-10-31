@@ -22,11 +22,11 @@ director and cache.
   downtime      downtimes recorded at the registry: whose they are, who
                 may change them, and what the directors do with them
 
-Every registration the suite makes has a prefix with `registry-test-` in
-it (MARKER), its site name too, and every downtime it declares that in
-its description. Before the scenarios and after them, it removes every
-such registration, server, and downtime, a failed run's included, as
-the registry's admin, or for a server's downtime, as that server.
+Every prefix the suite registers, every site name it gives, and every
+downtime it declares has `registry-test-` (MARKER) in it. Before and
+after the scenarios, the suite removes every such registration, server,
+and downtime, a failed run's included: as the registry's admin, or for
+a server's downtime, as that server.
 """
 
 import functools
@@ -531,11 +531,10 @@ def like_decoys(test: Test, k1: str, k2: str) -> list[Row]:
     """Check that a LIKE wildcard in a prefix is not taken as a pattern.
 
     A registered prefix with a LIKE wildcard in it (`_` or `%`) must not
-    enclose one it only matches as a pattern: the registry finds a
-    prefix's superspaces with `? LIKE (prefix || '/%')`
-    (namespaceSupSubChecks in registry/registry_db.go), which takes a
-    registered /x_b for the parent of /xYb/c, and so refuses the latter
-    another key.
+    enclose one it only matches as a pattern: a registered /x_b is no
+    parent of /xYb/c, which must take another key. The registry finds a
+    prefix's superspaces in SQL (namespaceSupSubChecks in
+    registry/registry_db.go).
     """
     if not test.chaining:
         why = "key chaining is off, so no superspace is consulted"
@@ -602,8 +601,7 @@ def deletion(test: Test, k1: str, k2: str) -> list[Row]:
     (deleteNamespaceHandler), as `pelican namespace delete` mints one:
     signed with another key, 403; with the registered one, 200, after
     which the prefix has no JWKS (404). A prefix that was never
-    registered gets 400, as one JSON document; Pelican writes that and
-    goes on, and writes another.
+    registered gets 400, as one JSON document.
     """
     prefix, never = test.prefix("del"), test.prefix("never")
     rows: list[Row] = []
@@ -700,11 +698,9 @@ def cli(test: Test, k1: str, k2: str) -> list[Row]:
     """Check `pelican namespace register` and `delete`.
 
     With the key the client is configured with, it must register the prefix
-    with that key, and delete it (cmd/registry_client.go). Its --privkey
-    flag names the key to sign with, and must be honored; Pelican binds it
-    to IssuerKey only if it has a value when the command is defined, which
-    it never does, so the client signs with a key of its configuration, or
-    one it makes, and the `cli-flags` row fails.
+    with that key, and delete it (cmd/registry_client.go). With an empty
+    key directory and --privkey, it must register the prefix with
+    --privkey's key.
     """
     rows: list[Row] = []
     prefix = test.prefix("cli")
@@ -763,22 +759,12 @@ def jwks(test: Test) -> list[Row]:
     rows: list[Row] = []
     problems: list[str] = []
     for prefix, server in exports.items():
-        problems += served_problems(test, prefix, server, exact=True)
+        problems += served_problems(test, prefix, server)
     rows.append(row("exports", problems, f"{len(exports)} export(s): their origin's own keys, exactly"))
     problems = []
     for server in test.servers:
-        # A cache never tells the registry of a key it adds since it
-        # registered, which this does not check: of a cache's, only that
-        # every key served is its own.
-        prefix = test.server_prefix(server)
-        problems += served_problems(test, prefix, server, exact=server.kind == "origin")
-    rows.append(
-        row(
-            "servers",
-            problems,
-            f"{len(test.servers)} server(s): each origin's own keys, and only each cache's",
-        )
-    )
+        problems += served_problems(test, test.server_prefix(server), server)
+    rows.append(row("servers", problems, f"{len(test.servers)} server(s): their own keys, exactly"))
     problems = []
     prefixes = list(exports) + [test.server_prefix(s) for s in test.servers]
     for prefix in prefixes:
@@ -800,17 +786,15 @@ def jwks(test: Test) -> list[Row]:
     return rows
 
 
-def served_problems(test: Test, prefix: str, server: Server, exact: bool) -> list[str]:
+def served_problems(test: Test, prefix: str, server: Server) -> list[str]:
     """Return what is wrong with the JWKS the registry serves for prefix.
 
     Args:
         test: The test.
         prefix: The prefix, which server registered.
-        server: The server that registered prefix. The keys it publishes
-            itself (see Test.published()) must include every key in its key
-            directory.
-        exact: Whether the JWKS must hold all the keys server publishes
-            itself, and nothing else, rather than only some of them.
+        server: The server that registered prefix. The JWKS must hold
+            exactly the keys it publishes itself (see Test.published()),
+            which must include every key in its key directory.
     """
     own = test.published(server)
     if own is None:
@@ -823,14 +807,10 @@ def served_problems(test: Test, prefix: str, server: Server, exact: bool) -> lis
     have = registry.thumbprints(registry.parse(answer.body))
     if answer.status != 200 or have is None:
         return problems + [f"{prefix}'s JWKS: {answer.describe()}"]
-    if exact and have != own:
+    if have != own:
         problems.append(
             f"{prefix}'s JWKS holds {len(have & own)} of {server.svc}'s {len(own)} key(s),"
             + f" and {len(have - own)} other(s)"
-        )
-    if not exact and (not have or not have <= own):
-        problems.append(
-            f"{prefix}'s JWKS holds {len(have - own)} key(s) not {server.svc}'s, of {len(have)}"
         )
     return problems
 
@@ -884,9 +864,8 @@ def private_keys(test: Test, prefixes: Sequence[str]) -> Row:
     urls = {s.web_url for s in test.servers} | {c.web_url for c in test.fed.caches}
     urls |= set(test.fed.directors) | {test.registry}
     for url in sorted(urls):
-        # The registry may serve no JWKS of its own: v26.0.0-rc.3's does
-        # not, since only the director, origins, and caches register the
-        # route (RegisterOIDCAPI in server_utils/oidc.go).
+        # The registry need not serve a JWKS of its own, since no other
+        # server verifies a token it signs.
         documents[f"{director.host(url)}'s JWKS"] = fetch(
             f"{director.host(url)}'s JWKS",
             f"{url}/.well-known/issuer.jwks",
@@ -1022,9 +1001,9 @@ def public_listing(test: Test, listed: str, unlisted: str) -> Row:
 
 
 def bad_status(test: Test) -> Row:
-    """Check that the admin's ?status=Bogus gets 400, as one JSON document.
+    """Check that the admin's ?status=Bogus gets 400.
 
-    Pelican writes that and goes on, and writes the list too.
+    Its body must be one JSON document.
     """
     answer = web.request("GET", f"{test.registry}{REGISTRATIONS}?status=Bogus", token=test.admin().token)
     problems = [] if answer.status == 400 else [f"{answer.describe()}, not 400"]
@@ -1284,26 +1263,20 @@ INVITE_TOO_LONG = "800h"
 def ownership(test: Test) -> list[Row]:
     """Check who owns a registration, and what that lets them do.
 
-    A registration starts unowned (registry/registry_ui.go); the
-    holder of its key claims it (POST /namespaces/:id/claim,
-    claimNamespace), with a token of registry.edit_registration signed
-    with the key, for good: a claim without a token is 400, with another
-    key's 403, the owner's again 200, and another user's 409. Once the
-    admin approves it, its owner may change its description and its
-    institution (applyOwnerEdits), and nothing else: the registry keeps
-    its site name, prefix, and key as they were, whatever the owner
-    sends, and refuses anyone else (403). A registration the admin
-    denies, its owner may edit, which resubmits it as Pending. And its
+    The registration, /registry-test-<run>-own, starts unowned
+    (registry/registry_ui.go). USER, as the holder of its key, claims it
+    for good (POST /namespaces/:id/claim, claimNamespace), with a token
+    of registry.edit_registration signed with the key: with no token,
+    400; with another key's, 403; with its own, 200, and again, 200; as
+    HEIR, 409. Once approved, only its owner may edit it, and then only
+    its description and institution (applyOwnerEdits); anyone else gets
+    403. Once denied, its owner's edit resubmits it as Pending. Its
     owner, or the admin, may hand it on with a single-use invite (POST
-    /namespaces/:id/ownership-invites; a non-owner gets 403, and an
-    expiry of 0, beyond 30 days, or that is no duration, 400), which the
-    user who redeems it (POST
-    /api/v1.0/invites/redeem/registration-ownership) then owns, and no
-    one else may redeem: the former owner may change nothing afterward.
-    The registration is one of the run's own, /registry-test-<run>-own,
-    which `test-registry` claims and hands on to `test-registry-heir`; a
-    user keeps the registrations they own, so the suite's sweep removes
-    it.
+    /namespaces/:id/ownership-invites): a non-owner gets 403, and an
+    expiry of 0, beyond 30 days, or of no duration, 400. HEIR redeems it
+    (POST /api/v1.0/invites/redeem/registration-ownership), and then
+    owns the registration; the former owner may change nothing. A user
+    keeps the registrations they own, so the suite's sweep removes it.
     """
     key = test.key("own")
     prefix = test.prefix("own")
@@ -1593,8 +1566,8 @@ def downtime(test: Test) -> list[Row]:
     That is, a cache's own, which it tells the registry of; a registered
     server's token, which may create or change only that server's own
     (DowntimeAuthHandler, and downtimeMutationAuthorized); and the admin's,
-    which the directors apply to routing, at once if current, and only list
-    if not yet begun (director/cache_ads.go).
+    which the directors apply to routing at once if current, and only list
+    if it begins later (director/cache_ads.go).
     """
     fed = test.fed
     if fed.tiny:

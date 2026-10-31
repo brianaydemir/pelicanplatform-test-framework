@@ -1,33 +1,31 @@
 # CI and Results
 
-How to run the smoke tests in CI, and the format of the results that
+Running the smoke tests in CI, and the format of the results that
 `test.py` and `smoke.sh` write.
 
 ## Running in CI
 
-Pelican's own CI can run these tests; this repository ships no workflow
-of its own. A job needs a Linux host that meets the
-[requirements](../README.md#requirements), and network access to GitHub
-and the image registries.
+This repository ships no CI workflow. A job needs a Linux host that
+meets the [requirements](../README.md#requirements), and network access
+to GitHub and the image registries.
 
-- **What to test** is given the usual way: `PELICAN_TAG` names the
-  release whose binaries, metadata verifier, and default images are
-  used; `IMAGE_ORIGIN`, `IMAGE_CACHE`, `IMAGE_DIRECTOR`, and
-  `IMAGE_REGISTRY` name images the job built and loaded into the local
-  daemon. To test a client the job built, run `./fed.sh init` once, then
-  copy the client over `framework/var/bin/linux/pelican`; `smoke.sh`
-  keeps `framework/var/bin/` across its resets.
+- **What to test:** `PELICAN_TAG` names the release whose binaries,
+  metadata verifier, and default images are used. `IMAGE_ORIGIN`,
+  `IMAGE_CACHE`, `IMAGE_DIRECTOR`, and `IMAGE_REGISTRY` name images that
+  the job built and loaded into the local daemon. To test a client that
+  the job built, run `./fed.sh init` once, then copy the client over
+  `framework/var/bin/linux/pelican`; `smoke.sh` keeps
+  `framework/var/bin/` across its resets.
 - **What to run:** `./smoke.sh -o DIR SHAPE...`. `./smoke.sh --names`
-  lists the shapes one per line, for a matrix of one shape per job.
-- **What comes back:** the exit status (non-zero if any shape failed),
-  and, in `DIR`, each shape's log, its results in `results/<shape>/`,
-  from each run of the tests its services' logs and containers' states,
-  its configuration, the tests' output, and every client command's, in
-  `logs/<shape>/<time>/` (see the [README](../README.md#quickstart)),
-  and, merged over the shapes, `results.tsv`, `junit.xml` (for a test
-  reporter), and `summary.md` (for `$GITHUB_STEP_SUMMARY`). A shape that
-  failed also leaves `<shape>.compose.log`, every service's log as it
-  failed. See [Results](#results).
+  lists the shapes, one per line, for a matrix of one shape per job.
+- **What comes back:** the exit status, non-zero if any shape failed,
+  and in `DIR`:
+  - each shape's log, and its results in `results/<shape>/`;
+  - each test run's [logs](../README.md#logs), in
+    `logs/<shape>/<time>/`;
+  - `<shape>.compose.log`, every service's log, for a shape that failed;
+  - merged over the shapes, `results.tsv`, `junit.xml` (for a test
+    reporter), and `summary.md` (for `$GITHUB_STEP_SUMMARY`).
 
 For example, as steps of a job in a matrix over the shapes:
 
@@ -52,29 +50,27 @@ For example, as steps of a job in a matrix over the shapes:
 
 Each suite writes `framework/var/results/<suite>.tsv`, and its SciTokens
 pass `<suite>-scitokens.tsv`
-([token profiles](tests/README.md#token-profiles)), one row per test
-case, with a header row:
+([token profiles](tests/README.md#token-profiles)): a header row, then
+one row per test case.
 
 ```
 suite   case   status   seconds   note
 ```
 
-`status` is `PASS`, `FAIL`, `SKIP`, or `INCONCLUSIVE`. A note's
-backslashes, tabs, carriage returns, and newlines are written as `\\`,
-`\t`, `\r`, and `\n`, so each row is one line. The suite is the suite's
-name (with `-scitokens` after it for its SciTokens pass), with `-<tag>`
-after that if `RESULTS_TAG` names a tag, as `smoke.sh` does to tell apart
-two runs of one suite. A suite that stops early records why, as a `FAIL`
-row named `setup` or `aborted`; among the reasons is `test.py`'s
-watchdog, which abandons a pass that has printed nothing for 20 minutes,
-or has run for 90, so that a scenario stuck on a server that never
-answers cannot stall a run (`STALL_SECONDS` and `BUDGET_SECONDS` in
-`test.py`). A run of everything first removes earlier runs' results with
-the same tag. `transfers` has a row per scenario, one per
-`served-by-*` check, and `read-back`, should a pstore origin fail to say
-what it holds; `auth` and `owners` have one per request (but per server
-for `auth`'s climbs and `expired-in-use`), and `auth` one per document
-its `keys` check fetches. To read one:
+- `suite` is the suite's name, with `-scitokens` for its SciTokens pass,
+  and `-<tag>` if `RESULTS_TAG` names a tag, as `smoke.sh` does to tell
+  apart two runs of one suite.
+- `status` is `PASS`, `FAIL`, `SKIP`, or `INCONCLUSIVE`.
+- `note` escapes backslashes, tabs, carriage returns, and newlines as
+  `\\`, `\t`, `\r`, and `\n`, so each row is one line.
+
+A suite that stops early records why, as a `FAIL` row named `setup` or
+`aborted`. One reason is `test.py`'s watchdog, which abandons a pass
+that prints nothing for 20 minutes, or runs for 90 (`STALL_SECONDS` and
+`BUDGET_SECONDS` in `test.py`). A run of every suite first removes
+earlier results with the same tag.
+
+To read one:
 
 ```sh
 column -t -s "$(printf '\t')" framework/var/results/transfers.tsv

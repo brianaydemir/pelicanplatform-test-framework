@@ -2,13 +2,11 @@
 
 They are read as the Pelican client reads them (parseDigestHeader in
 Pelican's client/handle_http.go): md5 and sha (SHA-1) in base64; crc32
-and crc32c in hex. XRootD writes crc32c in base64, which the client
-accepts too (xrootd/xrootd#2456), and so does this. The client knows no
-other algorithm; adler32 (hex) and sha-256 (base64), which a server may
-report, are read as RFC 3230 has them. XRootD's crc32 is the POSIX
-`cksum` (XrdCksCalccrc32), not the CRC-32 that the client and native
-origins mean by it, and check() says so of a crc32 that is the one but
-not the other.
+in hex; and crc32c in hex or in base64. The client knows no other
+algorithm; adler32 (hex) and sha-256 (base64), which a server may
+report, are read as RFC 3230 has them. By crc32, the client and native
+origins mean the IEEE CRC-32; check() says so where a crc32 is instead
+the object's POSIX `cksum`, as XRootD's XrdCksCalccrc32 computes it.
 """
 
 import base64
@@ -43,7 +41,7 @@ def compute(algorithm: str, data: bytes) -> bytes:
 
 
 def cksum(data: bytes) -> bytes:
-    """Return data's POSIX `cksum`, as XRootD's crc32 is.
+    """Return data's POSIX `cksum`.
 
     It is a CRC-32 that feeds each byte's bits most significant first,
     from 0, then the data's length in as few bytes as hold it, least

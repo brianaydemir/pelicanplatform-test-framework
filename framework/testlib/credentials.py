@@ -11,32 +11,33 @@ differs from `server` in one column of the table below (`ns-cross` from
 A token doesn't always decide (see expected()):
 
 - Reads of a PublicReads namespace (/public) are allowed whatever the
-  token. The servers ignore it, and the clients don't even send one
-  (client/handle_http.go in Pelican), although the director rejects any
-  expired token it is shown, whatever the namespace (director.go).
+  token. The servers ignore it, and the clients send none; a director,
+  though, refuses any expired token it is shown (see
+  transfers.outcome()).
 - Writes to a namespace without Writes (/public) are refused whatever
   the token.
 
-/public takes no writes, so it has no issuer at all (see has_issuer()),
-unless `-p origin-public-writes` gives it writes, and so an issuer,
-which a write there must then name; either way it has no keys of its
-own. The credentials that need a namespace's own key or issuer, or
-another namespace's, are only for /protected-a and /protected-b, each
-the other's other namespace (see applies()). Where only one of them is
-exported, no export lists the other's own key, so `ns-other` and
-`ns-cross` are skipped. With the origins' issuer off, every namespace
-has one issuer URL, and no namespace has keys of its own, so
-`wrong-iss`, `ns-jwks`, `ns-other`, and `ns-cross` are skipped; so they
-are with the external issuer, whose JWKS also lacks `jwks`'s key, so
-`jwks` is skipped too (see moot()).
+/public takes no writes, so it has no issuer (see has_issuer()), unless
+`-p origin-public-writes` gives it writes, and with them an issuer,
+which a write there must name. Either way it has no keys of its own. So
+the credentials that need a namespace's own key or issuer, or another
+namespace's, are only for /protected-a and /protected-b, each the
+other's other namespace (see applies()). Some shapes make some
+credentials moot, and they are skipped (see moot()):
+
+- `ns-other` and `ns-cross`, where only one protected namespace is
+  exported;
+- `wrong-iss`, `ns-jwks`, `ns-other`, and `ns-cross`, where the origins'
+  issuer is off or the external issuer replaces it;
+- `jwks`, where the external issuer replaces it.
 
 Each storage token comes in two profiles (see PROFILES), as `pelican
 token create --profile` makes them: the WLCG common JWT profile, which
 Pelican prefers, and SciTokens 2.0, which its documentation says it
-understands too. Which one a test presents is its session's
-(testlib/session.py), and each must get what the other gets. Tokens of
-Pelican's own scopes, such as its web API's, are of the WLCG profile
-alone, as Pelican mints them.
+accepts too. A test presents its session's profile
+(testlib/session.py), and each profile must get what the other gets.
+Tokens of Pelican's own scopes, such as its web API's, are of the WLCG
+profile alone, as Pelican mints them.
 """
 
 import json
@@ -258,13 +259,12 @@ def moot(fed: common.Federation, cred: Credential) -> str | None:
     """Return why cred can test nothing in fed, or None if it can.
 
     With the origins' issuer off, or the external issuer in its place,
-    `wrong-iss` would claim the right issuer, and no namespace has keys of
-    its own. The external issuer's JWKS holds only its own keys, so a
-    token that names it but is signed with a key listed only in
-    Server.IssuerJwks (`jwks`) would only repeat `unknown`. Where only one
-    protected namespace is exported (e.g. `-p origin-httpsv2`), no export
-    lists the other's own key, so a token signed with it (`ns-other`,
-    `ns-cross`) would only repeat `unknown`.
+    every namespace has one issuer, so none is wrong, and no namespace
+    has keys of its own. The external issuer's JWKS lacks the key that
+    Server.IssuerJwks lists, so `jwks` would only repeat `unknown`. Where
+    only one protected namespace is exported (e.g. `-p origin-httpsv2`),
+    no export lists the other's own key, so `ns-other` and `ns-cross`
+    would only repeat `unknown`.
     """
     if fed.external_issuer:
         why = "every namespace trusts the external issuer"
@@ -727,22 +727,26 @@ def wait_until_stale(expiry: float | None) -> None:
 
 
 def client_env(overwrites: bool = True) -> dict[str, str]:
-    """Return the environment for a client.
+    """Return the environment for a client that presents only its token.
 
-    The client should present only the token it is given. It looks for
-    tokens at --token, then in these variables and token files, then in
-    _CONDOR_CREDS, and presents the first acceptable one, or the first it
-    found if none is (client/acquire_token.go in Pelican). Most
-    credentials' tokens are unacceptable on purpose, so any other token
-    would win over them: drop the variables, and refuse to run with a
-    token file. With no token, `pelican object` also looks in its
-    credential store, which in the dev container outlives a run: give it
-    an empty one. It then gives up unless its stdout is a terminal, or
-    <PREFIX>_SKIP_TERMINAL_CHECK says to pretend: drop that too.
-    Preferred caches would win over a direct read: drop them, however
-    they are given. With overwrites, uploads may replace objects, since a
-    pstore can't be emptied; `object sync` wants them off, since they
-    turn off its skipping of uploads. Runs in framework/var.
+    The client looks for tokens at --token, then in these variables and
+    token files, then in _CONDOR_CREDS, and presents the first acceptable
+    one, or the first it found if none is (client/acquire_token.go in
+    Pelican). Most credentials' tokens are unacceptable on purpose, so
+    any other token would win over them. So the environment:
+
+    - drops the variables, and refuses to run with a token file;
+    - gives `pelican object` an empty credential store, which it looks in
+      when it has no token, since the dev container's outlives a run;
+    - drops <PREFIX>_SKIP_TERMINAL_CHECK, so that a client with no token
+      and no terminal gives up;
+    - drops preferred caches, however given, which would win over a
+      direct read;
+    - with overwrites, lets uploads replace objects, since a pstore can't
+      be emptied; `object sync` wants them off, since they turn off its
+      skipping of uploads.
+
+    Runs in framework/var.
     """
     env = dict(os.environ)
     for name in (

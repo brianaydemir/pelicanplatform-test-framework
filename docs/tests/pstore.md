@@ -2,218 +2,113 @@
 
 Part of [What the tests check](README.md).
 
-A pstore origin (`-p origin-pstore`) keeps its objects encrypted, in
-block files and in a catalog that only the running origin can read
-(`pstore/` and `origin_serve/backend_pstore.go` in Pelican). Besides
-serving objects, which `blocks` and `posc` check, it has an
-administrative storage API and CLI, verification passes that run on a
-schedule, a size bound past which it refuses writes, and backups of its
-catalog. The `pstore` suite checks them. Its objects go under
-`/<namespace>/data/pstore/<run>/`, in the first of `/protected-a` and
-`/protected-b` that takes writes, at every pstore origin, and it
-removes them afterward; where neither takes writes, every row skips.
-At another native origin, only `storage-api`'s `absent` row runs, and
-the suite skips XRootD origins. A scenario with several cases records
-a row per case, named `<scenario> <case>`, or
-`<scenario> <origin> <case>` where it asks each origin. Where other
-suites would read a store on disk, they ask a pstore origin's storage
-API what its catalog holds instead: [names](names.md) its names and
-checksums, and [listings](listings.md) and
-[client commands](client-commands.md) its modification times.
+A pstore origin (`-p origin-pstore`) keeps its objects encrypted, in block
+files and a catalog that only the running origin can read (Pelican's
+`docs/pstore-design.md`, cited below by section). The `pstore` suite checks
+its admin storage API and CLI, its scheduled passes, its size bound, and its
+catalog's backups; [blocks](block-boundaries.md) and
+[posc](posc-and-metadata.md#posc) check how it serves and stores objects.
+[Names](names.md), [listings](listings.md), and
+[client commands](client-commands.md) also use the storage API.
 
-- `storage-api`: each pstore origin serves, on its web port, `GET /api/v1.0/origin/storage/pstore/ls/<path>`, `stat/<path>`,
-  `digest/<path>`, and `usage`, for its admin alone
-  (`origin_serve/storage_api.go`). A path is in the store's catalog,
-  under the export's `StoragePrefix` (`/protected-a/...`). At each
-  pstore origin, the suite puts a collection of seven objects, of 100 to
-  18,100 bytes, some held in the catalog and some in block files, and a
-  collection `sub`, which holds one.
-  - `authz`: each route, with no token, must get 401; with the
-    namespace's `server` token, which is not of the origin's making for
-    its web API, 401; with the web token of an ordinary user,
-    `test-pstore` (`credentials.mint_user()`), 403; and with the
-    admin's, 200. The routes take two handlers, one to say who the
-    caller is, and one whether they are the admin; registered alone,
-    the second would refuse everyone with 401.
-  - `ls`: of the collection, whole, its eight entries in name order,
-    each with its path, size, and kind, and `more` false. Three at a
-    time (`limit=3`), each page continued with `after` set to the last
-    name before it: pages of three, three, and two entries, `more` on
-    all but the last, together the whole listing, with none twice. `ls`
-    of an object must get 400, and of nothing, 404.
-  - `stat`: of an object in a block file, and of one in the catalog,
-    its name, path, size, and ETag, each as a HEAD at the data port
-    says them; of `sub`, that it is a collection, with no ETag; and of
-    nothing, 404.
-  - `digest`: of an object, the RFC 3230 checksums that the store
-    recorded as it wrote it, md5, sha, and crc32c
-    (`pstore/checksum.go`), each the object's, and each what a HEAD
-    with `Want-Digest` of it alone gets at the data port; of a
-    collection, 400.
-  - `usage`: `backend` `pstore`, at least the collection's bytes used,
-    and a capacity of 0, since the shape bounds no store. Within 45
-    seconds, `pelican_pstore_used_bytes` and
-    `pelican_pstore_limit_bytes` must say the same: the janitor
-    republishes them every 30 seconds.
-  - `absent`: at a native origin whose store is not a pstore, every
-    route, with no token or with the admin's, must be 404, since the
-    origin registers none.
-- `introspect-cli`: `pelican-server origin introspect` (the client
-  lacks it; see [client binary](../../README.md#client-binary)) asks the
-  first pstore origin's storage API, with `--server` and `--json`.
-  `token`: with the admin's token in a file (`--token`), `usage`, and
-  `ls`, `stat`, and `digest` of `storage-api`'s collection, must print
-  what the API answers. `missing`: with a token file that does not
-  exist, it must fail, and say that the file was not found. `minted`:
-  with no file, it mints an admin token with its host's issuer key, for
-  the issuer that the origin's web API takes. Given a copy of the
-  origin's key (`PELICAN_ISSUERKEYSDIRECTORY`; a copy, since Pelican
-  makes a key in a key directory that has none) and the origin's web
-  URL (`PELICAN_SERVER_EXTERNALWEBURL`), `usage` must print what the
-  API answers. The scenario skips without a `pelican-server`.
-- `scheduled-passes`: a pstore origin checks its catalog
-  (`Origin.PStoreIndexCheckInterval`), and reads every object back
-  against its checksums (`Origin.PStoreDataScanInterval`), on a
-  schedule: here every minute, the first a minute after it starts
-  (`config.d/origin/pstore/50-origin.yaml`). Its janitor frees, every
-  30 seconds, the versions that an overwrite or a delete replaced. At
-  each pstore origin, once each pass has succeeded, within 150 seconds,
-  the suite puts two objects of 100,000 bytes, then overwrites one and
-  deletes the other. Within 150 seconds,
-  `pelican_pstore_reclaimed_objects_total` must rise by 2, and
-  `pelican_pstore_reclaimed_bytes_total` by their sizes; and each pass
-  must begin again, and succeed. No pass may have failed
-  (`pelican_pstore_scheduled_pass_failures_total`); the index check
-  must find nothing (`pelican_pstore_fsck_findings`); and the data scan
-  must have verified objects, and found none changed while the scenario
-  watched (`pelican_pstore_data_scan_mismatches_total`, which
-  `corruption`, in an earlier run, may have counted before). The index
-  check's `pending_instances`, writes under way or abandoned less than
-  10 minutes ago, which only the janitor reclaims, are reported but not
-  failed (`pstore/fsck.go`): a copy that failed in the `exports` suite
-  may leave some.
-- `corruption`: a store's data scan is the only thing that finds what
-  its disk has spoiled, since an origin, unlike a cache, has nowhere to
-  fetch a good copy from. At each pstore origin, the suite puts an
-  object of 100,000 bytes, which the store writes to a block file of its
-  own, the one new file of its size in `objects/` under the store
-  (`framework/var/data/origin/<N>/pstore/`), and then, from the dev
-  container, inverts a byte of the object's second block in that file,
-  as a failing disk would, so that the block no longer matches its
-  AES-GCM tag. A GET of the object must then not be served whole, or
-  the change missed it, and the row is inconclusive; and the next data
-  scan to begin after the change, and succeed, within 150 seconds, must
-  count it (`pelican_pstore_data_scan_mismatches_total`). The scan reads
-  each object back through the block store, which checks each block's
-  tag before any checksum is compared, and takes a block that fails it
-  for an error reading the object, which it logs as a warning ("Error
-  verifying object"), and counts nothing (`verifyObjectChecksum` in
-  `local_cache/consistency.go`, which `pstore/integrity.go` runs), so
-  the row is expected to fail, on v26.0.0-rc.3 and main alike (read in
-  the code, not yet run): a V2 cache's scan does the same
-  (`cache-api`'s `consistency` rows; [cache APIs](cache-apis.md)). The
-  note says what the GET got. The object is deleted afterward.
+The suite writes in the first of `/protected-a` and `/protected-b` that
+takes writes, and skips where neither does. At other native origins, only
+`storage-api`'s `absent` rows run; XRootD origins are skipped. A case's row
+is named `<scenario> <case>`, or `<scenario> <origin> <case>` where each
+origin is asked. `introspect-cli`, `scheduled-passes`, `corruption`, and
+`backups` run in the WLCG pass only
+([token profiles](README.md#token-profiles)).
 
-No shape bounds a store, or backs one up. So for `capacity`, `backups`,
-and `restore`, the suite restarts the first origin, once, as the last of
-its configuration layers ([service control](../../README.md#service-control)).
-Its one storage directory, `/data/pstore`, is bounded at what the
-storage API says it holds and 8 MiB more (`Origin.PStoreStorageDirs`,
-with a `MaxSize`). It backs up its catalog every 20 seconds, keeping 3
-(`Origin.PStoreMetadataBackupLocation`, `PStoreMetadataBackupInterval`,
-and `PStoreMetadataBackupsToKeep`), to a directory of the run's own in
-its state, `framework/var/state/<service>/pstore-backups/<run>/`, which
-the suite removes afterward. The suite then restores the origin, and
-waits, as `freshness` does, until every director names every origin and
-every cache answers. The restart needs a control helper, and skips the
-`tiny` topology, whose origin is the whole federation's process;
-otherwise the three scenarios skip, and say why. `scheduled-passes` and
-`corruption` run before it, since a restart starts the passes over.
+- `storage-api`: Each pstore origin must serve an admin-only storage API on
+  its web port: `GET /api/v1.0/origin/storage/pstore/ls/<path>`,
+  `stat/<path>`, `digest/<path>`, and `usage`. It is asked of a collection
+  of seven objects and a subcollection, `sub`:
 
-- `capacity`: straight at the origin, in order. A pstore never evicts:
-  past its bound, a write gets 507 until something is deleted
-  (`pstore/capacity.go`). Each refusal must count once in
-  `pelican_pstore_write_failures_total{reason="no_space"}`.
+  - `authz`: Each route must answer 401 with no token or the `server` token,
+    403 for an ordinary user, and 200 for the admin.
+  - `ls`: The collection's eight entries in name order, with path, size, and
+    kind; with `limit=3` and `after`, pages of 3, 3, and 2, `more` on all
+    but the last. Of an object, 400; of nothing, 404.
+  - `stat`: Of an object, its name, path, size, and ETag, as a HEAD gives
+    them; of `sub`, a collection; of nothing, 404.
+  - `digest`: Of an object, its md5, sha, and crc32c (RFC 3230), as a HEAD
+    with `Want-Digest` gives them; of a collection, 400.
+  - `usage`: `backend` `pstore`, at least the collection's bytes, and a
+    capacity of 0. `pelican_pstore_used_bytes` and
+    `pelican_pstore_limit_bytes` must agree within 45 seconds.
+  - `absent`: Every route must get 404 at a native origin without a pstore.
 
-  - `fill`: objects of up to 960 KiB, each written whole, with its
-    length, below pstore's 1 MiB spill threshold, so that each takes
-    its bytes and a tag per block, until 512 KiB are left. The store's
-    usage must have grown by what they take, less what the janitor
-    freed meanwhile.
-  - `sized`: a PUT's headers, with a `Content-Length` 256 KiB more than
-    is left, and no body: the origin must answer 507, and nothing else,
-    before any of the body comes. It checks a declared length against
-    the store before it reads (`checkBackendCapacity` in
-    `origin_serve/handlers.go`).
-  - `expect`: the same, with `Expect: 100-continue`: 507, with no `100 Continue` first. Python's `http.client` passes over a `100 Continue`, and sends a body whole, so these two send a request of
-    their own (`web.statuses_before_body()`).
-  - `chunked`: a PUT in chunks, with no length, of 128 KiB more than is
-    left, which the origin can refuse only once it has read what is
-    left, must get 507, not the WebDAV handler's 405 nor a 500
-    (`statusForBackendError` in `origin_serve/error_handling.go`). It
-    must leave nothing behind: a HEAD of the object and its `stat` must
-    get 404, and the store's usage must not have grown. What the origin
-    leaves unread is less than the 256 KiB that Go's server reads and
-    discards before it answers, so that it need not hang up on a
-    client still sending.
-  - `freed`: after a DELETE of a filler, the store must have room for
-    `sized`'s object within 90 seconds, once the janitor frees the
-    filler; `sized`'s PUT, with its body, must then succeed, read back
-    whole, and count no refusal.
-  - `gauges`: `pelican_pstore_limit_bytes` must be the bound, and with
-    `pelican_pstore_used_bytes`, within 45 seconds, say what the storage
-    API's `usage` says.
+- `introspect-cli`: `pelican-server origin introspect --json` at the first
+  pstore origin. Skips without `pelican-server`
+  ([client binary](../../README.md#client-binary)).
 
-- `backups`: the origin backs up its catalog at startup, then an
-  interval after each backup, to `pstore-metadata-<UTC>.pmb`, through a
-  `.partial` file that it renames, and prunes all but the newest it
-  keeps (`snapshotOnce` in `pstore/backup.go`).
+  - `token`: With the admin's token file, `usage`, `ls`, `stat`, and
+    `digest` must print what the API answers.
+  - `missing`: With a missing token file, it must fail, and say so.
+  - `minted`: With no token file, given the origin's issuer key and web URL,
+    it must mint an admin token that the origin takes.
 
-  - `startup`: within 60 seconds of the restart, a backup must appear,
-    written within an interval of when the origin started
-    (`process_start_time_seconds`), with its pass counted
-    (`pelican_pstore_scheduled_passes_total{pass="metadata_backup"}`).
-  - `schedule`: once four backup passes have begun, the backups must be
-    20 seconds apart, or up to 10 more (the interval runs from the end
-    of one to the start of the next), and none of the passes may have
-    failed.
-  - `files`: the directory must then hold three backups, the startup
-    one pruned, each named for when it was written and beginning with
-    the format's magic and version, `PELICAN-PSTORE-BACKUP\0\1`
-    (`pstore/backup_crypto.go`), and no `.partial` file, nor anything
-    else; and `pelican_pstore_metadata_backup_last_size_bytes` must be
-    the newest one's size.
+- `scheduled-passes`: The shape runs the index check
+  (`Origin.PStoreIndexCheckInterval`) and the data scan
+  (`Origin.PStoreDataScanInterval`) every minute. At each pstore origin,
+  with one object overwritten and another deleted, within 150 seconds
+  `pelican_pstore_reclaimed_objects_total` must rise by 2,
+  `pelican_pstore_reclaimed_bytes_total` by their sizes, and each pass must
+  run again. No pass may fail, the index check must find nothing
+  (`pelican_pstore_fsck_findings`), and the data scan must count no
+  mismatches. The index check's `pending_instances` are noted, not failed
+  (section 11.2).
 
-- `restore`, with the origin still backing up its catalog so: a backup
-  is only as good as what comes back out of it, and nothing but the
-  origin can read the store, so the scenario checks a restore through
-  the offline CLI, which reads the store on its own
-  (`pelican-server origin pstore`; `pstore/backup.go` and `recover.go`).
+- `corruption`: At each pstore origin, with a byte of an object's block
+  inverted on disk, the next data scan must count it within 150 seconds
+  (`pelican_pstore_data_scan_mismatches_total`; section 11.3).
 
-  - `objects`: five objects of 100 bytes to 1 MiB and 5, held in the
-    catalog and in block files, written straight to the origin; the
-    first backup taken after them, copied out of its directory; and
-    then one more object, written after that backup, which the origin
-    must serve.
-  - `cli`: with the origin stopped, the store's catalog (`db/`) is set
-    aside, leaving its block files (`objects/`) and master key
-    (`masterkey.json`), as a recovery is laid out, and
-    `metadata-restore` must restore the copied backup into it, opened
-    with a copy of the origin's issuer keys, to which the catalog's
-    master key and every backup are sealed.
-  - `export`: `export --verify` of the scenario's collection, from the
-    restored store, must write out every object the backup held, byte
-    for byte, each verified against the checksums the catalog records,
-    and not the object written after the backup.
-  - `served`: the origin, started again on the restored catalog, given
-    back to whoever owns the master key, must serve the five objects,
-    byte for byte, and answer 404 for the one written after the backup.
-    If it does not, the catalog set aside is put back, so that the rest
-    of the run finds the store as it was.
+`capacity`, `backups`, and `restore` restart the first origin, as the last
+of its [configuration layers](../glossary.md#configuration-layer)
+([service control](../../README.md#service-control)): its storage bounded at
+what it holds plus 8 MiB (`Origin.PStoreStorageDirs`), and its catalog
+backed up every 20 seconds, keeping 3 (`Origin.PStoreMetadataBackup*`). This
+needs a [control helper](../glossary.md#service-control-helper) and a
+topology other than `tiny`; elsewhere the three skip.
 
-  The scenario needs the `pelican-server` that has the CLI, and skips
-  without it; the block files that the late object left behind are the
-  janitor's to reclaim. It runs between `backups`'s `startup` and its
-  later cases, which wait for the schedule to run on past the stop and
-  the start, and before `capacity`, which would leave the store too
-  full for its objects.
+- `capacity`: Past its bound, a pstore write must get 507 until something is
+  deleted (section 7), each refusal counted once in
+  `pelican_pstore_write_failures_total{reason="no_space"}`:
+
+  - `fill`: Objects written until 512 KiB are left must grow usage by their
+    bytes and a tag per block, less what the janitor frees.
+  - `sized`: A PUT with a `Content-Length` 256 KiB more than is left must
+    get 507 before its body is sent.
+  - `expect`: The same, with `Expect: 100-continue`, and no `100 Continue`
+    first.
+  - `chunked`: A chunked PUT of 128 KiB more than is left must get 507, and
+    leave nothing.
+  - `freed`: After a DELETE, `sized`'s PUT must succeed within 90 seconds.
+  - `gauges`: `pelican_pstore_limit_bytes` must be the bound, and both
+    gauges must agree with `usage` within 45 seconds.
+
+- `backups`: The origin must back up its catalog at startup, then an
+  interval after each backup, to `pstore-metadata-<UTC>.pmb` by way of a
+  `.partial` file, keeping the newest (section 11.4).
+
+  - `startup`: A backup within 60 seconds of the restart, its pass counted
+    in `pelican_pstore_scheduled_passes_total{pass="metadata_backup"}`.
+  - `schedule`: After four passes, backups 20 to 30 seconds apart, and no
+    pass failed.
+  - `files`: Three backups, each starting `PELICAN-PSTORE-BACKUP\0\1`, and
+    nothing else; `pelican_pstore_metadata_backup_last_size_bytes` the
+    newest one's size.
+
+- `restore`: The offline CLI, `pelican-server origin pstore`, must restore a
+  backup (sections 11.4 and 11.5). Destructive: the origin is stopped and
+  its catalog (`db/`) set aside. Skips without `pelican-server`.
+
+  - `objects`: Five objects are written, and the next backup kept. A sixth,
+    written after it, must be served.
+  - `cli`: `metadata-restore` must restore that backup, given the origin's
+    issuer keys.
+  - `export`: `export --verify` must write out every object the backup held,
+    byte for byte, and not the sixth.
+  - `served`: Started on the restored catalog, the origin must serve the
+    five objects and answer 404 for the sixth. If it does not, the original
+    catalog is put back.

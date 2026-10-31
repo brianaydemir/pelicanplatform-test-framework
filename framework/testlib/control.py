@@ -1,10 +1,10 @@
 """Controlling the federation's services in the middle of a run.
 
 A test may restart, stop, start, pause, unpause, or kill a service, or
-restart one with configuration of its own; stop and resume the XRootD
-daemons in one, leaving the rest of it running; and ask what state a
-service's container is in, as when a server may have exited on its own,
-or which servers have (exited(), crashed()).
+restart one with configuration of its own. It may stop and resume the
+XRootD daemons in a service, leaving the rest of it running. It may ask
+what state a service's container is in, and which servers have exited
+on their own (exited(), crashed()).
 
 The dev container has no Docker, so a helper on the host,
 framework/control.py, acts for the tests: `./fed.sh test` runs one
@@ -23,14 +23,16 @@ The helper takes the actions in ACTIONS, one at a time, on the shape's
 services but `dev`, and refuses anything else; `state` and `exited`
 only look. Each call here returns once its action is done, and raises
 ControlError if it failed. A Pelican server that is restarted, started,
-or unpaused must also answer on its web port again within SERVE_WAIT
-seconds, and fails at once if it exits first. A wait for the federation
-to serve again after a restart goes through settle(), which ends at once
-if a Pelican server has exited on its own, since none comes back by
-itself: one that panics as it starts may answer its health check first.
+or unpaused must also answer on its web port within SERVE_WAIT seconds,
+and fails at once if it exits first. settle() waits for the federation
+to serve again after a restart, and ends at once if a Pelican server
+has exited on its own, since none comes back by itself; one that panics
+as it starts may answer its health check first.
+
 A scenario should put back whatever it stops, pauses, kills, or
-configures, even if it fails; the helper puts back what is left only
-when it stops serving, and the next one to start only the configuration.
+configures, even if it fails. The helper puts back what is left only
+when it stops serving, and the next helper to start, only the
+configuration.
 """
 
 import contextlib

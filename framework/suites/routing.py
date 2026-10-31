@@ -1,10 +1,9 @@
 """How the directors choose where to send a client, and what they answer.
 
-The suite covers in what order they send it, and what they put in the
-redirect: sorting by declared location, at random, by adaptive weights,
-and with servers filtered out; whether they ask the origins for an
-object first; what Location and Link carry; and what they refuse, and
-with what status.
+The suite covers the order in which a director sends a client to
+servers (by declared location, at random, by adaptive weights, and with
+servers filtered out), whether it asks the origins for an object first,
+what Location and Link carry, and what it refuses, with what status.
 
   distance            the default sort: a client's X-Pelican-Coordinate,
                       against the servers' declared GeoLocation, decides
@@ -22,7 +21,7 @@ with what status.
                       X-Pelican-JobId; ?redirect=false
   expired-401         a token that expires before a client could follow
                       the redirect gets 401, with WWW-Authenticate; one
-                      the director cannot read the expiry of does not
+                      whose expiry the director cannot read does not
   status-codes        an unknown namespace, writes where no origin takes
                       them, conflicting parameters, a client too old,
                       OPTIONS, and the Server header
@@ -39,32 +38,32 @@ with what status.
   permitted-namespaces
                       a cache restricted to a namespace
                       (Cache.PermittedNamespaces) is named for that
-                      namespace alone, and listed with it alone
+                      namespace alone, listed with it alone, and serves
+                      it alone
 
 Each service's own layer (framework/config.d/instance/) gives cache-0
 and origin-0 a GeoLocation in Madison, and cache-1 and origin-1 one in
-Lisbon, which the suite knows (GEO). The framework has no MaxMind
-database, so a client that sends no coordinate is placed at random in
-the contiguous US, and sorted toward the Madison servers, as their names
-would sort them anyway; `distance` sends its own.
+Lisbon (GEO). The framework has no GeoIP database, so a director places
+a client that sends no coordinate at random in the contiguous US, and
+sorts the Madison servers first; `distance` sends its own.
 
-The other director settings need a restart: under `-p topo-multi-cache`,
-and with a control helper, the suite restarts every director, as the
-last of its configuration layers (control.restart_with()), four times:
-with CacheSortMethod random; adaptive; adaptive with CheckCachePresence
-off; and FilteredServers naming the last cache, with
-AssumePresenceAtSingleOrigin off and response hostnames that no DNS
-knows, sent as headers. Each time, and once restored, it waits until
-every director names every server again. Elsewhere, what needs a restart
-is skipped. `permitted-namespaces` restarts the last cache instead,
-restricted to /public, or to another protected namespace, and waits
-likewise.
+The other director settings need a restart. Under `-p topo-multi-cache`,
+with a control helper, the suite restarts every director four times,
+each time with a configuration layer of its own added last
+(control.restart_with()): CacheSortMethod random; adaptive; adaptive
+with CheckCachePresence off; and FilteredServers naming the last cache,
+with AssumePresenceAtSingleOrigin off and response hostnames that no DNS
+knows, sent in headers. After each restart, and once the directors are
+restored, it waits until every director names every server again.
+Elsewhere, what needs a restart is skipped. `permitted-namespaces`
+restarts the last cache instead, restricted to /public or another
+protected namespace, and waits likewise.
 
 The suite puts its objects at every origin, in the first protected
 namespace, under data/routing/<run>/, and removes them afterward. It
 puts them in place, and fills the last cache for `adaptive`, with WLCG
-tokens; every request it asks the directors, which they pass on, carries
-a token of the session's profile.
+tokens; every request it sends the directors carries a token of the
+session's profile.
 """
 
 import contextlib
@@ -91,9 +90,7 @@ SCENARIOS = {
         " X-Pelican-Debug says why"
     ),
     "stat": "an object no origin holds: 404 where the director asks the origins, else 307",
-    "redirect": (
-        "Location carries the token, timeout, and parameters, and serves alone; Link carries" " no token"
-    ),
+    "redirect": "Location carries the token and parameters, and serves alone; Link carries no token",
     "expired-401": "a token about to expire gets 401 and WWW-Authenticate; an unreadable one 307",
     "status-codes": "unknown namespaces, unwritable writes, bad parameters, old clients, OPTIONS",
     "random-and-adaptive": (
@@ -102,7 +99,7 @@ SCENARIOS = {
     "filtered": "a cache in Director.FilteredServers is named by no director",
     "response-hostnames": "a bare path asked of a response hostname goes to an origin or a cache",
     "permitted-namespaces": (
-        "a cache restricted to a namespace (Cache.PermittedNamespaces) is named for it alone"
+        "a cache restricted to a namespace (Cache.PermittedNamespaces) is named for and serves it alone"
     ),
 }
 
@@ -144,7 +141,8 @@ EXPIRED_CHALLENGE = 'Bearer error="invalid_token", error_description="token has 
 STARTUP_WINDOW = 300
 STARTUP_SLACK = 10
 
-# The oldest client a director serves (minClientVersion).
+# A client too old for a director, and the oldest it serves
+# (minClientVersion).
 OLD_CLIENT = "pelican-client/6.9.0"
 NEW_ENOUGH_CLIENT = "pelican-client/7.0.0"
 
@@ -516,8 +514,8 @@ def unasked(test: Test, namespace: str) -> bool:
 
     Where the namespace takes no direct clients, the origins refuse the
     director's stat of an object in it, which carries no federation
-    token (a native origin answers 401), and it takes a refusal for
-    presence, as it must when it cannot tell (generateAvailabilityMaps).
+    token. The director must then take a refusal for presence, since it
+    cannot tell (generateAvailabilityMaps).
     """
     return "DirectReads" not in test.fed.exports[namespace]
 
@@ -1562,8 +1560,9 @@ def permitted_listing(test: Test, permitted: str, restricted: Server) -> tuple[s
 def permitted_direct(test: Test, permitted: str, restricted: Server) -> tuple[str, str]:
     """Check what the restricted cache serves, asked straight.
 
-    It must serve the object in the permitted namespace; of the probe in
-    the suite's own, it may serve it or refuse, but never other bytes.
+    It must serve the object in the permitted namespace, and refuse the
+    probe in the suite's own: it may access only the permitted ones
+    (Cache.PermittedNamespaces in Pelican's docs/parameters.yaml).
     """
     data = test.data["permitted"]
     answer = web.request(
@@ -1576,10 +1575,9 @@ def permitted_direct(test: Test, permitted: str, restricted: Server) -> tuple[st
             ", but not the object" if answer.status == 200 else ""
         )
     answer = web.request("GET", f"{restricted.url}{test.path('probe')}", token=test.token)
-    if answer.status == 200 and answer.body != test.data["probe"]:
-        return FAIL, f"/{test.namespace}: HTTP 200, but not the object"
-    said = "served" if answer.status == 200 else f"refused ({answer.describe()})"
-    return PASS, f"/{permitted} served; /{test.namespace} {said}"
+    if answer.status == 200:
+        return FAIL, f"/{test.namespace}: served, though not permitted"
+    return PASS, f"/{permitted} served; /{test.namespace} refused ({answer.describe()})"
 
 
 def put_permitted(test: Test, permitted: str) -> str | None:
