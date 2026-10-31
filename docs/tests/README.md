@@ -76,7 +76,7 @@ WLCG common JWT profile's `storage.read`, `storage.create`, and
 runs twice:
 
 1. The WLCG pass, reported as `<suite>`.
-1. The SciTokens pass, reported as `<suite>-scitokens`. Its tokens are
+2. The SciTokens pass, reported as `<suite>-scitokens`. Its tokens are
    what `pelican token create --profile scitokens2` mints, with the
    profile's version claim (`ver`) and the `ANY` audience. `--read`
    grants `read:`, and `--write` and `--modify` both grant `write:`,

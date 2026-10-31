@@ -91,14 +91,14 @@ afresh.
    ./fed.sh -p origin-xrootd -p topo-multi-origin init
    ```
 
-1. **Prepare** with `./fed.sh init`. It creates only what is missing,
+2. **Prepare** with `./fed.sh init`. It creates only what is missing,
    without Docker. Rerun it after changing presets, since the test data
    depends on the shape.
 
-1. **Start** with `./fed.sh up`. It also removes containers that the
+3. **Start** with `./fed.sh up`. It also removes containers that the
    shape doesn't use.
 
-1. **Test** with `./fed.sh test`. Or open a shell in the dev container
+4. **Test** with `./fed.sh test`. Or open a shell in the dev container
    with `./fed.sh dev`, where this checkout is `/scratch` and your
    Pelican checkout is `/app`, and run `python3.13 /scratch/test.py` or
    the client:
@@ -108,13 +108,13 @@ afresh.
        pelican://discovery:8444/public/data/0.0 /tmp/0.0
    ```
 
-1. **Inspect** with `./fed.sh logs -f origin-0`, `./fed.sh status`, the
+5. **Inspect** with `./fed.sh logs -f origin-0`, `./fed.sh status`, the
    [web UIs](#ports), and [`framework/var/`](#where-things-live).
 
-1. **Change something** ([Testing your changes](#testing-your-changes)),
+6. **Change something** ([Testing your changes](#testing-your-changes)),
    then apply it.
 
-1. **Reset** with `./reset.sh`. It stops everything, and discards
+7. **Reset** with `./reset.sh`. It stops everything, and discards
    `framework/var/` (but Grafana's database) and the dev container's
    volumes. It leaves `local/` alone.
 

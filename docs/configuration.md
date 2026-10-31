@@ -126,10 +126,10 @@ tests' own layer, and restore them afterward.
 Knobs are shell variables. Later sources win:
 
 1. `framework/environment.cfg`
-1. `local/environment.cfg`
-1. `framework/presets/default.sh`
-1. the `-p` presets, in order
-1. your environment, e.g. `PELICAN_LOG_LEVEL=debug ./fed.sh up`
+2. `local/environment.cfg`
+3. `framework/presets/default.sh`
+4. the `-p` presets, in order
+5. your environment, e.g. `PELICAN_LOG_LEVEL=debug ./fed.sh up`
 
 `framework/presets/default.sh` declares every knob that shapes the
 federation. Only presets may set those; `fed.sh` ignores them in your

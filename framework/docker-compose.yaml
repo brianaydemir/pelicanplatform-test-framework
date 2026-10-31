@@ -306,17 +306,28 @@ services:
   # director that `up` or a test recreates is found again. The directors
   # present the framework's certificate, which names `director`
   # (etc/tls.req).
+  #
+  # It starts with director-0, not once the directors are healthy: each
+  # director, as it starts, pings its external URL, which is this, and
+  # exits if nothing answers within Server.StartupTimeout (10 s). Until
+  # director-1 starts, it passes everything to director-0. It is healthy
+  # only once both directors answer as their own health checks ask, so
+  # that whatever starts after it finds both.
   director:
     hostname: director
     networks: [default, firewalled]
     image: nginx:alpine
     profiles: ["director-ha"]
     depends_on:
-      director-0: { condition: service_healthy }
-      director-1: { condition: service_healthy }
+      director-0: { condition: service_started }
     healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "8444"]
-      start_period: 10s
+      test:
+        - CMD-SHELL
+        - >-
+          nc -z 127.0.0.1 8444
+          && wget -qO /dev/null --no-check-certificate https://director-0:8444/api/v1.0/health
+          && wget -qO /dev/null --no-check-certificate https://director-1:8444/api/v1.0/health
+      start_period: 90s
       start_interval: 1s
       interval: 30s
       timeout: 5s
