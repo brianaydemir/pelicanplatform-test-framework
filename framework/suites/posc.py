@@ -1086,19 +1086,12 @@ def idle_restarted(test: Test) -> Row:
     )
     svc = test.origin.svc
     print(f"\nRestarting {svc} with:\n{text}")
-    rows: list[Row] = []
-    try:
-        with control.restart_with(svc, {CONFIG_FILE: text + "\n"}):
-            rows.append(suite.attempt(lambda: expiry_idle(test)))
-    except control.ControlError as e:
-        # Restarting, or restoring, failed: the row fails if it never ran.
-        warn(f"restarting {svc}, or restoring it: {e}")
-        if not rows:
-            rows.append((FAIL, f"restarting {svc}: {e}"))
-    why = test.settle(probe)
-    if why:
-        warn(f"with {svc} restored, {why}")
-    return rows[0]
+    return suite.attempt_restarted(
+        {svc: {CONFIG_FILE: text + "\n"}},
+        svc,
+        partial(expiry_idle, test),
+        restored=partial(test.settle, probe),
+    )
 
 
 def posc_expiry(test: Test) -> dict[str, Row]:

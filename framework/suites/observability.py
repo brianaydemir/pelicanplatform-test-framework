@@ -35,7 +35,7 @@ from testlib.director import expected_targets
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 from testlib.suite import CaseRow
-from testlib.webapi import API, CONFIG, HEALTH, LOG_LEVEL, LOG_TAIL, Server, judge
+from testlib.webapi import API, CONFIG, HEALTH, LOG_LEVEL, LOG_TAIL, Server, each_server, judge
 
 SCENARIOS = {
     "health-api": "each server's health report: for its admin alone, and every component ok",
@@ -267,31 +267,6 @@ class Test(suite.Test):
         return jwt.sign(claims, key)
 
 
-def each_server(
-    test: Test,
-    check: Callable[[Server], list[CaseRow]],
-    servers: Sequence[Server] | None = None,
-    case: str = "",
-) -> list[CaseRow]:
-    """Return check(server)'s rows for each of servers.
-
-    A server where check raised gets one failing row.
-
-    Args:
-        test: The test.
-        check: What returns a server's rows.
-        servers: The servers; None for every one.
-        case: What follows the server's name in the case of a row that
-            check leaves unnamed.
-    """
-    rows: list[CaseRow] = []
-    for server in test.servers if servers is None else servers:
-        unnamed = f"{server.name} {case}".strip()
-        found = suite.attempt_cases(functools.partial(check, server), (accounts.ApiError,))
-        rows += [(case or unnamed, status, note) for case, status, note in found]
-    return rows
-
-
 def cookie(test: Test, server: Server) -> dict[str, str]:
     """Return a Cookie header with the admin's login cookie at server."""
     return webapi.cookie_header(login=test.web.cookie(server))
@@ -445,8 +420,8 @@ def health_api(test: Test) -> list[CaseRow]:
 
     rows: list[CaseRow] = []
     for server in test.servers:
-        rows += each_server(test, check, [server], "components")
-        rows += each_server(test, access, [server], "access")
+        rows += each_server([server], check, "components")
+        rows += each_server([server], access, "access")
     return rows
 
 
@@ -493,7 +468,7 @@ def health_metrics(test: Test) -> list[CaseRow]:
             note += f"; {', '.join(moved)} changed meanwhile"
         return [("", *outcome(problems, note))]
 
-    return each_server(test, check)
+    return each_server(test.servers, check)
 
 
 # --------------------------------------------------------------------------
@@ -668,7 +643,9 @@ def metric_authorization(test: Test) -> list[CaseRow]:
     (promql_access()); and its own scrapes, and the directors'
     (scrape_rows()).
     """
-    rows = each_server(test, lambda server: [metrics_access(test, server), promql_access(test, server)])
+    rows = each_server(
+        test.servers, lambda server: [metrics_access(test, server), promql_access(test, server)]
+    )
     return rows + suite.attempt_cases(functools.partial(scrape_rows, test), (accounts.ApiError,))
 
 
@@ -1118,11 +1095,11 @@ def log_level(test: Test) -> list[CaseRow]:
             raised_at.append(change)
         return [row]
 
-    rows = each_server(test, raise_check)
+    rows = each_server(test.servers, raise_check)
     rows += suite.attempt_cases(functools.partial(expiry_rows, test, raised_at), (accounts.ApiError,))
-    rows += each_server(test, lambda server: [delete_row(test, server)])
-    rows += each_server(test, lambda server: [refusal_row(test, server)])
-    rows += each_server(test, lambda server: [cli_row(test, server)], test.servers[:1])
+    rows += each_server(test.servers, lambda server: [delete_row(test, server)])
+    rows += each_server(test.servers, lambda server: [refusal_row(test, server)])
+    rows += each_server(test.servers[:1], lambda server: [cli_row(test, server)])
     return rows
 
 
@@ -1240,9 +1217,7 @@ def log_redaction(test: Test) -> list[CaseRow]:
     and no token presented to it reaching the tail (redaction_row()).
     """
     servers = [s for s in test.servers if test.origins_at(s) or test.caches_at(s)]
-    return each_server(
-        test, lambda server: [tail_access(test, server), redaction_row(test, server)], servers
-    )
+    return each_server(servers, lambda server: [tail_access(test, server), redaction_row(test, server)])
 
 
 # --------------------------------------------------------------------------

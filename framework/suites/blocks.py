@@ -173,18 +173,6 @@ class Test(suite.Test):
         """Return the rel of a set's object of size."""
         return self.rel(set_name, str(size))
 
-    def make(self, rel: str) -> str | None:
-        """Make collection rel at every origin.
-
-        Returns:
-            What went wrong, or None.
-        """
-        errors = stores.make_dirs(self.origins, self.namespace, rel, self.setup)
-        if errors:
-            return errors[0]
-        self.made.add(rel)
-        return None
-
     def admin_token(self, cache: common.Cache) -> str:
         """Return a V2 cache's admin token (cacheapi.admin_token())."""
         return cacheapi.admin_token(self.session, cache)
@@ -325,13 +313,10 @@ class Test(suite.Test):
         """
         headers = {"Range": blocks.range_header(request)} if request else {}
         answer = web.request("GET", self.object_route(director_url, rel), token=self.token, headers=headers)
+        why = director.misdirected(self.fed, answer)
+        if why:
+            return f"the director: {why}"
         where = answer.header("Location")
-        if answer.status != 307 or not where:
-            return f"{answer.describe()} from the director, not a redirect"
-        urls = [c.url for c in self.fed.federated_caches] or [o.url for o in self.fed.origins]
-        if not any(where.startswith(url + "/") for url in urls):
-            kind = "a cache" if self.fed.federated_caches else "an origin"
-            return f"redirected to {where}, not {kind}"
         answer = web.request("GET", where, token=self.token, headers=headers, timeout=120)
         why = self.judge(answer, data, request)
         return f"at {director.host(where)}: {why}" if why else None
@@ -3632,23 +3617,10 @@ class Versions:
     ) -> tuple[str | None, str]:
         """Return which version a read of key through cache came back as.
 
-        The read is of object key (or a range of it; see
-        blocks.which_version()). A whole read asks for a digest too
-        (Want-Digest), which, if one comes, must be that version's: a stale
-        one would fail the client's check of bytes that are right.
-
-        Returns:
-            The version, or None; and why it is none.
+        The read is of object key (see Test.which_version()).
         """
-        headers = {"Range": blocks.range_header(request)} if request else {"Want-Digest": "crc32c"}
-        answer = self.test.ask("GET", cache.url, f"{self.base}/{key}", headers)
         versions = {"v1": self.v1[key], "v2": self.v2[key]}
-        version, why = blocks.which_version(versions, request, answer)
-        if version and request is None:
-            wrong, _ = digests.check(answer.header("Digest"), versions[version])
-            if wrong:
-                return None, f"served {version}, but with a Digest that is not its ({first(wrong)})"
-        return version, why
+        return self.test.which_version(cache, f"{self.base}/{key}", versions, request)
 
     def now(self, cache: common.Cache) -> list[str | None]:
         """Return the version of a whole read of each of cache's objects."""

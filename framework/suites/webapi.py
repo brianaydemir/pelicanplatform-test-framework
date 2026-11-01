@@ -39,6 +39,7 @@ from testlib.webapi import (
     cookie_header,
     create_token,
     delete_token,
+    each_server,
     judge,
     made_token,
     other_key,
@@ -102,21 +103,6 @@ REGISTRY_ROUTES = (
 )
 
 DISCOVERY_SCOPE = "pelican.director_service_discovery"
-
-
-def each_server(test: Access, rows_of: Callable[[Server], list[CaseRow]], case: str = "") -> list[CaseRow]:
-    """Return rows_of(server)'s rows for every server.
-
-    A server where it raises suite.SetupError or accounts.ApiError gets one
-    failing row instead, named for the server and case.
-    """
-    rows: list[CaseRow] = []
-    for server in test.servers:
-        try:
-            rows += rows_of(server)
-        except (suite.SetupError, accounts.ApiError) as e:
-            rows.append((f"{server.name} {case}".strip(), FAIL, str(e)))
-    return rows
 
 
 def unknown_ids(test: Access, server: Server) -> tuple[str, str]:
@@ -275,7 +261,7 @@ def admin_matrix(test: Access) -> list[CaseRow]:
     Each is tried with no credentials, the user's bearer token, and the
     admin's; and with bearer tokens that must count as no credentials.
     """
-    return each_server(test, partial(matrix_rows, test))
+    return each_server(test.servers, partial(matrix_rows, test))
 
 
 # --------------------------------------------------------------------------
@@ -564,7 +550,7 @@ def login(test: Access) -> list[CaseRow]:
     logged in, with no credentials, the admin's cookie, and the user's
     token; and two logins at once.
     """
-    return each_server(test, partial(login_rows, test))
+    return each_server(test.servers, partial(login_rows, test))
 
 
 # --------------------------------------------------------------------------
@@ -658,7 +644,7 @@ def cross_origin(test: Access, server: Server) -> CaseRow:
 def csrf(test: Access) -> list[CaseRow]:
     """Run registry_csrf(), and cross_origin() at every server."""
     rows = registry_csrf(test)
-    return rows + each_server(test, lambda server: [cross_origin(test, server)], "cross-origin")
+    return rows + each_server(test.servers, lambda server: [cross_origin(test, server)], "cross-origin")
 
 
 # --------------------------------------------------------------------------

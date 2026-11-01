@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable, Mapping
 from functools import cached_property
 from urllib.parse import quote
 
-from . import common, control, director, report, stores, web
+from . import blocks, common, control, digests, director, report, stores, web
 from .session import Session
 
 # How long, after a restart, every director may take to name the origins,
@@ -162,6 +162,36 @@ def check_restarted[T](
     return done
 
 
+def attempt_restarted(
+    files_by_svc: Mapping[str, Mapping[str, str]],
+    servers: str,
+    check: Callable[[], Row],
+    *,
+    restored: Callable[[], str | None] | None,
+    expected: tuple[type[Exception], ...] = (),
+) -> Row:
+    """Return check()'s row, with servers restarted (check_restarted()).
+
+    Args:
+        files_by_svc: As for check_restarted().
+        servers: Likewise.
+        check: What returns the row.
+        restored: As for check_restarted().
+        expected: As for attempt().
+    """
+    rows: dict[str, Row] = {}
+    check_restarted(
+        files_by_svc,
+        servers,
+        {"": check},
+        rows.__setitem__,
+        ready=None,
+        restored=restored,
+        expected=expected,
+    )
+    return rows[""]
+
+
 def clean(
     session: Session,
     area: str,
@@ -206,7 +236,7 @@ class Test:
         area: The suite's area.
         base: The run's collection: data/<area>/<run>.
         namespace: The namespace of the suite's objects.
-        made: The collections that put() has made at every origin.
+        made: The collections that make() has made at every origin.
     """
 
     _runs = 0
@@ -300,6 +330,18 @@ class Test:
         url = f"{self.fed.url}/{namespace or self.namespace}/{rel}"
         return f"{url}?{query}" if query else url
 
+    def make(self, rel: str) -> str | None:
+        """Make collection rel, and its parents, at every origin, with setup.
+
+        Returns:
+            What went wrong, or None.
+        """
+        errors = stores.make_dirs(self.fed.origins, self.namespace, rel, self.setup)
+        if errors:
+            return errors[0]
+        self.made.add(rel)
+        return None
+
     def put(self, objects: Mapping[str, bytes]) -> str | None:
         """Put objects, by rel, and their collections, in every store.
 
@@ -310,10 +352,9 @@ class Test:
         for rel, data in objects.items():
             parent = rel.rsplit("/", 1)[0]
             if parent not in self.made:
-                errors = stores.make_dirs(origins, self.namespace, parent, self.setup)
-                if errors:
-                    return errors[0]
-                self.made.add(parent)
+                why = self.make(parent)
+                if why:
+                    return why
             errors = stores.seed_everywhere(origins, self.namespace, rel, data, self.setup, self.caps)
             if errors:
                 return errors[0]
@@ -331,6 +372,38 @@ class Test:
         return web.request(
             method, self.url(server_url, rel), token=self.token, headers=headers, timeout=timeout
         )
+
+    def which_version(
+        self,
+        cache: common.Cache,
+        rel: str,
+        versions: Mapping[str, bytes],
+        request: blocks.Request | None,
+    ) -> tuple[str | None, str]:
+        """Return which of versions a read of rel through cache came back as.
+
+        The read is of rel whole, or of request's ranges (see
+        blocks.which_version()). A whole read asks for a digest too
+        (Want-Digest), which, if one comes, must be that version's: a stale
+        one would fail the client's check of bytes that are right.
+
+        Args:
+            cache: The cache to read through.
+            rel: The object.
+            versions: Each version's bytes, by name.
+            request: The ranges to read, or None for the whole object.
+
+        Returns:
+            The version's name and ""; or None, and why it is none.
+        """
+        headers = {"Range": blocks.range_header(request)} if request else {"Want-Digest": "crc32c"}
+        answer = self.ask("GET", cache.url, rel, headers)
+        version, why = blocks.which_version(dict(versions), request, answer)
+        if version and request is None:
+            wrong, _ = digests.check(answer.header("Digest"), versions[version])
+            if wrong:
+                return None, f"served {version}, but with a Digest that is not its ({common.first(wrong)})"
+        return version, why
 
     def age(self, cache: common.Cache, rel: str) -> int | None:
         """Return the Age with which a V2 cache says it holds all of rel.

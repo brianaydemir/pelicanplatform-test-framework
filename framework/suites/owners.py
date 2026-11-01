@@ -24,7 +24,7 @@ from testlib.common import die, first, outcome
 from testlib.credentials import ALLOW
 from testlib.owners import CREDENTIALS, OwnerCredential, Pair
 from testlib.report import FAIL, PASS, SKIP, Report, label, record, record_skip
-from testlib.session import Session, last_line
+from testlib.session import Session, last_line, not_refused
 from testlib.web import save
 
 OUT = "data/owners-test"
@@ -538,11 +538,8 @@ def client_get(
     )
     what = f"{'direct ' if direct else ''}get of /{ns}/{rel} ({cred.name})"
     if owners.expected(fed, cred, pair, side, "get", direct) != ALLOW:
-        if code == 0:
-            return f"{what}: succeeded, but should have been refused"
-        if transfers.refused(out + err) is None:
-            return f"{what}: failed, but not by refusal: {last_line(err or out)}"
-        return None
+        why = not_refused(code, out, err)
+        return f"{what}: {why}" if why else None
     if code != 0:
         return f"{what}: exit {code}: {last_line(err or out)}"
     if common.sha256(target) != common.sha256(
@@ -580,10 +577,9 @@ def client_put(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: st
     what = f"put to /{ns}/{rel} ({cred.name})"
     held = test.holders(pair, rel)
     if owners.expected(fed, cred, pair, side, "put", False) != ALLOW:
-        if code == 0:
-            return f"{what}: succeeded, but should have been refused"
-        if transfers.refused(out + err) is None:
-            return f"{what}: failed, but not by refusal: {last_line(err or out)}"
+        why = not_refused(code, out, err)
+        if why:
+            return f"{what}: {why}"
         if held:
             return f"{what}: refused, but {', '.join(held)} hold it"
         return None

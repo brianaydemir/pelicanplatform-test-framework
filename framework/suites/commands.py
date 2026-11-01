@@ -45,7 +45,7 @@ from urllib.parse import urlsplit
 from testlib import blocks, common, credentials, stores, suite, transfers
 from testlib.common import die, first
 from testlib.report import FAIL, PASS, SKIP
-from testlib.session import Session, json_object, json_objects, last_line
+from testlib.session import Session, json_object, json_objects, last_line, not_refused
 from testlib.suite import Row
 
 SCENARIOS = {
@@ -322,14 +322,6 @@ class Test(suite.Test):
         """Return the client's arguments for namespace's token."""
         return ["-t", self.token_files[namespace]]
 
-    def expect_refusal(self, code: int, out: str, err: str) -> str | None:
-        """Return why a command was not refused, or None if it was."""
-        if code == 0:
-            return "succeeded, but should have been refused"
-        if transfers.refused(out + err) is None:
-            return f"failed, but not by refusal: {last_line(err or out)}"
-        return None
-
     def expect_not_found(self, code: int, out: str, err: str) -> str | None:
         """Return why a command that should have found nothing did.
 
@@ -340,7 +332,7 @@ class Test(suite.Test):
             Why, or None if it did as it should.
         """
         if self.lacks:
-            return self.expect_refusal(code, out, err)
+            return not_refused(code, out, err)
         if code == 0:
             return "succeeded, but should have failed: not found"
         if not not_found(out + err):
@@ -363,7 +355,7 @@ class Test(suite.Test):
         find nothing changed.
         """
         if self.lacks:
-            why = self.expect_refusal(code, out, err) or untouched()
+            why = not_refused(code, out, err) or untouched()
             if why:
                 return FAIL, why
             return PASS, f"refused ({transfers.refused(out + err)}): no {', '.join(sorted(self.lacks))}"
@@ -721,7 +713,7 @@ def delete_refused(test: Test, name: str, args: list[str]) -> Row:
     test.seed("protected-a", rel, data)
     code, out, err = test.pelican_cmd("object", "delete", *args, test.pelican_url(rel))
     if args:
-        why = test.expect_refusal(code, out, err)
+        why = not_refused(code, out, err)
     else:
         why = no_token_refusal(code, out, err, test.fed.standalone)
     if why:
@@ -759,7 +751,7 @@ def delete_public(test: Test) -> Row:
         if not test.gone_somewhere("public", rel):
             return FAIL, "every origin still holds the object"
         return PASS, "removed: /public takes writes"
-    if why := test.expect_refusal(code, out, err):
+    if why := not_refused(code, out, err):
         return FAIL, why
     if not test.everywhere("public", rel, data):
         return FAIL, "refused, but an origin no longer holds the object"
@@ -1153,7 +1145,7 @@ def copy_to_public(test: Test) -> Row:
         if not test.somewhere("public", rel, data):
             return FAIL, "no origin holds the upload"
         return PASS, "stored: /public takes writes"
-    if why := test.expect_refusal(code, out, err):
+    if why := not_refused(code, out, err):
         return FAIL, why
     if not test.nowhere("public", rel):
         return FAIL, "refused, but an origin holds the upload"

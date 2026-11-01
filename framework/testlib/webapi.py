@@ -13,13 +13,14 @@ a login a second, counted by whole seconds of the clock.
 
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from typing import Any
 from urllib.parse import urlencode
 
-from . import accounts, common, credentials, director, jwt, web
+from . import accounts, common, credentials, director, jwt, suite, web
 from .session import Session
 
 API = "/api/v1.0"
@@ -235,6 +236,28 @@ def judge(case: str, expects: Sequence[Expect], extra: Sequence[str] = ()) -> tu
     problems += list(extra)
     seen = ", ".join(f"{label} {answer.status}" for label, answer, _ in expects)
     return (case, *common.outcome(problems, seen))
+
+
+def each_server(
+    targets: Sequence[Server], check: Callable[[Server], list[suite.CaseRow]], case: str = ""
+) -> list[suite.CaseRow]:
+    """Return check(server)'s rows for each server of targets.
+
+    A server where check raised gets one failing row (suite.attempt_cases(),
+    which expects accounts.ApiError too).
+
+    Args:
+        targets: The servers.
+        check: What returns a server's rows.
+        case: What follows the server's name in the case of a row that
+            check leaves unnamed.
+    """
+    rows: list[suite.CaseRow] = []
+    for server in targets:
+        unnamed = f"{server.name} {case}".strip()
+        found = suite.attempt_cases(partial(check, server), (accounts.ApiError,))
+        rows += [(name or unnamed, status, note) for name, status, note in found]
+    return rows
 
 
 def server_settings(access: Access, server: Server) -> dict[str, Any]:

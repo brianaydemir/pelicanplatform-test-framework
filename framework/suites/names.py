@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import quote
 
 from testlib import common, digests, director, stores, suite, transfers, web, webdav
-from testlib.common import die, first, outcome
+from testlib.common import die, outcome
 from testlib.names import NAMES
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, json_objects, last_line
@@ -100,9 +100,9 @@ class Test(suite.Test):
         What an origin refuses is left out, and recorded in unseeded: the
         scenarios then fail for it.
         """
-        errors = stores.make_dirs(self.origins, "protected-a", self.base, self.setup)
-        if errors:
-            die(f"could not make the run's collection: {first(errors)}")
+        why = self.make(self.base)
+        if why:
+            die(f"could not make the run's collection: {why}")
         for name, data in self.objects.items():
             self.unseeded += stores.seed_everywhere(
                 self.origins, "protected-a", self.rel(name), data, self.token, self.caps
@@ -249,21 +249,17 @@ def director_get(test: Test) -> Row:
     """
     if not test.fed.directors:
         return SKIP, "a standalone origin has no director"
-    urls = [c.url for c in test.fed.federated_caches] or [o.url for o in test.fed.origins]
-    kind = "a cache" if test.fed.federated_caches else "an origin"
     problems: list[str] = []
     for url in test.fed.directors:
         svc = director.host(url)
         for name in NAMES:
             route = test.url(f"{url}/api/v1.0/director/object", test.rel(name))
             answer = web.request("GET", route, token=test.token)
+            why = director.misdirected(test.fed, answer)
+            if why:
+                problems.append(f"{svc}: {name!r}: {why}")
+                continue
             where = answer.header("Location")
-            if answer.status != 307 or not where:
-                problems.append(f"{svc}: {name!r}: {answer.describe()}, not a redirect")
-                continue
-            if not any(where.startswith(u + "/") for u in urls):
-                problems.append(f"{svc}: {name!r}: redirected to {where}, not {kind}")
-                continue
             answer = web.request("GET", where, token=test.token)
             if answer.status != 200:
                 problems.append(f"{svc}: {name!r}: {answer.describe()} at {where}")
@@ -271,6 +267,7 @@ def director_get(test: Test) -> Row:
             why = test.wrong(name, answer.body)
             if why:
                 problems.append(f"{svc}: {why}")
+    kind = "a cache" if test.fed.federated_caches else "an origin"
     return outcome(problems, f"{len(test.fed.directors)} director(s), each leading to {kind}")
 
 
@@ -515,9 +512,9 @@ def put_by(test: Test, label: str, put: Callable[[str, str], str | None]) -> Row
     if not test.writes:
         return SKIP, "/protected-a takes no writes"
     collection = f"{test.put_base}/{label}"
-    errors = stores.make_dirs(test.origins, "protected-a", collection, test.setup)
-    if errors:
-        return FAIL, errors[0]
+    why = test.make(collection)
+    if why:
+        return FAIL, why
     directory = test.directory(label)
     files = {name: os.urandom(len(data)) for name, data in test.objects.items()}
     for name, data in files.items():

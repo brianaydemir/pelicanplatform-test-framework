@@ -488,6 +488,23 @@ def last_line(text: str) -> str:
     return (said or lines or ["(no output)"])[-1][:300]
 
 
+def not_refused(code: int, out: str, err: str = "") -> str | None:
+    """Return why a command that should have been refused was not, or None.
+
+    It must fail, and its output must show a refusal (transfers.refused()).
+
+    Args:
+        code: Its exit status.
+        out: Its stdout, or all its output.
+        err: Its stderr.
+    """
+    if code == 0:
+        return "succeeded, but should have been refused"
+    if transfers.refused(out + err) is None:
+        return f"failed, but not by refusal: {last_line(err or out)}"
+    return None
+
+
 # How errors name a JSON value's type, by its Python type's name.
 JSON_TYPES = {
     "dict": "an object",

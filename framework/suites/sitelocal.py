@@ -20,7 +20,7 @@ import os
 from testlib import common, credentials, stores, suite, transfers, web, webdav
 from testlib.common import die, first
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
-from testlib.session import Session, last_line
+from testlib.session import Session, last_line, not_refused
 from testlib.suite import Row
 
 SCENARIOS = {
@@ -189,14 +189,12 @@ def refused(test: Test) -> Row:
         test.pelican_url(rel),
         target,
     )
-    if code == 0:
-        return FAIL, "succeeded, but should have been refused"
-    why = transfers.refused(out + err)
-    if why is None:
-        return FAIL, f"failed, but not by refusal: {last_line(err or out)}"
+    why = not_refused(code, out, err)
+    if why:
+        return FAIL, why
     if common.sha256(target) is not None:
         return FAIL, "refused, but the file was written"
-    return PASS, f"refused ({why})"
+    return PASS, f"refused ({transfers.refused(out + err)})"
 
 
 def upstream(test: Test) -> Row:

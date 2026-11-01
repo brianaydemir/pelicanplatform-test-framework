@@ -32,6 +32,12 @@ SERVERS = "/api/v1.0/director_ui/servers"
 PERM_FILTERED = "Permanently Disabled via the director configuration"
 SHUTDOWN_FILTERED = "Disabled due to the server shutdown in progress"
 
+# How long after starting a director answers 429, not 404, for a
+# namespace no origin exports (inStartupSequence), and how near that it
+# may answer either, in seconds.
+STARTUP_WINDOW = 300
+STARTUP_SLACK = 10
+
 
 def parse_link(value: str) -> list[str]:
     """Return the rel="duplicate" URLs of a Link header, by priority.
@@ -71,6 +77,41 @@ def served_elsewhere(hosts: Sequence[str], cache: common.Cache) -> str | None:
         return "no server recorded"
     others = sorted({h for h in hosts if h != host(cache.url)})
     return f"served by {', '.join(others)}, not {cache.svc}" if others else None
+
+
+def misdirected(fed: common.Federation, answer: web.Response) -> str | None:
+    """Return why a director's answer to its object route is wrong, or None.
+
+    It must redirect (307) a plain HTTP client to a federated cache, or,
+    with none, to an origin.
+    """
+    where = answer.header("Location")
+    if answer.status != 307 or not where:
+        return f"{answer.describe()}, not a redirect"
+    urls = [c.url for c in fed.federated_caches] or [o.url for o in fed.origins]
+    if not any(where.startswith(url + "/") for url in urls):
+        kind = "a cache" if fed.federated_caches else "an origin"
+        return f"redirected to {where}, not {kind}"
+    return None
+
+
+def unknown_statuses(before: float, after: float) -> tuple[int, ...]:
+    """Return what a director may answer for a namespace no origin exports.
+
+    It answers 404, but 429 within STARTUP_WINDOW seconds of starting,
+    since it may not have heard from every origin (inStartupSequence),
+    and either near that.
+
+    Args:
+        before: How long ago it started, just before it was asked, in
+            seconds (metrics.started_ago()).
+        after: Likewise, once it answered.
+    """
+    if after < STARTUP_WINDOW - STARTUP_SLACK:
+        return (429,)
+    if before > STARTUP_WINDOW + STARTUP_SLACK:
+        return (404,)
+    return (404, 429)
 
 
 @dataclass

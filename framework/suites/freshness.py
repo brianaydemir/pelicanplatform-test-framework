@@ -36,7 +36,6 @@ from testlib import (
     cacheapi,
     common,
     control,
-    digests,
     director,
     metrics,
     stores,
@@ -222,28 +221,12 @@ class Versions:
     ) -> tuple[str | None, str]:
         """Return which version a read of rel through cache came back as.
 
-        A whole read asks for a digest too, which, if one comes, must be
-        that version's.
-
-        Args:
-            test: The test.
-            cache: The cache to read through.
-            rel: The object.
-            request: The range to read, or None for the whole object.
-
         Returns:
             The version, `v1` or `v2`, and ""; or None, and why
-            (blocks.which_version()).
+            (Test.which_version()).
         """
-        headers = {"Range": blocks.range_header(request)} if request else {"Want-Digest": "crc32c"}
-        answer = test.ask("GET", cache.url, rel, headers)
         versions = {"v1": self.v1[rel], "v2": self.v2[rel]}
-        version, why = blocks.which_version(versions, request, answer)
-        if version and request is None:
-            wrong, _ = digests.check(answer.header("Digest"), versions[version])
-            if wrong:
-                return None, f"{version}, but with a Digest that is not its ({first(wrong)})"
-        return version, why
+        return test.which_version(cache, rel, versions, request)
 
     def all_v2(self, test: Test, cache: common.Cache, rels: Sequence[str]) -> list[str]:
         """Return what whole reads of rels through cache got, but v2."""
@@ -448,9 +431,9 @@ def no_negative_cache(test: Test, _value: str) -> suite.Row:
     """
     rel = test.rel("no-negative-cache", "object")
     data = os.urandom(HELD_SIZE)
-    errors = stores.make_dirs(test.origins, NAMESPACE, rel.rsplit("/", 1)[0], test.setup)
-    if errors:
-        return FAIL, errors[0]
+    why = test.make(rel.rsplit("/", 1)[0])
+    if why:
+        return FAIL, why
     # A director that sends a bare path to an origin, which takes no
     # direct clients, would only be refused.
     directors = test.fed.directors

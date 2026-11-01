@@ -123,11 +123,6 @@ AD_SAMPLE = 40
 # may take to show the last of them.
 REDIRECT_ASKS = 5
 COUNT_WAIT = 5
-# How long a director has after starting before it answers 404, not 429,
-# for a namespace it knows of no origin for (inStartupSequence), and how
-# near that a row takes either, in seconds.
-STARTUP_WINDOW = 300
-STARTUP_SLACK = 10
 # `forwarding`: how long to wait for a cache's own ad to reach a director;
 # how long one director has to show what another forwarded; and how long
 # the cache's own ads have to restore both.
@@ -297,19 +292,6 @@ def caps_json(caps: frozenset[str]) -> dict[str, bool]:
 def issuer_of(export: common.Export) -> str | None:
     """Return the issuer a director should name for export, if any."""
     return export.issuer if credentials.has_issuer(export.caps) else None
-
-
-def unknown_statuses(url: str) -> tuple[int, ...]:
-    """Return what the director at url may answer for an unknown namespace.
-
-    A namespace no origin exports gets 404, but 429 while the director
-    may not have heard from every origin (inStartupSequence), and either
-    near the boundary or if it won't say when it started.
-    """
-    ago = metrics.started_ago(url)
-    if ago is None or abs(ago - STARTUP_WINDOW) <= STARTUP_SLACK:
-        return (404, 429)
-    return (429,) if ago < STARTUP_WINDOW else (404,)
 
 
 # --------------------------------------------------------------------------
@@ -972,7 +954,7 @@ def origin_stat(test: Test) -> list[CaseRow]:
     Without credentials, it answers 401; as its admin, of an object one
     origin alone holds, that origin; with min_responses above
     max_responses, 400; and for a namespace no origin exports, 404 (see
-    unknown_statuses()), as one JSON document.
+    director.unknown_statuses()), as one JSON document.
     """
     held, why = put_held(test)
     cases: dict[str, list[str]] = {c: [] for c in ("no-auth", "admin", "bad-bounds", "unknown-namespace")}
@@ -992,9 +974,12 @@ def origin_stat(test: Test) -> list[CaseRow]:
         answer = web.request("GET", f"{url}{target}?{query}", token)
         if answer.status != 400:
             cases["bad-bounds"].append(f"{what}: {answer.describe()}, not 400")
-        want = unknown_statuses(url)
         path = f"/director-api-nowhere-{test.run}/x"
+        before = metrics.started_ago(url)
         answer = web.request("GET", f"{url}{STAT}{path}", token=token)
+        after = metrics.started_ago(url)
+        # Either, if it won't say when it started.
+        want = (404, 429) if before is None or after is None else director.unknown_statuses(before, after)
         if answer.status not in want:
             cases["unknown-namespace"].append(f"{what}: {answer.describe()}, not {want}")
         elif common.as_object(answer.json()) is None:

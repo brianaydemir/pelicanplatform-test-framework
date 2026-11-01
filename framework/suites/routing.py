@@ -88,11 +88,6 @@ HOLDS, LACKS = 2.0, 0.5
 
 # What a director answers a token that has expired, or soon will.
 EXPIRED_CHALLENGE = 'Bearer error="invalid_token", error_description="token has expired"'
-# How long after starting a director answers 429, not 404, for a
-# namespace no origin exports (inStartupSequence), in seconds, and how
-# near that a row takes either.
-STARTUP_WINDOW = 300
-STARTUP_SLACK = 10
 
 # A client older than any a director serves (minClientVersion).
 ANCIENT_CLIENT = "pelican-client/0.0.1"
@@ -820,9 +815,8 @@ def expired_401(test: Test) -> list[CaseRow]:
 def unknown_namespace(test: Test) -> tuple[str, str]:
     """Check each director's answer for a namespace no origin exports.
 
-    Each must answer 404, but within STARTUP_WINDOW seconds of starting,
-    429, since it may not have heard from every origin
-    (inStartupSequence).
+    Each must answer 404, but within director.STARTUP_WINDOW seconds of
+    starting, 429 (director.unknown_statuses()).
     """
     path = f"/routing-nowhere-{test.run}/probe"
     problems: list[str] = []
@@ -835,12 +829,7 @@ def unknown_namespace(test: Test) -> tuple[str, str]:
         if before is None or after is None:
             unsure.append(f"{what}: its /metrics has no process_start_time_seconds")
             continue
-        if after < STARTUP_WINDOW - STARTUP_SLACK:
-            want: tuple[int, ...] = (429,)
-        elif before > STARTUP_WINDOW + STARTUP_SLACK:
-            want = (404,)
-        else:
-            want = (404, 429)
+        want = director.unknown_statuses(before, after)
         if answer.status not in want:
             problems.append(f"{what}, started {after:.0f}s ago: {answer.describe()}, not {want}")
     if problems:

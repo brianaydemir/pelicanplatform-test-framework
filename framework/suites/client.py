@@ -43,7 +43,7 @@ from testlib import (
 from testlib.common import die, first, outcome
 from testlib.issuer import User
 from testlib.report import FAIL, PASS, SKIP
-from testlib.session import Session, last_line
+from testlib.session import Session, last_line, not_refused
 from testlib.suite import NAMESPACE, CaseRow
 
 SCENARIOS = {
@@ -1073,12 +1073,8 @@ def got_named(fetch: Fetched, data: bytes) -> str | None:
 
 
 def refused(fetch: Fetched) -> str | None:
-    """Return why the download was not refused, or None."""
-    if fetch.status == 0:
-        return "succeeded, but should have been refused"
-    if transfers.refused(fetch.said) is None:
-        return f"failed, but not by refusal: {last_line(fetch.said)}"
-    return None
+    """Return why the download was not refused, or None (not_refused())."""
+    return not_refused(fetch.status, fetch.said)
 
 
 def plugin_refused(fetch: Fetched) -> str | None:
@@ -1695,9 +1691,9 @@ def multi_source(test: Test) -> list[CaseRow]:
     ):
         rel = test.rel(collection)
         if make:
-            errors = stores.make_dirs(test.fed.origins, NAMESPACE, rel, test.setup)
-            if errors:
-                rows.append((case, FAIL, first(errors)))
+            why = test.make(rel)
+            if why:
+                rows.append((case, FAIL, why))
                 continue
         fetch = test.pelican(
             case,

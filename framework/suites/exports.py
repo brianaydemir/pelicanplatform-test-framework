@@ -1612,16 +1612,13 @@ def gated(test: Test, passthrough: bool) -> Row:
     )
     print(f"\nRestarting the origins to reach their backend through {GATE_URL}, with {how}")
     before = len(gate_log())
-    try:
-        with control.restart_all_with(files):
-            row = suite.attempt(partial(gated_checks, test, passthrough, static, before), EXPECTED)
-    except control.ControlError as e:
-        row = (FAIL, f"restarting the origins: {e}")
-        warn(f"restarting the origins to reach their backend through the gate: {e}")
-    why = test.settle(test.rel(PROBE))
-    if why:
-        warn(f"with the origins restored, {why}")
-    return row
+    return suite.attempt_restarted(
+        files,
+        "the origins",
+        partial(gated_checks, test, passthrough, static, before),
+        restored=partial(test.settle, test.rel(PROBE)),
+        expected=EXPECTED,
+    )
 
 
 # Each of the RESTARTED rows: its check, which, given the restart's
