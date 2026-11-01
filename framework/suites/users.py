@@ -42,7 +42,7 @@ from functools import partial
 from typing import Any
 
 from testlib import common, control, credentials, jwt, stores, suite, web, webdav
-from testlib.common import Findings, die, first, outcome, warn
+from testlib.common import Findings, die, first, outcome
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
 from testlib.suite import NAMESPACE, Row
@@ -834,27 +834,17 @@ def restarted_rows(test: Test) -> dict[str, Row]:
     claim_token = test.mint(CLAIM_SUBJECT, {USERNAME_CLAIM: "pelican"})
     result: dict[str, Row] = {}
     print("\nRestarting the origins with a username claim and no default user")
-    try:
-        with control.restart_all_with({o.svc: {CONFIG_FILE: RESTART_CONFIG} for o in test.fed.origins}):
-            why = control.settle(partial(serving_data, test, claim_token), DATA_WAIT)
-            if why:
-                why = f"with the origins restarted, {why}"
-                result = {row: (FAIL, why) for row in RESTARTED}
-            else:
-                result["mapfile username-claim"] = (
-                    (INCONCLUSIVE, first(test.unshown))
-                    if test.unshown
-                    else suite.attempt(partial(claimed, test, claim_token))
-                )
-                result["mapfile unmatched"] = suite.attempt(partial(unmatched, test))
-    except control.ControlError as e:
-        # Restarting, or restoring, failed: what is left unrun fails.
-        for row in RESTARTED:
-            result.setdefault(row, (FAIL, f"restarting the origins: {e}"))
-        warn(f"restarting the origins with a username claim: {e}")
-    why = test.settle(test.rel(PROBE))
-    if why:
-        warn(f"with the origins restored, {why}")
+    suite.check_restarted(
+        {o.svc: {CONFIG_FILE: RESTART_CONFIG} for o in test.fed.origins},
+        "the origins",
+        {
+            "mapfile username-claim": partial(claimed, test, claim_token),
+            "mapfile unmatched": partial(unmatched, test),
+        },
+        result.__setitem__,
+        ready=partial(control.settle, partial(serving_data, test, claim_token), DATA_WAIT),
+        restored=partial(test.settle, test.rel(PROBE)),
+    )
     return result
 
 

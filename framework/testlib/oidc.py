@@ -216,23 +216,25 @@ def approve_device(issuer: str, user_code: str, user: IdpUser) -> web.Response:
     return web.request("POST", f"{issuer}/device", form=form)
 
 
-def user_code_in(line: str) -> str | None:
-    """Return the user code of the provider's verification URL in line.
+def device_flow_in(line: str) -> tuple[str, str] | None:
+    """Return the device flow of the provider's verification URL in line.
 
-    The URL is <issuer>/device?user_code=....
+    The URL is <issuer>/device?user_code=... (issuer.run_approving()'s
+    `announces`).
 
     Args:
         line: A line of a client's output.
 
     Returns:
-        The code, or None if line names no such URL.
+        The URL's scheme and host, and the user code; None if line names
+        no such URL.
     """
     for word in line.split():
         parts = urlsplit(word)
         if parts.path.endswith("/device"):
             found = parse_qs(parts.query).get("user_code")
             if found:
-                return found[0]
+                return f"{parts.scheme}://{parts.netloc}", found[0]
     return None
 
 

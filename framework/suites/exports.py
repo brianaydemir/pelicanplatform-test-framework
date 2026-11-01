@@ -1247,6 +1247,16 @@ NESTED_CHECKS: dict[str, NestedCheck] = {
 }
 
 
+def nested_check(test: Test, prefix: str, data: Mapping[str, bytes], case: str) -> Row:
+    """Run case's check, with tokens for the export of prefix minted now.
+
+    One token is for the whole export; the other, for elsewhere in it.
+    """
+    token = nested_token(test, prefix, "/")
+    wrong = nested_token(test, prefix, "/elsewhere/")
+    return NESTED_CHECKS[case](test, prefix, data, token, wrong)
+
+
 def nested_export(test: Test) -> dict[str, Row]:
     """Check an export nested in /public, which takes a token, at each origin.
 
@@ -1280,29 +1290,16 @@ def nested_export(test: Test) -> dict[str, Row]:
         return {row: (FAIL, str(e)) for row in rows}
     print(f"\nRestarting the origins with {prefix} exported, nested in /public")
     found: dict[str, Row] = {}
-    try:
-        with control.restart_all_with(files):
-            why = test.settle(test.rel(PROBE))
-            token = nested_token(test, prefix, "/")
-            wrong = nested_token(test, prefix, "/elsewhere/")
-            for case in NESTED_CASES:
-                if why:
-                    found[f"nested-export {case}"] = (
-                        FAIL,
-                        f"with the origins restarted, {why}",
-                    )
-                else:
-                    found[f"nested-export {case}"] = suite.attempt(
-                        partial(NESTED_CHECKS[case], test, prefix, data, token, wrong), EXPECTED
-                    )
-    except control.ControlError as e:
-        # Restarting, or restoring, failed: what is left unrun fails.
-        for row in rows:
-            found.setdefault(row, (FAIL, f"restarting the origins with {prefix} nested in /public: {e}"))
-        warn(f"restarting the origins with {prefix} nested in /public: {e}")
-    why = test.settle(test.rel(PROBE))
-    if why:
-        warn(f"with the origins restored, {why}")
+    settled = partial(test.settle, test.rel(PROBE))
+    suite.check_restarted(
+        files,
+        "the origins",
+        {f"nested-export {case}": partial(nested_check, test, prefix, data, case) for case in NESTED_CASES},
+        found.__setitem__,
+        ready=settled,
+        restored=settled,
+        expected=EXPECTED,
+    )
     error = unregister(test, prefix)
     if error:
         warn(f"{prefix} stays registered: {error}")
@@ -1659,25 +1656,16 @@ def run_restarted(test: Test, rows: Sequence[str], record: Callable[[str, Row], 
         return
     changes = ", ".join(f"{p}: {', '.join(c)}" for p, c in layout.caps.items())
     print(f"\nRestarting the origins with copies off, and {changes}")
-    done: set[str] = set()
-    try:
-        with control.restart_all_with(files):
-            why = test.settle(test.rel(PROBE))
-            for row in rows:
-                if why:
-                    record(row, (FAIL, f"with the origins restarted, {why}"))
-                else:
-                    record(row, suite.attempt(partial(RESTART_CHECKS[row], test, layout, data), EXPECTED))
-                done.add(row)
-    except control.ControlError as e:
-        # Restarting, or restoring, failed: what is left unrun fails.
-        for row in rows:
-            if row not in done:
-                record(row, (FAIL, f"restarting the origins: {e}"))
-        warn(f"restarting the origins with other exports: {e}")
-    why = test.settle(test.rel(PROBE))
-    if why:
-        warn(f"with the origins restored, {why}")
+    settled = partial(test.settle, test.rel(PROBE))
+    suite.check_restarted(
+        files,
+        "the origins",
+        {row: partial(RESTART_CHECKS[row], test, layout, data) for row in rows},
+        record,
+        ready=settled,
+        restored=settled,
+        expected=EXPECTED,
+    )
 
 
 # --------------------------------------------------------------------------

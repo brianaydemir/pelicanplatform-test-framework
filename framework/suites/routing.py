@@ -1383,25 +1383,17 @@ def run_restarted(test: Test, selected: Sequence[str], results: common.Results) 
     banned = frozenset([test.caches[-1].host]) if name else frozenset[str]()
     for phase in wanted:
         print(f"\nRestarting the directors with:\n{phase.text}")
-        restarts = {director.host(u): {CONFIG_FILE: phase.text} for u in test.fed.directors}
-        done: set[tuple[str, str]] = set()
-        try:
-            with control.restart_all_with(restarts):
-                why = wait_named(test, banned if phase.name == "combined" else frozenset())
-                for scenario, case, check in phase.checks:
-                    if why:
-                        suite.record(results, scenario, {case: (FAIL, f"after the restart, {why}")})
-                    else:
-                        suite.record(
-                            results, scenario, {case: suite.attempt(functools.partial(check, test))}
-                        )
-                    done.add((scenario, case))
-        except control.ControlError as e:
-            # Restarting, or restoring, failed: what is left unrun fails.
-            for scenario, case, _ in phase.checks:
-                if (scenario, case) not in done:
-                    suite.record(results, scenario, {case: (FAIL, f"restarting the directors: {e}")})
-            warn(f"restarting the directors, or restoring them: {e}")
+        suite.check_restarted(
+            {director.host(u): {CONFIG_FILE: phase.text} for u in test.fed.directors},
+            "the directors",
+            {
+                f"{scenario} {case}": functools.partial(check, test)
+                for scenario, case, check in phase.checks
+            },
+            functools.partial(suite.record, results),
+            ready=functools.partial(wait_named, test, banned if phase.name == "combined" else frozenset()),
+            restored=None,
+        )
     if wanted:
         why = wait_named(test)
         if why:

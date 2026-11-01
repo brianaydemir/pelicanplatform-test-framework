@@ -20,8 +20,6 @@ registry and its client of the issuer.
 import contextlib
 import os
 import secrets
-import subprocess
-import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -43,7 +41,7 @@ from testlib import (
 from testlib.accounts import Api, ApiError
 from testlib.common import outcome, warn
 from testlib.credentials import PROTECTED
-from testlib.issuer import ARCHIVE, DATA_SCOPES, IssuerError, User, data_scopes, project, scope
+from testlib.issuer import ARCHIVE, DATA_SCOPES, ClientRun, IssuerError, User, data_scopes, project, scope
 from testlib.oidc import IdpUser, LoginError
 from testlib.report import FAIL, SKIP
 from testlib.session import Session, last_line
@@ -405,56 +403,29 @@ def registry_env(test: Test, key_dir: str) -> dict[str, str]:
     return env
 
 
-def register_with_identity(
-    test: Test, env: dict[str, str], prefix: str, approver: IdpUser
-) -> tuple[int, str, int, list[str]]:
+def register_with_identity(test: Test, env: dict[str, str], prefix: str, approver: IdpUser) -> ClientRun:
     """Run `pelican namespace register --with-identity` for prefix.
 
-    Approve the provider's device flow that it announces, by its
-    verification URL, as approver.
-
-    Returns:
-        Its exit status, its output, how many flows were approved, and
-        what went wrong approving.
+    Approve the provider's device flow that it announces on its stdout,
+    by its verification URL, as approver. Whatever host the URL names,
+    approver logs in at the provider alone.
     """
-    problems: list[str] = []
-    approvals = [0]
-    with subprocess.Popen(
-        [
-            test.session.pelican,
-            "namespace",
-            "register",
-            "--prefix",
-            prefix,
-            "--with-identity",
-        ],
-        env=env,
-        cwd=test.session.tmp,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    ) as proc:
-        if proc.stdout is None:
-            raise RuntimeError("the client's output is not piped")
-        killer = threading.Timer(REGISTER_TIMEOUT, proc.kill)
-        killer.start()
-        lines: list[str] = []
-        seen: set[str] = set()
-        for line in proc.stdout:
-            lines.append(line)
-            code = oidc.user_code_in(line)
-            if code and code not in seen:
-                seen.add(code)
-                answer = oidc.approve_device(test.issuer, code, approver)
-                approvals[0] += 1
-                if answer.status != 200:
-                    problems.append(f"approving {code} at the provider: {answer.describe()}")
-        status = proc.wait()
-        killer.cancel()
-    if status < 0:
-        problems.append(f"the client was killed after {REGISTER_TIMEOUT:.0f}s")
-    return status, "".join(lines), approvals[0], problems
+
+    def approve(_: str, code: str) -> None:
+        answer = oidc.approve_device(test.issuer, code, approver)
+        if answer.status != 200:
+            raise IssuerError(f"approving {code} at the provider: {answer.describe()}")
+
+    return issuer.run_approving(
+        test.session.pelican,
+        ["namespace", "register", "--prefix", prefix, "--with-identity"],
+        env,
+        test.session.tmp,
+        approve,
+        REGISTER_TIMEOUT,
+        announces=oidc.device_flow_in,
+        on_stdout=True,
+    )
 
 
 def registry_identity(test: Test) -> list[CaseRow]:
@@ -476,11 +447,12 @@ def registry_identity(test: Test) -> list[CaseRow]:
     env = registry_env(test, key_dir)
     prefix = f"/oidc-test-{test.run}"
     member = test.users[MEMBER]
-    status, output, approvals, problems = register_with_identity(test, env, prefix, member)
-    if status != 0:
-        problems.append(f"register: exit {status}: {last_line(output)}")
-    if approvals != 1:
-        problems.append(f"the client announced {approvals} verification URLs, not one")
+    done = register_with_identity(test, env, prefix, member)
+    problems = list(done.problems)
+    if done.status != 0:
+        problems.append(f"register: exit {done.status}: {last_line(done.stderr or done.stdout)}")
+    if done.approvals != 1:
+        problems.append(f"the client announced {done.approvals} verification URLs, not one")
     route = registry.prefix_route(prefix)
     stored = web.request("GET", fed.registry_url + route)
     found = stored.object()
@@ -784,26 +756,17 @@ def run_restarted(test: Test, selected: Sequence[str], results: common.Results) 
         checks["groups"] = partial(group_rows, test, made)
         checks["client"] = partial(client_rows, test, made)
     print(f"\nRestarting {test.origin.svc} with:\n{RESTART_CONFIG}")
-    done: set[str] = set()
-    try:
-        with control.restart_with(test.origin.svc, {RESTART_FILE: RESTART_CONFIG}):
-            why = test.settle(made.objects[PROJECT_A][0]) if made else None
-            for scenario in wanted:
-                if why:
-                    suite.record(results, scenario, (FAIL, f"with {test.origin.svc} restarted, {why}"))
-                    done.add(scenario)
-                    continue
-                suite.record(results, scenario, suite.attempt_cases(checks[scenario], EXPECTED))
-                done.add(scenario)
-    except control.ControlError as e:
-        for scenario in wanted:
-            if scenario not in done:
-                suite.record(results, scenario, (FAIL, f"restarting {test.origin.svc}: {e}"))
-        warn(f"restarting {test.origin.svc}: {e}")
+    settled = partial(test.settle, made.objects[PROJECT_A][0]) if made else None
+    done = suite.check_restarted(
+        {test.origin.svc: {RESTART_FILE: RESTART_CONFIG}},
+        test.origin.svc,
+        {scenario: checks[scenario] for scenario in wanted},
+        partial(suite.record, results),
+        ready=settled,
+        restored=settled,
+        expected=EXPECTED,
+    )
     if made:
-        why = test.settle(made.objects[PROJECT_A][0])
-        if why:
-            warn(f"with {test.origin.svc} restored, {why}")
         if made.client is not None:
             admin_token = test.admin(test.access.server_at(test.web)).token or ""
             error = issuer.delete_client(test.web, f"/{test.namespace}", admin_token, made.client.client_id)

@@ -103,6 +103,65 @@ def record(results: common.Results, scenario: str, found: Row | list[CaseRow] | 
         results.add(f"{scenario} {case}".strip(), status, note)
 
 
+def check_restarted[T](
+    files_by_svc: Mapping[str, Mapping[str, str]],
+    servers: str,
+    checks: Mapping[str, Callable[[], T]],
+    add: Callable[[str, T | Row], None],
+    *,
+    ready: Callable[[], str | None] | None,
+    restored: Callable[[], str | None] | None,
+    expected: tuple[type[Exception], ...] = (),
+) -> set[str]:
+    """Run checks with servers restarted, and then restore them.
+
+    Each server is restarted with its files as the last of its
+    configuration layers (control.restart_all_with()). Then each check
+    runs, in order, and its result is recorded, a FAIL if it raised (as
+    attempt()); but if ready() finds something wrong, each fails with
+    that instead. If restarting, or restoring, fails, what is left
+    unrecorded fails. Afterward, restored() may wait until the
+    federation is as before; what it finds is only warned of.
+
+    Args:
+        files_by_svc: Each server's files, by service: YAML text, by
+            file name.
+        servers: What the servers are, for the notes ("the origins").
+        checks: What returns each check's result, by name.
+        add: Takes each check's name, and its result or row.
+        ready: Waits until the restarted servers can be checked, and
+            returns why not, or None; None to not wait.
+        restored: Likewise, once they are restored; None to not wait.
+        expected: As for attempt().
+
+    Returns:
+        The names of the checks recorded while the servers were
+        restarted.
+    """
+    done: set[str] = set()
+    try:
+        with control.restart_all_with(files_by_svc):
+            why = ready() if ready else None
+            for name, check in checks.items():
+                if why:
+                    add(name, (report.FAIL, f"with {servers} restarted, {why}"))
+                else:
+                    add(
+                        name,
+                        common.guarded(check, lambda note: (report.FAIL, note), (SetupError, *expected)),
+                    )
+                done.add(name)
+    except control.ControlError as e:
+        for name in checks:
+            if name not in done:
+                add(name, (report.FAIL, f"restarting {servers}: {e}"))
+        common.warn(f"restarting or restoring {servers}: {e}")
+    why = restored() if restored else None
+    if why:
+        common.warn(f"with {servers} restored, {why}")
+    return done
+
+
 def clean(
     session: Session,
     area: str,

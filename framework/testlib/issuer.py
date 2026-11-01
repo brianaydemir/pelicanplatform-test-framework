@@ -773,6 +773,9 @@ def run_approving(
     cwd: str,
     approver: Callable[[str, str], None],
     timeout: float = 180.0,
+    *,
+    announces: Callable[[str], tuple[str, str] | None] = approval_url,
+    on_stdout: bool = False,
 ) -> ClientRun:
     """Run `pelican <args>`, approving each device flow it announces.
 
@@ -782,10 +785,14 @@ def run_approving(
         env: The client's environment.
         cwd: The client's working directory.
         approver: Called as approver(issuer URL, user code) for each
-            device flow the client announces on its stderr; it raises
-            IssuerError if it cannot approve it.
+            device flow the client announces; it raises IssuerError if
+            it cannot approve it.
         timeout: How long, in seconds, the run may last before it is
             killed.
+        announces: Returns the issuer URL and user code of the flow
+            that a line of the client's output announces, or None.
+        on_stdout: Whether the client announces flows on its stdout,
+            rather than its stderr.
     """
     with subprocess.Popen(
         [pelican, *args],
@@ -798,17 +805,17 @@ def run_approving(
     ) as proc:
         if proc.stdout is None or proc.stderr is None:
             raise RuntimeError("the client's output is not piped")
-        stdout = proc.stdout
-        out: list[str] = []
-        collector = threading.Thread(target=lambda: out.append(stdout.read()))
+        watched, other = (proc.stdout, proc.stderr) if on_stdout else (proc.stderr, proc.stdout)
+        rest: list[str] = []
+        collector = threading.Thread(target=lambda: rest.append(other.read()))
         collector.start()
         killer = threading.Timer(timeout, proc.kill)
         killer.start()
         done = ClientRun(0, "", "", 0, [])
-        err: list[str] = []
-        for line in proc.stderr:
-            err.append(line)
-            flow = approval_url(line)
+        lines: list[str] = []
+        for line in watched:
+            lines.append(line)
+            flow = announces(line)
             if flow:
                 done.approvals += 1
                 try:
@@ -818,7 +825,8 @@ def run_approving(
         done.status = proc.wait()
         killer.cancel()
         collector.join()
-        done.stdout, done.stderr = "".join(out), "".join(err)
+        announced, collected = "".join(lines), "".join(rest)
+        done.stdout, done.stderr = (announced, collected) if on_stdout else (collected, announced)
         if done.status < 0:
             done.problems.append(f"the client was killed after {timeout:.0f}s")
         return done

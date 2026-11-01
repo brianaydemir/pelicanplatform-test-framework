@@ -148,9 +148,12 @@ SUBJECTS = (
 )
 # `ssrf-and-prefixes`: sources on the origin's own network, which
 # Server.SSRFProtection.AllowedCIDRs (config.d/base/40-origin.yaml) does
-# not allow, though it allows the private ranges.
+# not allow, though it allows the private ranges. The link-local one is
+# among the last 256 addresses, which RFC 3927 (section 2.1) reserves so
+# that no host takes them, and is no cloud's metadata service (as
+# 169.254.169.254 is): if Pelican fails to refuse it, nothing answers.
 SSRF_SOURCES = (
-    ("link-local", "http://169.254.169.254/latest/meta-data/"),
+    ("link-local", "http://169.254.255.100/"),
     ("loopback", "http://127.0.0.1:8444/api/v1.0/health"),
 )
 # The grants and scopes of the OAuth2 client that `oauth-clients`

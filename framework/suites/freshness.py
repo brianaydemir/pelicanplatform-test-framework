@@ -45,7 +45,7 @@ from testlib import (
     webdav,
 )
 from testlib.blocks import OVERWRITE_CHANGE, OVERWRITE_SIZE, store_bytes
-from testlib.common import die, first, outcome, warn
+from testlib.common import die, first, outcome
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
 from testlib.suite import NAMESPACE
@@ -1122,25 +1122,16 @@ def run_phase(test: Test, value: str, cases: Sequence[Case], results: common.Res
         return
     print(f"\nRestarting the origins to send Cache-Control: {value}")
     text = f"Origin:\n  CacheControl: {json.dumps(value)}\n"
-    done: set[str] = set()
-    try:
-        with control.restart_all_with({o.svc: {CONFIG_FILE: text} for o in test.origins}):
-            why = test.settle(test.rel(PROBE), PROBE_SIZE) or not_sent(test, value)
-            for case in ready:
-                if why:
-                    results.add(case.row, FAIL, f"with the origins restarted to send it, {why}")
-                else:
-                    run_case(test, case, value, results)
-                done.add(case.row)
-    except control.ControlError as e:
-        # Restarting, or restoring, failed: what is left unrun fails.
-        for case in ready:
-            if case.row not in done:
-                results.add(case.row, FAIL, f"restarting the origins: {e}")
-        warn(f"restarting the origins for Cache-Control '{value}': {e}")
-    why = test.settle(test.rel(PROBE), PROBE_SIZE)
-    if why:
-        warn(f"with the origins restored from Cache-Control '{value}', {why}")
+    settled = partial(test.settle, test.rel(PROBE), PROBE_SIZE)
+    suite.check_restarted(
+        {o.svc: {CONFIG_FILE: text} for o in test.origins},
+        "the origins",
+        {case.row: partial(case.run, test, value) for case in ready},
+        partial(suite.record, results),
+        ready=lambda: settled() or not_sent(test, value),
+        restored=settled,
+        expected=(stores.Unreadable,),
+    )
 
 
 def skip(fed: common.Federation) -> str | None:
