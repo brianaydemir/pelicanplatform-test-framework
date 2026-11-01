@@ -48,6 +48,7 @@ from testlib.blocks import OVERWRITE_CHANGE, OVERWRITE_SIZE, store_bytes
 from testlib.common import die, first, outcome, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
+from testlib.suite import NAMESPACE
 
 SCENARIOS = {
     "only-if-cached": "each V2 cache: only-if-cached gets 504 for what it lacks, and fetches nothing",
@@ -61,7 +62,6 @@ SCENARIOS = {
     "s-maxage": "max-age=120, s-maxage=20: each V2 cache serves an overwrite after about 20s",
 }
 
-NAMESPACE = "protected-a"
 
 # The Cache-Control of -p origin-max-age, under which, or with the
 # origins restarted to send it, the cases that need a copy to go stale
@@ -118,7 +118,7 @@ class Test(suite.Test):
     """
 
     def __init__(self, session: Session):
-        super().__init__(session, "freshness", NAMESPACE)
+        super().__init__(session, "freshness")
         self.origins = self.fed.origins
         self.caches = self.fed.federated_caches
         self.v2 = [c for c in self.caches if c.kind == "v2"]
@@ -156,22 +156,6 @@ def seconds_of(value: str, name: str) -> int:
 def sleep_until(moment: float) -> None:
     """Sleep until time moment, if it is to come."""
     time.sleep(max(0.0, moment - time.time()))
-
-
-def poll(problem: Callable[[], str | None], seconds: float, interval: float) -> str | None:
-    """Ask problem() what is wrong until it finds nothing, or seconds pass.
-
-    It is asked at once, and then every interval seconds.
-
-    Returns:
-        What it last found, or None.
-    """
-    deadline = time.time() + seconds
-    found = problem()
-    while found and time.time() < deadline:
-        time.sleep(interval)
-        found = problem()
-    return found
 
 
 def hold(test: Test, cache: common.Cache, rel: str, data: bytes) -> str | None:
@@ -251,7 +235,7 @@ class Versions:
             The version, `v1` or `v2`, and ""; or None, and why
             (blocks.which_version()).
         """
-        headers = {"Range": blocks.header(request)} if request else {"Want-Digest": "crc32c"}
+        headers = {"Range": blocks.range_header(request)} if request else {"Want-Digest": "crc32c"}
         answer = test.ask("GET", cache.url, rel, headers)
         versions = {"v1": self.v1[rel], "v2": self.v2[rel]}
         version, why = blocks.which_version(versions, request, answer)
@@ -280,18 +264,13 @@ class Versions:
             for request in [None, *blocks.requests(len(self.v2[rel]))]:
                 version, why = self.which(test, cache, rel, request)
                 if version != "v2":
-                    what = blocks.header(request) if request else "whole"
+                    what = blocks.range_header(request) if request else "whole"
                     found.append(f"{rel.rsplit('/', 1)[-1]} {what}: {version or why}")
         return found
 
 
 # --------------------------------------------------------------------------
 # Phases: the origins sending one Cache-Control.
-
-
-def settle(test: Test) -> str | None:
-    """Wait until the federation serves the probe (suite.Test.settle())."""
-    return test.settle(test.rel(PROBE), PROBE_SIZE)
 
 
 def not_sent(test: Test, value: str) -> str | None:
@@ -503,7 +482,7 @@ def no_negative_cache(test: Test, _value: str) -> suite.Row:
     took: list[float] = []
     targets: list[common.Cache | str] = [*test.caches, *directors]
     for target in targets:
-        why = poll(partial(not_back, test, target, rel, data), wait, 3)
+        why = common.wait_last(partial(not_back, test, target, rel, data), lambda found: not found, wait, 3)
         if why:
             when = f"{wait}s after" if wait else "once"
             problems.append(f"{when} every origin held the object, {why}")
@@ -619,13 +598,9 @@ def depth_0(test: Test, cache: common.Cache, rel: str) -> tuple[webdav.Entry | N
     Returns:
         The entry, and ""; or None, and why there is none.
     """
-    answer = webdav.propfind(test.url(cache.url, rel), "0", test.token)
-    if answer.status != 207:
-        return None, f"Depth 0 got {answer.describe()}, not 207"
-    try:
-        entries = webdav.relative(webdav.parse(answer.body), test.path(rel))
-    except ValueError as e:
-        return None, f"Depth 0: {e}"
+    _, entries, why = webdav.listing(test.url(cache.url, rel), "0", test.path(rel), test.token)
+    if entries is None:
+        return None, why
     if set(entries) != {""}:
         return None, f"Depth 0 lists {sorted(entries)}, not the object alone"
     entry = entries[""]
@@ -742,7 +717,7 @@ def propfind_overwrite(test: Test, value: str) -> suite.Row:
         etags = origin_etags(test, rel)
         sleep_until(filled[cache.svc] + fresh + 1)
         check = partial(not_current, test, cache, rel, len(versions.v2[rel]), old[cache.svc], etags)
-        why = poll(check, STALE_SLACK, 3)
+        why = common.wait_last(check, lambda found: not found, STALE_SLACK, 3)
         waited = time.time() - filled[cache.svc]
         if why:
             problems.append(
@@ -841,7 +816,7 @@ def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> suite
                 control.start(svc)
             except control.ControlError as e:
                 problems.append(str(e))
-    why = settle(test)
+    why = test.settle(test.rel(PROBE), PROBE_SIZE)
     if why:
         problems.append(f"once the origins started again, {why}")
     return outcome(problems, "; ".join(notes))
@@ -996,11 +971,11 @@ def not_stored(test: Test, value: str) -> suite.Row:
             why, was_whole = ranged(
                 data,
                 request,
-                test.ask("GET", cache.url, rel, {"Range": blocks.header(request)}),
+                test.ask("GET", cache.url, rel, {"Range": blocks.range_header(request)}),
             )
             whole += was_whole
             if why:
-                problems.append(f"{cache.svc} {blocks.header(request)}: {why}")
+                problems.append(f"{cache.svc} {blocks.range_header(request)}: {why}")
         if whole:
             notes.append(
                 f"{cache.svc} answered {whole} of {len(requests)} ranges whole,"
@@ -1150,7 +1125,7 @@ def run_phase(test: Test, value: str, cases: Sequence[Case], results: common.Res
     done: set[str] = set()
     try:
         with control.restart_all_with({o.svc: {CONFIG_FILE: text} for o in test.origins}):
-            why = settle(test) or not_sent(test, value)
+            why = test.settle(test.rel(PROBE), PROBE_SIZE) or not_sent(test, value)
             for case in ready:
                 if why:
                     results.add(case.row, FAIL, f"with the origins restarted to send it, {why}")
@@ -1163,7 +1138,7 @@ def run_phase(test: Test, value: str, cases: Sequence[Case], results: common.Res
             if case.row not in done:
                 results.add(case.row, FAIL, f"restarting the origins: {e}")
         warn(f"restarting the origins for Cache-Control '{value}': {e}")
-    why = settle(test)
+    why = test.settle(test.rel(PROBE), PROBE_SIZE)
     if why:
         warn(f"with the origins restored from Cache-Control '{value}', {why}")
 

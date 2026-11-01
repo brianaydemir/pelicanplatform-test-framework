@@ -29,13 +29,14 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
 from typing import Any
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlsplit
 
-from testlib import accounts, blocks, cacheapi, common, credentials, jwt, metrics, stores, suite, web
+from testlib import blocks, cacheapi, common, credentials, jwt, metrics, stores, suite, web
 from testlib.blocks import cache_dir, read_cinfo, store_bytes
 from testlib.common import Findings, first, outcome
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
+from testlib.suite import NAMESPACE
 
 SCENARIOS = {
     "prestage": "each cache prestages an object for a read token, and only then; `pelican object prestage`",
@@ -47,7 +48,6 @@ SCENARIOS = {
     "consistency": "each V2 cache finds an object corrupted in its store, drops it, and removes strays",
 }
 
-NAMESPACE = "protected-a"
 # The scenarios that present no storage token beyond their setup's (see
 # suites/__init__.py).
 ONE_PROFILE = ("purge", "usage")
@@ -80,12 +80,11 @@ class Test(suite.Test):
     """
 
     def __init__(self, session: Session):
-        super().__init__(session, "cache-api", NAMESPACE)
+        super().__init__(session, "cache-api")
         self.read_token = session.token(NAMESPACE, credentials.R)
         self.caches = self.fed.federated_caches
         self.v2 = [c for c in self.caches if c.kind == "v2"]
         self.corrupted: dict[str, suite.Row] | None = None
-        self._admin: dict[tuple[str, tuple[str, ...]], str] = {}
         self._elsewhere: str | None = None
 
     def fill_cached(self, cache: common.Cache, rel: str, data: bytes) -> str | None:
@@ -110,10 +109,7 @@ class Test(suite.Test):
 
         See cacheapi.admin_token().
         """
-        key = (cache.svc, extra_scopes)
-        if key not in self._admin:
-            self._admin[key] = cacheapi.admin_token(self.session, cache, extra_scopes)
-        return self._admin[key]
+        return cacheapi.admin_token(self.session, cache, extra_scopes)
 
     def purger(self, cache: common.Cache) -> str:
         """Return the admin's token for cache, with localcache.purge."""
@@ -155,20 +151,6 @@ def held_word(found: bool | None) -> str:
 # prestage
 
 
-def prestage(cache: common.Cache, path: str | None, token: str | None) -> web.Response:
-    """GET the prestage API of cache for path, with token.
-
-    The API streams its progress until the object is whole.
-
-    Args:
-        cache: The cache to ask.
-        path: The object's path in the federation; None for no `path`.
-        token: The token to present, if any.
-    """
-    query = "" if path is None else "?" + urlencode({"path": path})
-    return web.request("GET", f"{cache.web_url}{cacheapi.PRESTAGE}{query}", token=token, timeout=120)
-
-
 def lines(answer: web.Response) -> list[str]:
     """Return the lines of answer's body that aren't blank."""
     return [line.strip() for line in answer.body.decode(errors="replace").splitlines() if line.strip()]
@@ -207,7 +189,7 @@ def prestage_probe(test: Test) -> suite.Row:
     problems: list[str] = []
     for cache in test.v2:
         for what, path in (("no path", None), ("a relative path", test.rel("probe"))):
-            answer = prestage(cache, path, test.read_token)
+            answer = cacheapi.prestage(cache, path, test.read_token)
             if answer.status != 400:
                 problems.append(f"{cache.svc}, {what}: {answer.describe()}, not 400")
     return outcome(problems, f"{len(test.v2)} V2 cache(s)")
@@ -228,7 +210,7 @@ def prestage_refused(test: Test) -> suite.Row:
     for cache in test.v2:
         rel = rels[cache.svc]
         for what, token in (("no token", None), ("a token scoped elsewhere", test.elsewhere())):
-            answer = prestage(cache, test.path(rel), token)
+            answer = cacheapi.prestage(cache, test.path(rel), token)
             if answer.status != 403:
                 problems.append(f"{cache.svc}, {what}: {answer.describe()}, not 403")
         time.sleep(2)
@@ -258,7 +240,7 @@ def prestage_object(test: Test) -> suite.Row:
         if found is not False:
             problems.append(f"{cache.svc}: the object is {held_word(found)} before its prestage")
             continue
-        why = progress_problem(prestage(cache, test.path(rel), test.read_token))
+        why = progress_problem(cacheapi.prestage(cache, test.path(rel), test.read_token))
         if why:
             problems.append(f"{cache.svc}: the prestage: {why}")
             continue
@@ -267,7 +249,7 @@ def prestage_object(test: Test) -> suite.Row:
         why = web.served(test.ask("GET", cache.url, rel), data)
         if why:
             problems.append(f"{cache.svc}: a GET afterward got {why}")
-        why = progress_problem(prestage(cache, test.path(rel), test.read_token))
+        why = progress_problem(cacheapi.prestage(cache, test.path(rel), test.read_token))
         if why:
             problems.append(f"{cache.svc}: a second prestage: {why}")
     return outcome(problems, f"{len(test.v2)} V2 cache(s)")
@@ -283,7 +265,9 @@ def prestage_missing(test: Test) -> suite.Row:
     """
     problems: list[str] = []
     for cache in test.v2:
-        answer = prestage(cache, test.path(test.rel("prestage", f"missing-{cache.svc}")), test.read_token)
+        answer = cacheapi.prestage(
+            cache, test.path(test.rel("prestage", f"missing-{cache.svc}")), test.read_token
+        )
         found = lines(answer)
         last = found[-1] if found else "(nothing)"
         if answer.status != 200:
@@ -312,7 +296,7 @@ def prestage_name(test: Test) -> suite.Row:
     problems: list[str] = []
     for cache in test.v2:
         wanted, decoy = (test.rel("prestage", name) for name in names[cache.svc])
-        answer = prestage(cache, test.path(wanted), test.read_token)
+        answer = cacheapi.prestage(cache, test.path(wanted), test.read_token)
         if answer.status != 200:
             problems.append(f"{cache.svc}: the prestage got {answer.describe()}: {text(answer)}")
             continue
@@ -349,7 +333,7 @@ def client_prestage(test: Test, cache: common.Cache, rel: str) -> tuple[int, str
         cache.url,
         "--token",
         test.token_file,
-        test.fed.url + test.path(rel),
+        test.pelican_url(rel),
     )
     return code, last_line(err or out)
 
@@ -403,18 +387,6 @@ def prestage_client(test: Test) -> suite.Row:
 # evict
 
 
-def evict(
-    cache: common.Cache,
-    path: str,
-    token: str | None,
-    immediate: bool = True,
-    method: str = "POST",
-) -> web.Response:
-    """Send method to the eviction API of cache for path, with token."""
-    query = {"path": path, **({"immediate": "true"} if immediate else {})}
-    return web.request(method, f"{cache.web_url}{cacheapi.EVICT}?{urlencode(query)}", token=token)
-
-
 def evicted_message(path: str, count: int, immediate: bool) -> str:
     """Return what the eviction API says it did (evictHandler)."""
     if immediate:
@@ -463,7 +435,7 @@ def evict_refused(test: Test) -> suite.Row:
             ("a read-only token", test.read_token),
             ("a token scoped elsewhere", test.elsewhere()),
         ):
-            answer = evict(cache, test.path(rel), token)
+            answer = cacheapi.evict(cache, test.path(rel), token)
             if answer.status != 403:
                 problems.append(f"{cache.svc}, {what}: {answer.describe()}, not 403")
         found = test.cached(cache, rel)
@@ -476,7 +448,7 @@ def evict_refused(test: Test) -> suite.Row:
                 problems.append(f"{cache.svc}: a GET of {path} got {why}")
                 continue
             for what, token in (("no token", None), ("/protected-a's token", test.token)):
-                answer = evict(cache, path, token)
+                answer = cacheapi.evict(cache, path, token)
                 if answer.status != 403:
                     problems.append(f"{cache.svc}, {path} with {what}: {answer.describe()}, not 403")
             answer = web.request("HEAD", f"{cache.url}{quote(path)}", headers=web.ONLY_IF_CACHED)
@@ -531,7 +503,7 @@ def evict_immediate(test: Test) -> suite.Row:
             return FAIL, why
         for method in methods:
             rel = rels[(cache.svc, method)]
-            answer = evict(cache, test.path(rel), test.token, method=method)
+            answer = cacheapi.evict(cache, test.path(rel), test.token, method=method)
             want = evicted_message(test.path(rel), 1, True)
             if answer.status != 200 or text(answer) != want:
                 problems.append(
@@ -561,7 +533,7 @@ def evict_marked(test: Test) -> suite.Row:
         why = fill_all(test, {rel: objects[rel]}, [cache])
         if why:
             return FAIL, why
-        answer = evict(cache, test.path(rel), test.token, immediate=False)
+        answer = cacheapi.evict(cache, test.path(rel), test.token, immediate=False)
         want = evicted_message(test.path(rel), 1, False)
         if answer.status != 200 or text(answer) != want:
             problems.append(f"{cache.svc}: {answer.describe()} '{text(answer)}', not 200 '{want}'")
@@ -579,7 +551,7 @@ def unmark(test: Test, rel: str) -> None:
     finds only its own.
     """
     for cache in test.v2:
-        evict(cache, test.path(rel), test.token)
+        cacheapi.evict(cache, test.path(rel), test.token)
 
 
 def evict_prefix(test: Test) -> suite.Row:
@@ -597,7 +569,7 @@ def evict_prefix(test: Test) -> suite.Row:
         why = fill_all(test, objects, [cache])
         if why:
             return FAIL, why
-        answer = evict(cache, test.path(f"{base}/foo"), test.token)
+        answer = cacheapi.evict(cache, test.path(f"{base}/foo"), test.token)
         want = evicted_message(test.path(f"{base}/foo"), 2, True)
         if answer.status != 200 or text(answer) != want:
             problems.append(f"{cache.svc}: {answer.describe()} '{text(answer)}', not 200 '{want}'")
@@ -622,7 +594,7 @@ def evict_name(test: Test) -> suite.Row:
         why = fill_all(test, objects, [cache])
         if why:
             return FAIL, why
-        answer = evict(cache, test.path(wanted), test.token)
+        answer = cacheapi.evict(cache, test.path(wanted), test.token)
         if answer.status != 200:
             problems.append(f"{cache.svc}: {answer.describe()} '{text(answer)}', not 200")
         for rel, want_held in ((wanted, False), (decoy, True)):
@@ -645,7 +617,7 @@ def client_evict(test: Test, rel: str, immediate: bool) -> tuple[int, str]:
     args = ["object", "evict", "--token", test.token_file]
     if immediate:
         args.append("--immediate")
-    code, out, err = test.session.pelican_cmd(*args, test.fed.url + test.path(rel))
+    code, out, err = test.session.pelican_cmd(*args, test.pelican_url(rel))
     return code, last_line(out if code == 0 else err or out)
 
 
@@ -698,25 +670,20 @@ def other_admin(test: Test, cache: common.Cache) -> tuple[str, str]:
     for origin in test.fed.origins:
         key = common.signing_key(f"issuer-keys/{origin.svc}")
         if origin.web_url != cache.web_url and jwt.public_jwk(key) != own:
-            out = test.session.path(f"tokens/cache-api.other.{cache.svc}")
-            return (
-                credentials.mint_web_user(test.fed, out, origin.web_url, "admin", key=key),
-                f"{origin.svc}'s",
-            )
-    out = test.session.path(f"tokens/cache-api.unknown.{cache.svc}")
-    key = credentials.keys(test.fed)["unknown"]
-    return credentials.mint_web_user(test.fed, out, cache.web_url, "admin", key=key), "unknown.pem's"
+            return test.session.web_token(origin.web_url), f"{origin.svc}'s"
+    return test.session.web_token(cache.web_url, key=credentials.UNKNOWN_KEY), "unknown.pem's"
 
 
 # Each admin route, by row: its method, its path and query (given the URL
-# of an object that no cache holds, {url}), its body, whether it purges,
-# and what its admin must get for that request; None for no request as
-# the admin, for /purge, which `purge` sends.
-AdminRoute = tuple[str, str, str, bytes | None, bool, tuple[int, ...] | None]
+# of an object that no cache holds, {url}), its body (bytes as they are,
+# else as JSON), whether it purges, and what its admin must get for that
+# request; None for no request as the admin, for /purge, which `purge`
+# sends.
+AdminRoute = tuple[str, str, str, bytes | dict[str, Any] | None, bool, tuple[int, ...] | None]
 ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     ("purge", "POST", cacheapi.PURGE, None, True, None),
     ("purge-first", "POST", cacheapi.PURGE_FIRST, b"", True, (400,)),
-    ("purge-to-target", "POST", cacheapi.PURGE_TO_TARGET, b'{"target_bytes": 0}', True, (400,)),
+    ("purge-to-target", "POST", cacheapi.PURGE_TO_TARGET, {"target_bytes": 0}, True, (400,)),
     ("list", "GET", cacheapi.INTROSPECT + "/list?limit=1&pattern={url}", None, False, (200,)),
     ("etags", "GET", cacheapi.INTROSPECT + "/etags?url={url}", None, False, (200,)),
     ("metadata", "GET", cacheapi.INTROSPECT + "/metadata?url={url}", None, False, (404,)),
@@ -745,7 +712,9 @@ ADMIN_ROUTES: tuple[AdminRoute, ...] = (
 def send(route: AdminRoute, url: str, token: str | None) -> web.Response:
     """Send route's request to url, with token."""
     _, method, _, body, _, _ = route
-    return web.request(method, url, token=token, upload=body, headers=accounts.JSON if body else None)
+    if isinstance(body, bytes):
+        return web.request(method, url, token=token, upload=body)
+    return web.request(method, url, token=token, json_body=body)
 
 
 def admin_authz(test: Test, results: common.Results) -> None:
@@ -860,7 +829,6 @@ def purge_request(test: Test, cache: common.Cache, path: str, body: Any) -> web.
     already evicting answers a purge 500 (forcePurgeToTargets), so one
     that does is asked again, up to PURGE_TRIES times.
     """
-    data = None if body is None else json.dumps(body).encode()
     answer = web.Response(None)
     for n in range(PURGE_TRIES):
         if n:
@@ -869,9 +837,8 @@ def purge_request(test: Test, cache: common.Cache, path: str, body: Any) -> web.
             "POST",
             cache.web_url + path,
             token=test.purger(cache),
-            upload=data,
-            headers=accounts.JSON if data is not None else None,
             timeout=300,
+            json_body=body,
         )
         if answer.status != 500:
             break

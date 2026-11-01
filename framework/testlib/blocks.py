@@ -129,7 +129,7 @@ def stored(size: int) -> int:
     return size + TAG * -(-size // BLOCK)
 
 
-def header(request: Request) -> str:
+def range_header(request: Request) -> str:
     """Return the Range header for request."""
     specs: list[str] = []
     for start, end in request:
@@ -476,19 +476,6 @@ def concurrent_reads() -> list[Request | None]:
     ]
 
 
-def covering(request: Request, size: int, unit: int) -> list[int]:
-    """Return the blocks that request touches in an object of size.
-
-    Returns:
-        The indexes of the blocks of unit bytes, in order.
-    """
-    found: set[int] = set()
-    for r in request:
-        first, last = resolve(size, r)
-        found.update(range(first // unit, last // unit + 1))
-    return sorted(found)
-
-
 # --------------------------------------------------------------------------
 # Ranges that add up to a whole object: in the order read, overlapping,
 # and unaligned to both block sizes.
@@ -669,7 +656,7 @@ def read_space_file(cache: common.Cache, name: str) -> tuple[bytes | None, str]:
     try:
         target = os.readlink(link)
     except FileNotFoundError:
-        return None, f"framework/var/{link} is missing"
+        return None, f"{common.shown(link)} is missing"
     except OSError:
         target = link
     if target.startswith("/data/"):
@@ -678,9 +665,9 @@ def read_space_file(cache: common.Cache, name: str) -> tuple[bytes | None, str]:
         with open(target, "rb") as f:
             return f.read(), ""
     except FileNotFoundError:
-        return None, f"framework/var/{target} is missing"
+        return None, f"{common.shown(target)} is missing"
     except OSError as e:
-        return None, f"framework/var/{target}: {e.strerror}"
+        return None, f"{common.shown(target)}: {e.strerror}"
 
 
 def read_cinfo(cache: common.Cache, rel: str) -> tuple[Cinfo | None, str]:

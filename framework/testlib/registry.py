@@ -20,13 +20,15 @@ import os
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
+from urllib.parse import quote
 
-from . import accounts, common, jwt, web
+from . import common, jwt, web
 
 REGISTRY = "/api/v1.0/registry"
 REGISTRATIONS = "/api/v1.0/registry_ui/namespaces"
 SERVERS = "/api/v1.0/registry_ui/servers"
 CHECK_STATUS = "/api/v1.0/registry/namespaces/check/status"
+DOWNTIME = "/api/v1.0/downtime"
 
 # The members of a JWK that hold private key material: an EC key's d, and
 # an RSA key's d, p, q, dp, dq, and qi (RFC 7518, section 6).
@@ -38,6 +40,11 @@ EDIT_REGISTRATION = "registry.edit_registration"
 DOWNTIME_CREATE = "pelican.downtime_create"
 DOWNTIME_MODIFY = "pelican.downtime_modify"
 DOWNTIME_DELETE = "pelican.downtime_delete"
+
+
+def prefix_route(prefix: str) -> str:
+    """Return the route of prefix's registration, the prefix quoted."""
+    return REGISTRY + quote(prefix, safe="/:")
 
 
 def new_key(path: str) -> str:
@@ -119,12 +126,7 @@ def register(
     url = registry_url + REGISTRY
     keyset = jwks(keys)
     client_nonce = uuid.uuid4().hex + uuid.uuid4().hex
-    first = web.request(
-        "POST",
-        url,
-        upload=json.dumps({"client_nonce": client_nonce, "pubkey": keyset}).encode(),
-        headers=accounts.JSON,
-    )
+    first = web.request("POST", url, json_body={"client_nonce": client_nonce, "pubkey": keyset})
     challenge = first.object()
     server_nonce = str(challenge.get("server_nonce", ""))
     if first.status != 200 or not server_nonce:
@@ -144,7 +146,7 @@ def register(
         "identity_required": "false",
         "server_id": server_id,
     }
-    return web.request("POST", url, upload=json.dumps(body).encode(), headers=accounts.JSON)
+    return web.request("POST", url, json_body=body)
 
 
 def token(
@@ -201,32 +203,17 @@ def documents(body: bytes) -> int:
     return found
 
 
-def as_jwks(document: Any) -> list[dict[str, Any]] | None:
-    """Return the keys of a JWKS, or None if document isn't one.
-
-    Args:
-        document: The JWKS, parsed or as its text, as a registration
-            stores it (`pubkey`).
-    """
-    if isinstance(document, (str, bytes)):
-        document = parse(document.encode() if isinstance(document, str) else document)
-    listed = common.as_array((common.as_object(document) or {}).get("keys"))
-    if listed is None:
-        return None
-    return [common.as_object(k) or {} for k in listed]
-
-
 def private_members(document: Any) -> list[str]:
     """Return each key in a JWKS that holds private key material.
 
     Args:
-        document: The JWKS, as as_jwks() takes it.
+        document: The JWKS, as jwt.jwks_keys() takes it.
 
     Returns:
         Each such key, by its kid, and which members it holds.
     """
     found: list[str] = []
-    for key in as_jwks(document) or []:
+    for key in jwt.jwks_keys(document) or []:
         held = [m for m in PRIVATE_MEMBERS if m in key]
         if held:
             found.append(f"{key.get('kid', '(no kid)')}: {', '.join(held)}")
@@ -244,12 +231,12 @@ def thumbprints(document: Any) -> frozenset[str] | None:
     Each is computed from the key's members, not taken from its kid.
 
     Args:
-        document: The JWKS, as as_jwks() takes it.
+        document: The JWKS, as jwt.jwks_keys() takes it.
 
     Returns:
         The thumbprints, or None if document isn't a JWKS.
     """
-    listed = as_jwks(document)
+    listed = jwt.jwks_keys(document)
     if listed is None:
         return None
     found: set[str] = set()

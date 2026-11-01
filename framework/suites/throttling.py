@@ -35,6 +35,7 @@ from testlib import common, control, stores, suite, transfers, web
 from testlib.common import Findings, die, outcome, warn
 from testlib.report import FAIL, SKIP
 from testlib.session import Session, last_line
+from testlib.suite import NAMESPACE
 
 SCENARIOS = {
     "range-ahead": (
@@ -54,7 +55,6 @@ SCENARIOS = {
 # the download it is ahead of.
 SCHEDULER_AS_IS = ("range-ahead",)
 
-NAMESPACE = "protected-a"
 
 # The origins' rate limit (Origin.TransferRateLimit, in which a KB is
 # 1024 bytes), and its bytes per second. The limiter lets a second's
@@ -147,7 +147,7 @@ class Test(suite.Test):
     """
 
     def __init__(self, session: Session):
-        super().__init__(session, "throttling", NAMESPACE)
+        super().__init__(session, "throttling")
         self.origins = self.fed.origins
         self.holder = self.origins[0]
         self.v2 = [c for c in self.fed.federated_caches if c.kind == "v2"]
@@ -163,9 +163,9 @@ class Test(suite.Test):
         """
         origins = self.origins if everywhere else [self.holder]
         for rel, data in objects.items():
-            why = stores.write_file_everywhere(origins, self.namespace, rel, data)
-            if why:
-                return why
+            errors = stores.write_file_everywhere(origins, self.namespace, rel, data)
+            if errors:
+                return errors[0]
         return None
 
 
@@ -192,11 +192,6 @@ def shed_problem(answer: web.Response) -> str | None:
 
 # --------------------------------------------------------------------------
 # The federation, slowed.
-
-
-def settle(test: Test) -> str | None:
-    """Wait until the federation serves the probe (suite.Test.settle())."""
-    return test.settle(test.rel(PROBE), PROBE_SIZE)
 
 
 # --------------------------------------------------------------------------
@@ -898,7 +893,7 @@ def run_phase(test: Test, scenarios: list[str], results: common.Results, done: s
     """
     if not scenarios:
         return
-    why = settle(test)
+    why = test.settle(test.rel(PROBE), PROBE_SIZE)
     for scenario in scenarios:
         if why:
             results.add(scenario, FAIL, f"with the servers restarted slowed, {why}")
@@ -961,7 +956,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 if scenario not in done:
                     results.add(scenario, FAIL, f"restarting the servers: {e}")
             warn(f"restarting the servers slowed, or restoring them: {e}")
-        why = settle(test)
+        why = test.settle(test.rel(PROBE), PROBE_SIZE)
         if why:
             warn(f"with the servers restored, {why}")
     finally:

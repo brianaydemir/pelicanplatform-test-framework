@@ -25,7 +25,6 @@ objects are put in place, and the stores read, with WLCG tokens.
 See docs/tests/listings.md.
 """
 
-import json
 import os
 import time
 from collections.abc import Mapping
@@ -39,7 +38,8 @@ from testlib import common, credentials, stores, suite, web, webdav
 from testlib.common import die, first, outcome
 from testlib.names import NAMES
 from testlib.report import FAIL, PASS, SKIP
-from testlib.session import Session, last_line
+from testlib.session import Session, json_objects, last_line
+from testlib.suite import Row
 
 SCENARIOS = {
     "origin-depth-0": "each origin: Depth 0 of an object, and of a collection",
@@ -194,28 +194,6 @@ class Test(suite.Test):
                         return [error]
         return errors
 
-    def listing(
-        self,
-        url: str,
-        depth: str,
-        base: str,
-        token: str | None,
-        body: bytes | None = None,
-    ) -> tuple[web.Response, dict[str, webdav.Entry] | None, str]:
-        """PROPFIND url at depth, with token and body.
-
-        Returns:
-            The answer; its entries below base if it is a listing, or else
-            None; and why it is not, or "" if it is.
-        """
-        answer = webdav.propfind(url, depth, token, body)
-        if answer.status != 207:
-            return answer, None, f"Depth {depth}: {answer.describe()}, not 207"
-        try:
-            return answer, webdav.relative(webdav.parse(answer.body), base), ""
-        except ValueError as e:
-            return answer, None, f"Depth {depth}: {e}"
-
     def compare(
         self,
         url: str,
@@ -226,7 +204,7 @@ class Test(suite.Test):
         body: bytes | None = None,
     ) -> str | None:
         """Return what is wrong with url's listing at depth against want."""
-        _, got, why = self.listing(url, depth, base, token, body)
+        _, got, why = webdav.listing(url, depth, base, token, body)
         if got is None:
             return why
         wrong = webdav.problems(want, got)
@@ -244,23 +222,13 @@ class Test(suite.Test):
         )
         if code != 0:
             return None, f"exit {code}: {last_line(err)}"
-        # The listing is the last line that reads as one.
-        for line in reversed(out.strip().splitlines()):
-            try:
-                return {
-                    e["Name"]
-                    .rstrip("/")
-                    .rsplit("/", 1)[-1]: (bool(e.get("IsCollection")), e.get("Size") or 0)
-                    for e in json.loads(line)
-                }, ""
-            except (ValueError, KeyError, TypeError, AttributeError):
-                continue
-        return None, f"no listing in the output: {last_line(out)}"
-
-
-def origin_url(origin: common.Origin, path: str) -> str:
-    """Return the URL of path at origin."""
-    return f"{origin.url}{path}"
+        try:
+            return {
+                e["Name"].rstrip("/").rsplit("/", 1)[-1]: (bool(e.get("IsCollection")), e.get("Size") or 0)
+                for e in json_objects(out)
+            }, ""
+        except (ValueError, KeyError, AttributeError):
+            return None, f"no listing in the output: {last_line(out)}"
 
 
 # --------------------------------------------------------------------------
@@ -290,7 +258,7 @@ def modified_problem(test: Test, origin: common.Origin, ns: str, entry: webdav.E
     return ""
 
 
-def origin_depth_0(test: Test) -> tuple[str, str]:
+def origin_depth_0(test: Test) -> Row:
     """Check Depth 0 of an object, and of a collection, at each origin.
 
     The object's getlastmodified must be when its file was written.
@@ -302,12 +270,12 @@ def origin_depth_0(test: Test) -> tuple[str, str]:
             for rel, want in (("b", 5000), ("", None)):
                 target = f"{path}/{rel}" if rel else f"{path}/"
                 if not may_list(test.fed.exports[ns], "0", "origin"):
-                    why = test.refusal(origin_url(origin, target), "0", test.tokens[ns])
+                    why = test.refusal(f"{origin.url}{target}", "0", test.tokens[ns])
                     if why:
                         problems.append(f"{origin.svc} {target}: {why}")
                     continue
-                _, got, why = test.listing(
-                    origin_url(origin, target),
+                _, got, why = webdav.listing(
+                    f"{origin.url}{target}",
                     "0",
                     f"{path}/{rel}" if rel else path,
                     test.tokens[ns],
@@ -327,13 +295,13 @@ def origin_depth_0(test: Test) -> tuple[str, str]:
     return outcome(problems, f"{len(test.origins)} origin(s)")
 
 
-def origin_depth_1(test: Test) -> tuple[str, str]:
+def origin_depth_1(test: Test) -> Row:
     """Check that each origin lists a collection's members at Depth 1."""
     problems: list[str] = []
     for origin in test.origins:
         for ns in test.namespaces:
             path = test.path_in(ns)
-            url = origin_url(origin, f"{path}/")
+            url = f"{origin.url}{path}/"
             if may_list(test.fed.exports[ns], "1", "origin"):
                 why = test.compare(url, "1", path, test.children(ns), test.tokens[ns])
             else:
@@ -358,7 +326,7 @@ def infinity(
     Returns:
         What is wrong, or None; and a note.
     """
-    answer, got, why = test.listing(url, "infinity", test.path_in(namespace), token)
+    answer, got, why = webdav.listing(url, "infinity", test.path_in(namespace), token)
     if answer.status == 403:
         if refusable:
             return None, "refused (403)"
@@ -371,7 +339,7 @@ def infinity(
     return (f"Depth infinity: {'; '.join(wrong)}" if wrong else None), "the whole tree"
 
 
-def origin_infinity(test: Test) -> tuple[str, str]:
+def origin_infinity(test: Test) -> Row:
     """Check that each origin lists the whole tree at Depth infinity.
 
     An origin may refuse it instead.
@@ -381,7 +349,7 @@ def origin_infinity(test: Test) -> tuple[str, str]:
     for origin in test.origins:
         for ns in test.namespaces:
             path = test.path_in(ns)
-            url = origin_url(origin, f"{path}/")
+            url = f"{origin.url}{path}/"
             if may_list(test.fed.exports[ns], "infinity", "origin"):
                 why, note = infinity(test, url, ns, test.tokens[ns])
             else:
@@ -393,7 +361,7 @@ def origin_infinity(test: Test) -> tuple[str, str]:
     return outcome(problems, ", ".join(notes))
 
 
-def director(test: Test) -> tuple[str, str]:
+def director(test: Test) -> Row:
     """Check that each director redirects a PROPFIND to an origin.
 
     The origin's listing must then be right; or, where the director may
@@ -433,7 +401,7 @@ def director(test: Test) -> tuple[str, str]:
                         problems.append(f"{where} -> {parts.netloc}: {why}")
                     continue
                 if want is None:
-                    _, got, why = test.listing(location, depth, base, test.tokens[ns])
+                    _, got, why = webdav.listing(location, depth, base, test.tokens[ns])
                     if got is None:
                         problems.append(f"{where} -> {parts.netloc}: {why}")
                     elif set(got) != {""} or got[""].size != 5000:
@@ -443,7 +411,7 @@ def director(test: Test) -> tuple[str, str]:
     return outcome(problems, f"{len(test.fed.directors)} director(s)")
 
 
-def cache_depth_0(test: Test) -> tuple[str, str]:
+def cache_depth_0(test: Test) -> Row:
     """Check Depth 0 of each cache's own probe object.
 
     Ask before the cache holds it, then after a GET.
@@ -458,7 +426,7 @@ def cache_depth_0(test: Test) -> tuple[str, str]:
                 if answer.status != 200 or len(answer.body) != PROBE:
                     problems.append(f"{cache.svc}: GET {path}: {answer.describe()}")
                     break
-            _, got, why = test.listing(url, "0", path, test.token)
+            _, got, why = webdav.listing(url, "0", path, test.token)
             if got is None:
                 problems.append(f"{cache.svc} ({when}): {why}")
             elif set(got) != {""} or got[""].collection or got[""].size != PROBE:
@@ -466,7 +434,7 @@ def cache_depth_0(test: Test) -> tuple[str, str]:
     return outcome(problems, f"{len(test.caches)} cache(s)")
 
 
-def cache_depth_1(test: Test) -> tuple[str, str]:
+def cache_depth_1(test: Test) -> Row:
     """Check Depth 0 and 1 of a collection at each cache.
 
     Each must list it as the origins do.
@@ -476,7 +444,7 @@ def cache_depth_1(test: Test) -> tuple[str, str]:
     for cache in test.caches:
         path = test.path_in("protected-a")
         url = f"{cache.url}{path}/"
-        _, got, why = test.listing(url, "0", path, test.token)
+        _, got, why = webdav.listing(url, "0", path, test.token)
         if got is None:
             problems.append(f"{cache.svc}: {why}")
             continue
@@ -487,7 +455,7 @@ def cache_depth_1(test: Test) -> tuple[str, str]:
             if refusal := test.refusal(url, "1", test.token):
                 problems.append(f"{cache.svc}: {refusal}")
             continue
-        _, got, why = test.listing(url, "1", path, test.token)
+        _, got, why = webdav.listing(url, "1", path, test.token)
         if got is None:
             problems.append(f"{cache.svc}: {why}")
             continue
@@ -510,12 +478,11 @@ def origins_refuse_infinity(test: Test, ns: str) -> bool | None:
         return None
     path = test.path_in(ns)
     return any(
-        webdav.propfind(origin_url(o, f"{path}/"), "infinity", test.tokens[ns]).status == 403
-        for o in test.origins
+        webdav.propfind(f"{o.url}{path}/", "infinity", test.tokens[ns]).status == 403 for o in test.origins
     )
 
 
-def cache_infinity(test: Test) -> tuple[str, str]:
+def cache_infinity(test: Test) -> Row:
     """Check that each cache lists the whole tree at Depth infinity.
 
     A cache relays it to an origin. It may refuse with 403 only if an
@@ -544,7 +511,7 @@ def cache_infinity(test: Test) -> tuple[str, str]:
     return outcome(problems, ", ".join(notes))
 
 
-def cache_body(test: Test) -> tuple[str, str]:
+def cache_body(test: Test) -> Row:
     """Check that each cache follows the director's redirect of a PROPFIND.
 
     A cache relays a PROPFIND through the director, and must follow its
@@ -559,7 +526,7 @@ def cache_body(test: Test) -> tuple[str, str]:
             if why := test.refusal(url, "1", test.token):
                 problems.append(f"{cache.svc}: {why}")
             continue
-        answer, got, why = test.listing(url, "1", path, test.token, webdav.PROPFIND_BODY)
+        answer, got, why = webdav.listing(url, "1", path, test.token, webdav.PROPFIND_BODY)
         if answer.status is not None and 300 <= answer.status < 400:
             problems.append(
                 f"{cache.svc}: answered with the director's {answer.status}, to"
@@ -577,7 +544,7 @@ def servers(test: Test) -> list[tuple[str, str, str]]:
     return [(o.svc, o.url, "origin") for o in test.origins] + [(c.svc, c.url, "cache") for c in test.caches]
 
 
-def refused_everywhere(test: Test, token: str | None) -> tuple[str, str]:
+def refused_everywhere(test: Test, token: str | None) -> Row:
     """Check that every server refuses to list /protected-a with token.
 
     token is none, or one for elsewhere. A listing of an object, and of a
@@ -601,17 +568,17 @@ def refused_everywhere(test: Test, token: str | None) -> tuple[str, str]:
     return outcome(problems, f"{len(servers(test))} server(s)")
 
 
-def protected_a_no_token(test: Test) -> tuple[str, str]:
+def protected_a_no_token(test: Test) -> Row:
     """Check refused_everywhere() with no token."""
     return refused_everywhere(test, None)
 
 
-def protected_a_scope(test: Test) -> tuple[str, str]:
+def protected_a_scope(test: Test) -> Row:
     """Check refused_everywhere() with a token for elsewhere."""
     return refused_everywhere(test, test.elsewhere)
 
 
-def public_no_token(test: Test) -> tuple[str, str]:
+def public_no_token(test: Test) -> Row:
     """Check that anyone may list /public, as far as its capabilities allow.
 
     /public has PublicReads (see may_list()).
@@ -628,7 +595,7 @@ def public_no_token(test: Test) -> tuple[str, str]:
     return outcome(problems, f"{len(servers(test))} server(s)")
 
 
-def new_object(test: Test) -> tuple[str, str]:
+def new_object(test: Test) -> Row:
     """Check that a new object is listed at once, and not once removed.
 
     The object is put straight in every origin's store, and must be
@@ -666,7 +633,7 @@ def new_object(test: Test) -> tuple[str, str]:
     return outcome(problems, "listed at once, and not once removed")
 
 
-def collection_get(test: Test) -> tuple[str, str]:
+def collection_get(test: Test) -> Row:
     """Check a GET of a collection, tree/sub, which is no object.
 
     An origin asked without Accept: text/html, as by a client that
@@ -694,7 +661,7 @@ def collection_get(test: Test) -> tuple[str, str]:
     for origin in origins:
         for accept in ("", "text/html"):
             headers = {"Accept": accept} if accept else None
-            answer = web.request("GET", origin_url(origin, path), token=token, headers=headers)
+            answer = web.request("GET", f"{origin.url}{path}", token=token, headers=headers)
             kind = answer.header("Content-Type").lower()
             what = f"{origin.svc}: GET {path}{' as a browser' if accept else ''}"
             if is_object(answer.body):
@@ -855,7 +822,7 @@ def link_problems(
     return problems
 
 
-def html_links(test: Test) -> tuple[str, str]:
+def html_links(test: Test) -> Row:
     """Check the links of each origin's HTML listing.
 
     The listing (a GET with Accept: text/html) is of a collection that
@@ -887,7 +854,7 @@ def html_links(test: Test) -> tuple[str, str]:
     problems: list[str] = []
     unlisted: list[str] = []
     for origin in test.origins:
-        page = origin_url(origin, quote(f"/protected-a/{rel}/"))
+        page = origin.url + quote(f"/protected-a/{rel}/")
         answer = web.request("GET", page, token=token, headers={"Accept": "text/html"})
         if not is_html(answer):
             unlisted.append(origin.svc)
@@ -906,7 +873,7 @@ def html_links(test: Test) -> tuple[str, str]:
     return PASS, note
 
 
-def plain_object_listing(test: Test) -> tuple[str, str]:
+def plain_object_listing(test: Test) -> Row:
     """Check Depth 1 of an object, tree/b, which is no collection.
 
     A PROPFIND at every origin and cache must answer 207, listing the
@@ -925,7 +892,7 @@ def plain_object_listing(test: Test) -> tuple[str, str]:
             if why := test.refusal(target, "1", token):
                 problems.append(f"{svc}: {why}")
             continue
-        _, got, why = test.listing(target, "1", path, token)
+        _, got, why = webdav.listing(target, "1", path, token)
         if got is None:
             problems.append(f"{svc}: {why}")
         elif set(got) != {""}:

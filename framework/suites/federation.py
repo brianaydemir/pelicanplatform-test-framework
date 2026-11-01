@@ -28,8 +28,10 @@ from testlib import (
     common,
     credentials,
     director,
+    jwt,
     metrics,
     owners,
+    registry,
     stores,
     suite,
     transfers,
@@ -84,14 +86,11 @@ DIRECTORS_WAIT = 60
 # (Director.RegistryQueryInterval), and which the server tells at once.
 DOWNTIME_WAIT = 150
 
-# The registry's registrations (`registry-approval`), each a prefix with a
-# status; a server's is /caches/<host> or /origins/<host>.
-REGISTRATIONS = "/api/v1.0/registry_ui/namespaces"
+# A server's registration's prefix (`registry-approval`) is
+# /caches/<host> or /origins/<host>.
 SERVER_PREFIXES = ("/caches/", "/origins/")
 # The statuses of a registration awaiting approval.
 PENDING_STATUSES = ("Incomplete", "Pending")
-# A server's downtimes, through its web API.
-DOWNTIME = "/api/v1.0/downtime"
 
 # The connection broker's path.
 BROKER_PATH = "/api/v1.0/broker/reverse"
@@ -153,21 +152,12 @@ class Test(suite.Test):
         self.uploaded = False
         self.approval = Approval()
 
-    def admin(self, web_url: str, key_dir: str) -> accounts.Api:
+    def admin(self, web_url: str) -> accounts.Api:
         """Return the web API of the server at web_url, as its admin.
 
-        The admin's token (see credentials.mint_web_user()) is signed with
-        the server's key in key_dir.
+        See Session.web_token().
         """
-        host = director.host(web_url)
-        token = credentials.mint_web_user(
-            self.fed,
-            self.session.path(f"tokens/admin.{host}"),
-            web_url,
-            "admin",
-            key=common.signing_key(key_dir),
-        )
-        return accounts.Api(web_url, token)
+        return accounts.Api(web_url, self.session.web_token(web_url))
 
     def upload(self) -> str | None:
         """Put each namespace's probe at every origin, once (stores.seed()).
@@ -210,7 +200,7 @@ class Test(suite.Test):
         )
         if code != 0:
             return f"`pelican object get`: exit {code}: {last_line(err or out)}"
-        if common.sha256(target) != common.digest(self.data[self.read_ns]):
+        if not common.file_holds(target, self.data[self.read_ns]):
             return "`pelican object get` succeeded, but the file is not the object"
         return None
 
@@ -227,10 +217,10 @@ def pending_registrations(api: accounts.Api) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     for status in PENDING_STATUSES:
         listed = accounts.must(
-            api.call("GET", f"{REGISTRATIONS}?status={status}"),
+            api.call("GET", f"{registry.REGISTRATIONS}?status={status}"),
             f"listing {status} registrations",
         )
-        for row in listed.array:
+        for row in listed.array():
             entry = common.as_object(row) or {}
             found.append((str(entry.get("id", "")), str(entry.get("prefix", ""))))
     return found
@@ -246,8 +236,7 @@ def approve_pending(test: Test) -> None:
     """
     fed, found = test.fed, test.approval
     try:
-        host = director.host(fed.registry_url)
-        api = test.admin(fed.registry_url, f"issuer-keys/{host}")
+        api = test.admin(fed.registry_url)
         pending = pending_registrations(api)
         if not pending:
             return
@@ -269,7 +258,7 @@ def approve_pending(test: Test) -> None:
         headers = accounts.csrf(api)
         for reg_id, prefix in pending:
             accounts.must(
-                api.call("PATCH", f"{REGISTRATIONS}/{reg_id}/approve", headers=headers),
+                api.call("PATCH", f"{registry.REGISTRATIONS}/{reg_id}/approve", headers=headers),
                 f"approving {prefix}",
             )
             found.approved.append(prefix)
@@ -516,7 +505,7 @@ def discovery(test: Test) -> tuple[str, str]:
     jwks_uri = str(served["jwks_uri"])
     answer = web.request("GET", jwks_uri)
     try:
-        kids = credentials.key_ids(answer.body) if answer.status == 200 else None
+        kids = jwt.key_ids(answer.body) if answer.status == 200 else None
     except ValueError:
         kids = None
     if kids is None:
@@ -554,12 +543,12 @@ def broker_problems(fed: common.Federation, path: str, namespace: str) -> list[s
         why = wrong(answer.broker)
         if why:
             problems.append(f"{name}'s X-Pelican-Broker: {why}")
-        listed = web.request("GET", f"{url}/api/v1.0/director_ui/servers")
+        listed = web.request("GET", f"{url}{director.SERVERS}")
         servers = common.as_array(listed.json()) if listed.status == 200 else None
         if servers is None:
             problems.append(f"{name}'s list of servers: {listed.describe()}, not JSON")
             continue
-        for server in (common.as_object(s) or {} for s in servers):
+        for server in common.objects(servers):
             advertised = str(server.get("brokerUrl") or "")
             where = f"{name} lists {server.get('type')} {server.get('name')} with broker"
             if server.get("type") == "Origin":
@@ -939,7 +928,7 @@ def presence(test: Test) -> tuple[str, str]:
                     FAIL,
                     f"`pelican object get` {how} of /{ns}/{rel}: {last_line(err or out)}",
                 )
-            if common.sha256(target) != common.digest(data):
+            if not common.file_holds(target, data):
                 return FAIL, f"`pelican object get` {how} of /{ns}/{rel}: not the object"
     return PASS, (
         f"{holder.svc}'s alone, in {', '.join('/' + ns for ns in namespaces)}:"
@@ -947,8 +936,8 @@ def presence(test: Test) -> tuple[str, str]:
     )
 
 
-def down(test: Test, svc: str, web_url: str, route: str) -> str | None:
-    """Declare server svc down, then up, and check what the directors name.
+def down(test: Test, web_url: str, route: str) -> str | None:
+    """Declare a server down, then up, and check what the directors name.
 
     As its admin, through its web API at web_url, declare it down for the
     next hour: within DOWNTIME_WAIT seconds, no director may name it for
@@ -968,7 +957,7 @@ def down(test: Test, svc: str, web_url: str, route: str) -> str | None:
     before = named()
     if len(before) != len(fed.directors):
         return f"before its downtime, only {before} named it"
-    api = test.admin(web_url, f"issuer-keys/{svc}")
+    api = test.admin(web_url)
     headers = accounts.csrf(api)
     # A downtime's times are in milliseconds since the epoch: a server
     # refuses seconds (isValidTimeRange in web_ui/server_api.go).
@@ -981,13 +970,13 @@ def down(test: Test, svc: str, web_url: str, route: str) -> str | None:
         "endTime": now + 3_600_000,
     }
     downtime_id = str(uuid.uuid4())
-    answer = api.call("POST", f"{DOWNTIME}/{downtime_id}", declared, headers)
+    answer = api.call("POST", f"{registry.DOWNTIME}/{downtime_id}", declared, headers)
     if not answer.ok:
         return f"declaring the downtime: {answer.describe()}"
     why = None
     if not common.wait_for(lambda: not named(), DOWNTIME_WAIT, 5):
         why = f"{named()} still named it {DOWNTIME_WAIT}s into its downtime"
-    ended = api.call("DELETE", f"{DOWNTIME}/{downtime_id}", headers=headers)
+    ended = api.call("DELETE", f"{registry.DOWNTIME}/{downtime_id}", headers=headers)
     if why:
         return why
     if not ended.ok:
@@ -1017,7 +1006,7 @@ def downtime(test: Test) -> tuple[str, str]:
     if not targets:
         return SKIP, "no federated cache, and one origin, which nothing else could serve for"
     for svc, web_url, route in targets:
-        why = down(test, svc, web_url, route)
+        why = down(test, web_url, route)
         if why:
             return FAIL, f"{svc}: {why}"
     return PASS, (

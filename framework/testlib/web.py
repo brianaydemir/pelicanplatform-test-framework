@@ -12,10 +12,10 @@ import json
 import socket
 import ssl
 import time
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult, urlencode, urlsplit
 
 # The federation's CA, in the dev container.
 CA_FILE = "/certs/ca.crt"
@@ -105,6 +105,25 @@ def age(answer: Response) -> int | None:
     """Return answer's Age, in seconds, or None if it has none."""
     value = answer.header("Age").strip()
     return int(value) if value.isdigit() else None
+
+
+def multipart(boundary: str, parts: Sequence[tuple[str, bytes]]) -> bytes:
+    """Return a multipart/form-data body (RFC 7578) of parts.
+
+    Args:
+        boundary: The boundary between parts.
+        parts: Each a form field's name, and its bytes, sent as a file of
+            that name.
+    """
+    body = b""
+    for name, data in parts:
+        head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"; filename="{name}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        )
+        body += head.encode() + data + b"\r\n"
+    return body + f"--{boundary}--\r\n".encode()
 
 
 def save(path: str, answer: Response) -> None:
@@ -202,6 +221,8 @@ def request(
     headers: Mapping[str, str] | None = None,
     timeout: float = 60,
     chunked: bool = False,
+    json_body: Any = None,
+    form: Mapping[str, str] | None = None,
 ) -> Response:
     """Send method to url, and return the answer, trailers and all.
 
@@ -215,11 +236,19 @@ def request(
             whole exchange.
         chunked: Whether to send the body in chunks with no
             Content-Length, as the Pelican client sends it.
+        json_body: A body to send as JSON, in place of upload.
+        form: Fields to send as a form, in place of upload.
     """
     conn, target = _connect(url, timeout)
     sent = _with_token(headers, token)
     data: bytes | None = None
-    if isinstance(upload, str):
+    if json_body is not None:
+        data = json.dumps(json_body).encode()
+        sent.setdefault("Content-Type", "application/json")
+    elif form is not None:
+        data = urlencode(form).encode()
+        sent.setdefault("Content-Type", "application/x-www-form-urlencoded")
+    elif isinstance(upload, str):
         with open(upload, "rb") as f:
             data = f.read()
     else:

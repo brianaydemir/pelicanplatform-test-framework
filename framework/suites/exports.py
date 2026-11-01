@@ -48,7 +48,7 @@ from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 from testlib.stub import HOST as STUB_HOST
 from testlib.stub import Reply, Stub
-from testlib.suite import Row
+from testlib.suite import NAMESPACE, Row
 from testlib.webdav import copy_or_move, root_url
 
 SCENARIOS = {
@@ -80,7 +80,6 @@ SCENARIOS = {
     ),
 }
 
-NAMESPACE = "protected-a"
 
 # The rows of each scenario, in order. A scenario with cases records a
 # row per case, named `<scenario> <case>`.
@@ -194,12 +193,9 @@ UNDIRECTED = (
 )
 
 
-class SetupError(Exception):
-    """A scenario could not put in place what it checks."""
-
-
-# The exceptions by which a check reports a problem (suite.attempt()).
-EXPECTED = (SetupError, stores.Unreadable)
+# The exceptions, beside suite.SetupError, by which a check reports a
+# problem (suite.attempt()).
+EXPECTED = (stores.Unreadable,)
 
 
 class Test(suite.Test):
@@ -211,7 +207,7 @@ class Test(suite.Test):
     """
 
     def __init__(self, session: Session, stub: Stub):
-        super().__init__(session, "exports", NAMESPACE)
+        super().__init__(session, "exports")
         self.stub = stub
         self.stub_down: str | None = None
 
@@ -227,11 +223,11 @@ class Test(suite.Test):
         """Put data at rel in /protected-a at origin alone.
 
         Raises:
-            SetupError: The PUT failed.
+            suite.SetupError: The PUT failed.
         """
         error = stores.put(origin, NAMESPACE, rel, data, self.setup)
         if error:
-            raise SetupError(f"{origin.svc}: could not put {rel} in place ({error})")
+            raise suite.SetupError(f"{origin.svc}: could not put {rel} in place ({error})")
 
     def stored(
         self,
@@ -302,27 +298,6 @@ def snippet(body: bytes) -> str:
 # multipart-put
 
 
-def multipart(boundary: str, parts: Sequence[tuple[str, bytes]]) -> bytes:
-    """Return a multipart/form-data body (RFC 7578) of parts.
-
-    Args:
-        boundary: The boundary between parts.
-        parts: Each a form field's name, and its bytes.
-    """
-    body = b""
-    for name, data in parts:
-        body += (
-            (
-                f"--{boundary}\r\n"
-                f'Content-Disposition: form-data; name="{name}"; filename="{name}"\r\n'
-                "Content-Type: application/octet-stream\r\n\r\n"
-            ).encode()
-            + data
-            + b"\r\n"
-        )
-    return body + f"--{boundary}--\r\n".encode()
-
-
 def multipart_case(test: Test, case: str) -> Row:
     """Return the row of multipart_put()'s case, at each origin."""
     found = Findings()
@@ -330,9 +305,9 @@ def multipart_case(test: Test, case: str) -> Row:
         data = os.urandom(65536)
         boundary = f"pelican-testing-{os.urandom(12).hex()}"
         if case == "pelican-shaped":
-            body = multipart(boundary, (("metadata", METADATA_PART), ("object", data)))
+            body = web.multipart(boundary, (("metadata", METADATA_PART), ("object", data)))
         else:
-            body = multipart(boundary, (("file", data),))
+            body = web.multipart(boundary, (("file", data),))
         rel = test.rel(origin.svc, f"multipart-{case}")
         url = stores.url(origin, NAMESPACE, rel)
         answer = web.request(
@@ -506,7 +481,7 @@ def tpc_body(test: Test) -> dict[str, Row]:
     source_rel = test.rel(SOURCE)
     errors = stores.put_everywhere(test.fed.origins, NAMESPACE, source_rel, data, test.setup)
     if errors:
-        raise SetupError(f"could not put the source in place: {first(errors)}")
+        raise suite.SetupError(f"could not put the source in place: {first(errors)}")
     found = Findings()
     for origin in test.fed.origins:
         source_url, source_name = source_of(test, origin)
@@ -777,7 +752,7 @@ class Layout:
     caps: dict[str, list[str]]
 
 
-def unrestartable(test: Test) -> str | None:
+def origins_unrestartable(test: Test) -> str | None:
     """Return why the origins cannot be restarted with other exports.
 
     Returns:
@@ -813,7 +788,7 @@ def restate(text: str, caps: Mapping[str, Sequence[str]]) -> str:
     replaces a list whole.
 
     Raises:
-        SetupError: text has no Capabilities for an export in caps.
+        suite.SetupError: text has no Capabilities for an export in caps.
     """
     lines: list[str] = []
     prefix = ""
@@ -830,7 +805,7 @@ def restate(text: str, caps: Mapping[str, Sequence[str]]) -> str:
         lines.append(line)
     missing = sorted(set(caps) - changed)
     if missing:
-        raise SetupError(f"fed.sh's Origin.Exports has no Capabilities for {', '.join(missing)}")
+        raise suite.SetupError(f"fed.sh's Origin.Exports has no Capabilities for {', '.join(missing)}")
     return "\n".join(lines) + "\n"
 
 
@@ -838,14 +813,14 @@ def generated_exports(svc: str) -> str:
     """Return fed.sh's Origin.Exports for origin svc (GENERATED_EXPORTS).
 
     Raises:
-        SetupError: It is missing.
+        suite.SetupError: It is missing.
     """
     for pattern in GENERATED_EXPORTS:
         path = pattern.format(svc=svc)
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
                 return f.read()
-    raise SetupError(f"framework/var/{GENERATED_EXPORTS[-1]} is missing; run ./fed.sh init")
+    raise suite.SetupError(f"framework/var/{GENERATED_EXPORTS[-1]} is missing; run ./fed.sh init")
 
 
 def restart_files(svc: str, layout: Layout) -> dict[str, str]:
@@ -855,7 +830,7 @@ def restart_files(svc: str, layout: Layout) -> dict[str, str]:
         YAML text, by file name.
 
     Raises:
-        SetupError: fed.sh's Origin.Exports is missing, or lacks an
+        suite.SetupError: fed.sh's Origin.Exports is missing, or lacks an
             export's Capabilities.
     """
     text = generated_exports(svc)
@@ -873,7 +848,7 @@ def seed_restart(test: Test, layout: Layout) -> dict[str, bytes]:
         Their bytes, by name.
 
     Raises:
-        SetupError: An object could not be put in place.
+        suite.SetupError: An object could not be put in place.
     """
     fed = test.fed
     tree = test.rel("tree")
@@ -903,7 +878,7 @@ def seed_restart(test: Test, layout: Layout) -> dict[str, bytes]:
             if error:
                 errors.append(error)
     if errors:
-        raise SetupError(f"could not put the restart's objects in place: {first(errors)}")
+        raise suite.SetupError(f"could not put the restart's objects in place: {first(errors)}")
     return data
 
 
@@ -967,15 +942,11 @@ def listings_capability(test: Test, layout: Layout, data: Mapping[str, bytes]) -
                 f"{origin.svc}: a GET for HTML in /{namespace} got {page.describe()},"
                 + " not 401, 403, or 405"
             )
-        stat = webdav.propfind(f"{tree}/obj", "0", token)
-        try:
-            if stat.status != 207:
-                raise ValueError(stat.describe())
-            entries = webdav.parse(stat.body)
-            if len(entries) != 1 or entries[0].size != len(data["tree/obj"]):
-                raise ValueError(f"{[(e.path, e.size) for e in entries]}")
-        except ValueError as e:
-            found.problems.append(f"{origin.svc}: PROPFIND of Depth 0 of an object got {e}")
+        _, stat, why = webdav.stat(f"{tree}/obj", token)
+        if stat is None:
+            found.problems.append(f"{origin.svc}: PROPFIND of an object: {why}")
+        elif stat.size != len(data["tree/obj"]):
+            found.problems.append(f"{origin.svc}: PROPFIND of an object: getcontentlength {stat.size}")
         if namespace != NAMESPACE:
             control_listing = webdav.propfind(
                 f"{stores.url(origin, NAMESPACE, test.base)}/", "1", test.token
@@ -1072,14 +1043,14 @@ def nest(text: str, prefix: str, caps: Sequence[str], issuer: str) -> str:
     replaces a list whole.
 
     Raises:
-        SetupError: text has no entry for /public, or one without a
+        suite.SetupError: text has no entry for /public, or one without a
             StoragePrefix.
     """
     lines = text.rstrip("\n").split("\n")
     starts = [i for i, line in enumerate(lines) if re.match(r"\s*- FederationPrefix:", line)]
     public = [i for i in starts if re.match(r"\s*- FederationPrefix:\s*/public\s*$", lines[i])]
     if not public:
-        raise SetupError("fed.sh's Origin.Exports has no entry for /public")
+        raise suite.SetupError("fed.sh's Origin.Exports has no entry for /public")
     start = public[0]
     end = next((i for i in starts if i > start), len(lines))
     below = prefix[len("/public") :]
@@ -1100,7 +1071,7 @@ def nest(text: str, prefix: str, caps: Sequence[str], issuer: str) -> str:
         elif re.match(r"\s*StoragePrefix:", line):
             m = re.match(r"(\s*StoragePrefix:\s*)(\S+)", line)
             if m is None:
-                raise SetupError("fed.sh's Origin.Exports gives /public no StoragePrefix")
+                raise suite.SetupError("fed.sh's Origin.Exports gives /public no StoragePrefix")
             line = f"{m.group(1)}{m.group(2).rstrip('/')}{below}"
         entry.append(line)
     return "\n".join(lines) + "\n\n" + "\n".join(entry) + "\n"
@@ -1113,7 +1084,8 @@ def nested_files(svc: str, prefix: str, caps: Sequence[str], issuer: str) -> dic
         YAML text, by file name.
 
     Raises:
-        SetupError: fed.sh's Origin.Exports is missing, or has no /public.
+        suite.SetupError: fed.sh's Origin.Exports is missing, or has no
+            /public.
     """
     return {NESTED_FILE: nest(generated_exports(svc), prefix, caps, issuer)}
 
@@ -1128,7 +1100,7 @@ def seed_nested(test: Test) -> dict[str, bytes]:
         Their bytes, by name.
 
     Raises:
-        SetupError: An object could not be put in place.
+        suite.SetupError: An object could not be put in place.
     """
     data = {OPEN: os.urandom(NESTED_SIZE), f"{NESTED}/obj": os.urandom(NESTED_SIZE)}
     errors: list[str] = []
@@ -1148,7 +1120,7 @@ def seed_nested(test: Test) -> dict[str, bytes]:
             if error:
                 errors.append(error)
     if errors:
-        raise SetupError(f"could not put the nested export's objects in place: {first(errors)}")
+        raise suite.SetupError(f"could not put the nested export's objects in place: {first(errors)}")
     return data
 
 
@@ -1188,7 +1160,7 @@ def unregister(test: Test, prefix: str) -> str | None:
     """
     if not test.fed.registry_url:
         return None
-    url = f"{test.fed.registry_url}/api/v1.0/registry{quote(prefix, safe='/:')}"
+    url = test.fed.registry_url + registry.prefix_route(prefix)
     token = registry.token(
         test.fed.origin_key, registry.NAMESPACE_DELETE, "origin", url, audience="registry"
     )
@@ -1304,7 +1276,7 @@ def nested_export(test: Test) -> dict[str, Row]:
     try:
         files = {o.svc: nested_files(o.svc, prefix, caps, issuer) for o in fed.origins}
         data = seed_nested(test)
-    except SetupError as e:
+    except suite.SetupError as e:
         return {row: (FAIL, str(e)) for row in rows}
     print(f"\nRestarting the origins with {prefix} exported, nested in /public")
     found: dict[str, Row] = {}
@@ -1365,12 +1337,12 @@ def static_token() -> str:
     """Return the static token fed.sh made for the origins (TOKEN_FILE).
 
     Raises:
-        SetupError: TOKEN_FILE cannot be read.
+        suite.SetupError: TOKEN_FILE cannot be read.
     """
     try:
         return common.read_text(TOKEN_FILE)
     except OSError:
-        raise SetupError(f"framework/var/{TOKEN_FILE} is missing; run ./fed.sh init") from None
+        raise suite.SetupError(f"framework/var/{TOKEN_FILE} is missing; run ./fed.sh init") from None
 
 
 def backend_files(svc: str, passthrough: bool) -> dict[str, str]:
@@ -1456,13 +1428,9 @@ def gated_exercise(test: Test, origin: common.Origin, mode: str) -> tuple[list[s
         problems.append(f"HEAD {declared}: {answer.describe()}")
     paths.append(collection)
     listing = stores.url(origin, NAMESPACE, collection) + "/"
-    answer = webdav.propfind(listing, "1", test.token)
-    try:
-        if answer.status != 207:
-            raise ValueError(answer.describe())
-        names = set(webdav.relative(webdav.parse(answer.body), f"/{NAMESPACE}/{collection}"))
-    except ValueError as e:
-        problems.append(f"PROPFIND Depth 1 of {collection}: {e}")
+    _, names, why = webdav.listing(listing, "1", f"/{NAMESPACE}/{collection}", test.token)
+    if names is None:
+        problems.append(f"PROPFIND of {collection}: {why}")
     else:
         missing = [os.path.basename(p) for p in (declared, chunked) if os.path.basename(p) not in names]
         if missing:
@@ -1676,7 +1644,7 @@ def run_restarted(test: Test, rows: Sequence[str], record: Callable[[str, Row], 
         rows: The rows to run.
         record: Takes each row, and its result.
     """
-    why = unrestartable(test)
+    why = origins_unrestartable(test)
     if why:
         for row in rows:
             record(row, (SKIP, f"needs the origins restarted with other exports, but {why}"))
@@ -1685,7 +1653,7 @@ def run_restarted(test: Test, rows: Sequence[str], record: Callable[[str, Row], 
     try:
         files = {o.svc: restart_files(o.svc, layout) for o in test.fed.origins}
         data = seed_restart(test, layout)
-    except EXPECTED as e:
+    except (suite.SetupError, *EXPECTED) as e:
         for row in rows:
             record(row, (FAIL, str(e)))
         return
@@ -1723,7 +1691,7 @@ def with_sentinel(text: str, name: str) -> str:
     StoragePrefix), without which the origin must refuse to start.
 
     Raises:
-        SetupError: text lists no export.
+        suite.SetupError: text lists no export.
     """
     lines: list[str] = []
     for line in text.splitlines():
@@ -1732,7 +1700,7 @@ def with_sentinel(text: str, name: str) -> str:
         if m:
             lines.append(f"{m.group(1)}  SentinelLocation: {name}")
     if len(lines) == len(text.splitlines()):
-        raise SetupError("fed.sh's Origin.Exports lists no export")
+        raise suite.SetupError("fed.sh's Origin.Exports lists no export")
     return "\n".join(lines) + "\n"
 
 
@@ -1761,7 +1729,7 @@ def sentinel_present(test: Test, origin: common.Origin, text: str) -> Row:
             test.fed.exports[storage],
         )
         if error:
-            raise SetupError(f"could not put the sentinel in place: {error}")
+            raise suite.SetupError(f"could not put the sentinel in place: {error}")
     try:
         with control.restart_with(origin.svc, {SENTINEL_FILE: with_sentinel(text, name)}):
             answer = web.request("HEAD", stores.url(origin, NAMESPACE, test.rel(PROBE)), token=test.setup)
@@ -1836,7 +1804,7 @@ def sentinel_location(test: Test) -> dict[str, Row]:
 
 
 # Each scenario checked whole: its check, which returns a Row for each of
-# the scenario's ROWS, by row. A check may raise SetupError or
+# the scenario's ROWS, by row. A check may raise suite.SetupError or
 # stores.Unreadable, which fails its rows.
 SCENARIO_CHECKS: dict[str, Callable[[Test], dict[str, Row]]] = {
     "multipart-put": multipart_put,

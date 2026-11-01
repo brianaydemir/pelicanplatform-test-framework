@@ -18,7 +18,7 @@ import glob
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
-from . import common, credentials
+from . import common, credentials, jwt
 from .credentials import ALLOW, DENY
 
 SIDES = ("owner", "origins")
@@ -142,8 +142,8 @@ def key_path(fed: common.Federation, cred: OwnerCredential, pair: Pair) -> str:
     if cred.key == "origins":
         return fed.origin_key
     if cred.key == "jwks":
-        return "test-keys/jwks.pem"
-    return f"test-keys/ns-{pair.like}.pem"
+        return credentials.JWKS_KEY
+    return credentials.namespace_key(pair.like)
 
 
 def issuer_url(fed: common.Federation, cred: OwnerCredential, pair: Pair) -> str:
@@ -169,18 +169,15 @@ def mint(
     """
     if cred.key is None:
         return None
-    credentials.mint(
+    return credentials.mint(
         fed,
         out,
         f"/{pair.namespace(side)}/",
         key_path(fed, cred, pair),
         issuer_url(fed, cred, pair),
-        "/",
-        credentials.LONG,
         credentials.RWM,
         profile=profile,
     )
-    return common.read_text(out)
 
 
 def key_ids(key_dir: str) -> tuple[str, ...]:
@@ -192,7 +189,7 @@ def key_ids(key_dir: str) -> tuple[str, ...]:
     for pem in sorted(glob.glob(f"{key_dir}/*.pem")):
         try:
             with open(pem[: -len(".pem")] + ".jwks", "rb") as f:
-                found += sorted(credentials.key_ids(f.read()))
+                found += sorted(jwt.key_ids(f.read()))
         except (FileNotFoundError, ValueError):
             continue
     return tuple(found)

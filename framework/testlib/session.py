@@ -6,8 +6,9 @@ scratch directory. test.py makes a Session for each token profile
 tests' tokens are of the session's profile.
 
 Tokens are minted once and kept: the server's own, for a suite's
-checks, and those of the credential table (credentials.CREDENTIALS),
-which the auth and transfers suites both present. A suite's setup, and
+checks; those of the credential table (credentials.CREDENTIALS), which
+the auth and transfers suites both present; and those of each server's
+web API (web_token()). A suite's setup, and
 its checks of what the stores hold, use the server's own WLCG tokens
 whatever the session's profile (setup_token()), so that a scenario's
 twin in the other pass differs only in the token it presents. The
@@ -28,6 +29,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from . import common, credentials, report, transfers
 from .credentials import RWM, WLCG, Credential
@@ -36,6 +38,9 @@ from .credentials import RWM, WLCG, Credential
 # the exit status it then has (timeout(1)'s).
 CLIENT_TIMEOUT = 600.0
 TIMED_OUT = 124
+# How long before a web API token expires a Session mints it anew, in
+# seconds: a suite that keeps one it was handed may use it this long.
+WEB_TOKEN_RENEW = 3000
 
 
 def timed_out(seconds: float) -> str:
@@ -115,6 +120,7 @@ class Session:
         self.namespaces: list[str] = credentials.exported(self.fed)
         self._server: dict[tuple[str, str, tuple[str, ...]], str] = {}
         self._credential: dict[tuple[str, str, str], str | None] = {}
+        self._web: dict[tuple[str, str, tuple[str, ...], str], tuple[str, float]] = {}
         self.stale_at: float | None = None
         self.commands_log = f"{self.var_dir('data/commands')}.log"
         with open(self.commands_log, "w", encoding="utf-8"):
@@ -211,6 +217,61 @@ class Session:
         path = self.credential_file(cred, namespace, op)
         return None if path is None else common.read_text(path)
 
+    # The servers' web APIs' tokens.
+
+    def web_token_file(
+        self,
+        web_url: str,
+        username: str = "admin",
+        extra_scopes: tuple[str, ...] = (),
+        key: str | None = None,
+    ) -> str:
+        """Return the file of username's token for the web API at web_url.
+
+        It is credentials.mint_web_user()'s, lasting
+        credentials.WEB_TOKEN_LIFETIME: minted once for each key, and anew
+        once under WEB_TOKEN_RENEW seconds of that are left.
+
+        Args:
+            web_url: The server's web URL.
+            username: Its subject.
+            extra_scopes: Its scopes beside credentials.WEB_SCOPE.
+            key: The file of the private key that signs it; the server's
+                active signing key (credentials.key_dir_of()) if None.
+        """
+        key = key or common.signing_key(credentials.key_dir_of(self.fed, web_url))
+        cached = (web_url, username, extra_scopes, key)
+        with self._mint_lock:
+            path, expiry = self._web.get(cached, ("", 0.0))
+            if time.time() > expiry - WEB_TOKEN_RENEW:
+                signer = os.path.splitext(os.path.basename(key))[0]
+                name = ".".join((urlsplit(web_url).hostname or "", username, *extra_scopes, signer))
+                path = self.path(f"tokens/web.{name}")
+                expiry = time.time() + credentials.WEB_TOKEN_LIFETIME
+                credentials.mint_web_user(
+                    self.fed,
+                    f"{path}.new",
+                    web_url,
+                    username,
+                    credentials.WEB_TOKEN_LIFETIME,
+                    extra_scopes,
+                    key,
+                )
+                # Whole, since a client may be reading the old one.
+                os.replace(f"{path}.new", path)
+                self._web[cached] = (path, expiry)
+            return path
+
+    def web_token(
+        self,
+        web_url: str,
+        username: str = "admin",
+        extra_scopes: tuple[str, ...] = (),
+        key: str | None = None,
+    ) -> str:
+        """Return web_token_file()'s token itself."""
+        return common.read_text(self.web_token_file(web_url, username, extra_scopes, key))
+
     def wait_until_stale(self) -> None:
         """Wait, if need be, until no server may accept the expired tokens.
 
@@ -245,6 +306,32 @@ class Session:
         started = time.monotonic()
         found = self._run([self.pelican, *args], env, cwd, timeout)
         self.log_command(["pelican", *args], cwd or self.tmp, time.monotonic() - started, *found)
+        return found
+
+    def server_cmd(
+        self,
+        *args: str,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        timeout: float = CLIENT_TIMEOUT,
+    ) -> tuple[int, str, str]:
+        """Run `pelican-server <args>`, as pelican_cmd() runs `pelican`.
+
+        Args:
+            *args: The arguments to `pelican-server`.
+            env: The environment, if not the session's env.
+            cwd: The working directory, if not the scratch directory.
+            timeout: How long the run may take, in seconds.
+
+        Returns:
+            Its exit status (127 if there is no pelican-server), stdout,
+            and stderr.
+        """
+        if self.pelican_server is None:
+            return 127, "", "no pelican-server; run ./fed.sh init"
+        started = time.monotonic()
+        found = self._run([self.pelican_server, *args], env, cwd, timeout)
+        self.log_command(["pelican-server", *args], cwd or self.tmp, time.monotonic() - started, *found)
         return found
 
     def plugin_cmd(
@@ -333,7 +420,7 @@ class Session:
         cwd: str | None,
         timeout: float,
     ) -> tuple[int, str, str]:
-        """Run command, for pelican_cmd() or plugin_cmd()."""
+        """Run command, for pelican_cmd(), server_cmd(), or plugin_cmd()."""
         try:
             done = subprocess.run(
                 command,

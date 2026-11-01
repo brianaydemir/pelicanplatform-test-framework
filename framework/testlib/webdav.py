@@ -4,8 +4,9 @@ A listing is a {DAV:}multistatus of responses, one per resource: its
 href, and props in propstats, each with a status. Only props whose
 propstat says 200 count. Servers differ in prefixes (D:, lp1:) and in
 whether an href is a path or a URL, so both are read by namespace and
-by path. copy_or_move() sends a COPY or a MOVE, and root_url() is where
-OPTIONS of an origin's root goes.
+by path. listing() and stat() send a PROPFIND and read its answer;
+copy_or_move() sends a COPY or a MOVE, and root_url() is where OPTIONS
+of an origin's root goes.
 """
 
 import xml.etree.ElementTree as ET
@@ -146,6 +147,50 @@ def relative(entries: list[Entry], base: str) -> dict[str, Entry]:
             raise ValueError(f"{entry.path} is listed twice")
         found[name] = entry
     return found
+
+
+def listing(
+    url: str, depth: str, base: str, token: str | None = None, body: bytes | None = None
+) -> tuple[web.Response, dict[str, Entry] | None, str]:
+    """PROPFIND url at depth, and read the entries below base.
+
+    Args:
+        url: The resource.
+        depth: `0`, `1`, or `infinity`.
+        base: Its path, as relative() takes it.
+        token: A bearer token to present, if any.
+        body: The request's XML, if any.
+
+    Returns:
+        The answer; its entries by path below base (relative()), or None
+        if it is not a listing; and why it is not, or "".
+    """
+    answer = propfind(url, depth, token, body)
+    if answer.status != 207:
+        return answer, None, f"Depth {depth}: {answer.describe()}, not 207"
+    try:
+        return answer, relative(parse(answer.body), base), ""
+    except ValueError as e:
+        return answer, None, f"Depth {depth}: {e}"
+
+
+def stat(url: str, token: str | None = None) -> tuple[web.Response, Entry | None, str]:
+    """PROPFIND url at Depth 0, and read its one entry.
+
+    Returns:
+        The answer; the entry, or None if it is not a listing of one; and
+        why it is not, or "".
+    """
+    answer = propfind(url, "0", token)
+    if answer.status != 207:
+        return answer, None, f"Depth 0: {answer.describe()}, not 207"
+    try:
+        entries = parse(answer.body)
+    except ValueError as e:
+        return answer, None, f"Depth 0: {e}"
+    if len(entries) != 1:
+        return answer, None, f"Depth 0 lists {len(entries)} entries, not 1"
+    return answer, entries[0], ""
 
 
 def problems(want: Mapping[str, int | None], got: Mapping[str, Entry]) -> list[str]:

@@ -19,7 +19,7 @@ import shutil
 import time
 from functools import partial
 
-from testlib import common, credentials, director, owners, stores, suite, transfers, web
+from testlib import common, credentials, director, jwt, owners, stores, suite, transfers, web
 from testlib.common import die, first, outcome
 from testlib.credentials import ALLOW
 from testlib.owners import CREDENTIALS, OwnerCredential, Pair
@@ -232,7 +232,7 @@ def get_kids(test: Test, url: str, name: str) -> tuple[frozenset[str] | None, st
     if answer.status != 200:
         return None, f"{url}: {answer.describe()}"
     try:
-        return credentials.key_ids(answer.body), ""
+        return jwt.key_ids(answer.body), ""
     except ValueError:
         return None, f"{url}: not a JWKS"
 
@@ -251,7 +251,7 @@ def keys(test: Test) -> tuple[str, str]:
     ]:
         try:
             with open(path, "rb") as f:
-                test_kids |= credentials.key_ids(f.read())
+                test_kids |= jwt.key_ids(f.read())
         except (FileNotFoundError, ValueError):
             die(f"framework/var/{path} is missing or not a JWKS; run ./fed.sh keys init")
     checked = 0
@@ -462,7 +462,7 @@ def check_put(
     if owners.expected(test.fed, cred, pair, side, "put", True) == ALLOW:
         if not answer.ok:
             why = "expected 2xx"
-        elif common.sha256(test.store_path(origin, pair, side, rel)) != common.digest(data):
+        elif not common.file_holds(test.store_path(origin, pair, side, rel), data):
             why = f"{origin.svc}'s store does not hold the object"
     elif answer.status not in (401, 403):
         why = "expected 401 or 403"
@@ -592,7 +592,7 @@ def client_put(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: st
     right = [
         o
         for o in test.stores_of(pair, side)
-        if common.sha256(test.store_path(o, pair, side, rel)) == common.digest(data)
+        if common.file_holds(test.store_path(o, pair, side, rel), data)
     ]
     if not right:
         return f"{what}: no store of the side holds it"

@@ -34,7 +34,7 @@ from testlib.common import die, first, warn
 from testlib.credentials import R
 from testlib.report import SKIP
 from testlib.session import Session
-from testlib.suite import Row
+from testlib.suite import NAMESPACE, Row
 from testlib.webdav import copy_or_move, root_url
 
 SCENARIOS = {
@@ -65,7 +65,6 @@ SCENARIOS = {
     ),
 }
 
-NAMESPACE = "protected-a"
 
 # What every refusal of a token, or of what it may do, must be.
 REFUSED = (401, 403)
@@ -127,10 +126,6 @@ PAGES = {
 INERT_TYPES = ("application/octet-stream", "text/plain")
 
 
-class SetupError(Exception):
-    """A scenario's failure to put in place what it checks."""
-
-
 def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
@@ -164,7 +159,7 @@ class Test(suite.Test):
     """
 
     def __init__(self, session: Session):
-        super().__init__(session, "webdav", NAMESPACE)
+        super().__init__(session, "webdav")
         self.create_token = session.token(NAMESPACE, ("write",))
         self.read_token = session.token(NAMESPACE, R)
         self.landings: list[tuple[common.Origin, str, str]] = []
@@ -185,12 +180,12 @@ class Test(suite.Test):
             The object.
 
         Raises:
-            SetupError: It could not be put in place.
+            suite.SetupError: It could not be put in place.
         """
         data = os.urandom(4096) if data is None else data
         error = stores.put(origin, NAMESPACE, rel, data, self.setup)
         if error:
-            raise SetupError(f"{origin.svc}: could not put {rel} in place ({error})")
+            raise suite.SetupError(f"{origin.svc}: could not put {rel} in place ({error})")
         return data
 
     def storage_token(self, origin: common.Origin, namespace: str) -> str | None:
@@ -234,18 +229,12 @@ class Test(suite.Test):
             stores.Unreadable: The origin does not say.
         """
         url = at(origin, rel)
-        answer = webdav.propfind(url, "0", self.setup)
+        answer, found, why = webdav.stat(url, self.setup)
         if answer.status == 404:
             return None
-        try:
-            if answer.status != 207:
-                raise ValueError(answer.describe())
-            entries = webdav.parse(answer.body)
-            if len(entries) != 1:
-                raise ValueError(f"{len(entries)} entries at Depth 0")
-        except ValueError as e:
-            raise stores.Unreadable(f"PROPFIND {url}: {e}") from None
-        return entries[0].collection
+        if found is None:
+            raise stores.Unreadable(f"PROPFIND {url}: {why}")
+        return found.collection
 
     def made_problem(self, origin: common.Origin, rel: str, want: bool, what: str) -> str | None:
         """Return what is wrong with what origin holds at rel.
@@ -269,12 +258,12 @@ class Test(suite.Test):
         """Make each collection of rels in /protected-a at origin.
 
         Raises:
-            SetupError: One could not be made.
+            suite.SetupError: One could not be made.
         """
         for rel in rels:
             errors = stores.make_dirs([origin], NAMESPACE, rel, self.setup)
             if errors:
-                raise SetupError(f"{origin.svc}: could not make {rel} ({errors[0]})")
+                raise suite.SetupError(f"{origin.svc}: could not make {rel} ({errors[0]})")
 
     @override
     def clean(self, when: str, fatal: bool = False) -> None:
@@ -1033,7 +1022,7 @@ def cache_methods(test: Test) -> Row:
         data = os.urandom(4096)
         why = test.put({rel: data})
         if why:
-            raise SetupError(f"could not put {rel} at every origin ({why})")
+            raise suite.SetupError(f"could not put {rel} at every origin ({why})")
         new = f"{base}/{cache.svc}-mkcol"
         destination = f"{base}/{cache.svc}-dest"
         answered: list[str] = []
@@ -1058,7 +1047,7 @@ def cache_methods(test: Test) -> Row:
 
 
 # Each scenario, by name: it takes the Test, and returns its status and
-# note, or raises SetupError.
+# note, or raises suite.SetupError.
 RUN = {
     "post-create-only": post_create_only,
     "copy-move-destination": copy_move_destination,
@@ -1086,6 +1075,6 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 die(f"could not make the run's collection: {errors[0]}")
         for name in selected:
             print(f"  {name} ...")
-            results.add(name, *suite.attempt(partial(RUN[name], test), (SetupError,)))
+            results.add(name, *suite.attempt(partial(RUN[name], test)))
     finally:
         test.clean("after the run")

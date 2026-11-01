@@ -1,17 +1,16 @@
 """Every server's web API (/api/v1.0/), on its web port, and who may use it.
 
-Two users may: the server's admin, by a bearer token of the server's
-own making (credentials.mint_user(), as `pelican cache introspect` mints
+Two users may: the server's admin, by a bearer token of the server's own
+making (credentials.mint_web_user(), as `pelican cache introspect` mints
 the admin's) or by the cookie of a login as `admin`; and an ordinary
 user, `test-webapi`, whom the admin creates at each server once, for
 later runs to reuse. Access holds those credentials for every server of
 a shape. The admin, and then the user, first agree to each server's AUP
 (accounts.agree_to_aup()), without which it refuses them its user
-routes. Access spaces its logins at each server, which allows an
-address a login a second, counted by whole seconds of the clock.
+routes. Access spaces its logins at each server, which allows an address
+a login a second, counted by whole seconds of the clock.
 """
 
-import json
 import re
 import time
 from collections.abc import Mapping, Sequence
@@ -21,20 +20,20 @@ from typing import Any
 from urllib.parse import urlencode
 
 from . import accounts, common, credentials, director, jwt, web
-from .common import outcome
 from .session import Session
 
 API = "/api/v1.0"
 CONFIG = f"{API}/config"
 TOKENS = f"{API}/tokens"
+HEALTH = f"{API}/metrics/health"
+LOG_LEVEL = f"{API}/logging/level"
+LOG_TAIL = f"{API}/logs/tail"
+PROMQL = f"{API}/prometheus/query"
 
 # The built-in admin's password (README.md), and the ordinary user.
 ADMIN_PASSWORD = "asdf"
 USER = "test-webapi"
 
-# How long the bearer tokens last, in seconds: a whole suite, logins
-# spaced out included.
-TOKEN_LIFETIME = 3600
 # How far into a second of the clock the first of two logins that must
 # fall in one second may be sent, in seconds.
 EARLY = 0.3
@@ -72,23 +71,25 @@ def servers(fed: common.Federation) -> list[Server]:
     They are the origins (another owner's included), the caches
     (site-local ones included), the directors, and the registry.
     """
-    found: dict[str, tuple[str, str, set[str]]] = {}
+    found: dict[str, tuple[str, set[str]]] = {}
 
-    def add(name: str, web_url: str, key_dir: str, role: str) -> None:
-        found.setdefault(web_url, (name, key_dir, set()))[2].add(role)
+    def add(name: str, web_url: str, role: str) -> None:
+        found.setdefault(web_url, (name, set()))[1].add(role)
 
     for origin in fed.origins:
-        add(origin.svc, origin.web_url, f"issuer-keys/{origin.svc}", "origin")
+        add(origin.svc, origin.web_url, "origin")
     for owner in fed.owners:
-        add(owner.origin.svc, owner.web_url, owner.key_dir, "origin")
+        add(owner.origin.svc, owner.web_url, "origin")
     for cache in fed.caches:
-        add(cache.svc, cache.web_url, f"issuer-keys/{cache.svc}", "cache")
+        add(cache.svc, cache.web_url, "cache")
     for url in fed.directors:
-        add(director.host(url), url, f"issuer-keys/{director.host(url)}", "director")
+        add(director.host(url), url, "director")
     if fed.registry_url:
-        host = director.host(fed.registry_url)
-        add(host, fed.registry_url, f"issuer-keys/{host}", "registry")
-    return [Server(name, url, key_dir, frozenset(roles)) for url, (name, key_dir, roles) in found.items()]
+        add(director.host(fed.registry_url), fed.registry_url, "registry")
+    return [
+        Server(name, url, credentials.key_dir_of(fed, url), frozenset(roles))
+        for url, (name, roles) in found.items()
+    ]
 
 
 class Access:
@@ -106,7 +107,8 @@ class Access:
         self.fed = session.fed
         self.run = session.run
         self.servers = servers(self.fed)
-        self._tokens: dict[tuple[str, str], str] = {}
+        # The servers where USER is set up (user()), by name.
+        self._users: set[str] = set()
         self._cookies: dict[str, str] = {}
         self._last_login: dict[str, float] = {}
 
@@ -114,26 +116,9 @@ class Access:
         """Return the server whose web URL is web_url."""
         return next(s for s in self.servers if s.web_url == web_url)
 
-    def token(self, server: Server, username: str) -> str:
-        """Return a bearer token that server's web API takes as username's.
-
-        It is minted once (credentials.mint_web_user()), and lasts
-        TOKEN_LIFETIME seconds.
-        """
-        if (server.name, username) not in self._tokens:
-            self._tokens[(server.name, username)] = credentials.mint_web_user(
-                self.fed,
-                self.session.path(f"tokens/webapi.{server.name}.{username}"),
-                server.web_url,
-                username,
-                TOKEN_LIFETIME,
-                key=server.key,
-            )
-        return self._tokens[(server.name, username)]
-
     def admin(self, server: Server) -> str:
         """Return the admin's bearer token for server."""
-        return self.token(server, "admin")
+        return self.session.web_token(server.web_url)
 
     def user(self, server: Server) -> str:
         """Return the ordinary user's bearer token for server.
@@ -145,12 +130,14 @@ class Access:
         Raises:
             accounts.ApiError: Any of that fails.
         """
-        if (server.name, USER) not in self._tokens:
+        token = self.session.web_token(server.web_url, USER)
+        if server.name not in self._users:
             admin = accounts.Api(server.web_url, self.admin(server))
             accounts.agree_to_aup(admin)
             accounts.ensure_user(admin, USER)
-            accounts.agree_to_aup(accounts.Api(server.web_url, self.token(server, USER)))
-        return self.token(server, USER)
+            accounts.agree_to_aup(accounts.Api(server.web_url, token))
+            self._users.add(server.name)
+        return token
 
     def post_login(
         self,
@@ -178,12 +165,7 @@ class Access:
             time.sleep(wait)
         if early and time.time() % 1 > EARLY:
             time.sleep(1.01 - time.time() % 1)
-        answer = web.request(
-            "POST",
-            server.web_url + accounts.LOGIN,
-            upload=urlencode(fields).encode(),
-            headers={**accounts.FORM, **(headers or {})},
-        )
+        answer = web.request("POST", server.web_url + accounts.LOGIN, headers=headers, form=fields)
         self._last_login[server.web_url] = time.time()
         return answer
 
@@ -252,7 +234,7 @@ def judge(case: str, expects: Sequence[Expect], extra: Sequence[str] = ()) -> tu
     ]
     problems += list(extra)
     seen = ", ".join(f"{label} {answer.status}" for label, answer, _ in expects)
-    return (case, *outcome(problems, seen))
+    return (case, *common.outcome(problems, seen))
 
 
 def server_settings(access: Access, server: Server) -> dict[str, Any]:
@@ -264,6 +246,15 @@ def server_settings(access: Access, server: Server) -> dict[str, Any]:
     """
     answer = web.request("GET", server.web_url + CONFIG, token=access.admin(server))
     return common.as_object(answer.object().get("Server")) or {}
+
+
+def promql(
+    web_url: str, query: str, token: str | None = None, headers: Mapping[str, str] | None = None
+) -> web.Response:
+    """Ask the Prometheus at web_url for query, an instant query."""
+    return web.request(
+        "GET", f"{web_url}{PROMQL}?{urlencode({'query': query})}", token=token, headers=headers
+    )
 
 
 def other_key(access: Access, server: Server) -> tuple[str, str]:
@@ -278,7 +269,7 @@ def other_key(access: Access, server: Server) -> tuple[str, str]:
     for other in access.servers:
         if jwt.public_jwk(other.key) != own:
             return other.key, f"{other.name}'s key"
-    return credentials.keys(access.fed)["unknown"], "unknown.pem"
+    return credentials.UNKNOWN_KEY, "unknown.pem"
 
 
 def create_token(
@@ -302,16 +293,8 @@ def create_token(
         token: A bearer token to present, if any.
     """
     body = {"name": name, "scopes": list(scopes), "expiration": common.timestamp(expires)}
-    headers = dict(accounts.JSON)
-    if cookie:
-        headers.update(cookie_header(login=cookie))
-    return web.request(
-        "POST",
-        web_url + TOKENS,
-        token=token,
-        upload=json.dumps(body).encode(),
-        headers=headers,
-    )
+    headers = cookie_header(login=cookie) if cookie else {}
+    return web.request("POST", web_url + TOKENS, token=token, headers=headers, json_body=body)
 
 
 def delete_token(web_url: str, token_id: str, cookie: str) -> web.Response:

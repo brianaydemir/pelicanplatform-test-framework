@@ -40,7 +40,6 @@ Tokens of Pelican's own scopes, such as its web API's, are of the WLCG
 profile alone, as Pelican mints them.
 """
 
-import json
 import os
 import shutil
 import subprocess
@@ -92,7 +91,7 @@ SCOPES = {
 }
 # Each profile's audience for any server, which a token names unless told
 # otherwise.
-ANY_AUDIENCE = {WLCG: jwt.ANY_AUDIENCE, SCITOKENS: "ANY"}
+ANY_AUDIENCES = {WLCG: jwt.ANY_AUDIENCE, SCITOKENS: "ANY"}
 # Each profile's version claim, and its value, as `pelican token create`
 # writes it.
 VERSIONS = {WLCG: ("wlcg.ver", "1.0"), SCITOKENS: ("ver", "scitokens:2.0")}
@@ -285,27 +284,36 @@ def moot(fed: common.Federation, cred: Credential) -> str | None:
     return None
 
 
+# The tests' own keys, under framework/var (`./fed.sh keys init`): one
+# whose public key the origins list only in Server.IssuerJwks, and one
+# that no server knows.
+JWKS_KEY = "test-keys/jwks.pem"
+UNKNOWN_KEY = "test-keys/unknown.pem"
+
+
+def namespace_key(namespace: str) -> str:
+    """Return the tests' key for a protected namespace, under framework/var.
+
+    The origins list its public key only in the IssuerJwks of that
+    namespace's export.
+    """
+    return f"test-keys/ns-{namespace}.pem"
+
+
 def keys(fed: common.Federation) -> dict[str, str]:
     """Return where each signing key is, under framework/var.
 
     origin      the origins' issuer key
-    jwks        test-keys/jwks.pem, whose public key the origins list
-                only in Server.IssuerJwks
-    unknown     test-keys/unknown.pem, which no server knows
-    ns-<ns>     test-keys/ns-<ns>.pem, whose public key the origins
-                list only in the IssuerJwks of the /<ns> export (only
-                for the protected namespaces)
+    jwks        JWKS_KEY
+    unknown     UNKNOWN_KEY
+    ns-<ns>     namespace_key(<ns>), for each protected namespace
     """
-    found = {
-        "origin": fed.origin_key,
-        "jwks": "test-keys/jwks.pem",
-        "unknown": "test-keys/unknown.pem",
-    }
+    found = {"origin": fed.origin_key, "jwks": JWKS_KEY, "unknown": UNKNOWN_KEY}
     for namespace in PROTECTED:
-        found[f"ns-{namespace}"] = f"test-keys/ns-{namespace}.pem"
+        found[f"ns-{namespace}"] = namespace_key(namespace)
     for name, path in found.items():
         if name != "origin" and not os.path.isfile(path):
-            common.die(f"framework/var/{path} is missing; run ./fed.sh keys init")
+            common.die(f"{common.shown(path)} is missing; run ./fed.sh keys init")
     return found
 
 
@@ -334,20 +342,6 @@ SERVER_JWKS = "issuer-jwks/test.jwks"
 def namespace_jwks(namespace: str) -> str:
     """Return where namespace's own public keys are, under framework/var."""
     return f"issuer-jwks/ns-{namespace}.jwks"
-
-
-def key_ids(document: bytes) -> frozenset[str]:
-    """Return the kids in a JWKS document.
-
-    Raises:
-        ValueError: The document is not a JWKS.
-    """
-    parsed = common.as_object(json.loads(document)) or {}
-    listed = common.as_array(parsed.get("keys"))
-    if listed is None:
-        raise ValueError("not a JWKS")
-    found = [common.as_object(k) for k in listed]
-    return frozenset(str(k.get("kid", "")) for k in found if k is not None)
 
 
 def _holding(
@@ -455,16 +449,16 @@ def mint(
     prefix: str,
     key: str,
     issuer: str,
-    scope_path: str,
-    lifetime: int,
     scopes: tuple[str, ...],
+    *,
+    scope_path: str = "/",
+    lifetime: int = LONG,
     subject: str = SUBJECT,
     raw_scopes: tuple[str, ...] = (),
     audience: str = "",
-    *,
     profile: str,
-) -> None:
-    """Write a token for namespace prefix to file out.
+) -> str:
+    """Write a token for namespace prefix to file out, and return it.
 
     Args:
         fed: The federation.
@@ -472,9 +466,9 @@ def mint(
         prefix: The namespace prefix (e.g. /protected-a/).
         key: The file of the private key that signs it.
         issuer: The issuer it claims.
+        scopes: Its scopes, as `pelican token create` flags (e.g. read).
         scope_path: Its scope path, relative to the namespace.
         lifetime: Its lifetime, in seconds.
-        scopes: Its scopes, as `pelican token create` flags (e.g. read).
         subject: Its subject.
         raw_scopes: Its scopes as such (e.g. pelican.transfer).
         audience: Its audience; the profile's "any" unless this names
@@ -509,7 +503,8 @@ def mint(
             )
     if done.returncode != 0:
         sys.stderr.write(done.stderr)
-        common.die(f"could not create a token for {prefix} with framework/var/{key}")
+        common.die(f"could not create a token for {prefix} with {common.shown(key)}")
+    return common.read_text(out)
 
 
 def mint_server(
@@ -530,21 +525,18 @@ def mint_server(
     (scope_path), or for another subject or audience, is the origins'
     too.
     """
-    issuer = fed.issuer_of(namespace)
-    mint(
+    return mint(
         fed,
         out,
         f"/{namespace}/",
         fed.origin_key,
-        issuer,
-        scope_path,
-        LONG,
+        fed.issuer_of(namespace),
         scopes,
-        subject,
+        scope_path=scope_path,
+        subject=subject,
         audience=audience,
         profile=profile,
     )
-    return common.read_text(out)
 
 
 def _claims(
@@ -591,7 +583,7 @@ def server_claims(
     """
     return _claims(
         fed.issuer_of(namespace),
-        ANY_AUDIENCE[profile] if audience is None else audience,
+        ANY_AUDIENCES[profile] if audience is None else audience,
         " ".join(f"{SCOPES[profile][s]}:{scope_path}" for s in scopes),
         subject,
         lifetime,
@@ -622,9 +614,9 @@ def mint_credential(
         f"/{namespace}/",
         keys(fed)[key_name(cred.key, namespace)],
         fed.issuer_of(issuer_ns),
-        cred.scope_path,
-        cred.lifetime,
         cred.scopes(op),
+        scope_path=cred.scope_path,
+        lifetime=cred.lifetime,
         profile=profile,
     )
     # It expires within `lifetime` of `token create` returning.
@@ -633,6 +625,9 @@ def mint_credential(
 
 # The scope of a server's web API, which every user's token carries.
 WEB_SCOPE = "web_ui.access"
+# How long the web API tokens that a Session keeps last, in seconds
+# (Session.web_token()).
+WEB_TOKEN_LIFETIME = 3600
 
 
 def local_issuer(fed: common.Federation, web_url: str) -> str:
@@ -648,42 +643,6 @@ def local_issuer(fed: common.Federation, web_url: str) -> str:
     if fed.director_ha and web_url in fed.directors:
         return fed.director_url
     return f"{web_url}/api/v1.0/origin" if fed.tiny else web_url
-
-
-def mint_user(
-    fed: common.Federation,
-    out: str,
-    issuer: str,
-    key: str,
-    username: str,
-    lifetime: int = 300,
-    extra_scopes: tuple[str, ...] = (),
-) -> str:
-    """Write and return a token that a server's web API takes as username's.
-
-    It is minted as `pelican cache introspect` mints the admin's
-    (fetchOrGenerateWebAPIAdminToken in Pelican's cmd/cmd_utils.go). The
-    server resolves the subject to its record of that user
-    (extractUserFromBearerToken in web_ui/authentication.go); the
-    built-in `admin` always has one.
-
-    Args:
-        fed: The federation.
-        out: The file to write it to.
-        issuer: The server's local issuer (see local_issuer()).
-        key: The file of the server's own private key, which signs it.
-        username: Its subject.
-        lifetime: How long it lasts, in seconds.
-        extra_scopes: Its scopes beside WEB_SCOPE.
-    """
-    raw_scopes = (WEB_SCOPE, *extra_scopes)
-    mint(fed, out, "/", key, issuer, "/", lifetime, (), username, raw_scopes, profile=WLCG)
-    return common.read_text(out)
-
-
-def mint_admin(fed: common.Federation, out: str, issuer: str, key: str) -> str:
-    """Write and return the admin's token for a server (see mint_user())."""
-    return mint_user(fed, out, issuer, key, "admin")
 
 
 # The scopes of a server's metrics (/metrics) and of its Prometheus query
@@ -721,7 +680,11 @@ def mint_web_user(
 ) -> str:
     """Write and return a token of username's for the web API at web_url.
 
-    It is mint_user()'s, from the server's local issuer (local_issuer()).
+    It is minted as `pelican cache introspect` mints the admin's
+    (fetchOrGenerateWebAPIAdminToken in Pelican's cmd/cmd_utils.go), from
+    the server's local issuer (local_issuer()). The server resolves the
+    subject to its record of that user (extractUserFromBearerToken in
+    web_ui/authentication.go); the built-in `admin` always has one.
 
     Args:
         fed: The federation.
@@ -734,7 +697,18 @@ def mint_web_user(
             (key_dir_of()) if None.
     """
     key = key or common.signing_key(key_dir_of(fed, web_url))
-    return mint_user(fed, out, local_issuer(fed, web_url), key, username, lifetime, extra_scopes)
+    return mint(
+        fed,
+        out,
+        "/",
+        key,
+        local_issuer(fed, web_url),
+        (),
+        lifetime=lifetime,
+        subject=username,
+        raw_scopes=(WEB_SCOPE, *extra_scopes),
+        profile=WLCG,
+    )
 
 
 def web_token(

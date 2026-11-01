@@ -58,7 +58,7 @@ def get(api: Api, cid: str) -> Answer:
 
 def listed(api: Api) -> set[str]:
     """Return the IDs of the collections the caller may see."""
-    return {str(row.get("id")) for row in common.objects(api.call("GET", COLLECTIONS).array)}
+    return {str(row.get("id")) for row in common.objects(api.call("GET", COLLECTIONS).array())}
 
 
 def patch(api: Api, cid: str, **fields: Any) -> Answer:
@@ -83,7 +83,7 @@ def remove_under(api: Api, prefix: str, keep: str = "") -> list[str]:
         What went wrong; empty if nothing did.
     """
     problems: list[str] = []
-    for row in common.objects(api.call("GET", COLLECTIONS).array):
+    for row in common.objects(api.call("GET", COLLECTIONS).array()):
         namespace = str(row.get("namespace", ""))
         if namespace.startswith(prefix) and not (keep and namespace.startswith(keep)):
             gone = delete(api, str(row.get("id")))
@@ -92,9 +92,19 @@ def remove_under(api: Api, prefix: str, keep: str = "") -> list[str]:
     return problems
 
 
-def user_target(username: str) -> str:
-    """Return the ACL target that is the user username: user-<username>."""
-    return f"{USER_PREFIX}{username}"
+def user_target(user: str) -> str:
+    """Return the ACL target that is the user named user: user-<user>."""
+    return f"{USER_PREFIX}{user}"
+
+
+def username(role: str) -> str:
+    """Return the user who plays role in a suite: admin, or test-<role>."""
+    return "admin" if role == "admin" else f"test-{role}"
+
+
+def personal(role: str) -> str:
+    """Return the ACL target that grants to role's user alone."""
+    return user_target(username(role))
 
 
 def grant(api: Api, cid: str, target: str, role: str, expires_at: str | None = None) -> Answer:
@@ -129,7 +139,7 @@ def grants(api: Api, cid: str) -> set[tuple[str, str]]:
     Raises:
         ApiError: The ACL could not be listed.
     """
-    rows = common.objects(must(api.call("GET", f"{COLLECTIONS}/{cid}/acl"), "listing the ACL").array)
+    rows = common.objects(must(api.call("GET", f"{COLLECTIONS}/{cid}/acl"), "listing the ACL").array())
     return {
         (str(row.get("subjectName", "")).removeprefix(USER_PREFIX), str(row.get("role", "")))
         for row in rows

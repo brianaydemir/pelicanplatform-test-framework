@@ -23,6 +23,9 @@ from urllib.parse import urlsplit
 
 from . import common, control, web
 
+# A director's list of servers.
+SERVERS = "/api/v1.0/director_ui/servers"
+
 # How a director's web API (/api/v1.0/director_ui/servers) names why it
 # filters a server, in `filteredType`: by the filter type's text
 # (filterType.String() in director/cache_ads.go), not its name.
@@ -236,7 +239,7 @@ def listing_problems(fed: common.Federation, listed: Any) -> list[str]:
     want = expected_targets(fed)
     problems: list[str] = []
     seen: dict[tuple[str, str], int] = {}
-    for item in (common.as_object(i) or {} for i in common.as_array(listed) or []):
+    for item in common.objects(listed):
         targets = [str(t) for t in common.as_array(item.get("targets")) or []]
         labels = common.as_object(item.get("labels")) or {}
         if len(targets) != 1:

@@ -16,16 +16,21 @@ import time
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from functools import partial
+from typing import Any
 
-from testlib import accounts, common, credentials, director, issuer, jwt, web
+from testlib import accounts, common, credentials, director, issuer, jwt, registry, suite, web, webapi
 from testlib.common import outcome
 from testlib.director import expected_targets, listing_problems
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
+from testlib.suite import CaseRow
 from testlib.webapi import (
     ADMIN_PASSWORD,
     API,
     CONFIG,
+    HEALTH,
+    LOG_LEVEL,
+    LOG_TAIL,
     TOKENS,
     USER,
     Access,
@@ -53,16 +58,10 @@ SCENARIOS = {
 # Pelican mints in the WLCG profile alone (see suites/__init__.py).
 ONE_PROFILE = tuple(SCENARIOS)
 
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note.
-Row = tuple[str, str, str]
 
 LOGOUT = f"{API}/auth/logout"
 VERSION = f"{API}/version"
 DISCOVER = f"{API}/director/discoverServers"
-REGISTRATIONS = f"{API}/registry_ui/namespaces"
-REGISTERED_SERVERS = f"{API}/registry_ui/servers"
-DIRECTOR_SERVERS = f"{API}/director_ui/servers"
 
 # An origin that is none of the federation's, as a cross-site page has.
 EVIL = "https://evil.invalid"
@@ -77,9 +76,9 @@ API_TOKEN_EXPIRY = 10
 ADMIN_GETS = (
     ("config", CONFIG),
     ("tokens", TOKENS),
-    ("log-level", f"{API}/logging/level"),
-    ("logs", f"{API}/logs/tail?limit=10"),
-    ("health", f"{API}/metrics/health"),
+    ("log-level", LOG_LEVEL),
+    ("logs", f"{LOG_TAIL}?limit=10"),
+    ("health", HEALTH),
     ("pprof", f"{API}/debug/pprof/"),
     ("users", accounts.USERS),
 )
@@ -87,40 +86,35 @@ ADMIN_GETS = (
 # body. Each is sent with no credentials and as the user only, which it
 # must refuse; each body is one that would change nothing, if it got
 # through.
-ADMIN_CHANGES = (
+ADMIN_CHANGES: tuple[tuple[str, str, str, dict[str, Any] | None], ...] = (
     ("restart", "POST", f"{API}/restart", None),
-    ("config-patch", "PATCH", CONFIG, b"{}"),
-    ("aup-put", "PUT", f"{API}/aup", b"{}"),
+    ("config-patch", "PATCH", CONFIG, {}),
+    ("aup-put", "PUT", f"{API}/aup", {}),
 )
 # The registry's admin routes, by row: their method and path, given a
 # registration's ID ({ns}) and a server's ({server}). The suite sends
 # them for a registration and a server that do not exist.
 REGISTRY_ROUTES = (
-    ("approve", "PATCH", REGISTRATIONS + "/{ns}/approve"),
-    ("deny", "PATCH", REGISTRATIONS + "/{ns}/deny"),
-    ("delete-namespace", "DELETE", REGISTRATIONS + "/{ns}"),
-    ("delete-server", "DELETE", REGISTERED_SERVERS + "/{server}"),
+    ("approve", "PATCH", registry.REGISTRATIONS + "/{ns}/approve"),
+    ("deny", "PATCH", registry.REGISTRATIONS + "/{ns}/deny"),
+    ("delete-namespace", "DELETE", registry.REGISTRATIONS + "/{ns}"),
+    ("delete-server", "DELETE", registry.SERVERS + "/{server}"),
 )
 
 DISCOVERY_SCOPE = "pelican.director_service_discovery"
-PROMQL = f"{API}/prometheus/query"
 
 
-class Missing(Exception):
-    """Something the scenario needs is not there."""
-
-
-def each_server(test: Access, rows_of: Callable[[Server], list[Row]], case: str = "") -> list[Row]:
+def each_server(test: Access, rows_of: Callable[[Server], list[CaseRow]], case: str = "") -> list[CaseRow]:
     """Return rows_of(server)'s rows for every server.
 
-    A server where it raises Missing or accounts.ApiError gets one failing
-    row instead, named for the server and case.
+    A server where it raises suite.SetupError or accounts.ApiError gets one
+    failing row instead, named for the server and case.
     """
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for server in test.servers:
         try:
             rows += rows_of(server)
-        except (Missing, accounts.ApiError) as e:
+        except (suite.SetupError, accounts.ApiError) as e:
             rows.append((f"{server.name} {case}".strip(), FAIL, str(e)))
     return rows
 
@@ -131,15 +125,15 @@ def unknown_ids(test: Access, server: Server) -> tuple[str, str]:
     The registry is server's, and its admin finds that it holds neither.
 
     Raises:
-        Missing: Its admin cannot show that.
+        suite.SetupError: Its admin cannot show that.
     """
     ns_id = str(1_000_000_000 + int.from_bytes(os.urandom(3), "big"))
     server_id = f"webapi-{test.run}"
     admin = test.admin(server)
-    for path in (f"{REGISTRATIONS}/{ns_id}", f"{REGISTERED_SERVERS}/{server_id}"):
+    for path in (f"{registry.REGISTRATIONS}/{ns_id}", f"{registry.SERVERS}/{server_id}"):
         answer = web.request("GET", server.web_url + path, token=admin)
         if answer.status != 404:
-            raise Missing(
+            raise suite.SetupError(
                 f"GET {path} as the admin: {answer.describe()}, not 404, so the"
                 + " suite will not send the registry's admin routes for it"
             )
@@ -207,7 +201,7 @@ def strange_tokens(test: Access, server: Server) -> list[tuple[str, str, str, tu
     ]
 
 
-def registry_rows(test: Access, server: Server) -> list[Row]:
+def registry_rows(test: Access, server: Server) -> list[CaseRow]:
     """Return the rows of the registry's admin routes at server.
 
     Each is sent for a registration and a server that the registry does not
@@ -218,7 +212,7 @@ def registry_rows(test: Access, server: Server) -> list[Row]:
     admin, user = test.admin(server), test.user(server)
     guard = accounts.csrf(accounts.Api(server.web_url, admin))
     ns_id, server_id = unknown_ids(test, server)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for case, method, path in REGISTRY_ROUTES:
         url = server.web_url + path.format(ns=ns_id, server=server_id)
         expects: list[Expect] = [
@@ -230,12 +224,12 @@ def registry_rows(test: Access, server: Server) -> list[Row]:
     return rows
 
 
-def matrix_rows(test: Access, server: Server) -> list[Row]:
+def matrix_rows(test: Access, server: Server) -> list[CaseRow]:
     """Return admin_matrix()'s rows for server."""
     admin, user = test.admin(server), test.user(server)
     settings = server_settings(test, server)
     url = server.web_url
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for case, path in ADMIN_GETS:
         if case == "pprof" and settings.get("EnablePprof") is False:
             rows.append((f"{server.name} {case}", SKIP, "Server.EnablePprof is off"))
@@ -262,14 +256,9 @@ def matrix_rows(test: Access, server: Server) -> list[Row]:
         )
     )
     for case, method, path, body in ADMIN_CHANGES:
-        sent = accounts.JSON if body is not None else {}
         expects = [
-            ("none", web.request(method, url + path, upload=body, headers=sent), (401,)),
-            (
-                "user",
-                web.request(method, url + path, token=user, upload=body, headers=sent),
-                (403,),
-            ),
+            ("none", web.request(method, url + path, json_body=body), (401,)),
+            ("user", web.request(method, url + path, token=user, json_body=body), (403,)),
         ]
         rows.append(judge(f"{server.name} {case}", expects))
     for case, what, token, allowed in strange_tokens(test, server):
@@ -280,7 +269,7 @@ def matrix_rows(test: Access, server: Server) -> list[Row]:
     return rows
 
 
-def admin_matrix(test: Access) -> list[Row]:
+def admin_matrix(test: Access) -> list[CaseRow]:
     """Check each admin route at every server.
 
     Each is tried with no credentials, the user's bearer token, and the
@@ -310,11 +299,6 @@ def discover(server: Server, token: str) -> web.Response:
     return web.request("GET", server.web_url + DISCOVER, token=token)
 
 
-def query_up(server: Server, token: str) -> web.Response:
-    """Ask server's Prometheus for `up`, an instant query, with token."""
-    return web.request("GET", f"{server.web_url}{PROMQL}?query=up", token=token)
-
-
 def query_problems(answer: web.Response) -> list[str]:
     """Return what is wrong with answer, a Prometheus query's, if it is 200.
 
@@ -333,7 +317,7 @@ def listed_problems(answer: web.Response, token_id: str, name: str, secret: str)
     """
     if answer.status != 200:
         return [f"listing: {answer.describe()}, not 200"]
-    entries = [common.as_object(e) or {} for e in common.as_array(answer.json()) or []]
+    entries = common.objects(answer.json())
     problems: list[str] = []
     if not any(e.get("id") == token_id and e.get("name") == name for e in entries):
         problems.append(f"the listing lacks {token_id}, named {name}")
@@ -345,7 +329,7 @@ def listed_problems(answer: web.Response, token_id: str, name: str, secret: str)
     return problems
 
 
-def expiring_rows(server: Server, cookie: str, name: str, made: list[str]) -> list[Row]:
+def expiring_rows(server: Server, cookie: str, name: str, made: list[str]) -> list[CaseRow]:
     """Check an API token that expires in API_TOKEN_EXPIRY seconds.
 
     It must work at once, and be refused (403) two seconds after it expires.
@@ -364,7 +348,7 @@ def expiring_rows(server: Server, cookie: str, name: str, made: list[str]) -> li
     return [judge("expired", [("before", before, (200,)), ("after", after, (403,))])]
 
 
-def api_tokens(test: Access) -> list[Row]:
+def api_tokens(test: Access) -> list[CaseRow]:
     """Check the first director's API tokens.
 
     At the first director, as its admin, logged in: make an API token
@@ -381,7 +365,7 @@ def api_tokens(test: Access) -> list[Row]:
     cookie = test.cookie(server)
     name = f"webapi-{test.run}"
     made: list[str] = []
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     try:
         expires = datetime.now(timezone.utc) + timedelta(hours=1)
         answer = create_token(server.web_url, name, [DISCOVERY_SCOPE], expires, cookie)
@@ -430,7 +414,7 @@ def api_tokens(test: Access) -> list[Row]:
         if token is None:
             rows.append(("admin-grantable", FAIL, f"{answer.describe()}, with no API token"))
         else:
-            queried = query_up(server, token[0])
+            queried = webapi.promql(server.web_url, "up", token[0])
             rows.append(
                 judge(
                     "admin-grantable",
@@ -510,7 +494,7 @@ def whoami(server: Server, token: str | None = None, cookie: str = "") -> web.Re
     return web.request("GET", server.web_url + accounts.WHOAMI, token=token, headers=headers)
 
 
-def whoami_row(case: str, answer: web.Response, role: str | None, user: str = "") -> Row:
+def whoami_row(case: str, answer: web.Response, role: str | None, user: str = "") -> CaseRow:
     """Return case's row: answer, a /whoami's, must say who is logged in.
 
     Args:
@@ -537,11 +521,11 @@ def whoami_row(case: str, answer: web.Response, role: str | None, user: str = ""
     return judge(case, [("whoami", answer, (200,))], problems)
 
 
-def login_rows(test: Access, server: Server) -> list[Row]:
+def login_rows(test: Access, server: Server) -> list[CaseRow]:
     """Return login()'s rows for server."""
     name = server.name
     admin = {"user": "admin", "password": ADMIN_PASSWORD}
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     good = test.post_login(server, admin)
     rows.append(judge(f"{name} admin", [("admin/asdf", good, (200,))], cookie_problems(good)))
     wrong = test.post_login(server, {"user": "admin", "password": f"wrong-{test.run}"})
@@ -572,7 +556,7 @@ def login_rows(test: Access, server: Server) -> list[Row]:
     return rows
 
 
-def login(test: Access) -> list[Row]:
+def login(test: Access) -> list[CaseRow]:
     """Check logging in and out, and who is logged in, at every server.
 
     That is, logging in as the admin, with a wrong password, and with a
@@ -599,7 +583,7 @@ def csrf_refused(answer: web.Response) -> list[str]:
     return [f"{answer.describe()}, not 403 'CSRF token invalid'"]
 
 
-def registry_csrf(test: Access) -> list[Row]:
+def registry_csrf(test: Access) -> list[CaseRow]:
     """Check the registry's CSRF tokens.
 
     At the registry, as its admin, by cookie and by bearer token,
@@ -616,13 +600,13 @@ def registry_csrf(test: Access) -> list[Row]:
     first_guard, second_guard = accounts.csrf(api), accounts.csrf(api)
     csrf_cookie = first_guard["Cookie"].split("=", 1)[1]
     ns_id, _ = unknown_ids(test, server)
-    url = f"{server.web_url}{REGISTRATIONS}/{ns_id}/approve"
+    url = f"{server.web_url}{registry.REGISTRATIONS}/{ns_id}/approve"
     login_cookie = test.cookie(server)
     by = {
         "cookie": (None, {"_gorilla_csrf": csrf_cookie, "login": login_cookie}),
         "bearer": (admin, {"_gorilla_csrf": csrf_cookie}),
     }
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for how, (token, cookies) in by.items():
         base = {**cookie_header(**cookies), "Origin": server.web_url}
         cases = (
@@ -640,7 +624,7 @@ def registry_csrf(test: Access) -> list[Row]:
     return rows
 
 
-def cross_origin(test: Access, server: Server) -> Row:
+def cross_origin(test: Access, server: Server) -> CaseRow:
     """Check that a logout at server refuses a cookie from another site.
 
     AuthHandler guards the logout: with the admin's cookie, from another
@@ -671,7 +655,7 @@ def cross_origin(test: Access, server: Server) -> Row:
     return judge(f"{server.name} cross-origin", expects)
 
 
-def csrf(test: Access) -> list[Row]:
+def csrf(test: Access) -> list[CaseRow]:
     """Run registry_csrf(), and cross_origin() at every server."""
     rows = registry_csrf(test)
     return rows + each_server(test, lambda server: [cross_origin(test, server)], "cross-origin")
@@ -681,14 +665,14 @@ def csrf(test: Access) -> list[Row]:
 # malformed-path: paths that are not UTF-8 (Pelican's web_ui/middleware.go).
 
 
-def malformed_path(test: Access) -> list[Row]:
+def malformed_path(test: Access) -> list[CaseRow]:
     """Check that every server refuses a path that is not UTF-8 (400).
 
     At every server, GET of a path whose percent-encoding is not UTF-8
     (an overlong encoding of /), at the root and under the API, must get
     400; then the server must still answer.
     """
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for server in test.servers:
         expects: list[Expect] = [
             ("/%C0%AF", web.request("GET", server.web_url + "/%C0%AF"), (400,)),
@@ -717,7 +701,7 @@ def reported_version(server: Server) -> tuple[str | None, str]:
     return found, ""
 
 
-def header_row(case: str, answer: web.Response, reported: str) -> Row:
+def header_row(case: str, answer: web.Response, reported: str) -> CaseRow:
     """Return case's row: answer must carry `Server: pelican/<reported>`."""
     want = f"pelican/{reported}"
     got = answer.header("Server")
@@ -731,7 +715,7 @@ def listing_row(
     listing: web.Response,
     by_host: Mapping[str, str],
     versions: Mapping[str, str],
-) -> Row:
+) -> CaseRow:
     """Return a row for the director server's list of servers.
 
     Each server of the shape in it must have the version that server
@@ -745,10 +729,10 @@ def listing_row(
     """
     case = f"listed {server.name}"
     if listing.status != 200:
-        return case, FAIL, f"{DIRECTOR_SERVERS}: {listing.describe()}"
+        return case, FAIL, f"{director.SERVERS}: {listing.describe()}"
     problems: list[str] = []
     count = 0
-    for entry in (common.as_object(e) or {} for e in common.as_array(listing.json()) or []):
+    for entry in common.objects(listing.json()):
         name = by_host.get(director.host(str(entry.get("webUrl", ""))))
         if name is None or name not in versions:
             continue
@@ -762,7 +746,7 @@ def listing_row(
     return (case, *outcome(problems, f"{count} server(s)"))
 
 
-def version(test: Access) -> list[Row]:
+def version(test: Access) -> list[CaseRow]:
     """Check every server's version.
 
     Each must report one, the same, and PELICAN_TAG's, unless the shape runs
@@ -784,23 +768,23 @@ def version(test: Access) -> list[Row]:
     if expected is not None:
         problems += [f"{n} reports {v}, not {expected}" for n, v in versions.items() if v != expected]
     note = f"images of your own: {seen}" if expected is None else f"{len(versions)} server(s), {expected}"
-    rows: list[Row] = [("servers", *outcome(problems, note))]
+    rows: list[CaseRow] = [("servers", *outcome(problems, note))]
     by_host = {director.host(s.web_url): s.name for s in test.servers}
     for server in test.servers:
         mine = versions.get(server.name)
         if mine is None:
             continue
         if "director" in server.roles:
-            listing = web.request("GET", server.web_url + DIRECTOR_SERVERS)
+            listing = web.request("GET", server.web_url + director.SERVERS)
             rows.append(header_row(f"header {server.name} director", listing, mine))
             rows.append(listing_row(server, listing, by_host, versions))
         if "registry" in server.roles:
-            answer = web.request("GET", server.web_url + REGISTRATIONS)
+            answer = web.request("GET", server.web_url + registry.REGISTRATIONS)
             rows.append(header_row(f"header {server.name} registry", answer, mine))
     return rows
 
 
-RUN: dict[str, Callable[[Access], list[Row]]] = {
+RUN: dict[str, Callable[[Access], list[CaseRow]]] = {
     "admin-matrix": admin_matrix,
     "api-tokens": api_tokens,
     "login": login,
@@ -823,10 +807,6 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     test = Access(session)
     try:
         for name in selected:
-            rows = common.guarded(
-                partial(RUN[name], test), lambda note: [("", FAIL, note)], (Missing, accounts.ApiError)
-            )
-            for case, status, note in rows:
-                results.add(f"{name} {case}" if case else name, status, note)
+            suite.record(results, name, suite.attempt_cases(partial(RUN[name], test), (accounts.ApiError,)))
     finally:
         test.wait_for_logins()

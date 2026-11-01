@@ -1,7 +1,7 @@
 """A Pelican server's web API, as one of its users.
 
 That is JSON requests with the user's bearer token
-(credentials.mint_user()) or login cookie; the server's users and
+(credentials.mint_web_user()) or login cookie; the server's users and
 groups; and logging a user in.
 
 Users and groups are records in each server's database (Pelican's
@@ -13,12 +13,11 @@ group may match the embedded issuer's Issuer.AuthorizationTemplates
 only if it is eligible to, which only an administrator may make it.
 """
 
-import json
+import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
 
 from . import common, web
 
@@ -32,9 +31,6 @@ AUP = "/api/v1.0/aup"
 ME = "/api/v1.0/me"
 MY_AUP = "/api/v1.0/me/aup"
 MY_GROUPS = "/api/v1.0/me/groups"
-
-JSON = {"Content-Type": "application/json"}
-FORM = {"Content-Type": "application/x-www-form-urlencoded"}
 
 # The server allows an address one login a second
 # (Server.UILoginRateLimit): how far apart to send logins, in seconds,
@@ -64,21 +60,23 @@ class Answer:
         """Whether the status is a success (2xx)."""
         return self.status is not None and 200 <= self.status < 300
 
-    @property
     def object(self) -> dict[str, Any]:
-        """The body, if it is a JSON object; {} otherwise."""
+        """Return the body, if it is a JSON object; {} otherwise."""
         return common.as_object(self.data) or {}
 
-    @property
     def array(self) -> list[Any]:
-        """The body, if it is a JSON array; [] otherwise."""
+        """Return the body, if it is a JSON array; [] otherwise."""
         return common.as_array(self.data) or []
+
+    def id(self) -> str:
+        """Return the body's `id`, e.g. a created object's; "" if none."""
+        return str(self.object().get("id", ""))
 
     def describe(self) -> str:
         """Return the status, and the server's message if it sent one."""
         if self.status is None:
             return "no response"
-        message = self.object.get("msg") or self.object.get("error")
+        message = self.object().get("msg") or self.object().get("error")
         return f"HTTP {self.status}" + (f" ({message})" if message else "")
 
 
@@ -104,13 +102,10 @@ class Api:
         headers: Mapping[str, str] | None = None,
     ) -> Answer:
         """Send method to path, with body as JSON if given, and headers."""
-        upload = None if body is None else json.dumps(body).encode()
         sent = dict(headers or {})
-        if body is not None:
-            sent.update(JSON)
         if self.cookie is not None:
             sent["Cookie"] = f"login={self.cookie}"
-        answer = web.request(method, self.url + path, token=self.token, upload=upload, headers=sent)
+        answer = web.request(method, self.url + path, token=self.token, headers=sent, json_body=body)
         return Answer(answer.status, answer.json())
 
 
@@ -161,7 +156,7 @@ def agree_to_aup(api: Api) -> None:
     found = api.call("GET", AUP)
     if found.status == 404:
         return
-    version = must(found, f"GET {AUP}").object.get("version")
+    version = must(found, f"GET {AUP}").object().get("version")
     if not version:
         raise ApiError(f"GET {AUP}: {found.describe()}, with no version")
     must(api.call("POST", MY_AUP, {"version": version}), f"agreeing to AUP {version}")
@@ -173,7 +168,7 @@ def _find_id(api: Api, route: str, kind: str, field: str, value: str) -> str | N
     Raises:
         ApiError: Listing them fails.
     """
-    for found in common.objects(must(api.call("GET", route), f"listing {kind}").array):
+    for found in common.objects(must(api.call("GET", route), f"listing {kind}").array()):
         if found.get(field) == value:
             return str(found.get("id", ""))
     return None
@@ -199,8 +194,7 @@ def ensure_user(api: Api, username: str) -> str:
     found = find_user(api, username)
     if found:
         return found
-    made = must(api.call("POST", USERS, {"username": username}), f"creating user {username}")
-    return str(made.object.get("id", ""))
+    return must(api.call("POST", USERS, {"username": username}), f"creating user {username}").id()
 
 
 def set_status(api: Api, user_id: str, status: str) -> Answer:
@@ -244,8 +238,7 @@ def create_group(api: Api, name: str, eligible: bool = False) -> str:
     body: dict[str, Any] = {"name": name}
     if eligible:
         body["authTemplateEligible"] = True
-    made = must(api.call("POST", GROUPS, body), f"creating group {name}")
-    return str(made.object.get("id", ""))
+    return must(api.call("POST", GROUPS, body), f"creating group {name}").id()
 
 
 def ensure_group(api: Api, name: str, eligible: bool = False) -> str:
@@ -320,7 +313,7 @@ def password_invite(api: Api, user_id: str) -> str:
         api.call("POST", f"{USERS}/{user_id}/password-invite", {}),
         f"minting a password invite for {user_id}",
     )
-    return str(made.object.get("inviteToken", ""))
+    return str(made.object().get("inviteToken", ""))
 
 
 def set_password(web_url: str, invite: str, password: str) -> None:
@@ -330,13 +323,24 @@ def set_password(web_url: str, invite: str, password: str) -> None:
         ApiError: The server does not set it.
     """
     answer = web.request(
-        "POST",
-        web_url + REDEEM_PASSWORD,
-        upload=json.dumps({"token": invite, "password": password}).encode(),
-        headers=JSON,
+        "POST", web_url + REDEEM_PASSWORD, json_body={"token": invite, "password": password}
     )
     if answer.status != 200:
         raise ApiError(f"POST {REDEEM_PASSWORD}: {answer.describe()}")
+
+
+def new_password(admin: Api, user_id: str) -> str:
+    """Give the user a new password of the run's, and return it.
+
+    The admin mints an invite (password_invite()), with which the user
+    sets it.
+
+    Raises:
+        ApiError: Minting the invite, or setting the password, fails.
+    """
+    password = secrets.token_urlsafe(12)
+    set_password(admin.url, password_invite(admin, user_id), password)
+    return password
 
 
 def try_login(web_url: str, username: str, password: str) -> web.Response:
@@ -347,10 +351,9 @@ def try_login(web_url: str, username: str, password: str) -> web.Response:
     Returns:
         The server's answer, which sets the login cookie if it succeeded.
     """
-    form = urlencode({"user": username, "password": password}).encode()
     answer = web.Response(None)
     for _ in range(LOGIN_TRIES):
-        answer = web.request("POST", web_url + LOGIN, upload=form, headers=FORM)
+        answer = web.request("POST", web_url + LOGIN, form={"user": username, "password": password})
         if answer.status != 429:
             break
         time.sleep(LOGIN_SPACING)
@@ -370,3 +373,8 @@ def login(web_url: str, username: str, password: str) -> str:
     if answer.status != 200 or not cookie:
         raise ApiError(f"POST {LOGIN} as {username}: {answer.describe()}, with no login cookie")
     return cookie
+
+
+def whoami(web_url: str, cookie: str) -> dict[str, Any]:
+    """Return what the server at web_url says of cookie's user."""
+    return Api(web_url, None, cookie).call("GET", WHOAMI).object()

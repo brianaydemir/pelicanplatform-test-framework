@@ -12,7 +12,7 @@ verification page. In the code flow, the issuer's authorization
 endpoint sends the user back with a code, which the client trades for
 the token. The tests play the user too: both endpoints take the same
 credentials as the server's web API, a bearer token
-(credentials.mint_user()) or the cookie of a web login
+(credentials.mint_web_user()) or the cookie of a web login
 (accounts.login()). The issuer grants what the user is allowed,
 narrowed to what the client asked for and may carry
 (handleDeviceVerifySubmit and handleAuthorize in
@@ -33,7 +33,6 @@ tokens name credentials.local_issuer() as their issuer.
 
 import base64
 import hashlib
-import json
 import os
 import secrets
 import subprocess
@@ -44,7 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from . import accounts, common, web
+from . import common, jwt, web
 
 ROUTE = "/api/v1.0/issuer/ns"
 ADMIN_ROUTE = "/api/v1.0/issuer/admin/ns"
@@ -55,9 +54,6 @@ CODE_GRANT = "authorization_code"
 REFRESH_GRANT = "refresh_token"
 EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"
 ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
-
-# The audience the issuer gives every token: the WLCG profile's "any".
-ANY_AUDIENCE = "https://wlcg.cern.ch/jwt/v1/any"
 
 # What a client the tests create may carry: what Pelican gives a client
 # that registers itself (handleDynamicClientRegistration), but
@@ -116,7 +112,7 @@ class User:
     attribute.
 
     Attributes:
-        token: A bearer token (credentials.mint_user()).
+        token: A bearer token (credentials.mint_web_user()).
         cookie: The cookie of a web login (accounts.login()), which also
             carries the groups the user was in when they logged in.
     """
@@ -269,14 +265,7 @@ def admin_call(
         client_id: The client to ask about; "" for the list of them.
         body: What to send as JSON, if given.
     """
-    upload = None if body is None else json.dumps(body).encode()
-    return web.request(
-        method,
-        _clients_url(web_url, namespace, client_id),
-        token=bearer,
-        upload=upload,
-        headers=accounts.JSON,
-    )
+    return web.request(method, _clients_url(web_url, namespace, client_id), token=bearer, json_body=body)
 
 
 def create_client(
@@ -350,9 +339,7 @@ def post(client: Client, target: str, form: dict[str, str]) -> web.Response:
     body = dict(form)
     if client.public:
         body["client_id"] = client.client_id
-    return web.request(
-        "POST", target, upload=urlencode(body).encode(), headers={**accounts.FORM, **client.auth}
-    )
+    return web.request("POST", target, headers=client.auth, form=body)
 
 
 def tokens_of(answer: web.Response, what: str) -> Tokens:
@@ -384,9 +371,7 @@ def register(issuer_url: str, metadata: dict[str, Any]) -> web.Response:
         The issuer's answer: the client's credentials, metadata, and
         registration access token.
     """
-    return web.request(
-        "POST", f"{issuer_url}/oidc-cm", upload=json.dumps(metadata).encode(), headers=accounts.JSON
-    )
+    return web.request("POST", f"{issuer_url}/oidc-cm", json_body=metadata)
 
 
 def configuration(
@@ -405,10 +390,7 @@ def configuration(
         access: The client's registration access token; None for none.
         metadata: What to send, if given.
     """
-    upload = None if metadata is None else json.dumps(metadata).encode()
-    return web.request(
-        method, f"{issuer_url}/oidc-cm/{client_id}", token=access, upload=upload, headers=accounts.JSON
-    )
+    return web.request(method, f"{issuer_url}/oidc-cm/{client_id}", token=access, json_body=metadata)
 
 
 # --------------------------------------------------------------------------
@@ -504,10 +486,10 @@ def decide(issuer_url: str, user_code: str, user: User, action: str, csrf: str =
         cookies.append(f"csrf_token={secrets.token_urlsafe(32)}")
     if user.cookie is not None:
         cookies.append(f"login={user.cookie}")
-    headers = {**accounts.JSON, **user.headers}
+    headers = dict(user.headers)
     if cookies:
         headers["Cookie"] = "; ".join(cookies)
-    return web.request("POST", page, upload=json.dumps(body).encode(), headers=headers)
+    return web.request("POST", page, headers=headers, json_body=body)
 
 
 def approve(issuer_url: str, user_code: str, user: User) -> None:
@@ -551,8 +533,7 @@ def token(client: Client, user: User, wanted: Sequence[str]) -> str:
 def pkce() -> tuple[str, str]:
     """Return a PKCE verifier, and its S256 challenge."""
     verifier = secrets.token_urlsafe(48)
-    digest = hashlib.sha256(verifier.encode()).digest()
-    return verifier, base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return verifier, jwt.b64(hashlib.sha256(verifier.encode()).digest())
 
 
 def authorize(
@@ -694,34 +675,9 @@ def userinfo(issuer_url: str, access: str) -> web.Response:
     return web.request("GET", f"{issuer_url}/userinfo", token=access)
 
 
-def _part(tok: str, index: int) -> dict[str, Any]:
-    """Return part index of a token, the JSON object it encodes, or {}."""
-    try:
-        part = tok.split(".")[index]
-        padded = part + "=" * (-len(part) % 4)
-        return common.as_object(json.loads(base64.urlsafe_b64decode(padded))) or {}
-    except (IndexError, ValueError):
-        return {}
-
-
-def claims(tok: str) -> dict[str, Any]:
-    """Return a token's claims, not verified."""
-    return _part(tok, 1)
-
-
-def header(tok: str) -> dict[str, Any]:
-    """Return a token's header: its kid and alg."""
-    return _part(tok, 0)
-
-
-def scopes(tok: str) -> frozenset[str]:
-    """Return a token's scopes."""
-    return frozenset(str(claims(tok).get("scope", "")).split())
-
-
 def data_scopes(tok: str) -> frozenset[str]:
     """Return a token's scopes for data: storage.* and share.access."""
-    return frozenset(s for s in scopes(tok) if s.startswith(("storage.", "share.")))
+    return frozenset(s for s in jwt.scopes_of(tok) if s.startswith(("storage.", "share.")))
 
 
 def project(group: str) -> str:
@@ -741,7 +697,7 @@ def scope(kind: str, rel: str) -> str:
 
 def groups(tok: str) -> frozenset[str]:
     """Return a token's wlcg.groups: the groups that earned it something."""
-    return frozenset(str(g) for g in (common.as_array(claims(tok).get("wlcg.groups")) or []))
+    return frozenset(str(g) for g in (common.as_array(jwt.claims_of(tok).get("wlcg.groups")) or []))
 
 
 # --------------------------------------------------------------------------

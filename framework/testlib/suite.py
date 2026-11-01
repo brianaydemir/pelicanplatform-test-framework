@@ -20,11 +20,21 @@ SETTLE_WAIT = 150
 # it has served whole.
 HELD_WAIT = 30
 
+# The namespace of a suite's objects, unless its Test names another.
+NAMESPACE = "protected-a"
+
 # A row's status and note.
 Row = tuple[str, str]
+# A row's case (appended to its scenario's name, if any), status, and
+# note.
+CaseRow = tuple[str, str, str]
 
 
-def unexported(fed: common.Federation, namespace: str = "protected-a") -> str | None:
+class SetupError(Exception):
+    """A scenario could not set itself up; the message is its row's note."""
+
+
+def unexported(fed: common.Federation, namespace: str = NAMESPACE) -> str | None:
     """Return why the shape has no namespace to test, or None if it does."""
     if namespace in fed.exports:
         return None
@@ -36,9 +46,10 @@ def attempt(check: Callable[[], Row], expected: tuple[type[Exception], ...] = ()
 
     Args:
         check: What returns the row.
-        expected: The exceptions by which check() reports a problem.
+        expected: The exceptions, beside SetupError, by which check()
+            reports a problem.
     """
-    return common.guarded(check, lambda note: (report.FAIL, note), expected)
+    return common.guarded(check, lambda note: (report.FAIL, note), (SetupError, *expected))
 
 
 def attempt_all(
@@ -53,7 +64,43 @@ def attempt_all(
         check: What returns the rows.
         expected: As for attempt().
     """
-    return common.guarded(check, lambda note: {row: (report.FAIL, note) for row in rows}, expected)
+    return common.guarded(
+        check, lambda note: {row: (report.FAIL, note) for row in rows}, (SetupError, *expected)
+    )
+
+
+def attempt_cases[T](
+    check: Callable[[], T], expected: tuple[type[Exception], ...] = ()
+) -> T | list[CaseRow]:
+    """Return check()'s rows, or a FAIL with no case if it raised.
+
+    Args:
+        check: What returns the rows (or, for a scenario that may
+            return either, its row).
+        expected: As for attempt().
+    """
+    return common.guarded(check, lambda note: [("", report.FAIL, note)], (SetupError, *expected))
+
+
+def record(results: common.Results, scenario: str, found: Row | list[CaseRow] | Mapping[str, Row]) -> None:
+    """Record what a scenario found: its row, or its cases' rows.
+
+    A case's row is named `<scenario> <case>`, or `<scenario>` if its
+    case is "".
+
+    Args:
+        results: The suite's results.
+        scenario: The scenario's name.
+        found: Its row; its cases' rows; or its rows, by case.
+    """
+    if isinstance(found, tuple):
+        rows = [("", *found)]
+    elif isinstance(found, list):
+        rows = found
+    else:
+        rows = [(case, *row) for case, row in found.items()]
+    for case, status, note in rows:
+        results.add(f"{scenario} {case}".strip(), status, note)
 
 
 def clean(
@@ -105,7 +152,7 @@ class Test:
 
     _runs = 0
 
-    def __init__(self, session: Session, area: str, namespace: str = "protected-a"):
+    def __init__(self, session: Session, area: str, namespace: str = NAMESPACE):
         self.session = session
         self.fed = session.fed
         self.run = session.run
@@ -186,9 +233,13 @@ class Test:
         """Return rel's URL at the server at server_url."""
         return f"{server_url}/{self.namespace}/{quote(rel)}"
 
-    def pelican_url(self, rel: str, query: str = "") -> str:
-        """Return rel's pelican:// URL, unencoded, with query if any."""
-        return f"{self.fed.url}{self.path(rel)}" + (f"?{query}" if query else "")
+    def pelican_url(self, rel: str, query: str = "", namespace: str | None = None) -> str:
+        """Return rel's pelican:// URL, unencoded, with query if any.
+
+        rel is in namespace, if given, not the Test's.
+        """
+        url = f"{self.fed.url}/{namespace or self.namespace}/{rel}"
+        return f"{url}?{query}" if query else url
 
     def put(self, objects: Mapping[str, bytes]) -> str | None:
         """Put objects, by rel, and their collections, in every store.

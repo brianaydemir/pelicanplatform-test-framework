@@ -15,7 +15,9 @@ The [`oidc`](../../framework/suites/oidc.py) suite skips without the
 provider, and runs in the [WLCG pass](../glossary.md#pass) only
 ([token profiles](README.md#token-profiles)). Each
 [case](../glossary.md#case)'s row is named `<scenario> <case>`; `enabled`
-and `login` have a row per server.
+and `login` have a row per server. A login posts the user's password to the
+provider alone: one that a server sends elsewhere fails before the password
+is sent.
 
 - `enabled`: Each server's `/api/v1.0/auth/oauth` lists its modules. Its
   login route (`/api/v1.0/auth/oauth/login`) answers 307 to the provider's

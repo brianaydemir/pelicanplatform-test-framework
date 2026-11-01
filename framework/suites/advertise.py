@@ -38,7 +38,6 @@ from urllib.parse import quote, urlencode, urlsplit
 from testlib import accounts, ads, common, credentials, director, jwt, metrics, registry, stores, suite, web
 from testlib.ads import (
     ADVERTISE,
-    SERVERS,
     Missing,
     Server,
     Servers,
@@ -52,6 +51,7 @@ from testlib.common import die, first, outcome
 from testlib.director import expected_targets, listing_problems
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
+from testlib.suite import CaseRow
 
 SCENARIOS = {
     "forged-ads": (
@@ -72,10 +72,6 @@ SCENARIOS = {
 # suites/__init__.py): only `fed-token-at-origin` presents a user's, of
 # the session's profile, beside a federation token.
 ONE_PROFILE = tuple(s for s in SCENARIOS if s != "fed-token-at-origin")
-
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note.
-Row = tuple[str, str, str]
 
 # Scopes, as a token carries them, beside the advertise scope
 # (ads.ADVERTISE).
@@ -115,10 +111,6 @@ class Test(suite.Test, Servers):
         Servers.__init__(self, session.fed)
         self.probe = self.rel("probe")
         self.data = os.urandom(4096)
-
-    def caches(self) -> list[common.Cache]:
-        """Return the caches that the directors know of."""
-        return self.fed.federated_caches
 
 
 def rejected(url: str) -> float | None:
@@ -165,7 +157,7 @@ def restored(test: Test, *servers: Server) -> list[str]:
     return problems
 
 
-def restored_row(test: Test, *servers: Server) -> Row:
+def restored_row(test: Test, *servers: Server) -> CaseRow:
     """Return restored()'s row."""
     problems = restored(test, *servers)
     names = ", ".join(s.host for s in servers)
@@ -236,10 +228,10 @@ def everlasting(key: str, kid: str, issuer: str, audience: str) -> str:
     """
     body = ads.claims(ADVERTISE, issuer, audience, issuer)
     del body["exp"]
-    return ads.sign_claims(key, kid, body)
+    return jwt.sign(body, key, kid)
 
 
-def forged_ads(test: Test) -> list[Row]:
+def forged_ads(test: Test) -> list[CaseRow]:
     """Check that the directors take servers' own ads, and no forgeries.
 
     Post origin-0's and the first cache's own ads, as each, to every
@@ -253,9 +245,9 @@ def forged_ads(test: Test) -> list[Row]:
     fed = test.fed
     origin = test.server("Origin", director.host(fed.origins[0].url))
     servers = [origin]
-    if test.caches():
-        servers.append(test.server("Cache", director.host(test.caches()[0].url)))
-    rows: list[Row] = []
+    if test.fed.federated_caches:
+        servers.append(test.server("Cache", director.host(test.fed.federated_caches[0].url)))
+    rows: list[CaseRow] = []
     variants: list[Variant] = []
     for server in servers:
         kind = server.kind.lower()
@@ -360,7 +352,7 @@ def forged_ads(test: Test) -> list[Row]:
 # bad-broker-url
 
 
-def bad_broker_url(test: Test) -> list[Row]:
+def bad_broker_url(test: Test) -> list[CaseRow]:
     """Check that an ad whose broker URL does not parse gets 400.
 
     Post origin-0's own ad, as it, but with a broker URL that Go's
@@ -379,9 +371,11 @@ def bad_broker_url(test: Test) -> list[Row]:
         elif not isinstance(answer.json(), dict):
             problems.append(f"{name}: its 400's body is not one JSON object")
     for url in test.fed.directors:
-        listed = web.request("GET", f"{url}{SERVERS}")
+        listed = web.request("GET", f"{url}{director.SERVERS}")
         if listed.status != 200:
-            problems.append(f"{director.host(url)} then answered {SERVERS} with {listed.describe()}")
+            problems.append(
+                f"{director.host(url)} then answered {director.SERVERS} with {listed.describe()}"
+            )
     problems += restored(test, origin)
     return [("", *outcome(problems, f"{len(test.fed.directors)} director(s)"))]
 
@@ -414,7 +408,7 @@ def active_downtime(source: str) -> dict[str, Any]:
     }
 
 
-def spoofed_status(test: Test) -> list[Row]:
+def spoofed_status(test: Test) -> list[CaseRow]:
     """Check that only a cache's own key may take it out of routing.
 
     With the first cache's own key, its ad saying it is shutting down,
@@ -426,12 +420,12 @@ def spoofed_status(test: Test) -> list[Row]:
     is critical. The first must stay named, since an advertise token
     proves a server's prefix, not its name or URL.
     """
-    caches = test.caches()
+    caches = test.fed.federated_caches
     if not caches:
         return [("", SKIP, "the directors know of no cache")]
     first_cache = test.server("Cache", director.host(caches[0].url))
     wanted = len(test.fed.directors)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     before = naming(test, first_cache)
     if len(before) != wanted:
         return [("", FAIL, f"before anything was posted, only {before} named {first_cache.host}")]
@@ -467,7 +461,7 @@ def spoofed_status(test: Test) -> list[Row]:
         named = naming(test, first_cache)
         if len(named) != wanted:
             problems.append(f"afterward, only {named} named {first_cache.host}")
-        listed = web.request("GET", f"{test.director}{SERVERS}/{quote(first_cache.name, safe='')}")
+        listed = web.request("GET", f"{test.director}{director.SERVERS}/{quote(first_cache.name, safe='')}")
         found = listed.object()
         if found.get("filtered"):
             problems.append(
@@ -538,7 +532,7 @@ def fed_token_problems(test: Test, answer: web.Response, host: str) -> list[str]
     return problems
 
 
-def pending_registration(test: Test) -> Row:
+def pending_registration(test: Test) -> CaseRow:
     """Check that a director mints no federation token for a pending prefix.
 
     Under `-p registry-approval`: register a cache's prefix of the run's,
@@ -553,13 +547,7 @@ def pending_registration(test: Test) -> Row:
     key = registry.new_key(test.session.path("advertise-pending.pem"))
     kid = jwt.key_id(key)
     pubkey = json.dumps(registry.jwks([key]))
-    registry_host = director.host(fed.registry_url)
-    admin = accounts.Api(
-        fed.registry_url,
-        credentials.mint_web_user(
-            fed, test.session.path(f"tokens/admin.{registry_host}"), fed.registry_url, "admin"
-        ),
-    )
+    admin = accounts.Api(fed.registry_url, test.session.web_token(fed.registry_url))
     try:
         headers = accounts.csrf(admin)
     except accounts.ApiError as e:
@@ -582,7 +570,7 @@ def pending_registration(test: Test) -> Row:
     listed = admin.call("GET", f"{registry.REGISTRATIONS}?status=Pending")
     ids = [
         str(entry.get("id", ""))
-        for entry in (common.as_object(r) or {} for r in listed.array)
+        for entry in common.objects(listed.array())
         if entry.get("prefix") == prefix
     ]
     try:
@@ -596,7 +584,7 @@ def pending_registration(test: Test) -> Row:
             admin.call("DELETE", f"{registry.REGISTRATIONS}/{reg_id}", headers=headers)
 
 
-def fed_token(test: Test) -> list[Row]:
+def fed_token(test: Test) -> list[CaseRow]:
     """Check that a federation token needs a server's own advertise token.
 
     Ask the first director for a federation token as the first cache,
@@ -606,7 +594,7 @@ def fed_token(test: Test) -> list[Row]:
     token for another server; and with a token signed by a key no server
     knows: each must be refused (403).
     """
-    caches = test.caches()
+    caches = test.fed.federated_caches
     if not caches:
         return [("", SKIP, "the directors know of no cache, which asks for federation tokens")]
     cache = test.server("Cache", director.host(caches[0].url))
@@ -614,7 +602,7 @@ def fed_token(test: Test) -> list[Row]:
     token = test.advertise_token(cache)
     key, kid = test.key(cache)
     web_url = str(cache.detail.get("webUrl", ""))
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     answer = get_fed_token(test, {"host": host, "sType": "Cache"}, token)
     problems = fed_token_problems(test, answer, host)
     rows.append(("valid", *outcome(problems, f"for {host}")))
@@ -664,7 +652,7 @@ def fed_token(test: Test) -> list[Row]:
 # fed-token-at-origin
 
 
-def fed_token_at_origin(test: Test) -> list[Row]:
+def fed_token_at_origin(test: Test) -> list[CaseRow]:
     """Check that an origin without direct clients needs a federation token.
 
     Where the origins take no direct clients (`-p origin-no-direct`,
@@ -682,9 +670,9 @@ def fed_token_at_origin(test: Test) -> list[Row]:
         return [("", SKIP, "the origins take direct clients ('-p origin-no-direct')")]
     if not fed.native_origins:
         return [("", SKIP, f"XRootD serves the origins ({fed.origin_variant}), not Pelican")]
-    if not test.caches():
+    if not test.fed.federated_caches:
         return [("", SKIP, "the directors know of no cache, which asks for federation tokens")]
-    cache = test.server("Cache", director.host(test.caches()[0].url))
+    cache = test.server("Cache", director.host(test.fed.federated_caches[0].url))
     answer = get_fed_token(
         test, {"host": cache.registered_host, "sType": "Cache"}, test.advertise_token(cache)
     )
@@ -693,7 +681,7 @@ def fed_token_at_origin(test: Test) -> list[Row]:
         return [("", FAIL, f"no federation token for {cache.host}: {answer.describe()}")]
     user = test.token
     fed_only = (200,) if test.namespace == "public" else (401, 403)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for origin in stores.unique(fed.origins):
         url = stores.url(origin, test.namespace, test.probe)
         cases = (
@@ -731,16 +719,15 @@ def federation_key(fed: common.Federation) -> tuple[str, str]:
     """
     jwks_uri = str(fed.discovery.get("jwks_uri", ""))
     answer = web.request("GET", jwks_uri)
-    listed = common.as_array(answer.object().get("keys")) or []
+    listed = jwt.jwks_keys(answer.body) or []
     for key in sorted(glob.glob("issuer-keys/*/*.pem")):
-        jwk = jwt.public_jwk(key)
-        for entry in (common.as_object(e) or {} for e in listed):
-            if all(entry.get(k) == v for k, v in jwk.items()):
-                return key, str(entry.get("kid") or "")
+        kid = jwt.listed_kid(key, listed)
+        if kid is not None:
+            return key, kid
     raise Missing(f"{jwks_uri} ({answer.describe()}) lists none of framework/var/issuer-keys/'s keys")
 
 
-def discover_servers(test: Test) -> list[Row]:
+def discover_servers(test: Test) -> list[CaseRow]:
     """Check that only the federation's token gets the directors' servers.
 
     Ask each director for its servers, as Prometheus's service discovery
@@ -758,7 +745,7 @@ def discover_servers(test: Test) -> list[Row]:
         ("unknown-issuer", unknown_token(DISCOVERY, ELSEWHERE, jwt.ANY_AUDIENCE)),
         ("federation", sign(key, kid, DISCOVERY, issuer, jwt.ANY_AUDIENCE)),
     )
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for url in fed.directors:
         name = director.host(url)
         for case, token in tokens:
@@ -783,7 +770,7 @@ def discover_servers(test: Test) -> list[Row]:
 BrokerRequest = tuple[str, str, str | None, dict[str, str], str, tuple[int, ...]]
 
 
-def broker(test: Test) -> list[Row]:
+def broker(test: Test) -> list[CaseRow]:
     """Check that the broker gives a caller only its own origin's requests.
 
     Under `-p origin-broker`, ask the director's broker for requests
@@ -802,21 +789,21 @@ def broker(test: Test) -> list[Row]:
     fed = test.fed
     if not fed.broker:
         return [("", SKIP, "the origins use no connection broker ('-p origin-broker')")]
-    if not test.caches():
+    if not test.fed.federated_caches:
         return [("", SKIP, "the directors know of no cache")]
     endpoint = urlsplit(str(fed.discovery.get("broker_endpoint", "")))
     base = f"{endpoint.scheme}://{endpoint.netloc}"
     origin = test.server("Origin", director.host(fed.origins[0].url))
-    cache = test.server("Cache", director.host(test.caches()[0].url))
+    cache = test.server("Cache", director.host(test.fed.federated_caches[0].url))
     made_up = f"advertise-{test.run}"
 
     def registry_token(server: Server, scope: str) -> str:
         key, kid = test.key(server)
-        issuer = f"{fed.registry_url}/api/v1.0/registry{server.prefix}"
+        issuer = f"{fed.registry_url}{registry.prefix_route(server.prefix)}"
         return sign(key, kid, scope, issuer, base, server.registered_host)
 
     as_origin = {"origin": made_up, "prefix": origin.prefix}
-    unknown = unknown_token(RETRIEVE, f"{fed.registry_url}/api/v1.0/registry{origin.prefix}", base)
+    unknown = unknown_token(RETRIEVE, f"{fed.registry_url}{registry.prefix_route(origin.prefix)}", base)
     retrieve, reverse = "/api/v1.0/broker/retrieve", "/api/v1.0/broker/reverse"
     requests: list[BrokerRequest] = [
         (
@@ -845,14 +832,14 @@ def broker(test: Test) -> list[Row]:
             (400, 401, 403),
         ),
     ]
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for name, path, token, body, timeout, statuses in requests:
         answer = web.request(
             "POST",
             f"{base}{path}",
             token=token,
-            upload=json.dumps(body).encode(),
-            headers={**accounts.JSON, "X-Pelican-Timeout": timeout},
+            headers={"X-Pelican-Timeout": timeout},
+            json_body=body,
         )
         why = ""
         if answer.status not in statuses:
@@ -863,7 +850,7 @@ def broker(test: Test) -> list[Row]:
     return rows
 
 
-RUN: dict[str, Callable[[Test], list[Row]]] = {
+RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
     "forged-ads": forged_ads,
     "bad-broker-url": bad_broker_url,
     "spoofed-status": spoofed_status,
@@ -891,10 +878,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     print(f"Asking the directors about {test.path(test.probe)}\n")
     try:
         for name in selected:
-            rows = common.guarded(
-                partial(RUN[name], test), lambda note: [("", FAIL, note)], (Missing, accounts.ApiError)
+            suite.record(
+                results, name, suite.attempt_cases(partial(RUN[name], test), (Missing, accounts.ApiError))
             )
-            for case, status, note in rows:
-                results.add(f"{name} {case}".strip(), status, note)
     finally:
         test.clean("after the run")

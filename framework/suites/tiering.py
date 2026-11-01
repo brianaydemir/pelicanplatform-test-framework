@@ -19,7 +19,6 @@ The reads present tokens of the session's profile; the objects are put
 at the origins with WLCG tokens either way.
 """
 
-import hashlib
 import os
 import time
 from collections.abc import Callable
@@ -30,6 +29,7 @@ from testlib import blocks, common, digests, director, metrics, stores, suite, t
 from testlib.common import die, first, outcome
 from testlib.report import INCONCLUSIVE, PASS
 from testlib.session import Session, last_line
+from testlib.suite import Row
 
 SCENARIOS = {
     "tiered": "an object over the threshold, read whole, lands in the bucket",
@@ -75,8 +75,7 @@ def skip(fed: common.Federation) -> str | None:
 
 def snapshot(cache: common.Cache) -> metrics.Snapshot:
     """Return the cache's /metrics; none if it does not answer."""
-    root = urlsplit(cache.url)
-    return metrics.fetch(f"{root.scheme}://{root.netloc}") or metrics.EMPTY
+    return metrics.fetch(cache.web_url) or metrics.EMPTY
 
 
 def counted(cache: common.Cache, name: str, **labels: str) -> float:
@@ -100,11 +99,10 @@ def bucket_file(target: common.TierTarget, data: bytes) -> str | None:
     Returns:
         The file's path; None if no file holds an object of data.
     """
-    want = hashlib.sha256(data).hexdigest()
     for root, _, files in os.walk(target.directory):
         for name in files:
             path = os.path.join(root, name)
-            if os.path.getsize(path) == len(data) and common.sha256(path) == want:
+            if os.path.getsize(path) == len(data) and common.file_holds(path, data):
                 return path
     return None
 
@@ -236,7 +234,7 @@ class Test(suite.Test):
         return answer
 
 
-def each_cache(test: Test, check: Callable[[common.Cache], str | None]) -> tuple[str, str]:
+def each_cache(test: Test, check: Callable[[common.Cache], str | None]) -> Row:
     """Run check() at each tiering cache, and sum up the problems.
 
     Args:
@@ -259,7 +257,7 @@ def each_cache(test: Test, check: Callable[[common.Cache], str | None]) -> tuple
     return outcome(problems, ", ".join(f"{c.svc} ({test.target(c).mode})" for c in test.caches))
 
 
-def tiered(test: Test) -> tuple[str, str]:
+def tiered(test: Test) -> Row:
     """Check that an object over the threshold, read cold, is tiered.
 
     It must land in the bucket, and the cache count a successful upload.
@@ -279,7 +277,7 @@ def tiered(test: Test) -> tuple[str, str]:
     return each_cache(test, check)
 
 
-def threshold(test: Test) -> tuple[str, str]:
+def threshold(test: Test) -> Row:
     """Check that an object of exactly the threshold is tiered.
 
     One a byte smaller, read first, is not, by the time the other has
@@ -346,7 +344,7 @@ def unknown_to_directors(cache: common.Cache) -> str:
     return "which knows nothing of it" if cache.site_local else "which knows other caches"
 
 
-def redirect(test: Test) -> tuple[str, str]:
+def redirect(test: Test) -> Row:
     """Check that a read of a tiered object is redirected, or proxied.
 
     From a redirecting cache, it must get a 307 to a pre-signed URL in
@@ -383,7 +381,7 @@ def redirect(test: Test) -> tuple[str, str]:
     return status, note
 
 
-def ranges(test: Test) -> tuple[str, str]:
+def ranges(test: Test) -> Row:
     """Check that ranges of a tiered object (RANGES) are served right.
 
     Each is checked by blocks.check(): from a proxying cache itself;
@@ -396,7 +394,7 @@ def ranges(test: Test) -> tuple[str, str]:
     def check(cache: common.Cache) -> str | None:
         name, data = test.tiered_object(cache)
         for request in RANGES:
-            headers = {"Range": blocks.header(request)}
+            headers = {"Range": blocks.range_header(request)}
             answer = test.get_tiered(cache, name, headers)
             if test.target(cache).mode == "redirect":
                 if answer.status != 307:
@@ -443,7 +441,7 @@ def object_get(test: Test, cache: common.Cache, name: str, *flags: str) -> tuple
     return code, target, last_line(err or out)
 
 
-def client_get(test: Test) -> tuple[str, str]:
+def client_get(test: Test) -> Row:
     """Check that the clients get a tiered object.
 
     `pelican object get` of it, which the client follows wherever the
@@ -464,12 +462,12 @@ def client_get(test: Test) -> tuple[str, str]:
             code, target, said = object_get(test, cache, name, *flags)
             if code != 0:
                 return f"{key}: exit {code}: {said}"
-            if common.sha256(target) != common.digest(data):
+            if not common.file_holds(target, data):
                 return f"{key}: the file is not the object"
         passed, target, said = test.plugin(cache, name)
         if not passed:
             return f"stash_plugin: {last_line(said)}"
-        if common.sha256(target) != common.digest(data):
+        if not common.file_holds(target, data):
             return "stash_plugin: the file is not the object"
         return None
 
@@ -543,7 +541,7 @@ def redirected_after_tampering(
     return None
 
 
-def tampered(test: Test) -> tuple[str, str]:
+def tampered(test: Test) -> Row:
     """Check that a tiered object's substitute in the bucket is refused.
 
     The tiered object's copy in the bucket is replaced by other bytes of
@@ -573,7 +571,7 @@ def tampered(test: Test) -> tuple[str, str]:
     return each_cache(test, check)
 
 
-def overwritten(test: Test) -> tuple[str, str]:
+def overwritten(test: Test) -> Row:
     """Check that each read of an overwritten tiered object is one version.
 
     The object is overwritten at the origins with another of its size:

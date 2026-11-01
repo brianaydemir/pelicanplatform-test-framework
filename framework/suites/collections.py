@@ -10,7 +10,7 @@ The users are records of the issuer origin (origin-0, or `fed`), which
 its admin creates once and later runs reuse: test-curator, a collection
 administrator (Server.CollectionAdminUsers in
 framework/config.d/base/40-origin.yaml), and ordinary users. Each acts
-through a web token (credentials.mint_web_user()), and gets tokens for data
+through a web token (Session.web_token()), and gets tokens for data
 from the namespace's issuer through its device flow, approved as the
 user (testlib/issuer.py). Each run makes groups that test-owner owns;
 two collections, alpha and beta, under data/collections/<run>/, with an
@@ -29,7 +29,7 @@ from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlsplit
 
-from testlib import accounts, common, credentials, issuer, stores, suite, web
+from testlib import accounts, common, credentials, director, issuer, jwt, stores, suite, web
 from testlib.accounts import Api, ApiError, must
 from testlib.collections import (
     COLLECTIONS,
@@ -42,11 +42,12 @@ from testlib.collections import (
     metadata,
     missing,
     patch,
+    personal,
     remove_under,
     revoke,
     set_metadata,
     share,
-    user_target,
+    username,
 )
 from testlib.common import die, objects, outcome, warn
 from testlib.credentials import PROTECTED
@@ -78,7 +79,7 @@ ONE_PROFILE = tuple(SCENARIOS)
 # Where a user redeems an invite to own a collection.
 REDEEM_OWNERSHIP = "/api/v1.0/invites/redeem/collection-ownership"
 # The director's list of origins, from which the CLI takes the first.
-ORIGINS = "/api/v1.0/director_ui/servers?server_type=origin"
+ORIGINS = f"{director.SERVERS}?server_type=origin"
 
 ROLES = ("curator", "owner", "writer", "reader", "outsider", "sharer", "guest", "heir")
 # The run's groups, and who test-owner puts in each.
@@ -99,18 +100,6 @@ OBJECT_SIZE = 4096
 
 # How long a grant lasts in `expiry`, in seconds.
 EXPIRY = 20
-# How long a client may take to acquire its token and finish.
-CLIENT_TIMEOUT = 180.0
-
-
-def username(role: str) -> str:
-    """Return the user who plays role."""
-    return "admin" if role == "admin" else f"test-{role}"
-
-
-def personal(role: str) -> str:
-    """Return the ACL target that grants to role's user alone."""
-    return user_target(username(role))
 
 
 def skip(fed: common.Federation) -> str | None:
@@ -135,6 +124,7 @@ class Test(suite.Test):
         groups: The groups' IDs, by name.
         coll: The IDs of alpha and beta, by name.
         data: The objects' bytes, by name.
+        clients: The suite's clients of each namespace's issuer (client()).
     """
 
     def __init__(self, session: Session):
@@ -147,8 +137,7 @@ class Test(suite.Test):
         self.groups: dict[str, str] = {}
         self.coll: dict[str, str] = {}
         self.data: dict[str, bytes] = {}
-        self._web_tokens: dict[tuple[str, str], str] = {}
-        self._clients: dict[str, issuer.Client] = {}
+        self.clients: dict[str, issuer.Client] = {}
         self._minted = 0
 
     def web_token(self, role: str, web_url: str | None = None) -> str:
@@ -158,17 +147,7 @@ class Test(suite.Test):
             role: Whose it is.
             web_url: The origin's web URL; the issuer origin's by default.
         """
-        web_url = web_url or self.web
-        key = (web_url, role)
-        if key not in self._web_tokens:
-            self._web_tokens[key] = credentials.mint_web_user(
-                self.fed,
-                self.session.path(f"tokens/collections-web.{urlsplit(web_url).hostname}.{role}"),
-                web_url,
-                username(role),
-                lifetime=3600,
-            )
-        return self._web_tokens[key]
+        return self.session.web_token(web_url or self.web, username(role))
 
     def api(self, role: str) -> Api:
         """Return the issuer origin's web API, as role's user."""
@@ -179,9 +158,9 @@ class Test(suite.Test):
 
         The issuer is the issuer origin's.
         """
-        if namespace not in self._clients:
-            self._clients[namespace] = issuer.create_client(self.web, namespace, self.web_token("admin"))
-        return self._clients[namespace]
+        if namespace not in self.clients:
+            self.clients[namespace] = issuer.create_client(self.web, namespace, self.web_token("admin"))
+        return self.clients[namespace]
 
     def user(self, role: str, web_url: str | None = None) -> issuer.User:
         """Return role's user, as an origin's issuer knows them.
@@ -223,11 +202,6 @@ class Test(suite.Test):
         return issuer.scope(kind, self.rel(name))
 
 
-def rfc3339(when: float) -> str:
-    """Format when (seconds since the epoch) as a server reads it."""
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when))
-
-
 # --------------------------------------------------------------------------
 # The fixture.
 
@@ -247,7 +221,7 @@ def make_collection(
     """
     curator = test.api("curator")
     made = must(create(curator, name, test.path(test.rel(name)), visibility, sharing), f"creating {name}")
-    cid = str(made.object.get("id", ""))
+    cid = made.id()
     fields: dict[str, Any] = {"ownerId": test.ids["owner"]}
     if admins:
         fields["adminId"] = test.groups["admins"]
@@ -299,13 +273,17 @@ def prepare(test: Test) -> None:
 
 
 def finish(test: Test) -> None:
-    """Remove the run's collections, groups, and objects."""
+    """Remove the run's collections, groups, issuer clients, and objects."""
     sweep(test, this_run=True)
     admin = test.api("admin")
     for name, gid in test.groups.items():
         failed = accounts.delete_group(admin, gid)
         if failed:
             warn(f"could not remove the {name} group: {failed}")
+    for namespace, made in test.clients.items():
+        failed = issuer.delete_client(test.web, namespace, test.web_token("admin"), made.client_id)
+        if failed:
+            warn(f"could not remove the client of {namespace}'s issuer: {failed}")
     test.clean("after the run")
 
 
@@ -327,9 +305,7 @@ def run_approving(test: Test, args: Sequence[str], role: str, pelican: str | Non
 
     session = test.session
     env = issuer.client_env(session.env, session.path(f"credentials/{role}"))
-    return issuer.run_approving(
-        pelican or session.pelican, args, env, session.tmp, approve_as_role, CLIENT_TIMEOUT
-    )
+    return issuer.run_approving(pelican or session.pelican, args, env, session.tmp, approve_as_role)
 
 
 def cli_json(out: str) -> Any:
@@ -354,14 +330,14 @@ def users(test: Test) -> tuple[str, str]:
     their own, and nobody joins one uninvited.
     """
     problems: list[str] = []
-    found = {row.get("username") for row in objects(test.api("admin").call("GET", accounts.USERS).array)}
+    found = {row.get("username") for row in objects(test.api("admin").call("GET", accounts.USERS).array())}
     absent = [username(role) for role in ROLES if username(role) not in found]
     if absent:
         problems.append(f"the admin's list of users lacks {', '.join(absent)}")
     refused = test.api("outsider").call("POST", accounts.USERS, {"username": f"test-nobody-{test.run}"})
     if refused.status != 403:
         problems.append(f"an ordinary user's POST {accounts.USERS}: {refused.describe()}, not 403")
-    mine = {row.get("id") for row in objects(test.api("reader").call("GET", accounts.MY_GROUPS).array)}
+    mine = {row.get("id") for row in objects(test.api("reader").call("GET", accounts.MY_GROUPS).array())}
     if test.groups["readers"] not in mine:
         problems.append(f"test-reader's groups ({accounts.MY_GROUPS}) lack the readers group")
     joined = test.api("reader").call(
@@ -386,7 +362,7 @@ def create_scenario(test: Test) -> tuple[str, str]:
     if made.status != 201:
         problems.append(f"test-curator's create: {made.describe()}, not 201")
     else:
-        row = made.object
+        row = made.object()
         wanted = (
             ("namespace", gamma),
             ("ownerId", test.ids["curator"]),
@@ -412,12 +388,12 @@ def create_scenario(test: Test) -> tuple[str, str]:
         if refused.status != 400:
             problems.append(f"a create {why} ({namespace!r}): {refused.describe()}, not 400")
         if refused.ok:
-            delete(curator, str(refused.object.get("id")))
+            delete(curator, refused.id())
     odd = create(curator, "bad", bad, visibility="secret")
     if odd.status != 400:
         problems.append(f"a create with visibility `secret`: {odd.describe()}, not 400")
     if odd.ok:
-        delete(curator, str(odd.object.get("id")))
+        delete(curator, odd.id())
     return outcome(problems, "test-curator may, test-owner may not, bad namespaces refused")
 
 
@@ -441,7 +417,7 @@ def visibility_scenario(test: Test) -> tuple[str, str]:
     shown = get(outsider, beta)
     if shown.status != 200:
         problems.append(f"test-outsider's GET of beta, public: {shown.describe()}")
-    elif shown.object.get("canEdit") is not False:
+    elif shown.object().get("canEdit") is not False:
         problems.append("test-outsider may edit beta, says canEdit")
     for role, can_edit in (
         ("reader", False),
@@ -452,8 +428,8 @@ def visibility_scenario(test: Test) -> tuple[str, str]:
         answer = get(test.api(role), alpha)
         if answer.status != 200:
             problems.append(f"{username(role)}'s GET of alpha: {answer.describe()}")
-        elif answer.object.get("canEdit") is not can_edit:
-            problems.append(f"canEdit of alpha is {answer.object.get('canEdit')!r} for {username(role)}")
+        elif answer.object().get("canEdit") is not can_edit:
+            problems.append(f"canEdit of alpha is {answer.object().get('canEdit')!r} for {username(role)}")
     if alpha not in listed(test.api("curator")):
         problems.append("test-curator's list of collections, as their administrator, lacks alpha")
     changed = patch(outsider, beta, description="changed by test-outsider")
@@ -478,7 +454,7 @@ def acl_scenario(test: Test) -> tuple[str, str]:
     answer = grant(owner, delta, f"test-nobody-{test.run}", "read")
     if answer.status != 400:
         problems.append(f"a grant to a group that does not exist: {answer.describe()}, not 400")
-    later = rfc3339(time.time() + 3600)
+    later = common.timestamp(time.time() + 3600)
     for target, role, until in ((readers, "read", None), (personal("guest"), "read", later)):
         answer = grant(owner, delta, target, role, until)
         if not answer.ok:
@@ -519,7 +495,7 @@ def tokens(test: Test) -> tuple[str, str]:
         found = data_scopes(token)
         if set(found) != want:
             problems.append(f"{username(role)}'s token has {sorted(found)}, not {sorted(want)}")
-        claims = issuer.claims(token)
+        claims = jwt.claims_of(token)
         if claims.get("iss") != test.issuer_url:
             problems.append(f"{username(role)}'s token's issuer is {claims.get('iss')!r}")
         if claims.get("sub") != username(role):
@@ -527,12 +503,12 @@ def tokens(test: Test) -> tuple[str, str]:
     local = credentials.local_issuer(test.fed, test.web)
     for role, may_create in (("curator", True), ("outsider", False)):
         token = test.control_token(role)
-        found = issuer.scopes(token)
+        found = jwt.scopes_of(token)
         if "collection.read:/" not in found:
             problems.append(f"{username(role)}'s local token lacks collection.read:/")
         if ("collection.create:/" in found) != may_create:
             problems.append(f"{username(role)}'s local token has {sorted(found)}")
-        if issuer.claims(token).get("iss") != local:
+        if jwt.claims_of(token).get("iss") != local:
             problems.append(f"{username(role)}'s local token's issuer is not {local}")
         made = create(Api(test.web, token), "eta", test.path(test.rel("eta")))
         if may_create and made.status != 201:
@@ -540,7 +516,7 @@ def tokens(test: Test) -> tuple[str, str]:
         if not may_create and made.status != 403:
             problems.append(f"a create with test-outsider's local token: {made.describe()}, not 403")
         if made.ok:
-            must(delete(test.api("curator"), str(made.object.get("id"))), "deleting eta")
+            must(delete(test.api("curator"), made.id()), "deleting eta")
     return outcome(problems, "each token has its collections' scopes; collection.create test-curator's")
 
 
@@ -629,7 +605,7 @@ def federation_problems(test: Test, writes: bool) -> list[str]:
             "--token",
             test.data_token_file(role),
         )
-        if allowed and (status != 0 or common.sha256(dest) != common.digest(test.data["alpha/obj"])):
+        if allowed and (status != 0 or not common.file_holds(dest, test.data["alpha/obj"])):
             problems.append(f"`object get` as test-reader: exit {status}: {last_line(err)}")
         if not allowed and status == 0:
             problems.append("`object get` as test-outsider succeeded")
@@ -668,7 +644,7 @@ def client(test: Test) -> tuple[str, str]:
         problems += done.problems
         if done.approvals == 0:
             problems.append(f"the client as {username(role)} announced no device flow to approve")
-        if allowed and (done.status != 0 or common.sha256(dest) != common.digest(test.data["alpha/obj"])):
+        if allowed and (done.status != 0 or not common.file_holds(dest, test.data["alpha/obj"])):
             problems.append(f"`object get` as test-reader: exit {done.status}: {last_line(done.stderr)}")
         if not allowed and done.status == 0:
             problems.append("`object get` as test-outsider succeeded")
@@ -710,7 +686,7 @@ def share_confinement(test: Test) -> tuple[str, str]:
         if answer.status != 400:
             problems.append(f"a share {why} ({namespace}): {answer.describe()}, not 400")
         if answer.ok:
-            made.append(str(answer.object.get("id")))
+            made.append(answer.id())
             grant(sharer, made[-1], personal("guest"), "read")
     try:
         decoy = f"/{test.rel('decoy')}"
@@ -740,8 +716,8 @@ def shares(test: Test) -> tuple[str, str]:
         return PASS, "refused (409): a multiuser origin cannot impersonate a share's owner"
     if made.status != 201:
         return FAIL, f"test-sharer's share of alpha/shared: {made.describe()}, not 201"
-    sid = str(made.object.get("id"))
-    if made.object.get("parentCollectionId") != alpha:
+    sid = made.id()
+    if made.object().get("parentCollectionId") != alpha:
         problems.append("the share's parentCollectionId is not alpha's ID")
     answer = share(test.api("outsider"), alpha, "shared", shared_path)
     if answer.status != 404:
@@ -790,7 +766,7 @@ def expiry(test: Test) -> tuple[str, str]:
     alpha, owner = test.coll["alpha"], test.api("owner")
     deadline = time.time() + EXPIRY
     must(
-        grant(owner, alpha, personal("guest"), "read", rfc3339(deadline)),
+        grant(owner, alpha, personal("guest"), "read", common.timestamp(deadline)),
         "granting with an expiry",
     )
     try:
@@ -852,7 +828,7 @@ def manage(test: Test) -> tuple[str, str]:
     for who, answer in allowed:
         if not answer.ok:
             problems.append(f"a PATCH by {who}: {answer.describe()}")
-    row = get(owner, eps).object
+    row = get(owner, eps).object()
     if row.get("name") != "renamed by test-heir" or row.get("description") != "by test-writer":
         found = f"{row.get('name')!r} and {row.get('description')!r}"
         problems.append(f"after the PATCHes, the name and description are {found}")
@@ -871,15 +847,15 @@ def manage(test: Test) -> tuple[str, str]:
     answer = set_metadata(owner, eps, "key", "value")
     if not answer.ok:
         problems.append(f"test-owner's metadata: {answer.describe()}")
-    rows = {(r.get("key"), r.get("value")) for r in objects(metadata(reader, eps).array)}
+    rows = {(r.get("key"), r.get("value")) for r in objects(metadata(reader, eps).array())}
     if rows != {("key", "value")}:
         problems.append(f"the metadata test-reader lists is {sorted(rows)}, not key=value")
-    if get(owner, eps).object.get("metadata") != {"key": "value"}:
+    if get(owner, eps).object().get("metadata") != {"key": "value"}:
         problems.append("the collection's metadata field lacks key=value")
     answer = owner.call("DELETE", f"{COLLECTIONS}/{eps}/metadata/key")
     if not answer.ok:
         problems.append(f"test-owner's delete of the metadata: {answer.describe()}")
-    elif objects(metadata(owner, eps).array):
+    elif objects(metadata(owner, eps).array()):
         problems.append("the deleted metadata is still listed")
     answer = delete(owner, eps)
     if not answer.ok:
@@ -904,20 +880,20 @@ def ownership(test: Test) -> tuple[str, str]:
     answer = patch(owner, zeta, ownerId=test.ids["heir"])
     if not answer.ok:
         return FAIL, f"test-owner's transfer of zeta to test-heir: {answer.describe()}"
-    if get(heir, zeta).object.get("ownerId") != test.ids["heir"]:
+    if get(heir, zeta).object().get("ownerId") != test.ids["heir"]:
         problems.append("after the transfer, zeta's ownerId is not test-heir's")
     answer = delete(owner, zeta)
     if answer.status != 404:
         problems.append(f"the former owner's delete: {answer.describe()}, not 404")
     invite = heir.call("POST", f"{COLLECTIONS}/{zeta}/ownership-invites", {})
-    token = str(invite.object.get("inviteToken", ""))
+    token = str(invite.object().get("inviteToken", ""))
     if invite.status != 201 or not token:
         problems.append(f"test-heir's ownership invite: {invite.describe()}")
     else:
         answer = guest.call("POST", REDEEM_OWNERSHIP, {"token": token})
         if not answer.ok:
             problems.append(f"test-guest's redeeming of the invite: {answer.describe()}")
-        elif get(guest, zeta).object.get("ownerId") != test.ids["guest"]:
+        elif get(guest, zeta).object().get("ownerId") != test.ids["guest"]:
             problems.append("after the invite, zeta's ownerId is not test-guest's")
         again = test.api("outsider").call("POST", REDEEM_OWNERSHIP, {"token": token})
         if again.ok:
@@ -935,7 +911,7 @@ def first_origin(test: Test) -> str | None:
     It is the first the director lists.
     """
     answer = Api(test.fed.directors[0], None).call("GET", ORIGINS)
-    for row in objects(answer.array):
+    for row in objects(answer.array()):
         if row.get("webUrl"):
             return str(row["webUrl"])
     return None
@@ -984,13 +960,13 @@ def cli(test: Test) -> tuple[str, str]:
         problems.append("`collection create` as test-outsider succeeded")
         delete(curator, str((common.as_object(cli_json(done.stdout)) or {}).get("id")))
     done = manage_as("curator", "list")
-    if cid not in {str(r.get("id")) for r in objects(common.as_array(cli_json(done.stdout)) or [])}:
+    if cid not in {str(r.get("id")) for r in objects(cli_json(done.stdout))}:
         problems.append(f"`collection list`: exit {done.status}, without the new collection")
     done = manage_as("curator", "get", cid)
     if (common.as_object(cli_json(done.stdout)) or {}).get("namespace") != namespace:
         problems.append(f"`collection get`: exit {done.status}: {last_line(done.stderr)}")
     done = manage_as("curator", "update", cid, "--description", "managed by the CLI")
-    if done.status != 0 or get(curator, cid).object.get("description") != "managed by the CLI":
+    if done.status != 0 or get(curator, cid).object().get("description") != "managed by the CLI":
         problems.append(f"`collection update`: exit {done.status}: {last_line(done.stderr)}")
     readers = test.group_name("readers")
     done = manage_as("curator", "acl", "grant", cid, "--group-id", readers, "--role", "read")

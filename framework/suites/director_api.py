@@ -26,8 +26,10 @@ from urllib.parse import quote, urlsplit
 
 from testlib import ads, common, credentials, director, metrics, stores, suite, web, webapi, webdav
 from testlib.common import outcome
+from testlib.director import SERVERS
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
+from testlib.suite import CaseRow
 
 SCENARIOS = {
     "servers": "the lists of servers and namespaces, one server, the contact, and the directors",
@@ -44,15 +46,10 @@ SCENARIOS = {
 # suites/__init__.py): only `metrics`'s client requests carry one.
 ONE_PROFILE = tuple(s for s in SCENARIOS if s != "metrics")
 
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note.
-Row = tuple[str, str, str]
-
 # The directors' routes (director/director.go and director_ui.go in
 # Pelican).
 API = "/api/v1.0/director"
 UI = "/api/v1.0/director_ui"
-SERVERS = f"{UI}/servers"
 UI_NAMESPACES = f"{UI}/namespaces"
 CONTACT = f"{UI}/contact"
 STAT = f"{SERVERS}/origins/stat"
@@ -263,15 +260,10 @@ class Test(suite.Test):
 # Reading a director's answers.
 
 
-def objects(value: Any) -> list[dict[str, Any]]:
-    """Return the objects in value, a JSON array; none if it is none."""
-    return [common.as_object(v) or {} for v in common.as_array(value) or []]
-
-
 def objects_of(answer: web.Response) -> list[dict[str, Any]] | None:
     """Return the objects in answer, a 200's JSON array, or None if not."""
     found = common.as_array(answer.json()) if answer.status == 200 else None
-    return None if found is None else objects(found)
+    return None if found is None else common.objects(found)
 
 
 def row_key(row: Mapping[str, Any]) -> tuple[str, str]:
@@ -305,11 +297,6 @@ def caps_json(caps: frozenset[str]) -> dict[str, bool]:
 def issuer_of(export: common.Export) -> str | None:
     """Return the issuer a director should name for export, if any."""
     return export.issuer if credentials.has_issuer(export.caps) else None
-
-
-def utc_stamp() -> str:
-    """Return now, as a director's test files name it (RFC 3339, in UTC)."""
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def unknown_statuses(url: str) -> tuple[int, ...]:
@@ -448,7 +435,7 @@ def namespace_paths(value: Any) -> set[str] | None:
     if value is None:
         return set()
     found = common.as_array(value)
-    return None if found is None else {str(n.get("path", "")) for n in objects(found)}
+    return None if found is None else {str(n.get("path", "")) for n in common.objects(found)}
 
 
 def one_problems(test: Test, url: str) -> list[str]:
@@ -560,7 +547,7 @@ def directors_problems(test: Test, url: str) -> list[str]:
     return [] if got == want else [f"{director.host(url)} lists {got}, not {want}"]
 
 
-def servers(test: Test) -> list[Row]:
+def servers(test: Test) -> list[CaseRow]:
     """Check what each director says of the federation's servers.
 
     See each *_problems() function.
@@ -575,7 +562,7 @@ def servers(test: Test) -> list[Row]:
         ("contact", contact_problems, CONTACT_EMAIL),
         ("directors", lambda u: directors_problems(test, u), "every director"),
     ]
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for case, check, note in checks:
         problems = [p for url in test.fed.directors for p in check(url)]
         rows.append((case, *outcome(problems, note)))
@@ -611,7 +598,7 @@ def v2_problems(test: Test, url: str) -> list[str]:
     for entry in entries:
         path = str(entry.get("path", ""))
         caps = common.as_object(entry.get("Caps")) or {}
-        issuers = [url_text(i.get("issuer")) for i in objects(entry.get("token-issuer"))]
+        issuers = [url_text(i.get("issuer")) for i in common.objects(entry.get("token-issuer"))]
         if path == MONITORING:
             if caps.get("PublicRead") is not True or caps.get("Read") is not True:
                 problems.append(f"{name}: {MONITORING}'s capabilities are {caps}")
@@ -683,14 +670,14 @@ def prefix_problems(test: Test, url: str) -> list[str]:
     return problems
 
 
-def namespaces(test: Test) -> list[Row]:
+def namespaces(test: Test) -> list[CaseRow]:
     """Check what each director says of the namespaces.
 
     See v2_problems(), v1_problems(), and prefix_problems().
     """
     directors = test.fed.directors
     cases = prefix_cases(test)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     problems = [p for url in directors for p in v2_problems(test, url)]
     rows.append(("v2", *outcome(problems, f"{len(test.exports)} export(s), and {MONITORING}")))
     problems = [p for url in directors for p in v1_problems(url)]
@@ -811,7 +798,7 @@ def cache_file_problems(test: Test) -> list[str]:
     (runCacheTest in director/cache_monitor.go). The file is the suite's
     own, by its name, beside the directors' own.
     """
-    stamp = utc_stamp()
+    stamp = common.timestamp(time.time())
     path = f"{TEST_DIR}/director-api-{test.run}/{stamp[:10]}/director-test-{stamp}.txt"
     problems: list[str] = []
     for cache in test.fed.federated_caches:
@@ -823,7 +810,7 @@ def cache_file_problems(test: Test) -> list[str]:
     return problems
 
 
-def health(test: Test) -> list[Row]:
+def health(test: Test) -> list[CaseRow]:
     """Check the directors' health tests of each server.
 
     Within HEALTH_WAIT seconds, each director must list each server's as
@@ -865,7 +852,7 @@ def health(test: Test) -> list[Row]:
 # health-test-file
 
 
-def health_test_file(test: Test) -> list[Row]:
+def health_test_file(test: Test) -> list[CaseRow]:
     """Check the test file each director serves for its tests of caches.
 
     The file (getHealthTestFile in director/director.go) is named by a
@@ -874,7 +861,7 @@ def health_test_file(test: Test) -> list[Row]:
     is none gets 400. A directory whose name holds `&` and `<` must come
     back escaped in the PROPFIND's XML.
     """
-    stamp = utc_stamp()
+    stamp = common.timestamp(time.time())
     name = f"director-test-{stamp}.txt"
     good = f"{TEST_DIR}/{name}"
     escaped = f"{TEST_DIR}/a&b</{name}"
@@ -893,18 +880,11 @@ def health_test_file(test: Test) -> list[Row]:
             ("propfind", good, f"{base}{good}"),
             ("escaped", escaped, f"{base}{TEST_DIR}/a%26b%3C/{name}"),
         ):
-            answer = webdav.propfind(sent, "0")
-            if answer.status != 207:
-                cases[case].append(f"{what}: {answer.describe()}, not 207")
-                continue
-            try:
-                entries = webdav.parse(answer.body)
-            except ValueError as e:
-                cases[case].append(f"{what}: {e}")
-                continue
-            if [(e.path, e.size) for e in entries] != [(path, len(TEST_BODY))]:
-                found = [(e.path, e.size) for e in entries]
-                cases[case].append(f"{what}: it lists {found}, not {path}")
+            _, found, why = webdav.stat(sent)
+            if found is None:
+                cases[case].append(f"{what}: {why}")
+            elif (found.path, found.size) != (path, len(TEST_BODY)):
+                cases[case].append(f"{what}: it lists {(found.path, found.size)}, not {path}")
         answer = web.request("GET", f"{base}{TEST_DIR}/director-test-yesterday.txt")
         if answer.status != 400:
             cases["bad-timestamp"].append(f"{what}: {answer.describe()}, not 400")
@@ -977,7 +957,7 @@ def stat_admin_problems(test: Test, url: str, held: Held) -> list[str]:
     """
     answer = web.request("GET", f"{url}{STAT}/public/{held.rel}", token=test.admin(url))
     found = answer.object()
-    hosts = {director.host(str(o.get("url", ""))) for o in objects(found.get("objects"))}
+    hosts = {director.host(str(o.get("url", ""))) for o in common.objects(found.get("objects"))}
     want = holders(test, held)
     if answer.status != 200 or not hosts or not hosts <= want:
         named = sorted(hosts)
@@ -985,7 +965,7 @@ def stat_admin_problems(test: Test, url: str, held: Held) -> list[str]:
     return []
 
 
-def origin_stat(test: Test) -> list[Row]:
+def origin_stat(test: Test) -> list[CaseRow]:
     """Check which origins hold an object, as each director asks them.
 
     A director asks them by queryOrigins (director/director_ui.go).
@@ -1020,7 +1000,7 @@ def origin_stat(test: Test) -> list[Row]:
         elif common.as_object(answer.json()) is None:
             body = answer.body[:300]
             cases["unknown-namespace"].append(f"{what}: its body is no JSON object: {body!r}")
-    rows: list[Row] = [("no-auth", *outcome(cases["no-auth"], "401"))]
+    rows: list[CaseRow] = [("no-auth", *outcome(cases["no-auth"], "401"))]
     if held is None:
         rows.append(("admin", SKIP, why))
     else:
@@ -1128,7 +1108,7 @@ def count_problems(test: Test, url: str) -> list[str]:
     return problems
 
 
-def metrics_scenario(test: Test) -> list[Row]:
+def metrics_scenario(test: Test) -> list[CaseRow]:
     """Check what each director counts (metrics/director.go).
 
     It counts the redirects and client requests of a client of the run's
@@ -1179,7 +1159,7 @@ def hosts_metadata(test: Test, url: str) -> bool:
     return director.host(url) == discovery_host
 
 
-def metadata_hosting(test: Test) -> list[Row]:
+def metadata_hosting(test: Test) -> list[CaseRow]:
     """Check each director's discovery document and metadata comparison.
 
     A director serves the discovery document only where it is the
@@ -1292,7 +1272,7 @@ class Forwarding:
         return ads.post_ad(url, "Cache", body, self.token)
 
 
-def forwarded(f: Forwarding) -> Row:
+def forwarded(f: Forwarding) -> CaseRow:
     """Check that an ad posted to one director alone reaches the other.
 
     The cache's own ad, saying a status it doesn't, posted to the first
@@ -1319,7 +1299,7 @@ def forwarded(f: Forwarding) -> Row:
     return "", FAIL, f"{FORWARD_WAIT}s on, {second} lists it {got!r}, not {mark!r}"
 
 
-def shutdown_lifted(f: Forwarding) -> Row:
+def shutdown_lifted(f: Forwarding) -> CaseRow:
     """Check that a forwarded ad lifts the cache's shutdown at a director.
 
     The cache's own ad saying it is shutting down is posted to the
@@ -1383,7 +1363,7 @@ def restored(f: Forwarding) -> list[str]:
     return problems
 
 
-def forwarding(test: Test) -> list[Row]:
+def forwarding(test: Test) -> list[CaseRow]:
     """Check how the directors forward the first federated cache's ads.
 
     Under -p topo-multi-director, the cache's own ads are each posted to
@@ -1406,7 +1386,7 @@ def forwarding(test: Test) -> list[Row]:
     f.status = str(f.listed(f.second).get("serverStatus") or "ok")
     if f.status == "shutting down":
         return [(c, INCONCLUSIVE, "the cache says it is shutting down") for c in cases]
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     try:
         for case, check in (("forwarded", forwarded), ("shutdown-lifted", shutdown_lifted)):
             _, status, note = common.guarded(functools.partial(check, f), lambda note: ("", FAIL, note))
@@ -1421,7 +1401,7 @@ def forwarding(test: Test) -> list[Row]:
 
 
 # The scenarios, by name: each takes the Test, and returns its rows.
-RUN: dict[str, Callable[[Test], list[Row]]] = {
+RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
     "servers": servers,
     "namespaces": namespaces,
     "health": health,
@@ -1446,8 +1426,6 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     test = Test(session)
     try:
         for name in selected:
-            rows = common.guarded(functools.partial(RUN[name], test), lambda note: [("", FAIL, note)])
-            for case, status, note in rows:
-                results.add(f"{name} {case}".strip(), status, note)
+            suite.record(results, name, suite.attempt_cases(functools.partial(RUN[name], test)))
     finally:
         test.clean("after the run")

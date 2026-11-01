@@ -32,6 +32,7 @@ from testlib.common import die, first, outcome
 from testlib.names import NAMES
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, json_objects, last_line
+from testlib.suite import Row
 
 SCENARIOS = {
     "origin-put": "a PUT of each name lands under that name in each store, a pstore's too",
@@ -123,7 +124,7 @@ def catalogued_sizes(
     found, why = stores.catalog_answer(test.session, origin, "ls", "protected-a", collection)
     if found is None:
         return None, why
-    entries = common.objects(common.as_array(found.get("entries")) or [])
+    entries = common.objects(found.get("entries"))
     return {str(e.get("name")): e.get("size") for e in entries}, ""
 
 
@@ -167,7 +168,7 @@ def catalogued(test: Test, origin: common.Origin) -> list[str]:
     return problems
 
 
-def origin_put(test: Test) -> tuple[str, str]:
+def origin_put(test: Test) -> Row:
     """Check that a PUT of each name lands in each store, by name.
 
     The PUTs were made as the test began. In a store on disk, each lands
@@ -198,7 +199,7 @@ def origin_put(test: Test) -> tuple[str, str]:
     return outcome(problems, f"{len(test.origins)} store(s)")
 
 
-def served(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
+def served(test: Test, servers: list[Row]) -> Row:
     """Check that each of servers serves each object by its name.
 
     Args:
@@ -221,21 +222,21 @@ def served(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
     return outcome(problems, f"{len(servers)} server(s)")
 
 
-def origin_get(test: Test) -> tuple[str, str]:
+def origin_get(test: Test) -> Row:
     """Check that each origin serves each object by its name."""
     if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
     return served(test, [(o.svc, o.url) for o in test.origins])
 
 
-def cache_get(test: Test) -> tuple[str, str]:
+def cache_get(test: Test) -> Row:
     """Check that each cache serves each object by its name, cold."""
     if not test.fed.caches:
         return SKIP, "this shape has no cache"
     return served(test, [(c.svc, c.url) for c in test.fed.caches])
 
 
-def director_get(test: Test) -> tuple[str, str]:
+def director_get(test: Test) -> Row:
     """Check that each director's redirect leads to each object by its name.
 
     Each director's object route, asked for each object by its name,
@@ -273,7 +274,7 @@ def director_get(test: Test) -> tuple[str, str]:
     return outcome(problems, f"{len(test.fed.directors)} director(s), each leading to {kind}")
 
 
-def listed(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
+def listed(test: Test, servers: list[Row]) -> Row:
     """Check that each of servers lists every name once, with its size.
 
     Each lists the run's collection at depth 1.
@@ -289,14 +290,9 @@ def listed(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
     want: dict[str, int | None] = {n: len(data) for n, data in test.objects.items()}
     problems: list[str] = []
     for svc, server in servers:
-        answer = webdav.propfind(f"{server}{quote(path)}/", "1", test.token)
-        if answer.status != 207:
-            problems.append(f"{svc}: {answer.describe()}, not 207")
-            continue
-        try:
-            got = webdav.relative(webdav.parse(answer.body), path)
-        except ValueError as e:
-            problems.append(f"{svc}: {e}")
+        _, got, why = webdav.listing(f"{server}{quote(path)}/", "1", path, test.token)
+        if got is None:
+            problems.append(f"{svc}: {why}")
             continue
         wrong = webdav.problems(want, got)
         if wrong:
@@ -304,14 +300,14 @@ def listed(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
     return outcome(problems, f"{len(servers)} server(s)")
 
 
-def origin_list(test: Test) -> tuple[str, str]:
+def origin_list(test: Test) -> Row:
     """Check that each origin lists every name."""
     if not {"Listings", "DirectReads"} <= test.caps:
         return SKIP, "/protected-a may not be listed straight from an origin"
     return listed(test, [(o.svc, o.url) for o in test.origins])
 
 
-def cache_list(test: Test) -> tuple[str, str]:
+def cache_list(test: Test) -> Row:
     """Check that each federated cache lists every name.
 
     Site-local caches list their own way.
@@ -375,7 +371,7 @@ def get_by(
     test: Test,
     label: str,
     get: Callable[[str, common.Cache | None, str, str, str], tuple[str | None, list[str]]],
-) -> tuple[str, str]:
+) -> Row:
     """Check that a get of each object writes a file of its name.
 
     A get of each, alone, into a directory for each way a client reaches
@@ -413,7 +409,7 @@ def get_by(
     return status, "; ".join([note, *notes])
 
 
-def client_get(test: Test) -> tuple[str, str]:
+def client_get(test: Test) -> Row:
     """Check that `pelican object get` writes a file of each object's name.
 
     A get of each object, in a command of its own (see above), into a
@@ -478,7 +474,7 @@ def plugin_one(
     return transfers.plugin_passed(ads), ads or err or out
 
 
-def plugin_get(test: Test) -> tuple[str, str]:
+def plugin_get(test: Test) -> Row:
     """Check that stash_plugin writes a file of each object's name.
 
     As client_get(), through the plugin, which takes each object's URL and
@@ -501,7 +497,7 @@ def plugin_get(test: Test) -> tuple[str, str]:
     return get_by(test, "plugin-get", get)
 
 
-def put_by(test: Test, label: str, put: Callable[[str, str], str | None]) -> tuple[str, str]:
+def put_by(test: Test, label: str, put: Callable[[str, str], str | None]) -> Row:
     """Check that a put of a file of each name lands as that object.
 
     A put of each, alone, to its object's URL in a new collection must
@@ -556,7 +552,7 @@ def put_by(test: Test, label: str, put: Callable[[str, str], str | None]) -> tup
     return outcome(problems, f"{len(files)} files")
 
 
-def client_put(test: Test) -> tuple[str, str]:
+def client_put(test: Test) -> Row:
     """Check that `pelican object put` of each name lands as that object.
 
     Each file goes in a command of its own (see above); put_by() judges
@@ -570,7 +566,7 @@ def client_put(test: Test) -> tuple[str, str]:
     return put_by(test, "client-put", put)
 
 
-def plugin_put(test: Test) -> tuple[str, str]:
+def plugin_put(test: Test) -> Row:
     """Check that stash_plugin's put of each name lands as that object.
 
     Each file goes in a run of its own, as the only ad of its input (see
@@ -586,7 +582,7 @@ def plugin_put(test: Test) -> tuple[str, str]:
     return put_by(test, "plugin-put", put)
 
 
-def client_ls(test: Test) -> tuple[str, str]:
+def client_ls(test: Test) -> Row:
     """Check that `pelican object ls` lists every name once, with its size.
 
     It lists the run's collection, with -l --json.

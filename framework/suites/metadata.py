@@ -39,7 +39,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -47,7 +46,7 @@ from functools import partial
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
-from testlib import accounts, common, control, credentials, metrics, stores, suite, web
+from testlib import accounts, common, control, metrics, stores, suite, web
 from testlib.common import die, first, outcome, shown, warn
 from testlib.recorder import (
     CAPTURES,
@@ -59,7 +58,7 @@ from testlib.recorder import (
 )
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
-from testlib.suite import Row
+from testlib.suite import NAMESPACE, Row
 
 SCENARIOS = {
     "fields": "`object put --metadata-file`: the event carries the fields",
@@ -85,7 +84,6 @@ SCENARIOS = {
 # first origin's web API tokens (see suites/__init__.py).
 ONE_PROFILE = ("object-metadata-cli", "queue-admin")
 
-NAMESPACE = "protected-a"
 # The namespace's path, as the first origin's APIs name it, and the
 # path of the suite's area in it.
 NAMESPACE_PATH = f"/{NAMESPACE}"
@@ -123,10 +121,8 @@ QUERY_URL = "X-Pelican-Metadata-Query-Url"
 MANAGE_URL = "X-Pelican-Metadata-Manage-Url"
 
 # The ordinary user, whom the first origin's admin creates once, and
-# later runs reuse; and how long the suite's tokens for the origin's web
-# API last, which the restarts may outlast.
+# later runs reuse.
 USER = "test-metadata"
-TOKEN_LIFETIME = 3600
 
 # How long an event that should come at once may take to; how long a
 # cancelled event must then not be delivered (longer than the retries,
@@ -155,15 +151,9 @@ RECONCILE_WATCH = 45
 BACKPRESSURE = "pelican_origin_metadata_backpressure_refusals_total"
 
 
-class Problem(Exception):
-    """Why a scenario could not do what it needed to judge Pelican.
-
-    The scenario fails, with this as its note.
-    """
-
-
-# The exceptions by which a check reports a problem (suite.attempt()).
-EXPECTED = (Problem, accounts.ApiError, stores.Unreadable)
+# The exceptions, beside suite.SetupError, by which a check reports a
+# problem (suite.attempt()).
+EXPECTED = (accounts.ApiError, stores.Unreadable)
 
 
 class Test(suite.Test):
@@ -184,11 +174,10 @@ class Test(suite.Test):
         failing: Of those, the objects whose events the recorder always
             fails, which are deleted through the first origin, so that it
             records them gone, before the run's queue rows are.
-        admin_file: The file of the first origin's admin's token.
     """
 
     def __init__(self, session: Session):
-        super().__init__(session, "metadata", NAMESPACE)
+        super().__init__(session, "metadata")
         fed = self.fed
         self.mode = fed.metadata
         self.origin = fed.origins[0]
@@ -203,24 +192,15 @@ class Test(suite.Test):
         self.web = self.origin.web_url
         self.written: set[str] = set(uploaded(self.run))
         self.failing: set[str] = set()
-        self.admin_file = session.path("tokens/metadata.admin")
-        self._admin: str | None = None
-        self._user: str | None = None
+        self._user_made = False
 
     def object_url(self, name: str) -> str:
         """Return object name's URL at the first origin."""
         return f"{self.origin.url}{PREFIX}/{quote(name)}"
 
     def admin(self) -> str:
-        """Return the first origin's admin's bearer token.
-
-        Its file is admin_file.
-        """
-        if self._admin is None:
-            self._admin = credentials.mint_web_user(
-                self.fed, self.admin_file, self.web, "admin", TOKEN_LIFETIME
-            )
-        return self._admin
+        """Return the first origin's admin's bearer token."""
+        return self.session.web_token(self.web)
 
     def user(self) -> str:
         """Return USER's bearer token for the first origin's web API.
@@ -229,15 +209,14 @@ class Test(suite.Test):
         The admin, and then the user, agree to its AUP, without which it
         would refuse the user for that, not for being no admin.
         """
-        if self._user is None:
+        token = self.session.web_token(self.web, USER)
+        if not self._user_made:
             admin = accounts.Api(self.web, self.admin())
             accounts.agree_to_aup(admin)
             accounts.ensure_user(admin, USER)
-            out = self.session.path("tokens/metadata.user")
-            token = credentials.mint_web_user(self.fed, out, self.web, USER, TOKEN_LIFETIME)
             accounts.agree_to_aup(accounts.Api(self.web, token))
-            self._user = token
-        return self._user
+            self._user_made = True
+        return token
 
     def api(self, method: str, route: str, token: str | None) -> accounts.Answer:
         """Send method to route of the first origin's web API.
@@ -253,15 +232,15 @@ class Test(suite.Test):
         page at a time.
 
         Raises:
-            Problem: The origin won't list them.
+            suite.SetupError: The origin won't list them.
         """
         rows: list[dict[str, Any]] = []
         while True:
             query = urlencode({"namespace": NAMESPACE_PATH, "limit": 1000, "offset": len(rows)})
             answer = self.api("GET", f"{QUEUE}?{query}", self.admin())
             if answer.status != 200:
-                raise Problem(f"listing the publish queue: {answer.describe()}")
-            page = [common.as_object(r) or {} for r in common.as_array(answer.object.get("rows")) or []]
+                raise suite.SetupError(f"listing the publish queue: {answer.describe()}")
+            page = [common.as_object(r) or {} for r in common.as_array(answer.object().get("rows")) or []]
             rows += page
             if len(page) < 1000:
                 return rows
@@ -276,12 +255,12 @@ class Test(suite.Test):
         The health route of the first origin's publish queue says.
 
         Raises:
-            Problem: The route won't say.
+            suite.SetupError: The route won't say.
         """
         answer = self.api("GET", f"{QUEUE}/_health", self.admin())
         if answer.status != 200:
-            raise Problem(f"GET {QUEUE}/_health: {answer.describe()}")
-        counts = common.as_object(answer.object.get("per_namespace")) or {}
+            raise suite.SetupError(f"GET {QUEUE}/_health: {answer.describe()}")
+        counts = common.as_object(answer.object().get("per_namespace")) or {}
         return int(counts.get(NAMESPACE_PATH) or 0)
 
     def drop(self, event_id: str) -> str | None:
@@ -315,10 +294,7 @@ class Test(suite.Test):
     def holds(self, name: str, data: bytes) -> bool:
         """Return whether a store holds object name, with exactly data."""
         path = self.object_file(name)
-        if path is None:
-            return False
-        with open(path, "rb") as f:
-            return f.read() == data
+        return path is not None and common.file_holds(path, data)
 
     def check_stored(self, name: str, data: bytes, capture: str) -> Row | None:
         """Return a failure if no store holds object name with exactly data.
@@ -346,11 +322,11 @@ class Test(suite.Test):
             True, and the ID of a capture of such an event that the
             verifier accepted; or, on a timeout, False, and why.
         """
-        for _ in range(seconds):
-            accepted = [row[0] for row in since(after) if row[1:4] == ["200", kind, path]]
-            if accepted:
-                return True, accepted[-1]
-            time.sleep(1)
+        accepted = common.wait_last(
+            lambda: [row[0] for row in since(after) if row[1:4] == ["200", kind, path]], bool, seconds, 1
+        )
+        if accepted:
+            return True, accepted[-1]
         last = [row for row in since(after) if row[3:4] == [path]]
         if not last:
             return False, f"no {kind} event arrived"
@@ -379,8 +355,7 @@ class Test(suite.Test):
                 if not any(row[2:4] == [kind, path] for row in rows for kind in kinds)
             ]
 
-        common.wait_for(lambda: not missing(), seconds, 1)
-        return missing()
+        return common.wait_last(missing, lambda found: not found, seconds, 1)
 
     def direct_put(self, name: str, data: bytes, metadata: str, token: str | None = None) -> web.Response:
         """Upload data as object name straight to the first origin.
@@ -496,9 +471,8 @@ def blob(test: Test) -> Row:
     meta = event(capture, "metadata")
     if meta.get("content_type") != "application/xml" or meta.get("size") != len(sent):
         return FAIL, f"{shown(CAPTURES)}/{capture}.event.json: wrong or missing .metadata"
-    with open(f"{CAPTURES}/{capture}.blob", "rb") as f:
-        if f.read() != sent:
-            return FAIL, f"{shown(CAPTURES)}/{capture}.blob differs from the blob sent"
+    if not common.file_holds(f"{CAPTURES}/{capture}.blob", sent):
+        return FAIL, f"{shown(CAPTURES)}/{capture}.blob differs from the blob sent"
     return test.check_stored(name, data, capture) or (PASS, f"{shown(CAPTURES)}/{capture}.blob")
 
 
@@ -648,23 +622,24 @@ def issued(answer: web.Response, name: str, wanted: str) -> tuple[str, str]:
         wanted: The X-Pelican-Metadata-Status that answer must have.
 
     Raises:
-        Problem: The upload failed, says otherwise, or lacks either URL.
+        suite.SetupError: The upload failed, says otherwise, or lacks
+            either URL.
     """
     if not answer.ok:
-        raise Problem(f"uploading {name} got {answer.describe()}")
+        raise suite.SetupError(f"uploading {name} got {answer.describe()}")
     got = answer.header(STATUS_HEADER)
     if got != wanted:
         stale = got == "published" and name.startswith("fail-always-")
         hint = "; the recorder predates fail-always-*: ./fed.sh restart metadata" if stale else ""
-        raise Problem(f"uploading {name}: {STATUS_HEADER} '{got}', not '{wanted}'{hint}")
+        raise suite.SetupError(f"uploading {name}: {STATUS_HEADER} '{got}', not '{wanted}'{hint}")
     urls = (answer.header(QUERY_URL), answer.header(MANAGE_URL))
     for header, url in zip((QUERY_URL, MANAGE_URL), urls):
         if not url:
-            raise Problem(f"the {wanted} upload of {name} carries no {header}")
+            raise suite.SetupError(f"the {wanted} upload of {name} carries no {header}")
         if not urlsplit(url).path.startswith(STATUS_ROUTE):
-            raise Problem(f"{header} is {url}, not under {STATUS_ROUTE}")
+            raise suite.SetupError(f"{header} is {url}, not under {STATUS_ROUTE}")
     if urls[0] == urls[1]:
-        raise Problem(f"{QUERY_URL} and {MANAGE_URL} are both {urls[0]}")
+        raise suite.SetupError(f"{QUERY_URL} and {MANAGE_URL} are both {urls[0]}")
     return urls
 
 
@@ -677,7 +652,7 @@ def read_status(url: str, path: str, state: str) -> str | None:
     answer = fetch("GET", url)
     if answer.status != 200:
         return f"GET {url} got {answer.describe()}, not 200"
-    found = answer.object
+    found = answer.object()
     if found.get("object_path") != path or found.get("state") != state:
         return (
             f"GET {url} says {found.get('object_path')!r} is {found.get('state')!r},"
@@ -756,7 +731,7 @@ def urls_cancel(test: Test) -> Row:
     why = read_status(query, path, "pending")
     if why:
         return FAIL, why
-    event_id = str(fetch("GET", query).object.get("event_id", ""))
+    event_id = str(fetch("GET", query).object().get("event_id", ""))
     problems: list[str] = []
     refused = fetch("DELETE", query)
     if refused.status != 403:
@@ -766,7 +741,7 @@ def urls_cancel(test: Test) -> Row:
         problems.append(f"after the query URL's DELETE, {why}")
     cancelled = fetch("DELETE", manage)
     after = time.time_ns()
-    if cancelled.status != 200 or cancelled.object.get("cancelled") is not True:
+    if cancelled.status != 200 or cancelled.object().get("cancelled") is not True:
         problems.append(f"DELETE through the manage URL got {cancelled.describe()}, not a cancel")
     if problems:
         return FAIL, first(problems)
@@ -810,13 +785,13 @@ def committed(test: Test, name: str, metadata: str) -> None:
     metadata.
 
     Raises:
-        Problem: The event does not come.
+        suite.SetupError: The event does not come.
     """
     test.written.add(name.split("/", 1)[0])
     answer = test.direct_put(name, os.urandom(4096), metadata)
     arrived, why = test.await_event(f"{PREFIX}/{name}", "object.committed", EVENT_WAIT)
     if not arrived:
-        raise Problem(f"uploading {name} ({answer.describe()}): {why}")
+        raise suite.SetupError(f"uploading {name} ({answer.describe()}): {why}")
 
 
 def catalog_move(test: Test) -> Row:
@@ -931,7 +906,7 @@ def cancelled_object(test: Test) -> str:
     through its manage URL.
 
     Raises:
-        Problem: It could not be made.
+        suite.SetupError: It could not be made.
     """
     name = f"fail-always-{test.run}-reconcile"
     test.written.add(name)
@@ -940,7 +915,7 @@ def cancelled_object(test: Test) -> str:
     manage = issued(answer, name, "queued")[1]
     cancelled = fetch("DELETE", manage)
     if cancelled.status != 200:
-        raise Problem(f"cancelling {name} through its manage URL got {cancelled.describe()}")
+        raise suite.SetupError(f"cancelling {name} through its manage URL got {cancelled.describe()}")
     return f"{PREFIX}/{name}"
 
 
@@ -950,7 +925,7 @@ def rejected_object(test: Test) -> str:
     It is an upload whose event the recorder rejects (422).
 
     Raises:
-        Problem: It could not be made.
+        suite.SetupError: It could not be made.
     """
     name = f"reject-{test.run}-reconcile"
     test.written.add(name)
@@ -969,16 +944,16 @@ def observed_object(test: Test) -> str:
     origin then serves, and so records, as an object it did not write.
 
     Raises:
-        Problem: It could not be made.
+        suite.SetupError: It could not be made.
     """
     name = f"{test.run}-observed"
     test.written.add(name)
     error = stores.write_file(test.origin.store_of(NAMESPACE), f"data/metadata/{name}", os.urandom(4096))
     if error:
-        raise Problem(error)
+        raise suite.SetupError(error)
     answer = web.request("HEAD", test.object_url(name), token=test.setup)
     if answer.status != 200:
-        raise Problem(f"HEAD of {name}, written to the store, got {answer.describe()}")
+        raise suite.SetupError(f"HEAD of {name}, written to the store, got {answer.describe()}")
     return f"{PREFIX}/{name}"
 
 
@@ -1030,7 +1005,7 @@ def reconcile_rows(test: Test) -> dict[str, Row]:
     watched: dict[str, str] = {}
     for case, maker in makers.items():
         made: tuple[str, str] = common.guarded(
-            partial(path_of, maker, test), lambda note: ("", note), (Problem, accounts.ApiError)
+            partial(path_of, maker, test), lambda note: ("", note), (suite.SetupError, accounts.ApiError)
         )
         path, why = made
         if why:
@@ -1130,17 +1105,17 @@ def tracked_object(test: Test) -> tuple[str, int]:
         The object's path and size.
 
     Raises:
-        Problem: Either fails.
+        suite.SetupError: Either fails.
     """
     name = f"{test.run}-tracked"
     test.written.add(name)
     data = os.urandom(3000)
     answer = test.direct_put(name, data, 'step="tracked"', test.setup)
     if not answer.ok:
-        raise Problem(f"uploading {name} got {answer.describe()}")
+        raise suite.SetupError(f"uploading {name} got {answer.describe()}")
     path = f"{PREFIX}/{name}"
     if not common.wait_for(lambda: tracked(test, path), 10):
-        raise Problem(f"the record of objects has no live row for {path}")
+        raise suite.SetupError(f"the record of objects has no live row for {path}")
     return path, len(data)
 
 
@@ -1162,11 +1137,11 @@ def objects_api(test: Test, path: str, size: int) -> Row:
     listed = test.api("GET", routes["list"], admin)
     if listed.status != 200:
         problems.append(f"the admin's list got {listed.describe()}")
-    live = common.as_object(test.api("GET", routes["get"], admin).object.get("live")) or {}
+    live = common.as_object(test.api("GET", routes["get"], admin).object().get("live")) or {}
     if live.get("object_path") != path or not same(live.get("size"), size):
         found = f"{live.get('object_path')!r} of {live.get('size')!r} bytes"
         problems.append(f"the admin's lookup has {found}, not {path!r} of {size}")
-    history = common.as_array(test.api("GET", routes["history"], admin).object.get("rows")) or []
+    history = common.as_array(test.api("GET", routes["history"], admin).object().get("rows")) or []
     kinds = [(common.as_object(r) or {}).get("event_type") for r in history]
     if "commit" not in kinds:
         problems.append(f"the admin's history of {path} has {kinds}, no commit")
@@ -1197,37 +1172,31 @@ def objects_cli(test: Test, path: str) -> Row:
     Args:
         path: A tracked object's path (see tracked_object()).
     """
-    server = test.session.pelican_server
-    if server is None:
+    if test.session.pelican_server is None:
         return SKIP, "no pelican-server, which has `origin object-metadata`; run ./fed.sh init"
-    test.admin()
     problems: list[str] = []
     for subcommand, route in object_routes(path):
         args = cli_args(subcommand, path)
-        command = [server, "origin", "object-metadata", *args]
-        command += ["--server", test.web, "--token", test.admin_file, "--json"]
-        try:
-            done = subprocess.run(
-                command,
-                env=test.session.env,
-                cwd=test.tmp,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            problems.append(f"`{subcommand}` timed out after 120s")
-            continue
-        if done.returncode != 0:
-            problems.append(f"`{subcommand}`: exit {done.returncode}: {last_line(done.stderr)}")
+        token_file = test.session.web_token_file(test.web)
+        code, out, err = test.session.server_cmd(
+            "origin",
+            "object-metadata",
+            *args,
+            "--server",
+            test.web,
+            "--token",
+            token_file,
+            "--json",
+            cwd=test.tmp,
+            timeout=120,
+        )
+        if code != 0:
+            problems.append(f"`{subcommand}`: exit {code}: {last_line(err)}")
             continue
         try:
-            printed = json.loads(done.stdout)
+            printed = json.loads(out)
         except ValueError:
-            problems.append(f"`{subcommand}` printed no JSON: {last_line(done.stdout)}")
+            problems.append(f"`{subcommand}` printed no JSON: {last_line(out)}")
             continue
         answer = test.api("GET", route, test.admin())
         if answer.status != 200 or steady(printed) != steady(answer.data):
@@ -1242,7 +1211,7 @@ def object_metadata_cli(test: Test) -> dict[str, Row]:
     """
     try:
         path, size = tracked_object(test)
-    except Problem as e:
+    except suite.SetupError as e:
         return {case: (FAIL, str(e)) for case in CASES["object-metadata-cli"]}
     return {
         "api": suite.attempt(lambda: objects_api(test, path, size), EXPECTED),
@@ -1266,17 +1235,17 @@ def held_event(test: Test) -> tuple[str, str]:
         failed.
 
     Raises:
-        Problem: It is not queued within EVENT_WAIT seconds.
+        suite.SetupError: It is not queued within EVENT_WAIT seconds.
     """
     name = f"fail-always-{test.run}-held"
     path = f"{PREFIX}/{name}"
     test.written.add(name)
     error = stores.write_file(test.origin.store_of(NAMESPACE), f"data/metadata/{name}", b"held\n")
     if error:
-        raise Problem(error)
+        raise suite.SetupError(error)
     answer = web.request("DELETE", test.object_url(name), token=test.setup)
     if not answer.ok:
-        raise Problem(f"DELETE of {name} got {answer.describe()}")
+        raise suite.SetupError(f"DELETE of {name} got {answer.describe()}")
     found: list[dict[str, Any]] = []
 
     def attempted() -> bool:
@@ -1284,7 +1253,7 @@ def held_event(test: Test) -> tuple[str, str]:
         return bool(found)
 
     if not common.wait_for(attempted, EVENT_WAIT, 1):
-        raise Problem(f"no queue row for {path}'s object.deleted, tried once, in {EVENT_WAIT}s")
+        raise suite.SetupError(f"no queue row for {path}'s object.deleted, tried once, in {EVENT_WAIT}s")
     return str(found[0].get("event_id", "")), path
 
 
@@ -1328,13 +1297,13 @@ def queue_views(test: Test, event_id: str, path: str) -> Row:
     if not listed or listed[0].get("object_path") != path:
         problems.append(f"the admin's list lacks {event_id}, for {path}")
     health = test.api("GET", f"{QUEUE}/_health", admin)
-    state = health.object.get("state")
-    pending = int((common.as_object(health.object.get("per_namespace")) or {}).get(NAMESPACE_PATH) or 0)
+    state = health.object().get("state")
+    pending = int((common.as_object(health.object().get("per_namespace")) or {}).get(NAMESPACE_PATH) or 0)
     if health.status != 200 or state not in ("healthy", "warning", "error") or pending < 1:
         problems.append(f"the queue's health got {health.describe()}: {health.data}")
     row = test.api("GET", f"{QUEUE}/{quote(event_id)}", admin)
-    attempts = row.object.get("attempts")
-    if row.status != 200 or row.object.get("object_path") != path or not attempts:
+    attempts = row.object().get("attempts")
+    if row.status != 200 or row.object().get("object_path") != path or not attempts:
         problems.append(f"the admin's GET of {event_id} got {row.describe()}: {row.data}")
     unknown = test.api("GET", f"{QUEUE}/no-such-event-{test.run}", admin)
     if unknown.status != 404:
@@ -1349,7 +1318,7 @@ def queue_retry(test: Test, event_id: str) -> Row:
     answer 200 and have it delivered again within RETRY_WAIT seconds.
     """
     row = test.api("GET", f"{QUEUE}/{quote(event_id)}", test.admin())
-    due = go_time(row.object.get("next_attempt_at"))
+    due = go_time(row.object().get("next_attempt_at"))
     if row.status != 200 or due is None:
         return FAIL, f"the admin's GET of {event_id} got {row.describe()}: {row.data}"
     wait = due - time.time()
@@ -1397,7 +1366,7 @@ def queue_admin(test: Test, unrestarted: str | None) -> dict[str, Row]:
     """
     try:
         event_id, path = held_event(test)
-    except (Problem, accounts.ApiError) as e:
+    except (suite.SetupError, accounts.ApiError) as e:
         return {case: (FAIL, f"holding an event: {e}") for case in CASES["queue-admin"]}
     return {
         "auth": suite.attempt(lambda: queue_auth(test, event_id), EXPECTED),
@@ -1418,8 +1387,7 @@ def queue_off(session: Session) -> Row:
     (401), and tell the admin that publishing is off (503).
     """
     origin = session.fed.origins[0]
-    out = session.path("tokens/metadata.admin")
-    token = credentials.mint_web_user(session.fed, out, origin.web_url, "admin", TOKEN_LIFETIME)
+    token = session.web_token(origin.web_url)
     problems: list[str] = []
     answer = accounts.Api(origin.web_url, None).call("GET", QUEUE)
     if answer.status != 401:
@@ -1485,30 +1453,12 @@ def cap_rows(test: Test, cap: int, filled: list[str]) -> Row:
         filled.append(name)
         try:
             issued(test.direct_put(name, os.urandom(1024), 'step="fill"'), name, "queued")
-        except Problem as e:
+        except suite.SetupError as e:
             return FAIL, f"with {pending} of {cap} rows pending, {e}"
         pending = test.pending()
     if pending < cap:
         return FAIL, f"the namespace never had {cap} rows pending, but {pending}"
     return past_cap(test, f"{test.run}-refused-rows", "rows", f"{pending} rows pending, the cap")
-
-
-def with_blob(boundary: str, metadata: bytes, data: bytes) -> bytes:
-    """Return a multipart/form-data body (RFC 7578) of metadata and data.
-
-    Its parts are those Pelican takes apart by name
-    (Origin.Metadata.MetadataPartName and ObjectPartName): `metadata`,
-    whose bytes are metadata, then `object`, data.
-    """
-    body = b""
-    for name, part in (("metadata", metadata), ("object", data)):
-        head = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="{name}"; filename="{name}"\r\n'
-            "Content-Type: application/octet-stream\r\n\r\n"
-        )
-        body += head.encode() + part + b"\r\n"
-    return body + f"--{boundary}--\r\n".encode()
 
 
 def cap_bytes(test: Test, filled: list[str], blobs: list[str]) -> Row:
@@ -1526,17 +1476,20 @@ def cap_bytes(test: Test, filled: list[str], blobs: list[str]) -> Row:
     """
     errors = test.drop_rows([f"{PREFIX}/{n}" for n in filled])
     if errors:
-        raise Problem(f"draining the rows: {errors[0]}")
+        raise suite.SetupError(f"draining the rows: {errors[0]}")
     name = f"fail-always-{test.run}-blob"
     test.written.add(name)
     test.failing.add(name)
     blobs.append(name)
     boundary = f"pelican-testing-{os.urandom(12).hex()}"
+    # The parts that Pelican takes apart by name
+    # (Origin.Metadata.MetadataPartName and ObjectPartName).
+    parts = (("metadata", os.urandom(BLOB_CAP)), ("object", b"blob\n"))
     answer = web.request(
         "PUT",
         test.object_url(name),
         token=test.token,
-        upload=with_blob(boundary, os.urandom(BLOB_CAP), b"blob\n"),
+        upload=web.multipart(boundary, parts),
         headers={
             "Content-Type": f"multipart/form-data; boundary={boundary}",
             "X-Pelican-Object-Metadata": 'step="blob"',
@@ -1544,7 +1497,7 @@ def cap_bytes(test: Test, filled: list[str], blobs: list[str]) -> Row:
     )
     try:
         issued(answer, name, "queued")
-    except Problem as e:
+    except suite.SetupError as e:
         return FAIL, f"with no blob pending, {e}"
     return past_cap(test, f"{test.run}-refused-bytes", "bytes", f"{BLOB_CAP} blob bytes pending")
 
@@ -1557,7 +1510,7 @@ def drained(test: Test, held: Sequence[str]) -> Row:
     """
     errors = test.drop_rows([f"{PREFIX}/{n}" for n in held])
     if errors:
-        raise Problem(f"draining the queue: {errors[0]}")
+        raise suite.SetupError(f"draining the queue: {errors[0]}")
     name = f"{test.run}-drained"
     test.written.add(name)
     data = os.urandom(4096)
@@ -1618,9 +1571,9 @@ def restart_for(test: Test, text: str, body: Callable[[], None]) -> str | None:
     name = f"{test.run}-probe"
     probe = f"data/metadata/{name}"
     test.written.add(name)
-    error = stores.write_file_everywhere(test.fed.origins, NAMESPACE, probe, b"probe\n")
-    if error:
-        return f"putting the probe: {error}"
+    errors = stores.write_file_everywhere(test.fed.origins, NAMESPACE, probe, b"probe\n")
+    if errors:
+        return f"putting the probe: {first(errors)}"
     svc = test.origin.svc
     print(f"\nRestarting {svc} with:\n{text}")
     try:
@@ -1668,7 +1621,7 @@ def held_rows(test: Test, wanted: Sequence[str]) -> dict[str, Row]:
             try:
                 cap = test.pending() + ROW_HEADROOM
                 wanted.append("backpressure")
-            except Problem as e:
+            except suite.SetupError as e:
                 add("backpressure", {case: (FAIL, str(e)) for case in CASES["backpressure"]})
     if not wanted:
         return rows
@@ -1743,7 +1696,7 @@ def clean(test: Test) -> None:
                 time.sleep(3)
             doomed = [r for r in test.queue_rows() if test.run in str(r.get("object_path", ""))]
             errors += [e for e in (test.drop(str(r.get("event_id", ""))) for r in doomed) if e]
-    except (Problem, accounts.ApiError) as e:
+    except (suite.SetupError, accounts.ApiError) as e:
         errors.append(str(e))
     if errors:
         warn(f"could not remove all the run made: {first(errors)}")
@@ -1777,8 +1730,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     try:
         for name in selected:
             if name in CHECKS:
-                for case, row in CHECKS[name](test).items():
-                    results.add(f"{name} {case}", *row)
+                suite.record(results, name, CHECKS[name](test))
             elif name in RUN:
                 results.add(name, *suite.attempt(partial(RUN[name], test), EXPECTED))
         held = [name for name in ("queue-admin", "backpressure") if name in selected]
@@ -1786,7 +1738,6 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             for row_name, row in held_rows(test, held).items():
                 results.add(row_name, *row)
         if "catalog" in selected:
-            for case, row in reconcile_rows(test).items():
-                results.add(f"catalog {case}", *row)
+            suite.record(results, "catalog", reconcile_rows(test))
     finally:
         clean(test)

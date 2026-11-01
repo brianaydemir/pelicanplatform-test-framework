@@ -15,21 +15,16 @@ replaces it.
 """
 
 import glob
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from . import accounts, common, credentials, director, jwt, web
+from . import common, credentials, director, jwt, registry, web
 
 # The scope of an advertise token.
 ADVERTISE = "pelican.advertise"
-# A key that no server knows.
-UNKNOWN_KEY = "test-keys/unknown.pem"
-# The directors' list of servers.
-SERVERS = "/api/v1.0/director_ui/servers"
 # How long an ad lasts, in seconds, and how long a token signed here
 # lasts: a server's last a minute, but a check may wait out a restore
 # between minting one and its last use.
@@ -101,14 +96,14 @@ class Servers:
         """
         if (kind, host) in self._servers:
             return self._servers[(kind, host)]
-        listed = web.request("GET", f"{self.director}{SERVERS}")
-        for row in common.objects(common.as_array(listed.json()) or []):
+        listed = web.request("GET", f"{self.director}{director.SERVERS}")
+        for row in common.objects(listed.json()):
             if row.get("type") == kind and director.host(str(row.get("webUrl", ""))) == host:
                 name = str(row.get("name", ""))
-                answer = web.request("GET", f"{self.director}{SERVERS}/{quote(name, safe='')}")
+                answer = web.request("GET", f"{self.director}{director.SERVERS}/{quote(name, safe='')}")
                 found = common.as_object(answer.json())
                 if found is None:
-                    raise Missing(f"{SERVERS}/{name}: {answer.describe()}, not a server")
+                    raise Missing(f"{director.SERVERS}/{name}: {answer.describe()}, not a server")
                 self._servers[(kind, host)] = Server(kind, host, found)
                 return self._servers[(kind, host)]
         raise Missing(f"{director.host(self.director)} lists no {kind.lower()} at {host}")
@@ -116,7 +111,7 @@ class Servers:
     def key(self, server: Server) -> tuple[str, str]:
         """Return server's own key, and its kid.
 
-        Its own key is the one of its keys whose public key the registry
+        Its own key is the first of its keys whose public key the registry
         holds for its prefix.
 
         Returns:
@@ -126,14 +121,14 @@ class Servers:
             Missing: The registry holds none of its keys for its prefix.
         """
         if server.prefix not in self._keys:
-            url = f"{self.fed.registry_url}/api/v1.0/registry{server.prefix}/.well-known/issuer.jwks"
+            url = f"{self.fed.registry_url}{registry.prefix_route(server.prefix)}/.well-known/issuer.jwks"
             answer = web.request("GET", url)
-            listed = common.as_array(answer.object().get("keys")) or []
+            listed = jwt.jwks_keys(answer.body) or []
             for key in sorted(glob.glob(f"issuer-keys/{server.host}/*.pem")):
-                jwk = jwt.public_jwk(key)
-                for entry in common.objects(listed):
-                    if all(entry.get(k) == v for k, v in jwk.items()):
-                        self._keys[server.prefix] = (key, str(entry.get("kid") or ""))
+                kid = jwt.listed_kid(key, listed)
+                if kid is not None:
+                    self._keys[server.prefix] = (key, kid)
+                    break
             if server.prefix not in self._keys:
                 raise Missing(
                     f"the registry holds none of framework/var/issuer-keys/{server.host}/'s"
@@ -157,7 +152,7 @@ def claims(scope: str, issuer: str, audience: str, subject: str = "") -> dict[st
 
     They are those of a server's own advertise token (GetAdvertisementTok
     in Pelican's server_utils/server_utils.go), lasting TOKEN_LIFETIME
-    seconds, for a test to change before sign_claims() signs them.
+    seconds, for a test to change before jwt.sign() signs them.
 
     Args:
         scope: Its scope.
@@ -166,17 +161,6 @@ def claims(scope: str, issuer: str, audience: str, subject: str = "") -> dict[st
         subject: Its subject, if not credentials.SUBJECT.
     """
     return jwt.wlcg_claims(scope, issuer, [audience], subject or credentials.SUBJECT, TOKEN_LIFETIME)
-
-
-def sign_claims(key: str, kid: str, body: Mapping[str, Any]) -> str:
-    """Return a token of the claims body, signed with key under kid.
-
-    Args:
-        key: The PEM file, under framework/var, to sign it with.
-        kid: The key ID to sign it under.
-        body: Its claims, as claims() returns them.
-    """
-    return jwt.sign(body, key, kid)
 
 
 def sign(key: str, kid: str, scope: str, issuer: str, audience: str, subject: str = "") -> str:
@@ -192,15 +176,16 @@ def sign(key: str, kid: str, scope: str, issuer: str, audience: str, subject: st
         audience: Its audience.
         subject: Its subject, if not credentials.SUBJECT.
     """
-    return sign_claims(key, kid, claims(scope, issuer, audience, subject))
+    return jwt.sign(claims(scope, issuer, audience, subject), key, kid)
 
 
 def unknown_token(scope: str, issuer: str, audience: str) -> str:
     """Return a token of scope, from issuer, for audience.
 
-    It is signed with UNKNOWN_KEY.
+    It is signed with credentials.UNKNOWN_KEY.
     """
-    return sign(UNKNOWN_KEY, jwt.key_id(UNKNOWN_KEY), scope, issuer, audience)
+    key = credentials.UNKNOWN_KEY
+    return sign(key, jwt.key_id(key), scope, issuer, audience)
 
 
 def url_object(text: str) -> dict[str, str]:
@@ -226,8 +211,8 @@ def namespace_ad(listed: Mapping[str, Any]) -> dict[str, Any]:
     Returns:
         The namespace (a server_structs.NamespaceAd).
     """
-    generations = [common.as_object(g) or {} for g in common.as_array(listed.get("tokenGeneration")) or []]
-    issuers = [common.as_object(i) or {} for i in common.as_array(listed.get("tokenIssuer")) or []]
+    generations = common.objects(listed.get("tokenGeneration"))
+    issuers = common.objects(listed.get("tokenIssuer"))
     return {
         "Caps": listed.get("capabilities") or {},
         "path": listed.get("path", ""),
@@ -315,11 +300,10 @@ def post_ad(url: str, kind: str, body: Mapping[str, Any], token: str | None) -> 
         body: The ad.
         token: The token to present, if any.
     """
-    headers = {**accounts.JSON, **user_agent(kind, str(body.get("version", "")))}
     return web.request(
         "POST",
         f"{url}/api/v1.0/director/register{kind}",
         token=token,
-        upload=json.dumps(body).encode(),
-        headers=headers,
+        headers=user_agent(kind, str(body.get("version", ""))),
+        json_body=body,
     )

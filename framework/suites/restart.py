@@ -39,6 +39,7 @@ from testlib import (
     director,
     issuer,
     metrics,
+    registry,
     suite,
     transfers,
     web,
@@ -49,6 +50,7 @@ from testlib.common import die, first, outcome, warn
 from testlib.issuer import User
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
+from testlib.suite import NAMESPACE, CaseRow
 
 SCENARIOS = {
     "cache-restart": "each cache, restarted, serves what it held from its store",
@@ -76,12 +78,8 @@ SCENARIOS = {
     "peer-director": "a director killed drops from its peer's list, and returns (several directors)",
 }
 
-NAMESPACE = "protected-a"
 # The scenarios that present no storage token (see suites/__init__.py).
 ONE_PROFILE = ("state-survives", "ad-expiry", "xrootd-wedged", "peer-director")
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note.
-Row = tuple[str, str, str]
 
 OBJECT_SIZE = 1 << 20
 # How many objects each cache holds across its restart.
@@ -126,15 +124,9 @@ LIVENESS = "xrootd-liveness"
 WEDGED_WAIT = 90
 # A downtime's severity, as the web UI offers it.
 SEVERITY = "Outage (completely inaccessible)"
-# The scope of an API token that reads /metrics (promMetricAuthHandler in
-# web_ui/authorization.go takes API tokens).
-SCRAPE_SCOPE = credentials.SCRAPE_SCOPE
 
 LOCAL_METADATA = "/api/v1.0/server/localMetadata"
-REGISTERED_SERVERS = "/api/v1.0/registry_ui/servers"
-DOWNTIME = "/api/v1.0/downtime"
 DIRECTORS = "/api/v1.0/director/directors"
-HEALTH = "/api/v1.0/metrics/health"
 
 
 def skip(fed: common.Federation) -> str | None:
@@ -150,11 +142,10 @@ def skip(fed: common.Federation) -> str | None:
 
 
 class Test(suite.Test):
-    """The run's objects in /protected-a, and the servers' admin tokens."""
+    """The run's objects in /protected-a, and the servers' web APIs."""
 
     def __init__(self, session: Session):
-        super().__init__(session, "restart", NAMESPACE)
-        self._admins: dict[str, str] = {}
+        super().__init__(session, "restart")
 
     def place(self, name: str, data: bytes) -> None:
         """Put object name, holding data, at every origin (put())."""
@@ -162,25 +153,12 @@ class Test(suite.Test):
         if why:
             die(f"could not put {self.rel(name)} in place: {why}")
 
-    def admin_token(self, web_url: str, key_dir: str) -> str:
-        """Return a token that the server at web_url takes as its admin's.
+    def admin(self, web_url: str) -> Api:
+        """Return the web API of the server at web_url, as its admin.
 
-        It is signed with the server's key in key_dir (see
-        credentials.mint_web_user()).
+        See Session.web_token().
         """
-        if web_url not in self._admins:
-            self._admins[web_url] = credentials.mint_web_user(
-                self.fed,
-                self.session.path(f"tokens/restart.admin.{director.host(web_url)}"),
-                web_url,
-                "admin",
-                key=common.signing_key(key_dir),
-            )
-        return self._admins[web_url]
-
-    def admin(self, web_url: str, key_dir: str) -> Api:
-        """Return the web API of the server at web_url, as its admin."""
-        return Api(web_url, self.admin_token(web_url, key_dir))
+        return Api(web_url, self.session.web_token(web_url))
 
     def named_by(self, route: str, path: str, host: str) -> list[str]:
         """Return the directors that would send a GET of path to host.
@@ -220,7 +198,7 @@ class Test(suite.Test):
 # cache-restart
 
 
-def cache_restart(test: Test) -> list[Row]:
+def cache_restart(test: Test) -> list[CaseRow]:
     """Check that each cache, restarted, serves what it held from its store.
 
     Each cache holds HELD_OBJECTS objects read whole (a V2 cache says so
@@ -231,7 +209,7 @@ def cache_restart(test: Test) -> list[Row]:
     the origins' counters alone tell, and over XRootD origins, which
     keep none, only the bytes are checked.
     """
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for cache in test.fed.caches:
         names = [f"held-{cache.svc}-{n}" for n in range(HELD_OBJECTS)]
         objects = {name: os.urandom(OBJECT_SIZE) for name in names}
@@ -310,22 +288,17 @@ def cache_restart(test: Test) -> list[Row]:
 
 @dataclass(frozen=True)
 class Server:
-    """An origin or a cache, whose record of itself the suite reads.
-
-    Attributes:
-        key_dir: The directory of its signing key, under framework/var.
-    """
+    """An origin or a cache, whose record of itself the suite reads."""
 
     svc: str
     web_url: str
-    key_dir: str
 
 
 def servers_of(fed: common.Federation) -> list[Server]:
     """Return the origins (another owner's too) and the caches."""
-    found = [Server(o.svc, o.web_url, f"issuer-keys/{o.svc}") for o in fed.origins]
-    found += [Server(o.origin.svc, o.web_url, o.key_dir) for o in fed.owners]
-    found += [Server(c.svc, c.web_url, f"issuer-keys/{c.svc}") for c in fed.caches]
+    found = [Server(o.svc, o.web_url) for o in fed.origins]
+    found += [Server(o.origin.svc, o.web_url) for o in fed.owners]
+    found += [Server(c.svc, c.web_url) for c in fed.caches]
     return found
 
 
@@ -355,8 +328,8 @@ def local_metadata(test: Test, server: Server) -> dict[str, Any]:
     Returns:
         Its record (its ID, name, and type); {} if it will not say.
     """
-    answer = test.admin(server.web_url, server.key_dir).call("GET", LOCAL_METADATA)
-    return answer.object if answer.status == 200 else {}
+    answer = test.admin(server.web_url).call("GET", LOCAL_METADATA)
+    return answer.object() if answer.status == 200 else {}
 
 
 def registered_servers(test: Test) -> list[tuple[str, str]] | None:
@@ -369,13 +342,11 @@ def registered_servers(test: Test) -> list[tuple[str, str]] | None:
     fed = test.fed
     if not fed.registry_url:
         return None
-    host = director.host(fed.registry_url)
-    answer = test.admin(fed.registry_url, f"issuer-keys/{host}").call("GET", REGISTERED_SERVERS)
+    answer = test.admin(fed.registry_url).call("GET", registry.SERVERS)
     if answer.status != 200:
         return None
     return [
-        (str(entry.get("id", "")), str(entry.get("name", "")))
-        for entry in (common.as_object(s) or {} for s in answer.array)
+        (str(entry.get("id", "")), str(entry.get("name", ""))) for entry in common.objects(answer.array())
     ]
 
 
@@ -415,20 +386,22 @@ def record_state(test: Test, found: Recorded) -> list[str]:
             problems.append(f"{server.svc} records no ID of itself ({LOCAL_METADATA})")
     listed = registered_servers(test)
     if listed is None and test.fed.registry_url:
-        problems.append(f"the registry's {REGISTERED_SERVERS} did not answer the admin")
+        problems.append(f"the registry's {registry.SERVERS} did not answer the admin")
     found.registered = listed or []
     origin, _ = issuer_origin(test)
     if origin is None:
         return problems
     web_url = origin.web_url
-    admin = test.admin(web_url, f"issuer-keys/{origin.svc}")
+    admin = test.admin(web_url)
     try:
         accounts.agree_to_aup(admin)
         found.user_id = accounts.ensure_user(admin, f"restart-user-{test.run}")
         found.group_id = accounts.create_group(admin, f"restart-group-{test.run}")
         expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        # A token that reads /metrics (promMetricAuthHandler in
+        # web_ui/authorization.go takes API tokens).
         answer = webapi.create_token(
-            web_url, f"restart-{test.run}", [SCRAPE_SCOPE], expires, login_cookie(web_url)
+            web_url, f"restart-{test.run}", [credentials.SCRAPE_SCOPE], expires, login_cookie(web_url)
         )
         made = webapi.made_token(answer)
         if answer.status not in (200, 201) or made is None:
@@ -444,19 +417,21 @@ def record_state(test: Test, found: Recorded) -> list[str]:
             "startTime": now + 86_400_000,
             "endTime": now + 90_000_000,
         }
-        answer = admin.call("POST", f"{DOWNTIME}/{found.downtime_id}", declared, accounts.csrf(admin))
+        answer = admin.call(
+            "POST", f"{registry.DOWNTIME}/{found.downtime_id}", declared, accounts.csrf(admin)
+        )
         if not answer.ok:
             problems.append(f"declaring a downtime for tomorrow: {answer.describe()}")
             found.downtime_id = ""
         found.client = issuer.create_client(
             web_url,
             f"/{NAMESPACE}",
-            test.admin_token(web_url, f"issuer-keys/{origin.svc}"),
+            test.session.web_token(web_url),
             name=f"pelican-test-framework restart {test.run}",
         )
         tokens = issuer.device_tokens(
             found.client,
-            User(token=test.admin_token(web_url, f"issuer-keys/{origin.svc}")),
+            User(token=test.session.web_token(web_url)),
             ("openid", "offline_access", "storage.read:/"),
         )
         if not tokens.refresh:
@@ -484,7 +459,7 @@ def restart_and_settle(test: Test, svc: str, route: str, host: str) -> str | Non
     return None
 
 
-def state_survives(test: Test) -> list[Row]:
+def state_survives(test: Test) -> list[CaseRow]:
     """Check that what record_state() records outlives restarts.
 
     Once origin-0, director-0, and the registry have restarted, each
@@ -500,7 +475,7 @@ def state_survives(test: Test) -> list[Row]:
     test.place("probe", os.urandom(4096))
     found = Recorded()
     problems = record_state(test, found)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     if problems:
         rows.append(("setup", FAIL, first(problems)))
     origin = fed.origins[0]
@@ -542,7 +517,7 @@ def state_survives(test: Test) -> list[Row]:
         rows.append(("issuer", SKIP, why))
         return rows
     web_url = issuing.web_url
-    admin = test.admin(web_url, f"issuer-keys/{issuing.svc}")
+    admin = test.admin(web_url)
     try:
         problems = list[str]()
         if found.user_id and accounts.find_user(admin, f"restart-user-{test.run}") != found.user_id:
@@ -566,8 +541,8 @@ def state_survives(test: Test) -> list[Row]:
                 problems.append(f"the token {found.api_token_id} is not listed")
             rows.append(("api-token", *outcome(problems, "reads /metrics, and is listed")))
         if found.downtime_id:
-            answer = admin.call("GET", DOWNTIME)
-            ids = [str((common.as_object(d) or {}).get("id")) for d in answer.array]
+            answer = admin.call("GET", registry.DOWNTIME)
+            ids = [str((common.as_object(d) or {}).get("id")) for d in answer.array()]
             if found.downtime_id not in ids:
                 rows.append(("downtime", FAIL, f"the downtime is not listed: {answer.describe()}"))
             else:
@@ -597,17 +572,17 @@ def cleanup_state(test: Test, found: Recorded) -> None:
     if origin is None:
         return
     web_url = origin.web_url
-    admin = test.admin(web_url, f"issuer-keys/{origin.svc}")
+    admin = test.admin(web_url)
     try:
         if found.downtime_id:
-            admin.call("DELETE", f"{DOWNTIME}/{found.downtime_id}", headers=accounts.csrf(admin))
+            admin.call("DELETE", f"{registry.DOWNTIME}/{found.downtime_id}", headers=accounts.csrf(admin))
         if found.api_token_id:
             webapi.delete_token(web_url, found.api_token_id, login_cookie(web_url))
         if found.client:
             issuer.delete_client(
                 web_url,
                 f"/{NAMESPACE}",
-                test.admin_token(web_url, f"issuer-keys/{origin.svc}"),
+                test.session.web_token(web_url),
                 found.client.client_id,
             )
         if found.group_id:
@@ -622,7 +597,7 @@ def cleanup_state(test: Test, found: Recorded) -> None:
 # ad-expiry
 
 
-def ad_expiry(test: Test) -> list[Row]:
+def ad_expiry(test: Test) -> list[CaseRow]:
     """Check that a server killed drops from every director, and returns.
 
     The first federated cache, and with several origins the last origin,
@@ -645,7 +620,7 @@ def ad_expiry(test: Test) -> list[Row]:
         targets.append((origin.svc, "origin", director.host(origin.url)))
     if not targets:
         return [("", SKIP, "no cache, and one origin")]
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for svc, route, host in targets:
         # state_survives() restarts director-0 just before, which then
         # learns of each server again only from its next ad.
@@ -701,22 +676,22 @@ def ad_expiry(test: Test) -> list[Row]:
 # backend-outage
 
 
-def health_of(test: Test, svc: str, web_url: str, component: str) -> str:
-    """Return what the health report of svc, at web_url, says of component.
+def health_of(test: Test, web_url: str, component: str) -> str:
+    """Return what the health report at web_url says of component.
 
     Returns:
-        Its status, as the admin reads it; "" if nothing, as where svc does
-        not answer.
+        Its status, as the admin reads it; "" if nothing, as where the
+        server does not answer.
     """
-    answer = test.admin(web_url, f"issuer-keys/{svc}").call("GET", HEALTH)
-    components = common.as_object(answer.object.get("components")) or {}
+    answer = test.admin(web_url).call("GET", webapi.HEALTH)
+    components = common.as_object(answer.object().get("components")) or {}
     found = common.as_object(components.get(component)) or {}
     return str(found.get("status", ""))
 
 
 def health_component(test: Test, origin: common.Origin, component: str) -> str:
     """Return what origin's health report says of component (health_of())."""
-    return health_of(test, origin.svc, origin.web_url, component)
+    return health_of(test, origin.web_url, component)
 
 
 def restart_backend(backend: str) -> str | None:
@@ -750,7 +725,7 @@ def revived(svc: str) -> str | None:
     return f"{svc}'s container had {found or 'gone'}, so it was started again"
 
 
-def backend_outage(test: Test) -> list[Row]:
+def backend_outage(test: Test) -> list[CaseRow]:
     """Check that an origin answers 5xx while its backend is stopped.
 
     With the origins' storage service stopped: at origin-0, where it
@@ -775,7 +750,7 @@ def backend_outage(test: Test) -> list[Row]:
     rel, cold = test.rel("outage"), test.rel("outage-cold")
     cache = fed.federated_caches[0] if fed.federated_caches else None
     component = BACKEND_COMPONENTS.get(fed.origin_variant)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     try:
         control.stop(backend)
     except control.ControlError as e:
@@ -923,9 +898,9 @@ def wedge(test: Test, svc: str, web_url: str, route: str) -> tuple[str, str]:
     try:
         with control.restart_with(svc, {LIVENESS_FILE: LIVENESS_CONFIG}):
             if not common.wait_for(
-                lambda: health_of(test, svc, web_url, LIVENESS) == "ok", HEALTH_WAIT, interval=2
+                lambda: health_of(test, web_url, LIVENESS) == "ok", HEALTH_WAIT, interval=2
             ):
-                seen = health_of(test, svc, web_url, LIVENESS)
+                seen = health_of(test, web_url, LIVENESS)
                 problems.append(f"before its XRootD stopped, {LIVENESS} was {seen!r}, not 'ok'")
             control.freeze_xrootd(svc)
             frozen = time.monotonic()
@@ -933,7 +908,7 @@ def wedge(test: Test, svc: str, web_url: str, route: str) -> tuple[str, str]:
 
             def ended() -> bool:
                 if not unwell:
-                    seen = health_of(test, svc, web_url, LIVENESS)
+                    seen = health_of(test, web_url, LIVENESS)
                     if seen in ("warning", "critical"):
                         unwell.append(f"{seen} {time.monotonic() - frozen:.0f}s in")
                 return control.state(svc) != "running"
@@ -956,7 +931,7 @@ def wedge(test: Test, svc: str, web_url: str, route: str) -> tuple[str, str]:
     return outcome(problems, "; ".join(notes))
 
 
-def xrootd_wedged(test: Test) -> list[Row]:
+def xrootd_wedged(test: Test) -> list[CaseRow]:
     """Check that a server whose XRootD stops answering shuts itself down.
 
     Once its own XRootD has answered no liveness probe for
@@ -1056,7 +1031,7 @@ def failover_problems(fetch: Fetched, data: bytes, dead: str, client: str) -> li
     if client == "plugin" and not transfers.plugin_passed(fetch.said):
         return [f"exit {fetch.status}: {last_line(fetch.said)}"]
     problems: list[str] = []
-    if common.sha256(os.path.join(fetch.directory, "object")) != common.digest(data):
+    if not common.file_holds(os.path.join(fetch.directory, "object"), data):
         problems.append("the file is not the object")
     if not fetch.hosts:
         problems.append("no host recorded")
@@ -1092,7 +1067,7 @@ def failover_rows(
     probe: str,
     prefix: str = "",
     routes: Sequence[str] = ("",),
-) -> list[Row]:
+) -> list[CaseRow]:
     """Return a failover scenario's rows, with server dead away.
 
     dead is paused, and then killed. Each time, while the directors still
@@ -1109,7 +1084,7 @@ def failover_rows(
     """
     host = director.host(dead.url)
     path = test.path(test.rel(probe))
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for mode, away, back in (
         ("paused", control.pause, control.unpause),
         ("killed", control.kill, control.start),
@@ -1185,7 +1160,7 @@ def failover_rows(
     return rows
 
 
-def cache_failover(test: Test) -> list[Row]:
+def cache_failover(test: Test) -> list[CaseRow]:
     """Check that the clients get an object while the first cache is away.
 
     With the first federated cache paused (its ports take connections
@@ -1213,7 +1188,7 @@ def cache_failover(test: Test) -> list[Row]:
 # origin-failover
 
 
-def origin_failover(test: Test) -> list[Row]:
+def origin_failover(test: Test) -> list[CaseRow]:
     """Check that the clients get an object while the last origin is away.
 
     With several origins, each holding the object: the last is paused
@@ -1265,7 +1240,7 @@ def listed_directors(url: str) -> set[str] | None:
     return {director.host(str((common.as_object(d) or {}).get("advertise_url", ""))) for d in found}
 
 
-def peer_director(test: Test) -> list[Row]:
+def peer_director(test: Test) -> list[CaseRow]:
     """Check that a director killed drops from its peer's list, and returns.
 
     With several directors, the second killed: within Server.AdLifetime
@@ -1322,7 +1297,7 @@ def peer_director(test: Test) -> list[Row]:
 
 # --------------------------------------------------------------------------
 
-RUN: dict[str, Callable[[Test], list[Row]]] = {
+RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
     "cache-restart": cache_restart,
     "state-survives": state_survives,
     "ad-expiry": ad_expiry,
@@ -1347,9 +1322,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     print(f"Restarts against {fed.url}, objects under /{NAMESPACE}/{test.base}/\n")
     try:
         for name in selected:
-            rows = common.guarded(partial(RUN[name], test), lambda note: [("", FAIL, note)])
-            for case, status, note in rows:
-                results.add(f"{name} {case}".strip(), status, note)
+            suite.record(results, name, suite.attempt_cases(partial(RUN[name], test)))
     finally:
         test.clean("after the run")
         shutil.rmtree(test.tmp, ignore_errors=True)

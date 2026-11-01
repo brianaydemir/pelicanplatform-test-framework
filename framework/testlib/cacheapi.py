@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
-from . import blocks, common, credentials, web
+from . import blocks, common, web
 from .session import Session
 
 PRESTAGE = "/pelican/api/v1.0/prestage"
@@ -35,20 +35,13 @@ INTROSPECT = "/api/v1.0/cache/introspect"
 # purge` mints it (cmd/cache_evict.go).
 PURGE_SCOPE = "localcache.purge"
 
-# How long the admin's tokens last, in seconds: a suite keeps one per
-# cache for as long as it runs.
-TOKEN_LIFETIME = 3600
-
 
 def admin_token(session: Session, cache: common.Cache, extra_scopes: tuple[str, ...] = ()) -> str:
     """Return a token that cache's web API takes as its admin's.
 
-    It is credentials.mint_web_user()'s, with extra_scopes too (e.g.
-    PURGE_SCOPE), lasting TOKEN_LIFETIME.
+    It is Session.web_token()'s, with extra_scopes too (e.g. PURGE_SCOPE).
     """
-    name = "-".join(("admin", *extra_scopes))
-    out = session.path(f"tokens/cacheapi.{cache.svc}.{name}")
-    return credentials.mint_web_user(session.fed, out, cache.web_url, "admin", TOKEN_LIFETIME, extra_scopes)
+    return session.web_token(cache.web_url, "admin", extra_scopes)
 
 
 def object_url(fed: common.Federation, path: str) -> str:
@@ -63,6 +56,32 @@ def object_url(fed: common.Federation, path: str) -> str:
     """
     director = urlsplit(str(fed.discovery["director_endpoint"])).netloc
     return f"pelican://{director}{quote(path)}"
+
+
+def prestage(cache: common.Cache, path: str | None, token: str | None) -> web.Response:
+    """GET the prestage API of cache for path, with token.
+
+    The API streams its progress until the object is whole.
+
+    Args:
+        cache: The cache to ask.
+        path: The object's path in the federation; None for no `path`.
+        token: The token to present, if any.
+    """
+    query = "" if path is None else "?" + urlencode({"path": path})
+    return web.request("GET", f"{cache.web_url}{PRESTAGE}{query}", token=token, timeout=120)
+
+
+def evict(
+    cache: common.Cache,
+    path: str,
+    token: str | None,
+    immediate: bool = True,
+    method: str = "POST",
+) -> web.Response:
+    """Send method to the eviction API of cache for path, with token."""
+    query = {"path": path, **({"immediate": "true"} if immediate else {})}
+    return web.request(method, f"{cache.web_url}{EVICT}?{urlencode(query)}", token=token)
 
 
 def stats(cache: common.Cache) -> dict[str, Any] | None:

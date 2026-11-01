@@ -18,6 +18,7 @@ from testlib.common import die, first, outcome
 from testlib.credentials import R
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
+from testlib.suite import NAMESPACE
 
 # `restart-cache` presents the setup token alone, since its reads are
 # how it fills the cache and sees it serve again, not what it checks; so
@@ -42,7 +43,6 @@ SCENARIOS = {
     ),
 }
 
-NAMESPACE = "protected-a"
 
 # What a V2 cache sends in the trailer of a transfer that went well
 # (local_cache/persistent_cache_api.go in Pelican).
@@ -79,7 +79,7 @@ class Test(suite.Test):
     """
 
     def __init__(self, session: Session):
-        super().__init__(session, "selftest", NAMESPACE)
+        super().__init__(session, "selftest")
         self.object = self.rel("object")
         self.data = os.urandom(200_000)
         self.read_token = session.token(NAMESPACE, R)
@@ -199,7 +199,7 @@ def verify_problem(fed: common.Federation, token: str, kid: str) -> str | None:
     found = jwt.verify(token, jwks.body)
     if found != kid:
         return f"jwt.verify() found {found!r} in {origin.svc}'s JWKS, not {kid!r}"
-    other = json.dumps({"keys": [jwt.public_jwk(credentials.keys(fed)["unknown"])]})
+    other = json.dumps({"keys": [jwt.public_jwk(credentials.UNKNOWN_KEY)]})
     found = jwt.verify(token, other.encode())
     if found is not None:
         return f"jwt.verify() found {found!r} in a JWKS of the unknown key alone"
@@ -271,11 +271,7 @@ def restart_cache(test: Test) -> suite.Row:
         return FAIL, f"before the restart, GET got {why}"
     held = 0.0
     if v2:
-
-        def says_held() -> bool:
-            return web.age(web.request("HEAD", url, token=test.read_setup)) is not None
-
-        if not common.wait_for(says_held, suite.HELD_WAIT, interval=1):
+        if not test.wait_held(cache, test.object):
             return FAIL, f"before the restart, no Age within {suite.HELD_WAIT}s of a whole read"
         held = time.time()
     why = director.unnamed(fed.directors, "object", path, host)
@@ -289,14 +285,9 @@ def restart_cache(test: Test) -> suite.Row:
         return FAIL, f"after the restart, {why}"
     took = time.time() - restarted
 
-    answer = web.Response(None)
-
-    def serves() -> bool:
-        nonlocal answer
-        answer = web.request("GET", url, token=test.read_setup)
-        return answer.ok
-
-    common.wait_for(serves, SERVED_WAIT, interval=5)
+    answer = common.wait_last(
+        lambda: web.request("GET", url, token=test.read_setup), lambda got: got.ok, SERVED_WAIT, 5
+    )
     why = web.served(answer, test.data)
     if why:
         return FAIL, f"after the restart, GET got {why} (waited up to {SERVED_WAIT}s)"

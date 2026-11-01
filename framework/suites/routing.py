@@ -41,6 +41,7 @@ from testlib import common, control, credentials, director, jwt, metrics, stores
 from testlib.common import first, outcome, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
+from testlib.suite import CaseRow
 
 SCENARIOS = {
     "distance": (
@@ -61,15 +62,9 @@ SCENARIOS = {
     ),
 }
 
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note.
-Row = tuple[str, str, str]
-
 # The routes a client asks a director by, for a cache and for an origin.
 OBJECT = "/api/v1.0/director/object"
 ORIGIN = "/api/v1.0/director/origin"
-# The directors' list of servers.
-SERVERS = "/api/v1.0/director_ui/servers"
 
 # The locations that the servers declare (GeoLocation in
 # framework/config.d/instance/<service>/), and those the clients claim.
@@ -216,8 +211,8 @@ def linked(answer: web.Response) -> list[str]:
 
 def listed_servers(url: str) -> tuple[web.Response, list[dict[str, Any]]]:
     """Return the director at url's list of servers, and its answer."""
-    answer = web.request("GET", f"{url}{SERVERS}")
-    return answer, [common.as_object(r) or {} for r in common.as_array(answer.json()) or []]
+    answer = web.request("GET", f"{url}{director.SERVERS}")
+    return answer, common.objects(answer.json())
 
 
 def cache_row(rows: Sequence[Mapping[str, Any]], cache: Server) -> Mapping[str, Any] | None:
@@ -431,7 +426,7 @@ def malformed_problems(test: Test) -> list[str]:
     return problems
 
 
-def distance(test: Test) -> list[Row]:
+def distance(test: Test) -> list[CaseRow]:
     """Check that the directors sort the caches and origins by distance.
 
     The sort is the default. Each director must order them as a client
@@ -440,7 +435,7 @@ def distance(test: Test) -> list[Row]:
     route a client whose coordinate it can't read (see
     malformed_problems()).
     """
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for kind, route, servers in (
         ("caches", OBJECT, test.caches),
         ("origins", ORIGIN, test.origins),
@@ -520,7 +515,7 @@ def stat_problems(
     return problems
 
 
-def stat(test: Test) -> list[Row]:
+def stat(test: Test) -> list[CaseRow]:
     """Check each director's answer for an object no origin holds.
 
     The object is asked for of each director's origin route: with
@@ -534,7 +529,7 @@ def stat(test: Test) -> list[Row]:
     namespaces = test.session.namespaces
     protected = [ns for ns in namespaces if ns in credentials.PROTECTED]
     several = len(test.origins) > 1
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     if several:
         problems = stat_problems(test, namespaces, "", True, False)
         rows.append(("several", *outcome(problems, f"{len(test.origins)} origins, 404")))
@@ -727,7 +722,7 @@ REDIRECT_CASES = (
 )
 
 
-def redirect(test: Test) -> list[Row]:
+def redirect(test: Test) -> list[CaseRow]:
     """Check how each director builds a redirect of the probe.
 
     That is for its object route and its bare path
@@ -780,7 +775,7 @@ EXPIRY_CASES: tuple[tuple[str, Callable[[Test, int], str], bool, bool], ...] = (
 )
 
 
-def expired_401(test: Test) -> list[Row]:
+def expired_401(test: Test) -> list[CaseRow]:
     """Check that a token about to expire gets 401 and WWW-Authenticate.
 
     Each director, on its object and origin routes and the bare path of
@@ -794,7 +789,7 @@ def expired_401(test: Test) -> list[Row]:
     and those whose expiry it can't read, an opaque token and a JWT with
     no exp, must be redirected (307).
     """
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     targets = [("object", OBJECT), ("origin", ORIGIN), ("bare", "")]
     for case, make, in_query, refused in EXPIRY_CASES:
         problems: list[str] = []
@@ -954,7 +949,7 @@ class Statuses:
                 problems.append(f"{what}: no Access-Control-Allow-Methods")
         return outcome(problems, "200, with Allow and CORS")
 
-    def servers(self) -> list[Row]:
+    def servers(self) -> list[CaseRow]:
         """Check that each answer names the server as Pelican, in one field.
 
         Each answer that came must name it as Pelican, of the shape's
@@ -981,13 +976,13 @@ class Statuses:
         ]
 
 
-def status_codes(test: Test) -> list[Row]:
+def status_codes(test: Test) -> list[CaseRow]:
     """Check what each director refuses, and how; and its Server headers.
 
     See Statuses and unknown_namespace().
     """
     checks = Statuses(test, [])
-    rows: list[Row] = [("unknown-namespace", *unknown_namespace(test))]
+    rows: list[CaseRow] = [("unknown-namespace", *unknown_namespace(test))]
     rows.append(("writes", *checks.writes()))
     rows.append(("bad-requests", *checks.bad_requests()))
     rows.append(("options", *checks.options()))
@@ -1240,7 +1235,7 @@ def filtered_listing(test: Test, name: str | None) -> tuple[str, str]:
         mine = [r for r in rows if r.get("name") == name]
         what = director.host(url)
         if not mine:
-            problems.append(f"{what}: {SERVERS} ({answer.describe()}) does not list {name!r}")
+            problems.append(f"{what}: {director.SERVERS} ({answer.describe()}) does not list {name!r}")
         elif mine[0].get("filtered") is not True or mine[0].get("filteredType") != director.PERM_FILTERED:
             shown = {k: mine[0].get(k) for k in ("filtered", "filteredType")}
             problems.append(f"{what}: lists {name!r} with {shown}")
@@ -1357,14 +1352,14 @@ def phases(selected: Sequence[str], name: str | None) -> list[Phase]:
     return found
 
 
-def unrestartable(test: Test) -> str | None:
+def directors_unrestartable(test: Test) -> str | None:
     """Return why the suite won't restart the directors here, or None."""
     if len(test.caches) < 2:
         return "the suite restarts the directors only under -p topo-multi-cache"
     return control.unavailable()
 
 
-def restarted(test: Test, selected: Sequence[str], add: Callable[[str, str, str, str], None]) -> None:
+def run_restarted(test: Test, selected: Sequence[str], results: common.Results) -> None:
     """Restart the directors for each phase the selected scenarios need.
 
     For each, run its checks, and restore the directors; then wait until
@@ -1373,9 +1368,9 @@ def restarted(test: Test, selected: Sequence[str], add: Callable[[str, str, str,
     Args:
         test: The Test.
         selected: The selected scenarios.
-        add: What records a row: its scenario, case, status, and note.
+        results: The suite's results.
     """
-    why = unrestartable(test)
+    why = directors_unrestartable(test)
     name: str | None = None
     if not why and "filtered" in selected:
         name = cache_name(test, test.caches[-1])
@@ -1383,7 +1378,7 @@ def restarted(test: Test, selected: Sequence[str], add: Callable[[str, str, str,
     if why:
         for phase in wanted:
             for scenario, case, _ in phase.checks:
-                add(scenario, case, SKIP, why)
+                suite.record(results, scenario, {case: (SKIP, why)})
         return
     banned = frozenset([test.caches[-1].host]) if name else frozenset[str]()
     for phase in wanted:
@@ -1395,15 +1390,17 @@ def restarted(test: Test, selected: Sequence[str], add: Callable[[str, str, str,
                 why = wait_named(test, banned if phase.name == "combined" else frozenset())
                 for scenario, case, check in phase.checks:
                     if why:
-                        add(scenario, case, FAIL, f"after the restart, {why}")
+                        suite.record(results, scenario, {case: (FAIL, f"after the restart, {why}")})
                     else:
-                        add(scenario, case, *suite.attempt(functools.partial(check, test)))
+                        suite.record(
+                            results, scenario, {case: suite.attempt(functools.partial(check, test))}
+                        )
                     done.add((scenario, case))
         except control.ControlError as e:
             # Restarting, or restoring, failed: what is left unrun fails.
             for scenario, case, _ in phase.checks:
                 if (scenario, case) not in done:
-                    add(scenario, case, FAIL, f"restarting the directors: {e}")
+                    suite.record(results, scenario, {case: (FAIL, f"restarting the directors: {e}")})
             warn(f"restarting the directors, or restoring them: {e}")
     if wanted:
         why = wait_named(test)
@@ -1471,7 +1468,9 @@ def permitted_listing(test: Test, permitted: str, restricted: Server) -> tuple[s
         answer, rows = listed_servers(url)
         mine = cache_row(rows, restricted)
         if mine is None:
-            problems.append(f"{what}: {SERVERS} ({answer.describe()}) does not list {restricted.svc}")
+            problems.append(
+                f"{what}: {director.SERVERS} ({answer.describe()}) does not list {restricted.svc}"
+            )
             continue
         prefixes = [str(p) for p in common.as_array(mine.get("namespacePrefixes")) or []]
         wrong = [
@@ -1503,7 +1502,7 @@ def permitted_direct(test: Test, permitted: str, restricted: Server) -> tuple[st
     return PASS, f"/{permitted} served; /{test.namespace} refused ({answer.describe()})"
 
 
-def permitted_namespaces(test: Test, add: Callable[[str, str, str, str], None]) -> None:
+def permitted_namespaces(test: Test, results: common.Results) -> None:
     """Run `permitted-namespaces`: restrict the last cache to one namespace.
 
     Restart it so restricted, check how the directors route and list it,
@@ -1512,16 +1511,16 @@ def permitted_namespaces(test: Test, add: Callable[[str, str, str, str], None]) 
 
     Args:
         test: The Test.
-        add: What records a row: its scenario, case, status, and note.
+        results: The suite's results.
     """
     scenario = "permitted-namespaces"
-    why = unrestartable(test)
+    why = directors_unrestartable(test)
     permitted = permitted_namespace(test)
     if not why and permitted is None:
         why = f"the shape exports no namespace beside /{test.namespace}"
     if why or permitted is None:
         for case in ("routing", "listing", "direct"):
-            add(scenario, case, SKIP, why or "")
+            suite.record(results, scenario, {case: (SKIP, why or "")})
         return
     # On a pstore origin, /public's storage is /protected-a's.
     errors = stores.put_in_place(
@@ -1532,7 +1531,7 @@ def permitted_namespaces(test: Test, add: Callable[[str, str, str, str], None]) 
         test.data["permitted"],
     )
     if errors:
-        add(scenario, "", FAIL, f"putting the object in /{permitted}: {errors[0]}")
+        suite.record(results, scenario, (FAIL, f"putting the object in /{permitted}: {errors[0]}"))
         return
     restricted = test.caches[-1]
     text = f"Cache:\n  PermittedNamespaces:\n    - /{permitted}\n"
@@ -1547,7 +1546,7 @@ def permitted_namespaces(test: Test, add: Callable[[str, str, str, str], None]) 
     try:
         with control.restart_with(restricted.svc, {CONFIG_FILE: text}):
             if not common.wait_for(routed, suite.SETTLE_WAIT, interval=5):
-                add(scenario, "routing", FAIL, f"{suite.SETTLE_WAIT}s after the restart, {first(found)}")
+                routing = (FAIL, f"{suite.SETTLE_WAIT}s after the restart, {first(found)}")
             else:
                 problems: list[str] = []
                 for _ in range(PERMITTED_ASKS):
@@ -1558,23 +1557,19 @@ def permitted_namespaces(test: Test, add: Callable[[str, str, str, str], None]) 
                 note = (
                     f"{restricted.svc} named for /{permitted} alone, in {PERMITTED_ASKS} asks per director"
                 )
-                add(scenario, "routing", *outcome(problems, note))
-            add(
-                scenario,
-                "listing",
-                *suite.attempt(
-                    functools.partial(permitted_listing, test, permitted=permitted, restricted=restricted)
+                routing = outcome(problems, note)
+            suite.record(results, scenario, {"routing": routing})
+            checks = {
+                "listing": functools.partial(
+                    permitted_listing, test, permitted=permitted, restricted=restricted
                 ),
-            )
-            add(
-                scenario,
-                "direct",
-                *suite.attempt(
-                    functools.partial(permitted_direct, test, permitted=permitted, restricted=restricted)
+                "direct": functools.partial(
+                    permitted_direct, test, permitted=permitted, restricted=restricted
                 ),
-            )
+            }
+            suite.record(results, scenario, {case: suite.attempt(check) for case, check in checks.items()})
     except control.ControlError as e:
-        add(scenario, "", FAIL, f"restarting {restricted.svc}, or restoring it: {e}")
+        suite.record(results, scenario, (FAIL, f"restarting {restricted.svc}, or restoring it: {e}"))
         warn(f"restarting {restricted.svc}, or restoring it: {e}")
     why = wait_named(test)
     if why:
@@ -1586,7 +1581,7 @@ def permitted_namespaces(test: Test, add: Callable[[str, str, str, str], None]) 
 
 # The scenarios that run without a restart, by name: each takes the Test,
 # and returns its rows.
-RUN: dict[str, Callable[[Test], list[Row]]] = {
+RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
     "distance": distance,
     "stat": stat,
     "redirect": redirect,
@@ -1608,28 +1603,23 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     """
     test = Test(session)
 
-    def add(scenario: str, case: str, status: str, note: str) -> None:
-        results.add(f"{scenario} {case}".strip(), status, note)
-
     why = test.put({test.rel(name): test.data[name] for name in ("probe", "warm")})
     if why:
         for scenario in selected:
-            add(scenario, "", FAIL, f"putting the suite's objects at every origin: {why}")
+            suite.record(results, scenario, (FAIL, f"putting the suite's objects at every origin: {why}"))
         return
     print(f"Asking the directors about /{test.namespace}/{test.base}/\n")
     try:
         for name in selected:
             if name in RUN:
-                rows = common.guarded(functools.partial(RUN[name], test), lambda note: [("", FAIL, note)])
-                for case, status, note in rows:
-                    add(name, case, status, note)
+                suite.record(results, name, suite.attempt_cases(functools.partial(RUN[name], test)))
         later = [s for s in selected if s in RESTARTED]
         if "stat" in selected and len(test.origins) > 1:
-            add("stat", "single-checked", SKIP, f"{len(test.origins)} origins")
+            suite.record(results, "stat", {"single-checked": (SKIP, f"{len(test.origins)} origins")})
         elif "stat" in selected:
             later.append("stat")
-        restarted(test, later, add)
+        run_restarted(test, later, results)
         if "permitted-namespaces" in selected:
-            permitted_namespaces(test, add)
+            permitted_namespaces(test, results)
     finally:
         test.clean("after the run")

@@ -108,14 +108,31 @@ def _public_key(key: str) -> tuple[list[bytes], bytes]:
     return _der(spki), bits[1:]
 
 
-def _jwks_keys(jwks: bytes) -> list[dict[str, Any]]:
-    """Return the keys of JWKS document jwks.
+def jwks_keys(document: Any) -> list[dict[str, Any]] | None:
+    """Return the keys of a JWKS, or None if document isn't one.
+
+    Args:
+        document: The JWKS: its text, or parsed.
+    """
+    if isinstance(document, (str, bytes)):
+        try:
+            document = json.loads(document)
+        except ValueError:
+            return None
+    listed = common.as_array((common.as_object(document) or {}).get("keys"))
+    return None if listed is None else common.objects(listed)
+
+
+def key_ids(document: Any) -> frozenset[str]:
+    """Return the kids in a JWKS, as jwks_keys() takes it.
 
     Raises:
-        ValueError: jwks is not JSON.
+        ValueError: The document is not a JWKS.
     """
-    parsed = common.as_object(json.loads(jwks)) or {}
-    return common.objects(common.as_array(parsed.get("keys")) or [])
+    keys = jwks_keys(document)
+    if keys is None:
+        raise ValueError("not a JWKS")
+    return frozenset(str(k.get("kid", "")) for k in keys)
 
 
 def public_jwk(key: str) -> dict[str, str]:
@@ -142,6 +159,23 @@ def thumbprint(jwk: Mapping[str, str]) -> str:
     return b64(hashlib.sha256(members.encode()).digest())
 
 
+def listed_kid(key: str, keys: Sequence[Mapping[str, Any]]) -> str | None:
+    """Return the kid of the first of keys with key's public key.
+
+    Args:
+        key: A PEM private key file.
+        keys: A JWKS's keys (jwks_keys()).
+
+    Returns:
+        The kid ("" if it has none), or None if no key matches.
+    """
+    jwk = public_jwk(key)
+    for found in keys:
+        if all(found.get(k) == v for k, v in jwk.items()):
+            return str(found.get("kid") or "")
+    return None
+
+
 def key_id(key: str, jwks: bytes | None = None) -> str:
     """Return the kid to name PEM private key file key by.
 
@@ -154,11 +188,8 @@ def key_id(key: str, jwks: bytes | None = None) -> str:
         jwks: A JWKS document, e.g. an issuer's, or one in
             framework/var/issuer-jwks/.
     """
-    jwk = public_jwk(key)
-    for found in _jwks_keys(jwks) if jwks is not None else []:
-        if all(found.get(k) == v for k, v in jwk.items()) and "kid" in found:
-            return str(found["kid"])
-    return thumbprint(jwk)
+    kid = listed_kid(key, jwks_keys(jwks) or []) if jwks is not None else None
+    return kid or thumbprint(public_jwk(key))
 
 
 def algorithm(key: str) -> str:
@@ -289,6 +320,27 @@ def decode(token: str) -> tuple[dict[str, Any], dict[str, Any]]:
     return head, claims
 
 
+def claims_of(token: str) -> dict[str, Any]:
+    """Return a token's claims, unverified; {} if it is not a JWT."""
+    try:
+        return decode(token)[1]
+    except ValueError:
+        return {}
+
+
+def header_of(token: str) -> dict[str, Any]:
+    """Return a token's header, unverified; {} if it is not a JWT."""
+    try:
+        return decode(token)[0]
+    except ValueError:
+        return {}
+
+
+def scopes_of(token: str) -> frozenset[str]:
+    """Return a token's scopes, unverified."""
+    return frozenset(str(claims_of(token).get("scope", "")).split())
+
+
 def _der_integer(value: bytes) -> bytes:
     """Return a DER INTEGER of the unsigned big-endian value."""
     value = value.lstrip(b"\0") or b"\0"
@@ -320,7 +372,7 @@ def verify(token: str, jwks: bytes) -> str | None:
         return None
     body = _der_integer(raw[:32]) + _der_integer(raw[32:])
     der_signature = bytes([0x30, len(body)]) + body
-    for jwk in _jwks_keys(jwks):
+    for jwk in jwks_keys(jwks) or []:
         if jwk.get("kty") != "EC" or jwk.get("crv") != "P-256":
             continue
         if "kid" in head and jwk.get("kid") != head["kid"]:

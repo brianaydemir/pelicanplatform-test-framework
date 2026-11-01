@@ -44,6 +44,7 @@ from testlib.common import die, first, outcome
 from testlib.issuer import User
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
+from testlib.suite import NAMESPACE, CaseRow
 
 SCENARIOS = {
     "plugin-ads": (
@@ -88,13 +89,9 @@ SCENARIOS = {
     ),
 }
 
-NAMESPACE = "protected-a"
 # The scenarios that present no token of the tests' minting (see
 # suites/__init__.py): the share's is the embedded issuer's.
 ONE_PROFILE = ("share-url",)
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note.
-Row = tuple[str, str, str]
 
 OBJECT_SIZE = 100_000
 # `failover`'s object, and the block that cache-0's copy loses: in its
@@ -302,7 +299,7 @@ class Test(suite.Test):
     """The run's objects in /protected-a, and how the clients run."""
 
     def __init__(self, session: Session):
-        super().__init__(session, "client", NAMESPACE)
+        super().__init__(session, "client")
 
     def place(self, name: str, data: bytes, origins: Sequence[common.Origin] | None = None) -> None:
         """Put object name, holding data, in every store, or at origins.
@@ -561,7 +558,7 @@ def exit_problem(fetch: Fetched, ads: Sequence[Ad]) -> str | None:
     return None
 
 
-def failed_ad_row(case: str, fetch: Fetched, want_type: str, want_code: int | None) -> Row:
+def failed_ad_row(case: str, fetch: Fetched, want_type: str, want_code: int | None) -> CaseRow:
     """Return case's row: the plugin's ad of one transfer, which failed.
 
     The ad must say that it failed, and is not to be retried, with an
@@ -623,7 +620,7 @@ def wait_aged(test: Test, cold_hosts: Mapping[str, str]) -> list[str]:
     return problems
 
 
-def plugin_ads(test: Test) -> list[Row]:
+def plugin_ads(test: Test) -> list[CaseRow]:
     """Check that stash_plugin's result ads agree with its transfers.
 
     The ads (cmd/plugin.go), which HTCondor reads, are those of a batch of
@@ -640,7 +637,7 @@ def plugin_ads(test: Test) -> list[Row]:
     names = list(objects)
     urls = [test.pelican_url(test.rel(name)) for name in names]
     env = test.creds_env(test.server_creds("plugin-ads"))
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     cold_hosts: dict[str, str] = {}
     for case in ("cold", "warm"):
         problems: list[str] = wait_aged(test, cold_hosts) if case == "warm" else []
@@ -665,7 +662,7 @@ def plugin_ads(test: Test) -> list[Row]:
                 )
                 if case == "cold":
                     cold_hosts[name] = served_by(ad)
-                if common.sha256(os.path.join(fetch.directory, name)) != common.digest(data):
+                if not common.file_holds(os.path.join(fetch.directory, name), data):
                     problems.append(f"{name}: the file is not the object")
         why = exit_problem(fetch, ads)
         if why:
@@ -714,7 +711,7 @@ def plugin_ads(test: Test) -> list[Row]:
     return rows
 
 
-def upload_ads(test: Test) -> list[Row]:
+def upload_ads(test: Test) -> list[CaseRow]:
     """Return the rows of stash_plugin's ads of an upload (`-upload`).
 
     Of a batch of two files to /protected-a (`upload`): each ad must say
@@ -728,7 +725,7 @@ def upload_ads(test: Test) -> list[Row]:
     if not test.writes:
         reason = "/protected-a takes no writes"
         return [("upload", SKIP, reason), ("upload-refused", SKIP, reason)]
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     files = {"ads-up-a": os.urandom(OBJECT_SIZE), "ads-up-b": os.urandom(OBJECT_SIZE // 2)}
     sources = [test.local(f"ads-up/{name}", data) for name, data in files.items()]
     urls = [test.pelican_url(test.rel(name)) for name in files]
@@ -776,19 +773,15 @@ def unknown_token(test: Test) -> str:
 
     See credentials.CREDENTIALS, `unknown`.
     """
-    path = test.session.path("tokens/client.unknown")
-    credentials.mint(
+    return credentials.mint(
         test.fed,
-        path,
+        test.session.path("tokens/client.unknown"),
         f"/{NAMESPACE}/",
-        credentials.keys(test.fed)["unknown"],
+        credentials.UNKNOWN_KEY,
         test.fed.issuer_of(NAMESPACE),
-        "/",
-        credentials.LONG,
         credentials.RWM,
         profile=test.session.profile,
     )
-    return common.read_text(path)
 
 
 # --------------------------------------------------------------------------
@@ -813,7 +806,7 @@ def spoil(test: Test, cache: common.Cache, name: str, block: int) -> str | None:
     return None
 
 
-def failover(test: Test) -> list[Row]:
+def failover(test: Test) -> list[CaseRow]:
     """Check that a download failing partway at a cache resumes at the next.
 
     A V2 cache and another cache (of either kind, as under
@@ -851,7 +844,7 @@ def failover(test: Test) -> list[Row]:
         ]
     first_cache = v2[0]
     second = next(c for c in feds if c.svc != first_cache.svc)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for case in ("get", "plugin"):
         name = f"failover-{case}"
         data = os.urandom(FAILOVER_SIZE)
@@ -901,7 +894,7 @@ def get_failover_problems(
     if fetch.status != 0:
         return [f"exit {fetch.status}: {last_line(fetch.said)}"]
     problems: list[str] = []
-    if common.sha256(os.path.join(fetch.directory, "object")) != common.digest(data):
+    if not common.file_holds(os.path.join(fetch.directory, "object"), data):
         problems.append("the file is not the object")
     results = transfers.stats_results(transfers.read_stats(os.path.join(fetch.directory, "stats.json")))
     attempts = transfers.attempts_of(results[0]) if results else []
@@ -942,7 +935,7 @@ def plugin_failover_problems(
     ad = ads[0]
     problems: list[str] = []
     local = os.path.join(fetch.directory, transfers.local_name(url))
-    if common.sha256(local) != common.digest(data):
+    if not common.file_holds(local, data):
         problems.append("the file is not the object")
     found = developer_data(ad)
     endpoints = {
@@ -1069,7 +1062,7 @@ def got(fetch: Fetched, data: bytes, local: str = "object") -> str | None:
     """
     if fetch.status != 0:
         return f"exit {fetch.status}: {last_line(fetch.said)}"
-    if common.sha256(os.path.join(fetch.directory, local)) != common.digest(data):
+    if not common.file_holds(os.path.join(fetch.directory, local), data):
         return "the file is not the object"
     return None
 
@@ -1117,7 +1110,7 @@ DISCOVERERS: tuple[Discoverer, ...] = (
 )
 
 
-def token_discovery(test: Test) -> list[Row]:
+def token_discovery(test: Test) -> list[CaseRow]:
     """Check which token each client presents, of those in its environment.
 
     The cases (tokenContentIterator in client/acquire_token.go, which
@@ -1143,10 +1136,10 @@ def token_discovery(test: Test) -> list[Row]:
     wrong_path = test.session.credential_token(credentials.BY_NAME["wrong-path"], NAMESPACE, "get")
     unknown = unknown_token(test)
     good_creds = test.server_creds("discovery-good")
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for prefix, get, denied in DISCOVERERS:
 
-        def row(case: str, why: str | None, passed: str = "", client: str = prefix) -> Row:
+        def row(case: str, why: str | None, passed: str = "", client: str = prefix) -> CaseRow:
             return (client + case, FAIL, why) if why else (client + case, PASS, passed)
 
         env = {**base, "BEARER_TOKEN": test.token}
@@ -1201,7 +1194,7 @@ def token_discovery(test: Test) -> list[Row]:
 # url-forms
 
 
-def url_forms(test: Test) -> list[Row]:
+def url_forms(test: Test) -> list[CaseRow]:
     """Check the forms of a URL that the clients take, of one object.
 
     Pelican's URLs (pelican_url/parse.go): a bare path, which needs a
@@ -1225,9 +1218,9 @@ def url_forms(test: Test) -> list[Row]:
     base = dict(test.session.env)
     base.pop("PELICAN_FEDERATION_DISCOVERYURL", None)
     token = ["--token", test.token_file]
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
 
-    def get(case: str, args: Sequence[str], env: Mapping[str, str], note: str) -> Row:
+    def get(case: str, args: Sequence[str], env: Mapping[str, str], note: str) -> CaseRow:
         fetch = test.pelican(case, ["object", "get", *args, "."], env)
         why = got(fetch, data, name)
         return (case, FAIL, why) if why else (case, PASS, note)
@@ -1296,7 +1289,7 @@ def create_token(
 
 def issued_row(
     case: str, claims: dict[str, Any] | None, fetch: Fetched, issuer_url: str, *, named: str, passed: str
-) -> Row:
+) -> CaseRow:
     """Return case's row: create_token() minted a token of issuer_url.
 
     A failure names issuer_url as named; a pass says passed.
@@ -1310,7 +1303,7 @@ def issued_row(
 
 def declined_row(
     case: str, claims: dict[str, Any] | None, fetch: Fetched, hint: str, *, saying: str, passed: str
-) -> Row:
+) -> CaseRow:
     """Return case's row: create_token() minted nothing, saying hint.
 
     A failure without hint says that it failed, but not saying (e.g.
@@ -1323,7 +1316,7 @@ def declined_row(
     return (case, PASS, passed)
 
 
-def token_create_discovery(test: Test) -> list[Row]:
+def token_create_discovery(test: Test) -> list[CaseRow]:
     """Check how `pelican token create` finds an issuer and a scope.
 
     Without --issuer or --scope-path (cmd/token.go): with the origins' key,
@@ -1340,7 +1333,7 @@ def token_create_discovery(test: Test) -> list[Row]:
     `-p topo-multi-owner`, with origin-2's key for /other, the issuer is
     origin-2's (`other-owner`).
     """
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     name = "token-create/obj"
     data = os.urandom(OBJECT_SIZE)
     test.place(name, data)
@@ -1370,7 +1363,7 @@ def token_create_discovery(test: Test) -> list[Row]:
             test,
             "create-namespace-key",
             collection,
-            credentials.keys(test.fed)[f"ns-{NAMESPACE}"],
+            credentials.namespace_key(NAMESPACE),
         )
         rows.append(
             issued_row(
@@ -1384,9 +1377,7 @@ def token_create_discovery(test: Test) -> list[Row]:
         )
     else:
         rows.append(("namespace-key", SKIP, "no namespace has keys of its own"))
-    claims, _, fetch = create_token(
-        test, "create-unknown-key", collection, credentials.keys(test.fed)["unknown"]
-    )
+    claims, _, fetch = create_token(test, "create-unknown-key", collection, credentials.UNKNOWN_KEY)
     rows.append(
         declined_row(
             "unknown-key",
@@ -1471,7 +1462,7 @@ def share_once(
     )
 
 
-def share_url(test: Test) -> list[Row]:
+def share_url(test: Test) -> list[CaseRow]:
     """Check the URL that `pelican object share` hands out, and its token.
 
     `pelican object share [--write]` of a collection in /protected-a,
@@ -1493,18 +1484,12 @@ def share_url(test: Test) -> list[Row]:
     data = os.urandom(OBJECT_SIZE)
     test.place(name, data)
     collection = test.pelican_url(test.rel("share"))
-    admin = credentials.mint_web_user(
-        test.fed,
-        test.session.path("tokens/client.admin"),
-        test.fed.origin_web_url,
-        "admin",
-        key=test.fed.origin_key,
-    )
+    admin = test.session.web_token(test.fed.origin_web_url)
 
     def approver(issuer_url: str, user_code: str) -> None:
         issuer.approve(issuer_url, user_code, User(token=admin))
 
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     tokens: dict[str, str] = {}
     for case, flags, want in (
         ("url", [], {f"storage.read:/{test.rel('share')}"}),
@@ -1529,11 +1514,7 @@ def share_url(test: Test) -> list[Row]:
         if f"{parts.scheme}://{parts.netloc}{parts.path}" != collection or not token:
             problems.append(f"printed {printed!r}, not the collection's URL with ?authz=")
         else:
-            scopes: set[str] = set()
-            try:
-                scopes = set(str(jwt.decode(token)[1].get("scope", "")).split())
-            except ValueError:
-                pass
+            scopes = jwt.scopes_of(token)
             if not want <= scopes or not scopes <= want | {f"storage.read:/{test.rel('share')}"}:
                 problems.append(f"the token's scopes are {sorted(scopes)}, not {sorted(want)}")
             tokens[case] = token
@@ -1671,7 +1652,7 @@ def skipstat_failover(test: Test) -> tuple[str, str]:
 # multi-source
 
 
-def multi_source(test: Test) -> list[Row]:
+def multi_source(test: Test) -> list[CaseRow]:
     """Check `get` and `put` with several sources, and `?recursive`.
 
     These are rows G8-G10 and P8-P10 of Pelican's
@@ -1682,14 +1663,14 @@ def multi_source(test: Test) -> list[Row]:
     for name, data in objects.items():
         test.place(name, data)
     urls = [test.pelican_url(test.rel(name)) for name in objects]
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     directory = test.directory("get-g8")
     fetch = test.pelican(
         "get-g8", ["object", "get", "--token", test.token_file, *urls, directory], cwd=directory
     )
     problems = exit_problems(fetch)
     for name, data in objects.items():
-        if common.sha256(os.path.join(directory, name)) != common.digest(data):
+        if not common.file_holds(os.path.join(directory, name), data):
             problems.append(f"{name} is missing or wrong in the directory")
     rows.append(("get-directory", *outcome(problems, "each landed by its name (G8)")))
     for case, target, message in (
@@ -1800,7 +1781,7 @@ def multi_source(test: Test) -> list[Row]:
     )
     problems = exit_problems(fetch)
     for path, data in tree.items():
-        if common.sha256(os.path.join(directory, path)) != common.digest(data):
+        if not common.file_holds(os.path.join(directory, path), data):
             problems.append(f"{path} is missing or wrong")
     rows.append(("get-recursive-query", *outcome(problems, "the tree came back (G5, ?recursive)")))
     # The plugin's download of the tree, to its directory (`.`): the
@@ -1819,9 +1800,7 @@ def multi_source(test: Test) -> list[Row]:
         (
             d
             for d in (fetch.directory, os.path.join(fetch.directory, "multi-recursive"))
-            if all(
-                common.sha256(os.path.join(d, path)) == common.digest(data) for path, data in tree.items()
-            )
+            if all(common.file_holds(os.path.join(d, path), data) for path, data in tree.items())
         ),
         None,
     )
@@ -1838,7 +1817,7 @@ def multi_source(test: Test) -> list[Row]:
 # preferred-cache-down
 
 
-def preferred_cache_down(test: Test) -> list[Row]:
+def preferred_cache_down(test: Test) -> list[CaseRow]:
     """Check a preferred cache that is down, with `+` and without.
 
     `pelican object get --cache https://<cache>:1,+`: a preferred
@@ -1854,7 +1833,7 @@ def preferred_cache_down(test: Test) -> list[Row]:
     data = os.urandom(OBJECT_SIZE)
     test.place(name, data)
     dead = f"https://{director.host(caches[0].url)}:1"
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     fetch = test.pelican(
         "preferred-plus",
         [
@@ -2031,7 +2010,7 @@ def stop_agent(pelican: Callable[..., tuple[int, str, str]]) -> tuple[str, str]:
     return PASS, said
 
 
-def async_job(test: Test) -> list[Row]:
+def async_job(test: Test) -> list[CaseRow]:
     """Check `get --async` and `copy --async`, which the client agent runs.
 
     `pelican object get --async --wait` and `object copy --async
@@ -2051,7 +2030,7 @@ def async_job(test: Test) -> list[Row]:
     name = "async"
     data = os.urandom(OBJECT_SIZE)
     test.place(name, data)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
 
     def pelican(*args: str, cwd: str | None = None) -> tuple[int, str, str]:
         return test.session.pelican_cmd(*args, env=env, cwd=cwd)
@@ -2076,7 +2055,7 @@ def async_job(test: Test) -> list[Row]:
             rows.append(("get", FAIL, f"exit {code}: {last_line(err or out)}"))
         elif not job:
             rows.append(("get", FAIL, f"no job ID printed: {last_line(out)}"))
-        elif common.sha256(target) != common.digest(data):
+        elif not common.file_holds(target, data):
             rows.append(("get", FAIL, "the file is not the object"))
         else:
             rows.append(("get", PASS, f"job {job}"))
@@ -2101,10 +2080,7 @@ def async_job(test: Test) -> list[Row]:
                 listed = {}
                 rows.append(("list", FAIL, f"unreadable output ({e}): {last_line(out)}"))
             else:
-                ids = [
-                    str(j.get("job_id"))
-                    for j in (common.as_object(j) or {} for j in common.as_array(listed.get("jobs")) or [])
-                ]
+                ids = [str(j.get("job_id")) for j in common.objects(listed.get("jobs"))]
                 if job and job not in ids:
                     rows.append(("list", FAIL, f"lists {ids}, not {job}"))
                 else:
@@ -2160,7 +2136,7 @@ def async_job(test: Test) -> list[Row]:
 
 # What a scenario of RUN, given the Test, returns: its rows, or for one
 # row with no case, its status and note.
-Rows = tuple[str, str] | list[Row]
+Rows = suite.Row | list[CaseRow]
 
 RUN: dict[str, Callable[[Test], Rows]] = {
     "plugin-ads": plugin_ads,
@@ -2186,10 +2162,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     print(f"Client contracts against {fed.url}, objects under /{NAMESPACE}/{test.base}/\n")
     try:
         for name in selected:
-            found = common.guarded(partial(RUN[name], test), lambda note: [("", FAIL, note)])
-            rows = found if isinstance(found, list) else [("", *found)]
-            for case, status, note in rows:
-                results.add(f"{name} {case}".strip(), status, note)
+            suite.record(results, name, suite.attempt_cases(partial(RUN[name], test)))
     finally:
         test.clean("after the run")
         shutil.rmtree(test.tmp, ignore_errors=True)

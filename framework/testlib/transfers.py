@@ -32,10 +32,11 @@ LOAD's sizes (see make_batches() and batch_count()).
 
 What a scenario should do depends on the namespace's capabilities in
 the shape (see outcome()). /public, which has no keys of its own, gets
-only the credentials that apply to it (see credentials.applies()). A
-shape that exports one namespace has batches only for its scenarios
-(see exported()), except `dne` and its twins, which move to a protected
-namespace where /public isn't exported (see placed()).
+only the credentials that apply to it (see credentials.applies()). Not
+every shape exports every namespace (ORIGIN_NAMESPACES in fed.sh); one
+that exports one has batches only for its scenarios, except `dne` and
+its twins, which move to a protected namespace where /public isn't
+exported (see placed()).
 """
 
 import dataclasses
@@ -124,14 +125,6 @@ class Scenario:
         asks the cache straight.
         """
         return not self.named
-
-
-def exported(scenario: Scenario, exports: Exports) -> bool:
-    """Return whether the federation exports scenario's namespace.
-
-    Not every shape exports every one (ORIGIN_NAMESPACES in fed.sh).
-    """
-    return scenario.namespace in exports
 
 
 def outcome(scenario: Scenario, exports: Exports) -> Outcome:
@@ -305,7 +298,7 @@ def placed(scenario: Scenario, exports: Exports) -> Scenario:
     its `server` token, which a refusal can't explain: the objects never
     exist there either. The rest run as they are.
     """
-    if not scenario.missing or exported(scenario, exports):
+    if not scenario.missing or scenario.namespace in exports:
         return scenario
     namespace = next((ns for ns in credentials.PROTECTED if ns in exports), None)
     if namespace is None:
@@ -476,11 +469,6 @@ def format_batch(batch: Batch) -> str:
     return "".join(transfer_ad(url, local_name(url)) for url in batch.urls)
 
 
-def parse_batch(scenario: Scenario, index: int, text: str) -> Batch:
-    """Parse a batch of scenario's from text, in stash_plugin's format."""
-    return Batch(scenario, index, tuple(re.findall(r'Url="([^"]*)"', text)))
-
-
 def batch_count(scenario: Scenario, exports: Exports, load: Load) -> int:
     """Return how many batches scenario runs.
 
@@ -511,7 +499,7 @@ def make_batches(
     batches: dict[str, list[Batch]] = {}
     for scenario in PELICAN_SCENARIOS:
         scenario = placed(scenario, exports)
-        if not exported(scenario, exports):
+        if scenario.namespace not in exports:
             continue
         picks: list[list[str]] = []
         for x in range(batch_count(scenario, exports, load)):

@@ -32,7 +32,6 @@ import math
 import os
 import re
 import shutil
-import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -45,7 +44,6 @@ from testlib import (
     blocks,
     common,
     control,
-    credentials,
     digests,
     metrics,
     stores,
@@ -78,8 +76,6 @@ ONE_PROFILE = ("introspect-cli", "scheduled-passes", "corruption", "backups")
 # takes writes.
 NAMESPACES = ("protected-a", "protected-b")
 
-# How long the suite's own web tokens last, in seconds: the whole suite.
-TOKEN_LIFETIME = 3600
 # An ordinary user, whom no server makes an admin. No server need know of
 # them: a token of the server's own making names its user.
 USER = "test-pstore"
@@ -201,7 +197,6 @@ class Test(suite.Test):
     def __init__(self, session: Session, namespace: str):
         super().__init__(session, "pstore", namespace)
         self.pstores = [o for o in self.fed.origins if o.pstore]
-        self._tokens: dict[tuple[str, str], str] = {}
         self.objects = listing_objects(self)
         # What went wrong putting the collection at each origin that has
         # it, by service.
@@ -214,34 +209,13 @@ class Test(suite.Test):
         """
         return stores.catalog(origin, self.namespace, rel)
 
-    def web_token_file(self, origin: common.Origin, user: str) -> str:
-        """Return the file of a token that origin's web API takes as user's.
-
-        The token is minted once, by credentials.mint_web_user().
-        """
-        out = self.session.path(f"tokens/pstore.{origin.svc}.{user}")
-        if (origin.svc, user) not in self._tokens:
-            self._tokens[(origin.svc, user)] = credentials.mint_web_user(
-                self.fed, out, origin.web_url, user, TOKEN_LIFETIME
-            )
-        return out
-
-    def web_token(self, origin: common.Origin, user: str) -> str:
-        """Return the token of web_token_file() itself."""
-        self.web_token_file(origin, user)
-        return self._tokens[(origin.svc, user)]
-
     def admin_file(self, origin: common.Origin) -> str:
         """Return the file of the admin's token for origin's web API."""
-        return self.web_token_file(origin, "admin")
+        return self.session.web_token_file(origin.web_url)
 
     def admin(self, origin: common.Origin) -> str:
         """Return the admin's token for origin's web API."""
-        return self.web_token(origin, "admin")
-
-    def user(self, origin: common.Origin) -> str:
-        """Return USER's token for origin's web API."""
-        return self.web_token(origin, USER)
+        return self.session.web_token(origin.web_url)
 
     def api(self, origin: common.Origin, path: str, token: str | None, **query: Any) -> web.Response:
         """GET path of origin's storage API, with query, presenting token.
@@ -360,7 +334,7 @@ def authz(test: Test, origin: common.Origin, _objects: Mapping[str, bytes]) -> R
     tries = (
         ("no token", None, 401),
         ("the server token", test.token, 401),
-        (USER, test.user(origin), 403),
+        (USER, test.session.web_token(origin.web_url, USER), 403),
         ("the admin", test.admin(origin), 200),
     )
     problems: list[str] = []
@@ -617,47 +591,11 @@ def storage_api(test: Test) -> dict[str, Row]:
 # introspect-cli
 
 
-def server_cmd(
-    test: Test, command: list[str], env: Mapping[str, str], timeout: float
-) -> tuple[int, str, str]:
-    """Run a pelican-server command in tmp.
-
-    Args:
-        test: The run.
-        command: The command.
-        env: What to add to the session's environment.
-        timeout: How long it may take, in seconds.
-
-    Returns:
-        Its exit status, stdout, and stderr.
-    """
-    try:
-        done = subprocess.run(
-            command,
-            env={**test.session.env, **env},
-            cwd=test.tmp,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return -1, "", f"timed out after {timeout:.0f}s"
-    return done.returncode, done.stdout, done.stderr
-
-
 @dataclass
 class Cli:
-    """`pelican-server origin introspect` at one origin.
-
-    Attributes:
-        server: The pelican-server to run.
-    """
+    """`pelican-server origin introspect` at one origin."""
 
     test: Test
-    server: str
     origin: common.Origin
 
     def run(
@@ -673,11 +611,14 @@ class Cli:
         Returns:
             Its exit status, stdout, and stderr.
         """
-        command = [self.server, "origin", "introspect", *args, "--server", self.origin.web_url]
+        command = ["origin", "introspect", *args, "--server", self.origin.web_url]
         if token_file is not None:
             command += ["--token", token_file]
         command.append("--json")
-        return server_cmd(self.test, command, env or {}, timeout=120)
+        session = self.test.session
+        return session.server_cmd(
+            *command, env={**session.env, **(env or {})}, cwd=self.test.tmp, timeout=120
+        )
 
     def compare(
         self, args: Sequence[str], api_route: str, env: Mapping[str, str] | None = None
@@ -737,12 +678,11 @@ def introspect_cli(test: Test) -> dict[str, Row]:
     the origin's key (`minted`), it must mint a token the origin takes,
     and print the usage.
     """
-    server = test.session.pelican_server
-    if server is None:
+    if test.session.pelican_server is None:
         skipped = "no pelican-server, which has `origin introspect`; run ./fed.sh init"
         return {case: (SKIP, skipped) for case in ("token", "missing", "minted")}
     origin = test.pstores[0]
-    cli = Cli(test, server, origin)
+    cli = Cli(test, origin)
     directory = test.catalog(origin, test.rel("api"))
     filed = f"{directory}/{FILED}"
     rows: dict[str, Row] = {}
@@ -1507,7 +1447,6 @@ class Restore:
     """restore's state at the first origin.
 
     Attributes:
-        server: The pelican-server to run.
         data: The objects written before the backup, by object name.
         copied: The backup restored, copied under test.tmp.
         aside: Where the catalog that the restore replaces is set aside
@@ -1518,7 +1457,6 @@ class Restore:
     test: Test
     origin: common.Origin
     backups: Backups
-    server: str
     data: dict[str, bytes] = field(default_factory=dict[str, bytes])
     copied: str = ""
     aside: str = ""
@@ -1546,8 +1484,17 @@ class Restore:
         Returns:
             Its exit status, stdout, and stderr.
         """
-        command = [self.server, "origin", "pstore", *args, "--location", os.path.abspath(self.store)]
-        return server_cmd(self.test, command, keys_env(self.test, self.origin), CLI_TIMEOUT)
+        session = self.test.session
+        return session.server_cmd(
+            "origin",
+            "pstore",
+            *args,
+            "--location",
+            os.path.abspath(self.store),
+            env={**session.env, **keys_env(self.test, self.origin)},
+            cwd=self.test.tmp,
+            timeout=CLI_TIMEOUT,
+        )
 
     def written(self) -> Row:
         """Write the objects, and wait for a backup of them (`objects`).
@@ -1736,7 +1683,7 @@ class Restore:
 # Running the restart's scenarios.
 
 
-def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], None]) -> None:
+def run_restarted(test: Test, wanted: Sequence[str], results: common.Results) -> None:
     """Run the scenarios in wanted with the first origin restarted.
 
     Restart the first origin for the scenarios in wanted (`capacity`,
@@ -1747,26 +1694,24 @@ def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], 
     Args:
         test: The run.
         wanted: The scenarios.
-        add: Record a row: its scenario, case, and result.
+        results: The suite's results.
     """
     origin = test.fed.origins[0]
     why = control.unrestartable(test.fed)
     if why:
         for scenario in wanted:
-            add(scenario, "", (SKIP, why))
+            suite.record(results, scenario, (SKIP, why))
         return
     if "restore" in wanted and test.session.pelican_server is None:
-        add(
-            "restore",
-            "",
-            (SKIP, "no pelican-server, which has `origin pstore`; run ./fed.sh init"),
+        suite.record(
+            results, "restore", (SKIP, "no pelican-server, which has `origin pstore`; run ./fed.sh init")
         )
         wanted = [s for s in wanted if s != "restore"]
     bound: int | None = None
     if "capacity" in wanted:
         found, why = usage(test, origin)
         if found is None:
-            add("capacity", "", (FAIL, f"before the restart, {why}"))
+            suite.record(results, "capacity", (FAIL, f"before the restart, {why}"))
             wanted = [s for s in wanted if s != "capacity"]
         else:
             bound = int(found["usedBytes"]) + HEADROOM
@@ -1783,25 +1728,21 @@ def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], 
             # too full for its objects, and backups' later cases last,
             # once the schedule has run on past restore's stop and start.
             if backups and "restore" in wanted:
-                server = test.session.pelican_server or ""
-                for case, row in Restore(test, origin, backups, server).run().items():
-                    add("restore", case, row)
+                suite.record(results, "restore", Restore(test, origin, backups).run())
                 done.add("restore")
             if bound is not None:
-                for case, row in Capacity(test, origin, bound).run().items():
-                    add("capacity", case, row)
+                suite.record(results, "capacity", Capacity(test, origin, bound).run())
                 done.add("capacity")
             if backups and startup and "backups" in wanted:
-                add("backups", "startup", startup)
+                suite.record(results, "backups", {"startup": startup})
                 rows = common.guarded(backups.finished, lambda note: {"": (FAIL, note)})
-                for case, row in rows.items():
-                    add("backups", case, row)
+                suite.record(results, "backups", rows)
                 done.add("backups")
     except control.ControlError as e:
         # Restarting, or restoring, failed: what is left unrun fails.
         for scenario in wanted:
             if scenario not in done:
-                add(scenario, "", (FAIL, f"restarting {origin.svc}: {e}"))
+                suite.record(results, scenario, (FAIL, f"restarting {origin.svc}: {e}"))
         warn(f"restarting {origin.svc}, or restoring it: {e}")
     finally:
         if backups:
@@ -1849,15 +1790,10 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     pstore = any(o.pstore for o in fed.origins)
     namespace = writable(fed)
 
-    def add(scenario: str, case: str, row: Row) -> None:
-        results.add(f"{scenario} {case}".strip(), *row)
-
     if namespace is None:
         for scenario in selected:
-            add(
-                scenario,
-                "",
-                (SKIP, "this shape exports no protected namespace that takes writes"),
+            suite.record(
+                results, scenario, (SKIP, "this shape exports no protected namespace that takes writes")
             )
         return
     test = Test(session, namespace)
@@ -1870,29 +1806,24 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             if scenario in later:
                 continue
             if not pstore and scenario != "storage-api":
-                add(
-                    scenario,
-                    "",
-                    (SKIP, f"the origins' store is {fed.origin_variant}, no pstore"),
+                suite.record(
+                    results, scenario, (SKIP, f"the origins' store is {fed.origin_variant}, no pstore")
                 )
                 continue
             rows = common.guarded(partial(RUN[scenario], test), lambda note: {"": (FAIL, note)})
-            for case, row in rows.items():
-                add(scenario, case, row)
+            suite.record(results, scenario, rows)
         if later and not fed.origins[0].pstore:
             for scenario in later:
-                add(
-                    scenario,
-                    "",
-                    (SKIP, f"the origins' store is {fed.origin_variant}, no pstore"),
+                suite.record(
+                    results, scenario, (SKIP, f"the origins' store is {fed.origin_variant}, no pstore")
                 )
         elif later:
             errors = stores.put_everywhere(fed.origins, namespace, test.rel(PROBE), b"probe", test.setup)
             if errors:
                 for scenario in later:
-                    add(scenario, "", (FAIL, f"putting the probe: {errors[0]}"))
+                    suite.record(results, scenario, (FAIL, f"putting the probe: {errors[0]}"))
             else:
-                restarted(test, later, add)
+                run_restarted(test, later, results)
     finally:
         if pstore:
             suite.clean(session, test.area, "after the run", test.pstores)

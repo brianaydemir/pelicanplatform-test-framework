@@ -98,9 +98,12 @@ A suite records a row per [case](glossary.md#case)
 through [`testlib.report`](../framework/testlib/report.py).
 `testlib.common.outcome()` gives a row's verdict: a FAIL naming the first
 problem, with `first()`, which prints them all; or a PASS. A row the suite
-could not judge is `INCONCLUSIVE`, with a note saying why, never a pass. A
-scenario that raises fails, by `testlib.common.guarded()`, and the rest
-still run.
+could not judge is `INCONCLUSIVE`, with a note saying why, never a pass.
+[`testlib.suite`](../framework/testlib/suite.py)'s `attempt()`,
+`attempt_all()`, and `attempt_cases()` run a scenario so that one that
+raises fails, and the rest still run; one that cannot set itself up raises
+`suite.SetupError`, whose message is the row's note. `suite.record()`
+records a scenario's rows.
 
 Each suite's page under [What the tests check](tests/README.md) describes
 every scenario, and the suite's docstring points to it. A change to a suite

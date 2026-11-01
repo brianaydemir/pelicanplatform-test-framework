@@ -54,7 +54,7 @@ from testlib import blocks, common, control, metrics, stores, suite, web, webdav
 from testlib.common import die, first, outcome, shown, wait_for, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
-from testlib.suite import Row
+from testlib.suite import NAMESPACE, Row
 
 SCENARIOS = {
     "commit": "a complete upload lands, whole, and leaves no staging file",
@@ -68,7 +68,6 @@ SCENARIOS = {
     "posc-expiry": "stale staging files are reaped, an idle upload kept, and staging guarded",
 }
 
-NAMESPACE = "protected-a"
 
 # posc-expiry's cases, each a row named `posc-expiry <case>`.
 EXPIRY_CASES = ("mode", "stale", "staging-put", "staging-mkcol", "idle")
@@ -293,7 +292,7 @@ class Test(suite.Test):
     """
 
     def __init__(self, session: Session):
-        super().__init__(session, "posc", NAMESPACE)
+        super().__init__(session, "posc")
         fed = self.fed
         self.pelican = session.pelican
         self.env = session.env
@@ -424,7 +423,7 @@ class Test(suite.Test):
         """Return whether the object that found() finds holds data."""
         if not self.pstore:
             path = self.object_file(name)
-            return path is not None and holds(path, data)
+            return path is not None and common.file_holds(path, data)
         return common.digest(data) in stores.held_anywhere(
             self.origins, NAMESPACE, f"data/posc/{name}", {NAMESPACE: self.setup}
         )
@@ -551,12 +550,6 @@ def blind(test: Test, upload: Upload, seen: bool) -> bool:
 
 
 BLIND = "the store showed nothing of the upload while it was held open"
-
-
-def holds(path: str, data: bytes) -> bool:
-    """Return whether the file at path holds data."""
-    with open(path, "rb") as f:
-        return f.read() == data
 
 
 # --------------------------------------------------------------------------
@@ -851,12 +844,12 @@ def hidden(test: Test) -> Row:
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
     answer: web.Response | None = None
-    listed: web.Response | None = None
+    listed: tuple[web.Response, dict[str, webdav.Entry] | None, str] | None = None
     try:
         staged = upload.started() and wait_for(lambda: test.new_staging() is not None, 10)
         there = os.path.isdir(posc_dir)
         if staged and there:
-            listed = webdav.propfind(url, "1", test.token)
+            listed = webdav.listing(url, "1", f"/{NAMESPACE}", test.token)
             answer = web.request("GET", url, token=test.token, headers={"Accept": "text/html"})
     finally:
         upload.finish()
@@ -864,12 +857,9 @@ def hidden(test: Test) -> Row:
         if not staged:
             return FAIL, upload.error or f"no staging file appeared ({http(upload.status)})"
         return FAIL, f"{shown(posc_dir)} does not exist, although an upload is staged"
-    if listed.status != 207:
-        return FAIL, f"PROPFIND {url}: {listed.describe()}, not 207"
-    try:
-        entries = webdav.relative(webdav.parse(listed.body), f"/{NAMESPACE}")
-    except ValueError as e:
-        return FAIL, f"PROPFIND {url}: {e}"
+    _, entries, why = listed
+    if entries is None:
+        return FAIL, f"PROPFIND {url}: {why}"
     if "data" not in entries:
         return FAIL, f"PROPFIND {url} does not list data/, so it is not the export's listing"
     if ".pelican-posc" in entries:
@@ -886,13 +876,6 @@ def hidden(test: Test) -> Row:
 
 # --------------------------------------------------------------------------
 # posc-expiry
-
-
-class Problem(Exception):
-    """A row's failure to do what it needs to judge Pelican.
-
-    The row fails, with this as its note.
-    """
 
 
 def staging_root(test: Test) -> str:
@@ -919,15 +902,17 @@ def plant(test: Test, age: float) -> str:
         The file's path.
 
     Raises:
-        Problem: POSC has no staging directory yet, or the file could not
-            be written.
+        suite.SetupError: POSC has no staging directory yet, or the file
+            could not be written.
     """
     if not os.path.isdir(staging_root(test)):
-        raise Problem(f"{shown(staging_root(test))} does not exist, though an upload has been staged")
+        raise suite.SetupError(
+            f"{shown(staging_root(test))} does not exist, though an upload has been staged"
+        )
     rel = f".pelican-posc/expiry-{test.run}/in_progress.{int(time.time())}.{os.getpid()}"
     error = stores.write_file(test.origin.store_of(NAMESPACE), rel, b"abandoned\n")
     if error:
-        raise Problem(error)
+        raise suite.SetupError(error)
     path = f"{test.origin.store_of(NAMESPACE)}/{rel}"
     then = time.time() - age
     os.utime(path, (then, then))
@@ -1088,9 +1073,9 @@ def idle_restarted(test: Test) -> Row:
     if why:
         return SKIP, why
     probe = f"data/posc/{test.run}-probe"
-    error = stores.write_file_everywhere(test.origins, NAMESPACE, probe, b"probe\n")
-    if error:
-        return FAIL, f"putting the probe: {error}"
+    errors = stores.write_file_everywhere(test.origins, NAMESPACE, probe, b"probe\n")
+    if errors:
+        return FAIL, f"putting the probe: {first(errors)}"
     text = "\n".join(
         [
             "Origin:",
@@ -1104,7 +1089,7 @@ def idle_restarted(test: Test) -> Row:
     rows: list[Row] = []
     try:
         with control.restart_with(svc, {CONFIG_FILE: text + "\n"}):
-            rows.append(suite.attempt(lambda: expiry_idle(test), (Problem,)))
+            rows.append(suite.attempt(lambda: expiry_idle(test)))
     except control.ControlError as e:
         # Restarting, or restoring, failed: the row fails if it never ran.
         warn(f"restarting {svc}, or restoring it: {e}")
@@ -1123,10 +1108,10 @@ def posc_expiry(test: Test) -> dict[str, Row]:
     and its guard on its staging directory.
     """
     return {
-        "mode": suite.attempt(lambda: expiry_mode(test), (Problem,)),
-        "stale": suite.attempt(lambda: expiry_stale(test), (Problem,)),
-        "staging-put": suite.attempt(lambda: expiry_staging_put(test), (Problem,)),
-        "staging-mkcol": suite.attempt(lambda: expiry_staging_mkcol(test), (Problem,)),
+        "mode": suite.attempt(lambda: expiry_mode(test)),
+        "stale": suite.attempt(lambda: expiry_stale(test)),
+        "staging-put": suite.attempt(lambda: expiry_staging_put(test)),
+        "staging-mkcol": suite.attempt(lambda: expiry_staging_mkcol(test)),
         "idle": idle_restarted(test),
     }
 
@@ -1174,8 +1159,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 results.add(name, SKIP, skips[name])
                 continue
             if name == "posc-expiry":
-                for case, row in posc_expiry(test).items():
-                    results.add(f"{name} {case}", *row)
+                suite.record(results, name, posc_expiry(test))
                 continue
             results.add(name, *suite.attempt(partial(RUN[name], test), (CouldNotConnect,)))
     finally:

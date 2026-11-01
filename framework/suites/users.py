@@ -45,7 +45,7 @@ from testlib import common, control, credentials, jwt, stores, suite, web, webda
 from testlib.common import Findings, die, first, outcome, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
-from testlib.suite import Row
+from testlib.suite import NAMESPACE, Row
 
 SCENARIOS = {
     "owner": "an upload with the tests' token is the pelican user's (uid 10941)",
@@ -58,7 +58,6 @@ SCENARIOS = {
     "mapfile": "under multiuser, the mapfile's rules, a username claim, and a mapfile edited",
 }
 
-NAMESPACE = "protected-a"
 # The scenarios that present no token (see suites/__init__.py).
 ONE_PROFILE = ("public-tokenless",)
 
@@ -150,14 +149,6 @@ PROBE_SIZE = 5000
 REFUSED = (403, 404)
 # What the restart's unmatched token must get: a refusal.
 UNAUTHORIZED = (401, 403)
-
-
-class SetupError(Exception):
-    """A scenario could not put in place what it checks."""
-
-
-# The exceptions by which a check reports a problem (suite.attempt()).
-EXPECTED = (SetupError,)
 
 
 def skip(fed: common.Federation) -> str | None:
@@ -296,7 +287,7 @@ class Test(suite.Test):
     """
 
     def __init__(self, session: Session):
-        super().__init__(session, "users", NAMESPACE)
+        super().__init__(session, "users")
         self.origins = stores.unique(self.fed.origins)
         self.other_token = credentials.mint_server(
             self.fed,
@@ -401,9 +392,9 @@ def public_tokenless(test: Test) -> dict[str, Row]:
         return {row: (SKIP, why) for row in rows}
     data = os.urandom(4096)
     rel = test.rel("public-tokenless")
-    error = stores.write_file_everywhere(test.origins, "public", rel, data)
-    if error:
-        return {row: (FAIL, f"could not put the object in place: {error}") for row in rows}
+    errors = stores.write_file_everywhere(test.origins, "public", rel, data)
+    if errors:
+        return {row: (FAIL, f"could not put the object in place: {first(errors)}") for row in rows}
     got, listed = Findings(), Findings()
     for origin in test.origins:
         url = f"{origin.url}/public/{rel}"
@@ -488,10 +479,10 @@ def bypass(test: Test) -> dict[str, Row]:
         try:
             os.mkdir(f"{store}/{directory}")
         except OSError as e:
-            raise SetupError(f"making framework/var/{store}/{directory}: {e.strerror}") from e
+            raise suite.SetupError(f"making framework/var/{store}/{directory}: {e.strerror}") from e
         error = stores.write_file(store, f"{directory}/{name}", data)
         if error:
-            raise SetupError(error)
+            raise suite.SetupError(error)
         why = made_private(f"{store}/{directory}/{name}", 0o600) or made_private(
             f"{store}/{directory}", 0o700
         )
@@ -538,7 +529,7 @@ def staging_hidden(test: Test) -> Row:
     of it, as bypass's other rows say.
 
     Raises:
-        SetupError: The file could not be written.
+        suite.SetupError: The file could not be written.
     """
     if not test.fed.posc:
         return SKIP, "only under POSC ('-p origin-posc')"
@@ -562,7 +553,7 @@ def staging_hidden(test: Test) -> Row:
             with open(path, "wb") as f:
                 f.write(os.urandom(4096))
         except OSError as e:
-            raise SetupError(f"writing framework/var/{path}: {e.strerror}") from e
+            raise suite.SetupError(f"writing framework/var/{path}: {e.strerror}") from e
         why = made_private(path, 0o600)
         if why:
             found.doubts.append(why)
@@ -638,7 +629,7 @@ def read_only_dir(test: Test) -> Row:
     """Return posc-multiuser's `read-only-dir` row (see posc_multiuser()).
 
     Raises:
-        SetupError: The directory could not be made.
+        suite.SetupError: The directory could not be made.
     """
     found = Findings()
     for origin in test.origins:
@@ -647,7 +638,7 @@ def read_only_dir(test: Test) -> Row:
         try:
             os.mkdir(f"{store}/{directory}")
         except OSError as e:
-            raise SetupError(f"making framework/var/{store}/{directory}: {e.strerror}") from e
+            raise suite.SetupError(f"making framework/var/{store}/{directory}: {e.strerror}") from e
         why = made_private(f"{store}/{directory}", 0o500)
         if why:
             found.doubts.append(why)
@@ -729,7 +720,7 @@ def mapfile(test: Test) -> dict[str, Row]:
         "mapfile edited": partial(edited, test),
     }
     result: dict[str, Row] = {
-        row: (INCONCLUSIVE, first(test.unshown)) if test.unshown else suite.attempt(check, EXPECTED)
+        row: (INCONCLUSIVE, first(test.unshown)) if test.unshown else suite.attempt(check)
         for row, check in checks.items()
     }
     result.update(restarted_rows(test))
@@ -837,9 +828,9 @@ def restarted_rows(test: Test) -> dict[str, Row]:
     if why:
         why = f"needs the origins restarted with a username claim and no default user, but {why}"
         return {row: (SKIP, why) for row in RESTARTED}
-    error = stores.write_file_everywhere(test.origins, NAMESPACE, test.rel(PROBE), os.urandom(PROBE_SIZE))
-    if error:
-        return {row: (FAIL, f"could not put the probe in place: {error}") for row in RESTARTED}
+    errors = stores.write_file_everywhere(test.origins, NAMESPACE, test.rel(PROBE), os.urandom(PROBE_SIZE))
+    if errors:
+        return {row: (FAIL, f"could not put the probe in place: {first(errors)}") for row in RESTARTED}
     claim_token = test.mint(CLAIM_SUBJECT, {USERNAME_CLAIM: "pelican"})
     result: dict[str, Row] = {}
     print("\nRestarting the origins with a username claim and no default user")
@@ -853,9 +844,9 @@ def restarted_rows(test: Test) -> dict[str, Row]:
                 result["mapfile username-claim"] = (
                     (INCONCLUSIVE, first(test.unshown))
                     if test.unshown
-                    else suite.attempt(partial(claimed, test, claim_token), EXPECTED)
+                    else suite.attempt(partial(claimed, test, claim_token))
                 )
-                result["mapfile unmatched"] = suite.attempt(partial(unmatched, test), EXPECTED)
+                result["mapfile unmatched"] = suite.attempt(partial(unmatched, test))
     except control.ControlError as e:
         # Restarting, or restoring, failed: what is left unrun fails.
         for row in RESTARTED:
@@ -899,7 +890,7 @@ def unmatched(test: Test) -> Row:
 
 
 # Each scenario takes the Test, and returns its rows (ROWS), by name, each
-# a status and a note; it raises SetupError if it cannot set up.
+# a status and a note; it raises suite.SetupError if it cannot set up.
 RUN: dict[str, Callable[[Test], dict[str, Row]]] = {
     "owner": owner,
     "default-user": default_user,
@@ -947,7 +938,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             rows = ROWS[name]
             if len(rows) > 1:
                 print(f"  {name} ...")
-            found = suite.attempt_all(rows, partial(RUN[name], test), EXPECTED)
+            found = suite.attempt_all(rows, partial(RUN[name], test))
             for row in rows:
                 results.add(row, *found[row])
     finally:

@@ -37,7 +37,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime
-from functools import cached_property
+from functools import cached_property, partial
 from typing import Any
 
 from testlib import (
@@ -48,6 +48,7 @@ from testlib import (
     credentials,
     director,
     issuer,
+    jwt,
     stores,
     suite,
     web,
@@ -57,6 +58,7 @@ from testlib.common import die, outcome, warn
 from testlib.issuer import User
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
+from testlib.suite import NAMESPACE, CaseRow
 
 SCENARIOS = {
     "ping": "the public ping answers that the service is the transfer service",
@@ -116,12 +118,10 @@ ONE_PROFILE = (
 )
 
 # The scenarios that need the API's host configured otherwise (see
-# run_configured()), and the one that restarts it.
+# run_restarted()), and the one that restarts it.
 CONFIGURED = ("enabled-groups", "oauth-clients")
 RESTARTS = "restart"
 
-# The namespace of the run's objects and the storage credentials.
-NAMESPACE = "protected-a"
 
 # The transfer API's scope, and its routes.
 SCOPE = "pelican.transfer"
@@ -130,8 +130,6 @@ API = "/api/v1.0/transfer"
 JOB_WAIT = 120
 # The jobs' terminal states.
 FINISHED = ("completed", "failed", "cancelled")
-# A key that no server knows.
-UNKNOWN_KEY = "test-keys/unknown.pem"
 # Its other routes.
 OAUTH_CLIENTS = "/oauth-clients"
 BOOTSTRAP = "/credentials/bootstrap/token-exchange"
@@ -178,14 +176,8 @@ def skip(fed: common.Federation) -> str | None:
     return None
 
 
-class ApiError(Exception):
-    """A refusal by the API of what a scenario's setup asked of it."""
-
-
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note. A scenario returns its status and note, or its rows.
-Row = tuple[str, str, str]
-Rows = tuple[str, str] | list[Row]
+# A scenario returns its status and note, or its rows.
+Rows = suite.Row | list[CaseRow]
 
 
 class Test(suite.Test):
@@ -211,7 +203,6 @@ class Test(suite.Test):
             OAuth2 clients are of, and which `restart` slows: the API's
             host, or another server.
         origin_svc: The service of origin-0.
-        origin_key: The key of origin-0.
         issuer_clients: The issuer's clients that the configured
             scenarios made, each with the web URL and the admin token
             that made it, to remove afterward.
@@ -225,7 +216,7 @@ class Test(suite.Test):
     """
 
     def __init__(self, session: Session):
-        super().__init__(session, "transfer-api", NAMESPACE)
+        super().__init__(session, "transfer-api")
         api = self.fed.transfer_api
         if api is None:
             die("framework/var/generated/transfer-api says the transfer API is off")
@@ -240,9 +231,6 @@ class Test(suite.Test):
         self._finished_job: dict[str, Any] | None = None
         self.origin_web = self.fed.origin_web_url
         self.origin_svc = self.fed.origins[0].svc
-        self.origin_key = common.signing_key(f"issuer-keys/{self.origin_svc}")
-        self._admin: str | None = None
-        self._origin_admin: str | None = None
         self.issuer_clients: list[tuple[str, str, str, issuer.Client]] = []
         self.user_ids: list[str] = []
         self.group_ids: list[str] = []
@@ -257,53 +245,28 @@ class Test(suite.Test):
             key: The file of the key that signs it.
             subject: Its subject.
         """
-        path = self.session.path(f"tokens/transfer-api.{name}")
-        credentials.mint(
+        return credentials.mint(
             self.fed,
-            path,
+            self.session.path(f"tokens/transfer-api.{name}"),
             f"/{self.namespace}/",
             key,
             self.issuer,
-            "/",
-            credentials.LONG,
             (),
-            subject,
+            subject=subject,
             raw_scopes=(SCOPE,),
             profile=credentials.WLCG,
         )
-        return common.read_text(path)
 
     def admin_token(self) -> str:
         """Return a token the API's host's web API takes as its admin's.
 
-        See credentials.mint_web_user().
+        See Session.web_token().
         """
-        if self._admin is None:
-            self._admin = credentials.mint_web_user(
-                self.fed,
-                self.session.path("tokens/transfer-api.admin"),
-                self.web_url,
-                "admin",
-                key=self.key,
-            )
-        return self._admin
+        return self.session.web_token(self.web_url)
 
     def origin_admin_token(self) -> str:
-        """Return a token that origin-0's web API takes as its admin's.
-
-        It is admin_token() where origin-0 is the API's host.
-        """
-        if self.origin_web == self.web_url:
-            return self.admin_token()
-        if self._origin_admin is None:
-            self._origin_admin = credentials.mint_web_user(
-                self.fed,
-                self.session.path("tokens/transfer-api.origin-admin"),
-                self.origin_web,
-                "admin",
-                key=self.origin_key,
-            )
-        return self._origin_admin
+        """Return a token that origin-0's web API takes as its admin's."""
+        return self.session.web_token(self.origin_web)
 
     def admin(self) -> Api:
         """Return the API's host's web API, as its admin."""
@@ -361,11 +324,7 @@ class Test(suite.Test):
             The status, the answer as a JSON object ({} if it is not one),
             and the raw answer.
         """
-        upload = json.dumps(body).encode() if body is not None else None
-        headers = accounts.JSON if body is not None else {}
-        answer = web.request(
-            method, f"{self.web_url}{API}{path}", token=token, upload=upload, headers=headers
-        )
+        answer = web.request(method, f"{self.web_url}{API}{path}", token=token, json_body=body)
         return answer.status, answer.object(), answer.body
 
     def stored(self, name: str) -> list[str | None]:
@@ -387,13 +346,13 @@ class Test(suite.Test):
                 user's.
 
         Raises:
-            ApiError: The API refused it.
+            suite.SetupError: The API refused it.
         """
         status, found, raw = self.call(
             "POST", "/credentials", owner or self.api_token, {"name": name, "access_token": token}
         )
         if status != 201 or not found.get("id"):
-            raise ApiError(f"could not add credential {name}: HTTP {status}: {raw[:200]!r}")
+            raise suite.SetupError(f"could not add credential {name}: HTTP {status}: {raw[:200]!r}")
         self.credential_ids.append((str(found["id"]), owner or self.api_token))
         return str(found["id"])
 
@@ -459,13 +418,13 @@ class Test(suite.Test):
         The copy is made once.
 
         Raises:
-            ApiError: The API refused the copy.
+            suite.SetupError: The API refused the copy.
         """
         if self._finished_job is None:
             writer = self.add_credential(f"{self.run}-job", self.token)
             status, found = self.submit(self.copy_job("src", "job-copy", writer, writer))
             if status != 201 or not found.get("job_id"):
-                raise ApiError(f"could not submit a copy: HTTP {status}: {found}")
+                raise suite.SetupError(f"could not submit a copy: HTTP {status}: {found}")
             self._finished_job = self.wait(str(found["job_id"]))
             self._finished_job.setdefault("job_id", found["job_id"])
         return self._finished_job
@@ -497,7 +456,7 @@ def auth_with(test: Test, token: str | None) -> tuple[str, str]:
 
 def auth_unknown_key(test: Test) -> tuple[str, str]:
     """Check that a pelican.transfer token of an unknown key is refused."""
-    return auth_with(test, test.mint("unknown", UNKNOWN_KEY, credentials.SUBJECT))
+    return auth_with(test, test.mint("unknown", credentials.UNKNOWN_KEY, credentials.SUBJECT))
 
 
 def credentials_scenario(test: Test) -> tuple[str, str]:
@@ -532,7 +491,7 @@ def credentials_scenario(test: Test) -> tuple[str, str]:
     return PASS, str(found["id"])
 
 
-def copy(test: Test) -> list[Row]:
+def copy(test: Test) -> list[CaseRow]:
     """Check `pelican object copy` through the transfer API, waiting for it.
 
     It names the API with `--transfer-server` (`server`); and then names
@@ -555,7 +514,7 @@ def copy(test: Test) -> list[Row]:
         "--json",
         test.pelican_url(test.rel("src")),
     ]
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     target = test.pelican_url(test.rel("cli-copy"))
     code, out, err = test.session.pelican_cmd(
         "object", "copy", "--transfer-server", test.web_url, *common_args, target
@@ -607,7 +566,7 @@ def job_status(test: Test) -> tuple[str, str]:
     if common.digest(test.data) not in test.stored("job-copy"):
         return FAIL, "the job completed, but no origin holds the copy"
     status, found, _ = test.call("GET", "/jobs?status=completed", test.api_token)
-    listed = [common.as_object(j) or {} for j in common.as_array(found.get("jobs")) or []]
+    listed = common.objects(found.get("jobs"))
     if status != 200 or job["job_id"] not in [j.get("job_id") for j in listed]:
         return FAIL, f"listing completed jobs: HTTP {status}, without {job['job_id']}"
     return PASS, str(job["job_id"])
@@ -841,7 +800,7 @@ def local_put(test: Test) -> tuple[str, str]:
 # The API's edges.
 
 
-def subjects(test: Test) -> list[Row]:
+def subjects(test: Test) -> list[CaseRow]:
     """Check tokens whose subjects are no usernames, or `admin`'s.
 
     They are pelican.transfer tokens whose subjects are a URL, one
@@ -851,7 +810,7 @@ def subjects(test: Test) -> list[Row]:
     its jobs (200) and run a copy of its own, and but for `admin`, the
     suite's own user must not see the subject's job.
     """
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for case, subject in SUBJECTS:
         token = test.mint(f"subject-{case}", test.key, subject)
         status, found, _ = test.call("GET", "/jobs", token)
@@ -865,7 +824,7 @@ def subjects(test: Test) -> list[Row]:
         if why:
             problems.append(why)
         status, listed, _ = test.call("GET", "/jobs", token)
-        jobs = [common.as_object(j) or {} for j in common.as_array(listed.get("jobs")) or []]
+        jobs = common.objects(listed.get("jobs"))
         mine = [str(j.get("job_id")) for j in jobs]
         if status != 200 or not mine:
             problems.append(f"the subject's jobs: HTTP {status}, listing {len(mine)}")
@@ -984,7 +943,7 @@ def database_files(test: Test) -> list[str]:
     return sorted(glob.glob(f"state/{test.svc}/*.sqlite*"))
 
 
-def ssrf_and_prefixes(test: Test) -> list[Row]:
+def ssrf_and_prefixes(test: Test) -> list[CaseRow]:
     """Check SSRF and prefix refusals, and that the database hides tokens.
 
     A job whose source is on loopback or link-local, which no allowed
@@ -995,7 +954,7 @@ def ssrf_and_prefixes(test: Test) -> list[Row]:
     `secrets` row comes once every other scenario has run (see
     plain_secrets()).
     """
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     problems: list[str] = []
     destination = test.pelican_url(test.rel("ssrf"))
     for case, source in SSRF_SOURCES:
@@ -1025,7 +984,7 @@ def ssrf_and_prefixes(test: Test) -> list[Row]:
     return rows
 
 
-def plain_secrets(test: Test) -> list[Row]:
+def plain_secrets(test: Test) -> list[CaseRow]:
     """Check that the database of the API's host hides what it keeps.
 
     No credential's token, nor the client secret that `oauth-clients`
@@ -1099,7 +1058,7 @@ def credential_cli(test: Test) -> tuple[str, str]:
     code, out, err = test.session.pelican_cmd("transfer", "credential", "list", *common_args)
     if code != 0:
         return FAIL, f"list: exit {code}: {last_line(err or out)}"
-    listed = [common.as_object(c) or {} for c in common.as_array(cli_json(out)) or []]
+    listed = common.objects(cli_json(out))
     if not any(c.get("id") == cred_id and c.get("name") == name for c in listed):
         return FAIL, f"list does not show {name} ({cred_id}): {last_line(out)}"
     if test.token in out + err:
@@ -1154,7 +1113,7 @@ def settle(test: Test) -> str | None:
     return control.settle(unready, suite.SETTLE_WAIT)
 
 
-def run_configured(test: Test, names: list[str], results: common.Results) -> None:
+def run_restarted(test: Test, names: list[str], results: common.Results) -> None:
     """Run the scenarios named with the API's host configured for them.
 
     The host is restarted with the run's configuration, and then
@@ -1168,7 +1127,7 @@ def run_configured(test: Test, names: list[str], results: common.Results) -> Non
                     results.add(f"{name} configured", FAIL, f"once {test.svc} restarted, {why}")
                 return
             for name in names:
-                record(results, name, guarded(CONFIGURED_RUN[name], test))
+                suite.record(results, name, suite.attempt_cases(partial(CONFIGURED_RUN[name], test)))
     except control.ControlError as e:
         for name in names:
             results.add(f"{name} configured", FAIL, str(e))
@@ -1184,13 +1143,11 @@ def log_in(test: Test, username: str, user_id: str) -> str:
     The password is the run's, set through an invite the admin mints.
     The cookie carries the groups they are in.
     """
-    invite = accounts.password_invite(test.admin(), user_id)
-    password = secrets.token_urlsafe(12)
-    accounts.set_password(test.web_url, invite, password)
+    password = accounts.new_password(test.admin(), user_id)
     return accounts.login(test.web_url, username, password)
 
 
-def enabled_groups(test: Test) -> list[Row]:
+def enabled_groups(test: Test) -> list[CaseRow]:
     """Check that with Transfer.EnabledGroups, only a member gets the API.
 
     With it naming a group of the run's, the API's host's local issuer
@@ -1216,21 +1173,14 @@ def enabled_groups(test: Test) -> list[Row]:
         made = accounts.must(
             admin.call("POST", accounts.USERS, {"username": username}), f"creating {username}"
         )
-        user_id = str(made.object.get("id", ""))
+        user_id = made.id()
         test.user_ids.append(user_id)
-        token = credentials.mint_web_user(
-            test.fed,
-            test.session.path(f"tokens/transfer-api.web.{role}"),
-            test.web_url,
-            username,
-            key=test.key,
-        )
-        accounts.agree_to_aup(Api(test.web_url, token))
+        accounts.agree_to_aup(Api(test.web_url, test.session.web_token(test.web_url, username)))
         if role == "member":
             accounts.add_member(admin, gid, user_id)
         cookies[role] = log_in(test, username, user_id)
     client = test.issuer_client(issuer.LOCAL_NAMESPACE, (issuer.DEVICE_GRANT,), ("openid", SCOPE))
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     tokens: dict[str, str] = {}
     problems: list[str] = []
     for role, username in users.items():
@@ -1239,11 +1189,11 @@ def enabled_groups(test: Test) -> list[Row]:
         except issuer.IssuerError as e:
             problems.append(f"{username}'s device flow: {e}")
             continue
-        granted = SCOPE in issuer.scopes(tokens[role])
+        granted = SCOPE in jwt.scopes_of(tokens[role])
         if granted != (role == "member"):
             problems.append(
                 f"{users[role]}'s token {'has' if granted else 'lacks'} {SCOPE}:"
-                + f" {sorted(issuer.scopes(tokens[role]))}"
+                + f" {sorted(jwt.scopes_of(tokens[role]))}"
             )
     rows.append(("issuer", *outcome(problems, f"{SCOPE} to the member alone")))
     problems = []
@@ -1265,7 +1215,7 @@ def enabled_groups(test: Test) -> list[Row]:
     return rows
 
 
-def oauth_clients_disabled(test: Test) -> list[Row]:
+def oauth_clients_disabled(test: Test) -> list[CaseRow]:
     """Check that the OAuth2 client routes are off by default.
 
     With Transfer.EnableOAuth2Clients off, as by default, they refuse
@@ -1296,7 +1246,7 @@ def expiry_of(found: dict[str, Any]) -> datetime | None:
         return None
 
 
-def oauth_clients(test: Test) -> list[Row]:
+def oauth_clients(test: Test) -> list[CaseRow]:
     """Check OAuth2 clients, with Transfer.EnableOAuth2Clients on.
 
     A client of the namespace issuer's, which origin-0's admin creates for
@@ -1324,7 +1274,7 @@ def oauth_clients(test: Test) -> list[Row]:
         device = test.issuer_client(f"/{test.namespace}", (issuer.DEVICE_GRANT,))
         client_id, client_secret = exchange.client_id, exchange.client_secret
     test.secrets.append(client_secret)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     problems: list[str] = []
     body = {
         "name": f"{test.run}-exchange",
@@ -1413,7 +1363,7 @@ CONFIGURED_RUN: dict[str, Callable[[Test], Rows]] = {
 # restart
 
 
-def restart(test: Test) -> list[Row]:
+def restart(test: Test) -> list[CaseRow]:
     """Check jobs and credentials across a restart of the API's host.
 
     The host restarts while a copy runs (origin-0 slowed, where it can
@@ -1432,7 +1382,7 @@ def restart(test: Test) -> list[Row]:
     writer = test.add_credential(f"{test.run}-interrupted", test.token)
     slowed = test.fed.origin_variant == "posixv2"
     text = f"Origin:\n  TransferRateLimit: {RATE_LIMIT}\n"
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     job: dict[str, Any] = {}
     job_id = ""
     try:
@@ -1516,9 +1466,11 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             die(f"could not put the source object in place: {why}")
         plain = [n for n in selected if n not in CONFIGURED and n != RESTARTS]
         for name in plain:
-            record(results, name, guarded(RUN[name], test))
+            suite.record(results, name, suite.attempt_cases(partial(RUN[name], test)))
         if "oauth-clients" in selected:
-            record(results, "oauth-clients", guarded(oauth_clients_disabled, test))
+            suite.record(
+                results, "oauth-clients", suite.attempt_cases(partial(oauth_clients_disabled, test))
+            )
         configured_names = [n for n in selected if n in CONFIGURED]
         if configured_names:
             why = control.unrestartable(test.fed)
@@ -1526,26 +1478,14 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 for name in configured_names:
                     results.add(f"{name} configured", SKIP, why)
             else:
-                run_configured(test, configured_names, results)
+                run_restarted(test, configured_names, results)
         if RESTARTS in selected:
-            record(results, RESTARTS, guarded(restart, test))
+            suite.record(results, RESTARTS, suite.attempt_cases(partial(restart, test)))
         if "ssrf-and-prefixes" in selected:
-            record(results, "ssrf-and-prefixes", guarded(plain_secrets, test))
+            suite.record(results, "ssrf-and-prefixes", suite.attempt_cases(partial(plain_secrets, test)))
     finally:
         finish(test)
         test.clean("after the run")
-
-
-def guarded(check: Callable[[Test], Rows], test: Test) -> Rows:
-    """Return check(test), or one failing row if it raised."""
-    return common.guarded(lambda: check(test), lambda why: [("", FAIL, why)], (ApiError,))
-
-
-def record(results: common.Results, name: str, found: Rows) -> None:
-    """Record found, scenario name's status and note, or its rows."""
-    rows = found if isinstance(found, list) else [("", *found)]
-    for case, status, note in rows:
-        results.add(f"{name} {case}".strip(), status, note)
 
 
 def finish(test: Test) -> None:

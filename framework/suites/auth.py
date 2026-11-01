@@ -393,7 +393,7 @@ def file_key_ids(path: str) -> frozenset[str]:
     """Return the kids in the JWKS file at path."""
     try:
         with open(path, "rb") as f:
-            return credentials.key_ids(f.read())
+            return jwt.key_ids(f.read())
     except FileNotFoundError:
         die(f"framework/var/{path} is missing; run ./fed.sh keys init")
     except ValueError:
@@ -412,7 +412,7 @@ def get_jwks(url: str, out: str, name: str) -> tuple[web.Response, frozenset[str
     if answer.status != 200:
         return answer, None, ["expected 200"]
     try:
-        return answer, credentials.key_ids(answer.body), []
+        return answer, jwt.key_ids(answer.body), []
     except ValueError:
         return answer, None, ["the body is not a JWKS"]
 
@@ -1157,7 +1157,7 @@ def check_audience_specific(test: Test) -> None:
         (f"aud-{label(first.svc, 'origin')}", raw_token(test, extra={"aud": [own]}), first),
         (
             "aud-list",
-            raw_token(test, extra={"aud": [credentials.ANY_AUDIENCE[test.profile], OTHER_AUDIENCE]}),
+            raw_token(test, extra={"aud": [credentials.ANY_AUDIENCES[test.profile], OTHER_AUDIENCE]}),
             None,
         ),
     )
@@ -1565,7 +1565,7 @@ def check_nested(test: Test) -> None:
     # it.
     owner_token = nested_token(test, export, "owner", owner.key, RWM, credentials.WLCG)
     # Each token presented: its row's name, and the token.
-    unknown = nested_token(test, export, "unknown", "test-keys/unknown.pem", R, test.profile)
+    unknown = nested_token(test, export, "unknown", credentials.UNKNOWN_KEY, R, test.profile)
     tokens = (("none", None), ("unknown", unknown))
     refusal = f"{export.prefix} takes a token"
     common.empty_dir(storage)
@@ -1635,18 +1635,7 @@ def nested_token(
     and kept as name.
     """
     out = test.session.path(f"tokens/nested.{name}")
-    credentials.mint(
-        test.fed,
-        out,
-        f"{export.prefix}/",
-        key,
-        export.issuer,
-        "/",
-        credentials.LONG,
-        scopes,
-        profile=profile,
-    )
-    return common.read_text(out)
+    return credentials.mint(test.fed, out, f"{export.prefix}/", key, export.issuer, scopes, profile=profile)
 
 
 def skip(_fed: common.Federation) -> str | None:

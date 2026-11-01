@@ -9,7 +9,6 @@ instead, or its admin asks its storage API; and there, /public, which
 takes no writes, reads /protected-a's storage.
 """
 
-import hashlib
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
@@ -58,8 +57,6 @@ S3_PART = 5 << 20
 # alone (RegisterStorageAPI in Pelican's origin_serve/storage_api.go): ls,
 # stat, and digest of a path in the store's catalog, and usage.
 STORAGE_API = "/api/v1.0/origin/storage/pstore"
-# How long the admin's tokens for it last, in seconds: a whole suite.
-STORAGE_TOKEN_LIFETIME = 3600
 
 
 def url(origin: common.Origin, namespace: str, rel: str) -> str:
@@ -140,7 +137,7 @@ def held(origin: common.Origin, namespace: str, rel: str, token: str | None) -> 
         target = url(origin, namespace, rel)
         answer = web.request("GET", target, token=token)
         if answer.status == 200:
-            return hashlib.sha256(answer.body).hexdigest()
+            return common.digest(answer.body)
         if answer.status == 404:
             return None
         raise Unreadable(f"GET {target}: {answer.describe()}")
@@ -172,20 +169,14 @@ def storage_route(kind: str, path: str) -> str:
 def storage_admin(session: Session, origin: common.Origin, key: str | None = None) -> str:
     """Return a token that origin's storage API takes as its admin's.
 
-    It is credentials.mint_web_user()'s, lasting STORAGE_TOKEN_LIFETIME
-    seconds; a session mints it once for each key.
+    It is Session.web_token()'s.
 
     Args:
-        session: The pass, whose scratch directory keeps the token.
+        session: The pass.
         origin: The pstore origin.
         key: The PEM file to sign it with, if not origin's signing key.
     """
-    fed = session.fed
-    key = key or common.signing_key(credentials.key_dir_of(fed, origin.web_url))
-    out = session.path(f"tokens/stores.{origin.svc}.{os.path.basename(key)}")
-    if not os.path.exists(out):
-        return credentials.mint_web_user(fed, out, origin.web_url, "admin", STORAGE_TOKEN_LIFETIME, key=key)
-    return common.read_text(out)
+    return session.web_token(origin.web_url, key=key)
 
 
 def catalog_answer(
@@ -241,7 +232,7 @@ def written_at(
         try:
             return os.stat(path).st_mtime, ""
         except OSError as e:
-            return None, f"framework/var/{path}: {e.strerror}"
+            return None, f"{common.shown(path)}: {e.strerror}"
     found, why = catalog_answer(session, origin, "stat", namespace, rel)
     if found is None:
         return None, why
@@ -301,7 +292,7 @@ def require_dirs(origins: Iterable[common.Origin], namespaces: Iterable[str], re
         for namespace in wanted:
             directory = f"{origin.store_of(namespace)}/{rel}"
             if not os.path.isdir(directory):
-                common.die(f"framework/var/{directory} is missing; run ./fed.sh init")
+                common.die(f"{common.shown(directory)} is missing; run ./fed.sh init")
 
 
 def put(
@@ -462,23 +453,20 @@ def write_file(store: str, rel: str, data: bytes) -> str | None:
             f.write(data)
         os.chmod(path, 0o644)
     except OSError as e:
-        return f"writing framework/var/{store}/{rel}: {e.strerror}"
+        return f"writing {common.shown(store)}/{rel}: {e.strerror}"
     return None
 
 
 def write_file_everywhere(
     origins: Iterable[common.Origin], namespace: str, rel: str, data: bytes
-) -> str | None:
+) -> list[str]:
     """Run write_file() for rel in namespace at each store of origins once.
 
     Returns:
-        What first went wrong, or None if nothing did.
+        What went wrong; empty if nothing did.
     """
-    for origin in unique(origins):
-        error = write_file(origin.store_of(namespace), rel, data)
-        if error:
-            return error
-    return None
+    errors = [write_file(origin.store_of(namespace), rel, data) for origin in unique(origins)]
+    return [error for error in errors if error]
 
 
 def make_dirs(origins: Iterable[common.Origin], namespace: str, rel: str, token: str) -> list[str]:
@@ -497,7 +485,7 @@ def make_dirs(origins: Iterable[common.Origin], namespace: str, rel: str, token:
             try:
                 _make_tree(origin.store_of(namespace), parts)
             except OSError as e:
-                errors.append(f"making framework/var/{e.filename}: {e.strerror}")
+                errors.append(f"making {common.shown(e.filename)}: {e.strerror}")
             continue
         for n in range(1, len(parts) + 1):
             target = url(origin, namespace, "/".join(parts[:n]))
@@ -525,7 +513,7 @@ def delete(origin: common.Origin, namespace: str, rel: str, token: str) -> str |
         except FileNotFoundError:
             pass
         except OSError as e:
-            return f"removing framework/var/{path}: {e.strerror}"
+            return f"removing {common.shown(path)}: {e.strerror}"
         return None
     target = url(origin, namespace, rel)
     answer = web.request("DELETE", target, token=token)
@@ -551,7 +539,7 @@ def empty_tree(origin: common.Origin, namespace: str, rel: str, token: str) -> l
         try:
             common.empty_dir(path)
         except OSError as e:
-            return [f"emptying framework/var/{path}: {e.strerror}"]
+            return [f"emptying {common.shown(path)}: {e.strerror}"]
         return []
     errors: list[str] = []
     doomed: list[str] = []  # parents before children
@@ -559,15 +547,11 @@ def empty_tree(origin: common.Origin, namespace: str, rel: str, token: str) -> l
     while pending:
         here = pending.pop()
         target = url(origin, namespace, here)
-        answer = webdav.propfind(target, "1", token)
+        answer, entries, why = webdav.listing(target, "1", f"/{namespace}/{here}", token)
         if answer.status == 404:
             continue
-        try:
-            if answer.status != 207:
-                raise ValueError(answer.describe())
-            entries = webdav.relative(webdav.parse(answer.body), f"/{namespace}/{here}")
-        except ValueError as e:
-            errors.append(f"PROPFIND {target}: {e}")
+        if entries is None:
+            errors.append(f"PROPFIND {target}: {why}")
             continue
         for name, entry in entries.items():
             if name:

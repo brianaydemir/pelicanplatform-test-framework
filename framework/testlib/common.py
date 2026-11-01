@@ -18,10 +18,10 @@ import shutil
 import sys
 import time
 import traceback
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import cached_property
 from typing import Any, NoReturn, cast
 from urllib.parse import urlsplit
@@ -135,7 +135,7 @@ def binary(name: str) -> str:
     """Return the path of framework/var/bin/<os>/<name>; it must exist."""
     path = _bin(name)
     if not os.path.exists(path):
-        die(f"framework/var/{path} is missing; run ./fed.sh init on the host")
+        die(f"{shown(path)} is missing; run ./fed.sh init on the host")
     return path
 
 
@@ -186,9 +186,9 @@ def as_array(value: Any) -> list[Any] | None:
     return items
 
 
-def objects(items: Iterable[Any]) -> list[dict[str, Any]]:
-    """Return the JSON objects among items, parsed JSON values."""
-    return [found for found in (as_object(item) for item in items) if found is not None]
+def objects(value: Any) -> list[dict[str, Any]]:
+    """Return the objects in value, a parsed JSON array; [] if not one."""
+    return [found for found in map(as_object, as_array(value) or []) if found is not None]
 
 
 def digest(data: bytes) -> str:
@@ -206,6 +206,11 @@ def sha256(path: str) -> str | None:
     except FileNotFoundError:
         return None
     return found.hexdigest()
+
+
+def file_holds(path: str, data: bytes) -> bool:
+    """Return whether the file at path exists and holds data."""
+    return sha256(path) == digest(data)
 
 
 def read_text(path: str) -> str:
@@ -248,6 +253,24 @@ def wait_for(condition: Callable[[], bool], seconds: float, interval: float = 0.
             return False
         time.sleep(interval)
     return True
+
+
+def wait_last[T](
+    probe: Callable[[], T], done: Callable[[T], bool], seconds: float, interval: float = 0.5
+) -> T:
+    """Call probe until what it returns is done, for up to seconds.
+
+    Returns:
+        What probe returned last.
+    """
+    last: list[T] = []
+
+    def finished() -> bool:
+        last[:] = [probe()]
+        return done(last[0])
+
+    wait_for(finished, seconds, interval)
+    return last[0]
 
 
 def first(problems: Sequence[str]) -> str:
@@ -320,11 +343,16 @@ class Findings:
         return report_module.PASS, "; ".join([passed] + self.notes)
 
 
-def timestamp(when: datetime) -> str:
-    """Return when, a UTC time, as Go's encoding/json reads a time.Time.
+def timestamp(when: datetime | float) -> str:
+    """Return when as Go's encoding/json reads a time.Time.
 
     That is RFC 3339, to the second.
+
+    Args:
+        when: A UTC time, or seconds since the epoch.
     """
+    if not isinstance(when, datetime):
+        when = datetime.fromtimestamp(when, timezone.utc)
     return when.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -490,7 +518,7 @@ def signing_key(key_dir: str) -> str:
     """
     keys = sorted(glob.glob(os.path.join(key_dir, "*.pem")))
     if not keys:
-        die(f"no key in framework/var/{key_dir}/; run ./fed.sh init")
+        die(f"no key in {shown(key_dir)}/; run ./fed.sh init")
     return keys[0]
 
 
@@ -623,7 +651,7 @@ class Federation:
             with open(path, encoding="utf-8") as f:
                 return f.read()
         except FileNotFoundError:
-            die(f"framework/var/{path} is missing; run ./fed.sh init")
+            die(f"{shown(path)} is missing; run ./fed.sh init")
 
     def _line(self, name: str) -> str:
         """Return generated/<name>'s one line."""

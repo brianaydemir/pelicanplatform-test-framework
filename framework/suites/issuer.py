@@ -34,8 +34,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from testlib import accounts, collections, common, credentials, issuer, stores, suite, web
+from testlib import accounts, collections, common, credentials, issuer, jwt, stores, suite, web
 from testlib.accounts import Api, ApiError, must
+from testlib.collections import personal, username
 from testlib.common import die, outcome, warn
 from testlib.credentials import PROTECTED
 from testlib.issuer import (
@@ -111,8 +112,6 @@ DOOMED_WAIT = 600
 # The device flow's least polling interval (RFC 8628), which the issuer
 # enforces.
 POLL_INTERVAL = 5.2
-# How long a client may take to acquire its token and finish.
-CLIENT_TIMEOUT = 180.0
 # How long past a code's expiry `code-expiry` redeems it, allowing for
 # clock skew between containers.
 CODE_MARGIN = 3
@@ -139,16 +138,6 @@ CLIENTS: dict[str, tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = {
         (),
     ),
 }
-
-
-def username(role: str) -> str:
-    """Return the user who plays role."""
-    return "admin" if role == "admin" else f"test-{role}"
-
-
-def personal(role: str) -> str:
-    """Return the ACL target that grants to role's user alone."""
-    return collections.user_target(username(role))
 
 
 def home(role: str) -> str:
@@ -203,21 +192,11 @@ class Test(suite.Test):
         self.data: dict[str, bytes] = {}
         self.doomed: tuple[Tokens, float] | None = None
         self.clients: dict[tuple[str, str], issuer.Client] = {}
-        self._web_tokens: dict[str, str] = {}
         self._minted = 0
 
     def web_token(self, role: str) -> str:
         """Return a token of role's user for the issuer origin's web API."""
-        if role not in self._web_tokens:
-            self._web_tokens[role] = credentials.mint_web_user(
-                self.fed,
-                self.session.path(f"tokens/issuer-web.{role}"),
-                self.web,
-                username(role),
-                lifetime=3600,
-                key=self.fed.origin_key,
-            )
-        return self._web_tokens[role]
+        return self.session.web_token(self.web, username(role))
 
     def api(self, role: str) -> Api:
         """Return the issuer origin's web API, as role's user."""
@@ -325,7 +304,7 @@ def sweep(test: Test) -> None:
     directory, gamma = test.path(f"{BASE}/collections/"), test.path(test.gamma_rel)
     for problem in collections.remove_under(admin, directory, keep=gamma):
         warn(problem)
-    for row in common.objects(admin.call("GET", accounts.GROUPS).array):
+    for row in common.objects(admin.call("GET", accounts.GROUPS).array()):
         name = str(row.get("name", ""))
         if name.startswith(f"{ROGUE}-") and name != f"{ROGUE}-{test.run}":
             failed = accounts.delete_group(admin, str(row.get("id")))
@@ -341,9 +320,7 @@ def log_in(test: Test, role: str) -> User:
     Returns:
         Their login.
     """
-    invite = accounts.password_invite(test.api("admin"), test.ids[role])
-    password = secrets.token_urlsafe(12)
-    accounts.set_password(test.web, invite, password)
+    password = accounts.new_password(test.api("admin"), test.ids[role])
     return User(cookie=accounts.login(test.web, username(role), password))
 
 
@@ -378,7 +355,7 @@ def prepare(test: Test) -> None:
         collections.create(curator, "gamma", test.path(test.gamma_rel), sharing=True),
         "creating gamma",
     )
-    test.gamma = str(made.object.get("id", ""))
+    test.gamma = made.id()
     for role, right in (("stranger", "read"), ("member", "write")):
         must(
             collections.grant(curator, test.gamma, personal(role), right),
@@ -389,7 +366,7 @@ def prepare(test: Test) -> None:
             collections.share(stranger, test.gamma, "shared", test.path(test.shared_rel)),
             "sharing gamma/shared",
         )
-        test.share = str(shared.object.get("id", ""))
+        test.share = shared.id()
         must(
             collections.grant(stranger, test.share, personal("analyst"), "read"),
             "granting read on the share to test-analyst",
@@ -463,14 +440,14 @@ def claim_problems(tok: str, role: str, issuer_url: str, groups: frozenset[str])
     version 1.0, and groups, the groups that earned it something.
     """
     problems: list[str] = []
-    claims = issuer.claims(tok)
+    claims = jwt.claims_of(tok)
     who = username(role)
     if claims.get("iss") != issuer_url:
         problems.append(f"{who}'s token's issuer is {claims.get('iss')!r}, not {issuer_url}")
     if claims.get("sub") != who:
         problems.append(f"{who}'s token's subject is {claims.get('sub')!r}")
     audience = claims.get("aud")
-    if audience not in (issuer.ANY_AUDIENCE, [issuer.ANY_AUDIENCE]):
+    if audience not in (jwt.ANY_AUDIENCE, [jwt.ANY_AUDIENCE]):
         problems.append(f"{who}'s token's audience is {audience!r}, not the WLCG any")
     if claims.get("wlcg.ver") != "1.0":
         problems.append(f"{who}'s token's wlcg.ver is {claims.get('wlcg.ver')!r}")
@@ -528,16 +505,16 @@ def discovery(test: Test) -> tuple[str, str]:
             problems.append(f"/{namespace}'s grant_types_supported are {sorted(supported)}")
         jwks = web.request("GET", str(document.get("jwks_uri", "")))
         try:
-            kids = credentials.key_ids(jwks.body)
+            kids = jwt.key_ids(jwks.body)
         except ValueError:
             problems.append(f"/{namespace}'s jwks_uri serves no JWKS ({jwks.describe()})")
             continue
         tok = test.tokens("member", (scope("read", ARCHIVE),), namespace=namespace).access
-        kid = str(issuer.header(tok).get("kid", ""))
+        kid = str(jwt.header_of(tok).get("kid", ""))
         if not kid or kid not in kids:
             problems.append(f"/{namespace}'s JWKS lacks kid {kid!r}, which signed a token")
-        if issuer.claims(tok).get("iss") != issuer_url:
-            problems.append(f"/{namespace}'s token names {issuer.claims(tok).get('iss')!r}")
+        if jwt.claims_of(tok).get("iss") != issuer_url:
+            problems.append(f"/{namespace}'s token names {jwt.claims_of(tok).get('iss')!r}")
     local = credentials.local_issuer(test.fed, test.web)
     try:
         document = issuer.discovery(issuer.url(test.web, issuer.LOCAL_NAMESPACE))
@@ -590,7 +567,7 @@ def templates(test: Test) -> tuple[str, str]:
                 problems.append(
                     f"{username(role)}'s /protected-b token has {sorted(found)}," + f" not {sorted(want)}"
                 )
-            if issuer.claims(tok).get("iss") != test.fed.issuer_of("protected-b"):
+            if jwt.claims_of(tok).get("iss") != test.fed.issuer_of("protected-b"):
                 problems.append(f"{username(role)}'s /protected-b token names another issuer")
         notes.append("/protected-b's own templates")
     return outcome(problems, "; ".join(notes))
@@ -696,7 +673,7 @@ def requests(test: Test) -> tuple[str, str]:
     rows = requests_table(test)
     for row in rows:
         toks = test.tokens(row.role, row.asks)
-        found = issuer.scopes(toks.access)
+        found = jwt.scopes_of(toks.access)
         if found != row.gets:
             problems.append(
                 f"{username(row.role)} asking {' '.join(row.asks)} ({row.why}) got"
@@ -707,8 +684,8 @@ def requests(test: Test) -> tuple[str, str]:
         if toks.refresh is not None:
             problems.append(f"a refresh token came without offline_access ({row.why})")
     toks = test.tokens("member", ("offline_access", f"{R}:/{ARCHIVE}"))
-    if issuer.scopes(toks.access) != frozenset({"offline_access", f"{R}:/{ARCHIVE}"}):
-        problems.append(f"with offline_access, the token has {sorted(issuer.scopes(toks.access))}")
+    if jwt.scopes_of(toks.access) != frozenset({"offline_access", f"{R}:/{ARCHIVE}"}):
+        problems.append(f"with offline_access, the token has {sorted(jwt.scopes_of(toks.access))}")
     if toks.refresh is None:
         problems.append("no refresh token came with offline_access")
     return outcome(problems, f"{len(rows) + 1} requests")
@@ -732,7 +709,7 @@ def code(test: Test) -> tuple[str, str]:
         user = test.user(row.role)
         if row.carried:
             try:
-                found = issuer.scopes(issuer.code_flow(client, user, row.asks).access)
+                found = jwt.scopes_of(issuer.code_flow(client, user, row.asks).access)
             except IssuerError as e:
                 problems.append(f"{row.why}: {e}")
                 continue
@@ -793,8 +770,8 @@ def code(test: Test) -> tuple[str, str]:
         asks = (f"{R}:/{ARCHIVE}",)
     try:
         toks = issuer.code_flow(public, test.user("member"), asks)
-        if issuer.scopes(toks.access) != frozenset({f"{R}:/{ARCHIVE}"}):
-            problems.append(f"the public client's token has {sorted(issuer.scopes(toks.access))}")
+        if jwt.scopes_of(toks.access) != frozenset({f"{R}:/{ARCHIVE}"}):
+            problems.append(f"the public client's token has {sorted(jwt.scopes_of(toks.access))}")
         if toks.refresh is not None:
             problems.append("the public client got a refresh token")
     except IssuerError as e:
@@ -812,8 +789,8 @@ def clients(test: Test) -> tuple[str, str]:
     narrow = test.client("narrow")
     toks = test.tokens("member", ("openid", "offline_access", *DATA_SCOPES), kind="narrow")
     want = frozenset({"openid"} | {s for s in test.allowed("member") if s.startswith(R)})
-    if issuer.scopes(toks.access) != want:
-        problems.append(f"the read-only client's token has {sorted(issuer.scopes(toks.access))}")
+    if jwt.scopes_of(toks.access) != want:
+        problems.append(f"the read-only client's token has {sorted(jwt.scopes_of(toks.access))}")
     if toks.refresh is not None:
         problems.append("the read-only client, which may not refresh, got a refresh token")
     refused = (
@@ -848,9 +825,9 @@ def clients(test: Test) -> tuple[str, str]:
         if not refused_with(answer, status, error):
             problems.append(f"{what}'s client_credentials ping: {answer.describe()}, not {error}")
     toks = test.tokens("member", ("offline_access", f"{R}:/{ARCHIVE}"), kind="public")
-    if issuer.scopes(toks.access) != frozenset({f"{R}:/{ARCHIVE}"}) or toks.refresh is not None:
+    if jwt.scopes_of(toks.access) != frozenset({f"{R}:/{ARCHIVE}"}) or toks.refresh is not None:
         problems.append(
-            f"the public client's device flow gave {sorted(issuer.scopes(toks.access))}"
+            f"the public client's device flow gave {sorted(jwt.scopes_of(toks.access))}"
             + f" and {'a' if toks.refresh else 'no'} refresh token"
         )
     return outcome(problems, "read-only, public, and wrong clients get what they may")
@@ -1006,7 +983,7 @@ def federation_problems(test: Test, tokens: dict[str, str]) -> list[str]:
         status, _, err = test.session.pelican_cmd(
             "object", "get", test.pelican_url(rel), dest, "--token", test.data_token_file(role)
         )
-        if allowed and (status != 0 or common.sha256(dest) != common.digest(test.data[rel])):
+        if allowed and (status != 0 or not common.file_holds(dest, test.data[rel])):
             problems.append(f"`object get` as test-member: exit {status}: {last_line(err)}")
         if not allowed and status == 0:
             problems.append("`object get` as test-stranger succeeded")
@@ -1057,8 +1034,8 @@ def refresh(test: Test) -> tuple[str, str]:
         problems.append("the refresh gave the same access token back")
     if second.refresh is None or second.refresh == first.refresh:
         problems.append("the refresh gave no new refresh token")
-    if issuer.scopes(second.access) != issuer.scopes(first.access):
-        problems.append(f"the refreshed token's scopes are {sorted(issuer.scopes(second.access))}")
+    if jwt.scopes_of(second.access) != jwt.scopes_of(first.access):
+        problems.append(f"the refreshed token's scopes are {sorted(jwt.scopes_of(second.access))}")
     problems += claim_problems(second.access, "member", test.issuer_url, frozenset(GROUPS))
     if abs(second.expires_in - test.lifetimes.access) > 1:
         problems.append(f"the refreshed token's expires_in is {second.expires_in}")
@@ -1105,7 +1082,7 @@ def revoked(test: Test) -> tuple[str, str]:
     client, curator = test.client("device"), test.api("curator")
     gamma = scope("read", test.gamma_rel)
     before = test.tokens("stranger", ("offline_access", f"{R}:/"))
-    if gamma not in issuer.scopes(before.access) or before.refresh is None:
+    if gamma not in jwt.scopes_of(before.access) or before.refresh is None:
         return FAIL, "test-stranger's tokens lack gamma's read, or a refresh token"
     must(
         collections.revoke(curator, test.gamma, personal("stranger"), "read"),
@@ -1114,7 +1091,7 @@ def revoked(test: Test) -> tuple[str, str]:
     try:
         after = issuer.refresh(client, before.refresh)
         got = issuer.tokens_of(after, "the refresh after the revoke")
-        if gamma in issuer.scopes(got.access):
+        if gamma in jwt.scopes_of(got.access):
             problems.append("a refresh after the grant was revoked still gives gamma's read")
     except IssuerError as e:
         problems.append(str(e))
@@ -1165,12 +1142,12 @@ def exchange(test: Test) -> tuple[str, str]:
     problems: list[str] = []
     client = test.client("exchange")
     subject = test.tokens("member", ("offline_access", f"{R}:/", f"{M}:/")).access
-    reads = {s for s in issuer.scopes(subject) if s.startswith(R)}
+    reads = {s for s in jwt.scopes_of(subject) if s.startswith(R)}
     answer = issuer.exchange(client, subject, (f"{R}:/{ARCHIVE}",))
     try:
         got = issuer.tokens_of(answer, "the exchange")
-        if issuer.scopes(got.access) != frozenset({f"{R}:/{ARCHIVE}"}):
-            problems.append(f"the exchanged token has {sorted(issuer.scopes(got.access))}")
+        if jwt.scopes_of(got.access) != frozenset({f"{R}:/{ARCHIVE}"}):
+            problems.append(f"the exchanged token has {sorted(jwt.scopes_of(got.access))}")
         if got.raw.get("issued_token_type") != issuer.ACCESS_TOKEN_TYPE:
             problems.append(f"issued_token_type is {got.raw.get('issued_token_type')!r}")
         problems += claim_problems(got.access, "member", test.issuer_url, frozenset(GROUPS))
@@ -1182,18 +1159,18 @@ def exchange(test: Test) -> tuple[str, str]:
     answer = issuer.exchange(client, subject, (f"{M}:/{home('member')}",))
     try:
         got = issuer.tokens_of(answer, "the exchange for a scope the client may not carry")
-        if issuer.scopes(got.access):
+        if jwt.scopes_of(got.access):
             problems.append(
                 "an exchange for a scope the client may not carry gave"
-                + f" {sorted(issuer.scopes(got.access))}"
+                + f" {sorted(jwt.scopes_of(got.access))}"
             )
     except IssuerError as e:
         problems.append(str(e))
     answer = issuer.exchange(client, subject)
     try:
         got = issuer.tokens_of(answer, "the exchange for nothing in particular")
-        if issuer.scopes(got.access) != frozenset(reads | {"offline_access"}):
-            problems.append(f"the inherited scopes are {sorted(issuer.scopes(got.access))}")
+        if jwt.scopes_of(got.access) != frozenset(reads | {"offline_access"}):
+            problems.append(f"the inherited scopes are {sorted(jwt.scopes_of(got.access))}")
         if got.refresh is None:
             problems.append("no refresh token came with the inherited offline_access")
     except IssuerError as e:
@@ -1225,7 +1202,7 @@ def expiry(test: Test) -> tuple[str, str]:
     problems: list[str] = []
     client = test.client("device")
     toks = test.tokens("member", ("offline_access", f"{R}:/{ARCHIVE}"))
-    claims = issuer.claims(toks.access)
+    claims = jwt.claims_of(toks.access)
     # The token's iat is when the user approved the flow, so the lifetime
     # is from now, not from iat.
     exp = float(claims.get("exp", 0))
@@ -1289,11 +1266,9 @@ def client_scenario(test: Test) -> tuple[str, str]:
     def get(name: str) -> tuple[issuer.ClientRun, bool]:
         dest = os.path.join(test.tmp, f"client-{name}")
         args = ["object", "get", test.pelican_url(rel), dest]
-        done = issuer.run_approving(
-            session.pelican, args, env, session.tmp, approve_as_member, CLIENT_TIMEOUT
-        )
+        done = issuer.run_approving(session.pelican, args, env, session.tmp, approve_as_member)
         problems.extend(done.problems)
-        right = done.status == 0 and common.sha256(dest) == common.digest(test.data[rel])
+        right = done.status == 0 and common.file_holds(dest, test.data[rel])
         if not right:
             problems.append(f"`object get` ({name}): exit {done.status}: {last_line(done.stderr)}")
         return done, right
@@ -1472,7 +1447,7 @@ def admin_clients(test: Test) -> tuple[str, str]:
         if answer.status != 403:
             problems.append(f"deleting a client as test-member: {answer.describe()}, not 403")
         listed = issuer.admin_call(test.web, namespace, admin)
-        rows = common.objects(common.as_array(listed.json()) or [])
+        rows = common.objects(listed.json())
         if listed.status != 200 or made.client_id not in {r.get("client_id") for r in rows}:
             problems.append(f"the admin's list: {listed.describe()}, without the new client")
         shown = issuer.admin_call(test.web, namespace, admin, "GET", made.client_id)
@@ -1544,9 +1519,9 @@ def narrowed_client_problems(test: Test, made: issuer.Client, refresh_token: str
         problems.append(f"narrowing the scopes: {answer.describe()}")
     wanted = ("openid", "offline_access", f"{R}:/", f"{M}:/")
     toks = issuer.device_tokens(made, test.user("member"), wanted)
-    if issuer.scopes(toks.access) != frozenset(narrow) or toks.refresh is not None:
+    if jwt.scopes_of(toks.access) != frozenset(narrow) or toks.refresh is not None:
         problems.append(
-            f"the narrowed client's token has {sorted(issuer.scopes(toks.access))}"
+            f"the narrowed client's token has {sorted(jwt.scopes_of(toks.access))}"
             + f" and {'a' if toks.refresh else 'no'} refresh token"
         )
     return problems
@@ -1573,8 +1548,8 @@ def cors_and_pkce(test: Test) -> tuple[str, str]:
         ("POST", client.device_url),
         ("OPTIONS", client.token_url),
     ):
-        headers = {**evil, **accounts.FORM, "Access-Control-Request-Method": "POST"}
-        answer = web.request(method, url, upload=b"", headers=headers)
+        headers = {**evil, "Access-Control-Request-Method": "POST"}
+        answer = web.request(method, url, headers=headers, form={})
         allowed = answer.header("Access-Control-Allow-Origin")
         if answer.status is None or allowed:
             problems.append(f"{method} {url} from another site: {answer.describe()}, {allowed!r}")
@@ -1708,8 +1683,8 @@ def binding_problems(test: Test, client: issuer.Client) -> list[str]:
     problems: list[str] = []
     try:
         toks = issuer.device_tokens(client, test.user("member"), (f"{R}:/{ARCHIVE}",))
-        if issuer.scopes(toks.access) != frozenset({f"{R}:/{ARCHIVE}"}):
-            problems.append(f"its token has {sorted(issuer.scopes(toks.access))}")
+        if jwt.scopes_of(toks.access) != frozenset({f"{R}:/{ARCHIVE}"}):
+            problems.append(f"its token has {sorted(jwt.scopes_of(toks.access))}")
     except IssuerError as e:
         problems.append(f"test-member's flow with the registered client: {e}")
     flow = issuer.started(issuer.start_device(client, (f"{R}:/{ARCHIVE}",)), client)

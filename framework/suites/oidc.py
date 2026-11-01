@@ -32,13 +32,13 @@ from testlib import (
     accounts,
     common,
     control,
-    credentials,
     issuer,
     oidc,
     registry,
     stores,
     suite,
     web,
+    webapi,
 )
 from testlib.accounts import Api, ApiError
 from testlib.common import outcome, warn
@@ -47,7 +47,8 @@ from testlib.issuer import ARCHIVE, DATA_SCOPES, IssuerError, User, data_scopes,
 from testlib.oidc import IdpUser, LoginError
 from testlib.report import FAIL, SKIP
 from testlib.session import Session, last_line
-from testlib.webapi import Server, servers
+from testlib.suite import CaseRow
+from testlib.webapi import Server
 
 SCENARIOS = {
     "enabled": (
@@ -83,10 +84,6 @@ SCENARIOS = {
 # Every scenario: each presents only Pelican's tokens, its issuer's and
 # its web API's, beside its setup's (see suites/__init__.py).
 ONE_PROFILE = tuple(SCENARIOS)
-
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note.
-Row = tuple[str, str, str]
 
 # The provider's users (framework/etc/idp-users.json), by what each is
 # for. Users of the same name in local/etc/idp-users.json replace them.
@@ -124,7 +121,7 @@ class Test(suite.Test):
     Attributes:
         issuer: The provider's issuer URL.
         users: The provider's users, by name.
-        servers: The servers.
+        access: The servers, and their admins' tokens.
         client_id: The servers' client at the provider.
         registry_ids: The provider's users' IDs at the registry, by name.
     """
@@ -135,7 +132,7 @@ class Test(suite.Test):
         super().__init__(session, "oidc", namespace)
         self.issuer = fed.oidc_issuer or ""
         self.users = oidc.users(self.issuer)
-        self.servers = servers(fed)
+        self.access = webapi.Access(session)
         self.client_id = oidc.client_id()
         self.registry_ids: dict[str, str] = {}
         self._admins: dict[str, Api] = {}
@@ -150,35 +147,20 @@ class Test(suite.Test):
         """The issuer origin's web URL."""
         return self.fed.origin_web_url
 
-    def user(self, name: str) -> IdpUser:
-        """Return the provider's user named name."""
-        return self.users[name]
-
     def admin(self, server: Server) -> Api:
         """Return server's web API as its admin.
 
         The admin has agreed to its AUP.
         """
         if server.web_url not in self._admins:
-            token = credentials.mint_web_user(
-                self.fed,
-                self.session.path(f"tokens/oidc.admin.{server.name}"),
-                server.web_url,
-                "admin",
-                key=server.key,
-            )
-            found = Api(server.web_url, token)
+            found = Api(server.web_url, self.access.admin(server))
             accounts.agree_to_aup(found)
             self._admins[server.web_url] = found
         return self._admins[server.web_url]
 
-    def server_at(self, web_url: str) -> Server:
-        """Return the server whose web URL is web_url."""
-        return next(s for s in self.servers if s.web_url == web_url)
-
     def login(self, web_url: str, name: str) -> str:
         """Return a login cookie of the provider's user name at web_url."""
-        return oidc.login(web_url, self.user(name))
+        return oidc.login(web_url, self.users[name])
 
     def record_of(self, server: Server, username: str) -> list[dict[str, Any]]:
         """Return server's records of the users named username.
@@ -190,16 +172,15 @@ class Test(suite.Test):
         """
         listed = accounts.must(
             self.admin(server).call("GET", accounts.USERS), f"listing {server.name}'s users"
-        ).array
-        found = (common.as_object(x) or {} for x in listed)
-        return [u for u in found if u.get("username") == username]
+        ).array()
+        return [u for u in common.objects(listed) if u.get("username") == username]
 
 
 # --------------------------------------------------------------------------
 # enabled
 
 
-def enabled(test: Test) -> list[Row]:
+def enabled(test: Test) -> list[CaseRow]:
     """Check that each server lists its OIDC modules, and begins a login.
 
     At each server, /api/v1.0/auth/oauth must list each module it runs;
@@ -209,8 +190,8 @@ def enabled(test: Test) -> list[Row]:
     OIDC.ClientRedirectHostname, with a state, which a session cookie
     keeps too.
     """
-    rows: list[Row] = []
-    for server in test.servers:
+    rows: list[CaseRow] = []
+    for server in test.access.servers:
         problems: list[str] = []
         answer = web.request("GET", server.web_url + oidc.ENABLED)
         found = answer.object()
@@ -253,7 +234,7 @@ def enabled(test: Test) -> list[Row]:
 # login
 
 
-def login(test: Test) -> list[Row]:
+def login(test: Test) -> list[CaseRow]:
     """Check that MEMBER logs in at each server through the provider.
 
     whoami must then name them by their preferred_username, as no admin;
@@ -262,9 +243,9 @@ def login(test: Test) -> list[Row]:
     provider must have been asked for the code's tokens, as the servers'
     client, and for who the user is (its log).
     """
-    rows: list[Row] = []
-    member = test.user(MEMBER)
-    for server in test.servers:
+    rows: list[CaseRow] = []
+    member = test.users[MEMBER]
+    for server in test.access.servers:
         problems: list[str] = []
         before = len(oidc.log_entries())
         try:
@@ -273,12 +254,12 @@ def login(test: Test) -> list[Row]:
         except LoginError as e:
             rows.append((server.name, FAIL, str(e)))
             continue
-        me = oidc.whoami(server.web_url, cookie)
+        me = accounts.whoami(server.web_url, cookie)
         if me.get("authenticated") is not True or me.get("user") != member.preferred_username:
             problems.append(f"whoami after logging in: {me}")
         elif me.get("role") != "user":
             problems.append(f"whoami says the role is {me.get('role')!r}, not user")
-        later = oidc.whoami(server.web_url, again)
+        later = accounts.whoami(server.web_url, again)
         if later.get("user") != me.get("user") or later.get("user_id") != me.get("user_id"):
             problems.append(f"a second login is another user: {later}")
         try:
@@ -317,7 +298,7 @@ def login(test: Test) -> list[Row]:
 # callback
 
 
-def callback(test: Test) -> list[Row]:
+def callback(test: Test) -> list[CaseRow]:
     """Check how the issuer origin takes a login's callback.
 
     A callback sent without its session cookie must be refused (400), as
@@ -328,14 +309,14 @@ def callback(test: Test) -> list[Row]:
     web_url = test.web
     try:
         started = oidc.begin(web_url)
-        sent = oidc.authorize(started.authorize_url, test.user(MEMBER))
+        sent = oidc.authorize(started.authorize_url, test.users[MEMBER])
     except LoginError as e:
         return [("", FAIL, str(e))]
     location = sent.header("Location")
     if sent.status != 302 or not location:
         return [("", FAIL, f"logging in at the provider: {sent.describe()}")]
     target = oidc.callback_at(web_url, location)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
 
     answer = web.request("GET", target)
     problems: list[str] = []
@@ -374,7 +355,7 @@ def callback(test: Test) -> list[Row]:
 # collision
 
 
-def collision(test: Test) -> list[Row]:
+def collision(test: Test) -> list[CaseRow]:
     """Check that a user whose preferred_username is `admin` gets no admin.
 
     COLLIDER, whose preferred_username is `admin`, the built-in
@@ -382,12 +363,12 @@ def collision(test: Test) -> list[Row]:
     the next claim (Server.AutoEnrollUsernameClaims: their email) for
     the username, and give them no admin role, nor the admin's routes.
     """
-    user = test.user(COLLIDER)
+    user = test.users[COLLIDER]
     try:
         cookie = test.login(test.web, COLLIDER)
     except LoginError as e:
         return [("", FAIL, str(e))]
-    me = oidc.whoami(test.web, cookie)
+    me = accounts.whoami(test.web, cookie)
     problems: list[str] = []
     if me.get("user") == "admin":
         problems.append("the provider's user became `admin`")
@@ -476,7 +457,7 @@ def register_with_identity(
     return status, "".join(lines), approvals[0], problems
 
 
-def registry_identity(test: Test) -> list[Row]:
+def registry_identity(test: Test) -> list[CaseRow]:
     """Check `pelican namespace register --with-identity` of a run's prefix.
 
     The registry starts the provider's device flow and hands the client
@@ -494,16 +475,17 @@ def registry_identity(test: Test) -> list[Row]:
     key = registry.new_key(os.path.join(key_dir, "key.pem"))
     env = registry_env(test, key_dir)
     prefix = f"/oidc-test-{test.run}"
-    member = test.user(MEMBER)
+    member = test.users[MEMBER]
     status, output, approvals, problems = register_with_identity(test, env, prefix, member)
     if status != 0:
         problems.append(f"register: exit {status}: {last_line(output)}")
     if approvals != 1:
         problems.append(f"the client announced {approvals} verification URLs, not one")
-    stored = web.request("GET", f"{fed.registry_url}{registry.REGISTRY}{prefix}")
+    route = registry.prefix_route(prefix)
+    stored = web.request("GET", fed.registry_url + route)
     found = stored.object()
     if stored.status != 200 or not found:
-        problems.append(f"GET {registry.REGISTRY}{prefix}: {stored.describe()}, not registered")
+        problems.append(f"GET {route}: {stored.describe()}, not registered")
     else:
         if registry.thumbprints(found.get("pubkey")) != registry.key_thumbprints([key]):
             problems.append(f"{prefix} is not registered with the client's key")
@@ -519,7 +501,7 @@ def registry_identity(test: Test) -> list[Row]:
     code, out, err = test.session.pelican_cmd("namespace", "delete", "--prefix", prefix, env=env)
     if code != 0:
         problems.append(f"delete: exit {code}: {last_line(err or out)}")
-    elif web.request("GET", f"{fed.registry_url}{registry.REGISTRY}{prefix}").status == 200:
+    elif web.request("GET", fed.registry_url + route).status == 200:
         problems.append(f"{prefix} is still registered after delete")
     note = f"{prefix}: registered as {MEMBER}" + (
         ", owned by the registry's user of that identity" if test.registry_ids.get(MEMBER) else ""
@@ -571,7 +553,7 @@ def seed(test: Test) -> Restarted:
         What was put, by group.
 
     Raises:
-        ApiError: An object could not be put in place.
+        suite.SetupError: An object could not be put in place.
     """
     found: dict[str, tuple[str, bytes]] = {}
     for group in (PROJECT_A, PROJECT_B):
@@ -579,7 +561,7 @@ def seed(test: Test) -> Restarted:
         data = os.urandom(OBJECT_SIZE)
         why = test.put({rel: data})
         if why:
-            raise ApiError(f"could not put {rel} in place: {why}")
+            raise suite.SetupError(f"could not put {rel} in place: {why}")
         found[group] = (rel, data)
     return Restarted(found)
 
@@ -593,7 +575,7 @@ def unseed(test: Test, made: Restarted) -> None:
                 warn(error)
 
 
-def admin_rows(test: Test, when: str) -> list[Row]:
+def admin_rows(test: Test, when: str) -> list[CaseRow]:
     """Check who is origin-0's admin, when `restarted` or `restored`.
 
     With origin-0 restarted: OWNER, named in Server.UIAdminUsers, must
@@ -602,7 +584,7 @@ def admin_rows(test: Test, when: str) -> list[Row]:
     must be no admin, and refused the users. Once restored, OWNER must
     be no admin.
     """
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     if when == "restored":
         cases = [(OWNER, False)]
     else:
@@ -614,7 +596,7 @@ def admin_rows(test: Test, when: str) -> list[Row]:
         except LoginError as e:
             rows.append((f"{when} {name}", FAIL, str(e)))
             continue
-        me = oidc.whoami(test.web, cookie)
+        me = accounts.whoami(test.web, cookie)
         role = me.get("role")
         if (role == "admin") != expect_admin:
             problems.append(f"whoami says the role is {role!r}")
@@ -641,7 +623,7 @@ def expected_scopes(group: str) -> frozenset[str]:
     )
 
 
-def group_rows(test: Test, made: Restarted) -> list[Row]:
+def group_rows(test: Test, made: Restarted) -> list[CaseRow]:
     """Check what the issuer grants for the groups that the provider claims.
 
     With origin-0 taking groups from the provider: MEMBER's device flow
@@ -652,8 +634,8 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
     and be refused test-project-b's. The flows use made.client, which
     this makes.
     """
-    rows: list[Row] = []
-    admin_token = test.admin(test.server_at(test.web)).token or ""
+    rows: list[CaseRow] = []
+    admin_token = test.admin(test.access.server_at(test.web)).token or ""
     try:
         made.client = issuer.create_client(
             test.web,
@@ -719,13 +701,13 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
     )
     if code != 0:
         problems.append(f"`pelican object get` with the token: exit {code}: {last_line(err or out)}")
-    elif common.sha256(target) != common.digest(data_a):
+    elif not common.file_holds(target, data_a):
         problems.append("`pelican object get` with the token: the file is not the object")
     rows.append(("data", *outcome(problems, f"{PROJECT_A}'s object read, {PROJECT_B}'s refused")))
     return rows
 
 
-def client_rows(test: Test, made: Restarted) -> list[Row]:
+def client_rows(test: Test, made: Restarted) -> list[CaseRow]:
     """Check `pelican object get` of test-project-a's object, with no token.
 
     The client registers itself with the issuer and starts a device
@@ -756,19 +738,16 @@ def client_rows(test: Test, made: Restarted) -> list[Row]:
         problems.append(f"exit {done.status}: {last_line(done.stderr or done.stdout)}")
     if done.approvals < 1:
         problems.append("the client started no device flow")
-    if common.sha256(target) != common.digest(data):
+    if not common.file_holds(target, data):
         problems.append("the file is not the object")
     return [("", *outcome(problems, f"{done.approvals} flow(s) approved as {MEMBER}"))]
 
 
-def guarded(check: Callable[[], list[Row]]) -> list[Row]:
-    """Return check()'s rows, or one failing row if it raised."""
-    return common.guarded(
-        check, lambda note: [("", FAIL, note)], (ApiError, stores.Unreadable, IssuerError)
-    )
+# What a scenario raises, beside suite.SetupError, to report a problem.
+EXPECTED = (ApiError, stores.Unreadable, IssuerError)
 
 
-def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Row], None]) -> None:
+def run_restarted(test: Test, selected: Sequence[str], results: common.Results) -> None:
     """Run the selected restart scenarios, with origin-0 restarted.
 
     origin-0 is restarted with RESTART_CONFIG, and afterward restored.
@@ -776,7 +755,7 @@ def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Ro
     Args:
         test: The run.
         selected: The scenarios selected.
-        record: Record a row, with its scenario's name.
+        results: The suite's results.
     """
     wanted = [s for s in ("admin", "groups", "client") if s in selected]
     if not wanted:
@@ -784,23 +763,23 @@ def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Ro
     why = control.unrestartable(test.fed)
     if why:
         for scenario in wanted:
-            record(scenario, ("", SKIP, f"needs origin-0 restarted, but {why}"))
+            suite.record(results, scenario, (SKIP, f"needs origin-0 restarted, but {why}"))
         return
     lacking = no_issuer(test)
     for scenario in ("groups", "client"):
         if scenario in wanted and lacking:
-            record(scenario, ("", SKIP, lacking))
+            suite.record(results, scenario, (SKIP, lacking))
     wanted = [s for s in wanted if s == "admin" or not lacking]
     if not wanted:
         return
-    checks: dict[str, Callable[[], list[Row]]] = {"admin": partial(admin_rows, test, "restarted")}
+    checks: dict[str, Callable[[], list[CaseRow]]] = {"admin": partial(admin_rows, test, "restarted")}
     made: Restarted | None = None
     if not lacking:
         try:
             made = seed(test)
-        except (ApiError, stores.Unreadable) as e:
+        except (suite.SetupError, stores.Unreadable) as e:
             for scenario in wanted:
-                record(scenario, ("", FAIL, str(e)))
+                suite.record(results, scenario, (FAIL, str(e)))
             return
         checks["groups"] = partial(group_rows, test, made)
         checks["client"] = partial(client_rows, test, made)
@@ -811,30 +790,28 @@ def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Ro
             why = test.settle(made.objects[PROJECT_A][0]) if made else None
             for scenario in wanted:
                 if why:
-                    record(scenario, ("", FAIL, f"with {test.origin.svc} restarted, {why}"))
+                    suite.record(results, scenario, (FAIL, f"with {test.origin.svc} restarted, {why}"))
                     done.add(scenario)
                     continue
-                for found in guarded(checks[scenario]):
-                    record(scenario, found)
+                suite.record(results, scenario, suite.attempt_cases(checks[scenario], EXPECTED))
                 done.add(scenario)
     except control.ControlError as e:
         for scenario in wanted:
             if scenario not in done:
-                record(scenario, ("", FAIL, f"restarting {test.origin.svc}: {e}"))
+                suite.record(results, scenario, (FAIL, f"restarting {test.origin.svc}: {e}"))
         warn(f"restarting {test.origin.svc}: {e}")
     if made:
         why = test.settle(made.objects[PROJECT_A][0])
         if why:
             warn(f"with {test.origin.svc} restored, {why}")
         if made.client is not None:
-            admin_token = test.admin(test.server_at(test.web)).token or ""
+            admin_token = test.admin(test.access.server_at(test.web)).token or ""
             error = issuer.delete_client(test.web, f"/{test.namespace}", admin_token, made.client.client_id)
             if error:
                 warn(error)
         unseed(test, made)
     if "admin" in wanted and "admin" in done:
-        for found in admin_rows(test, "restored"):
-            record("admin", found)
+        suite.record(results, "admin", admin_rows(test, "restored"))
 
 
 # --------------------------------------------------------------------------
@@ -842,7 +819,7 @@ def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Ro
 
 # The scenarios that need no restart: each takes the Test, and returns
 # its rows.
-RUN: dict[str, Callable[[Test], list[Row]]] = {
+RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
     "enabled": enabled,
     "login": login,
     "callback": callback,
@@ -855,14 +832,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, those that restart origin-0 last."""
     test = Test(session)
 
-    def record(scenario: str, found: Row) -> None:
-        case, status, note = found
-        results.add(f"{scenario} {case}".strip(), status, note)
-
-    print(f"Logging in through {test.issuer} at {len(test.servers)} server(s)\n")
+    print(f"Logging in through {test.issuer} at {len(test.access.servers)} server(s)\n")
     for name in selected:
         if name in RUN:
             print(f"  {name} ...")
-            for found in guarded(partial(RUN[name], test)):
-                record(name, found)
-    run_restarted(test, selected, record)
+            suite.record(results, name, suite.attempt_cases(partial(RUN[name], test), EXPECTED))
+    run_restarted(test, selected, results)

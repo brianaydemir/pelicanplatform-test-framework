@@ -21,9 +21,7 @@ WLCG pass alone.
 """
 
 import functools
-import json
 import re
-import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -36,7 +34,8 @@ from testlib.credentials import RWM, R
 from testlib.director import expected_targets
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
-from testlib.webapi import API, CONFIG, Server, judge
+from testlib.suite import CaseRow
+from testlib.webapi import API, CONFIG, HEALTH, LOG_LEVEL, LOG_TAIL, Server, judge
 
 SCENARIOS = {
     "health-api": "each server's health report: for its admin alone, and every component ok",
@@ -52,15 +51,8 @@ SCENARIOS = {
 # (see suites/__init__.py).
 ONE_PROFILE = tuple(s for s in SCENARIOS if s not in ("http-metrics", "log-redaction"))
 
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note.
-Row = tuple[str, str, str]
 
-HEALTH = f"{API}/metrics/health"
 LIVENESS = f"{API}/health"
-LOG_LEVEL = f"{API}/logging/level"
-LOG_TAIL = f"{API}/logs/tail"
-PROMQL = f"{API}/prometheus/query"
 
 # An object that init puts in every namespace (init-data.py), which
 # `log-redaction` and `log-level-xrootd` read.
@@ -169,10 +161,6 @@ _DURATION = re.compile(r"(\d+(?:\.\d+)?)(h|m|s|ms|us|µs|ns)")
 _UNITS = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 1e-3, "us": 1e-6, "µs": 1e-6, "ns": 1e-9}
 
 
-class Missing(Exception):
-    """Something the scenario needs is not there."""
-
-
 def readable(fed: common.Federation) -> str:
     """Return the first exported namespace with an issuer, else the first.
 
@@ -206,13 +194,9 @@ class Test(suite.Test):
         self.subject = f"observability-{self.run}"
         self.changes: dict[str, list[str]] = {}
 
-    def admin(self, server: Server) -> str:
-        """Return the admin's bearer token for server."""
-        return self.web.admin(server)
-
     def health(self, server: Server) -> web.Response:
         """Return server's health report, as its admin reads it."""
-        return web.request("GET", server.web_url + HEALTH, token=self.admin(server))
+        return web.request("GET", server.web_url + HEALTH, token=self.web.admin(server))
 
     def config(self, server: Server) -> dict[str, Any]:
         """Return server's configuration, as its admin reads it.
@@ -220,7 +204,7 @@ class Test(suite.Test):
         Returns:
             The configuration; {} if reading it fails.
         """
-        return web.request("GET", server.web_url + CONFIG, token=self.admin(server)).object()
+        return web.request("GET", server.web_url + CONFIG, token=self.web.admin(server)).object()
 
     def caches_at(self, server: Server) -> list[common.Cache]:
         """Return the caches whose web URL is server's."""
@@ -259,7 +243,7 @@ class Test(suite.Test):
             key: The key to sign it with, if not server's own.
         """
         return credentials.web_token(
-            self.fed, server.web_url, self.subject, scopes, webapi.TOKEN_LIFETIME, key
+            self.fed, server.web_url, self.subject, scopes, credentials.WEB_TOKEN_LIFETIME, key
         )
 
     def storage_token(self, namespace: str, scopes: tuple[str, ...], key: str = "") -> str:
@@ -283,17 +267,12 @@ class Test(suite.Test):
         return jwt.sign(claims, key)
 
 
-def guarded(check: Callable[[], list[Row]]) -> list[Row]:
-    """Return check()'s rows, or one failing row if it raised."""
-    return common.guarded(check, lambda note: [("", FAIL, note)], (Missing, accounts.ApiError))
-
-
 def each_server(
     test: Test,
-    check: Callable[[Server], list[Row]],
+    check: Callable[[Server], list[CaseRow]],
     servers: Sequence[Server] | None = None,
     case: str = "",
-) -> list[Row]:
+) -> list[CaseRow]:
     """Return check(server)'s rows for each of servers.
 
     A server where check raised gets one failing row.
@@ -305,11 +284,11 @@ def each_server(
         case: What follows the server's name in the case of a row that
             check leaves unnamed.
     """
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for server in test.servers if servers is None else servers:
         unnamed = f"{server.name} {case}".strip()
-        for found, status, note in guarded(functools.partial(check, server)):
-            rows.append((found or unnamed, status, note))
+        found = suite.attempt_cases(functools.partial(check, server), (accounts.ApiError,))
+        rows += [(case or unnamed, status, note) for case, status, note in found]
     return rows
 
 
@@ -417,7 +396,7 @@ def settled_reports(test: Test) -> dict[str, web.Response]:
         time.sleep(HEALTH_POLL)
 
 
-def health_access(test: Test, server: Server) -> Row:
+def health_access(test: Test, server: Server) -> CaseRow:
     """Check who may read server's health report.
 
     No one with no credentials (401), not an ordinary user (403), and its
@@ -433,7 +412,7 @@ def health_access(test: Test, server: Server) -> Row:
         [
             ("none", web.request("GET", url), (200,) if public else (401,)),
             ("user", web.request("GET", url, token=user), (200,) if public else (403,)),
-            ("admin", web.request("GET", url, token=test.admin(server)), (200,)),
+            ("admin", web.request("GET", url, token=test.web.admin(server)), (200,)),
             ("/health", web.request("GET", server.web_url + LIVENESS), (200,)),
         ],
     )
@@ -442,7 +421,7 @@ def health_access(test: Test, server: Server) -> Row:
     return case, status, note
 
 
-def health_api(test: Test) -> list[Row]:
+def health_api(test: Test) -> list[CaseRow]:
     """Check that each server's health report is all ok, for its admin only.
 
     Every server's health report, once settled (settled_reports()), must
@@ -452,7 +431,7 @@ def health_api(test: Test) -> list[Row]:
     """
     reports = settled_reports(test)
 
-    def check(server: Server) -> list[Row]:
+    def check(server: Server) -> list[CaseRow]:
         answer = reports[server.name]
         verdict = judge_report(test, server, answer)
         if verdict.storage_only:
@@ -461,10 +440,10 @@ def health_api(test: Test) -> list[Row]:
             return [("", FAIL, "; ".join(verdict.problems))]
         return [("", PASS, f"ok: {', '.join(sorted(components(answer.object())))}")]
 
-    def access(server: Server) -> list[Row]:
+    def access(server: Server) -> list[CaseRow]:
         return [health_access(test, server)]
 
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for server in test.servers:
         rows += each_server(test, check, [server], "components")
         rows += each_server(test, access, [server], "access")
@@ -478,7 +457,7 @@ def gauges(snapshot: metrics.Snapshot) -> dict[str, float]:
     }
 
 
-def health_metrics(test: Test) -> list[Row]:
+def health_metrics(test: Test) -> list[CaseRow]:
     """Check that each server's health gauges agree with its health report.
 
     At every server, read the health report, then /metrics, then the
@@ -488,7 +467,7 @@ def health_metrics(test: Test) -> list[Row]:
     server alerting on its gauges would take for a fault.
     """
 
-    def check(server: Server) -> list[Row]:
+    def check(server: Server) -> list[CaseRow]:
         before = test.health(server)
         snapshot = metrics.fetch(server.web_url)
         after = test.health(server)
@@ -547,13 +526,7 @@ def vector(answer: web.Response) -> Series | None:
     return result
 
 
-def query(server: Server, promql: str, token: str | None = None, **kw: Any) -> web.Response:
-    """Ask server's Prometheus for promql, an instant query."""
-    url = f"{server.web_url}{PROMQL}?{urlencode({'query': promql})}"
-    return web.request("GET", url, token=token, **kw)
-
-
-def metrics_access(test: Test, server: Server) -> Row:
+def metrics_access(test: Test, server: Server) -> CaseRow:
     """Check who may read server's /metrics.
 
     No one with no token (401 or 403); a token of its own issuer with
@@ -577,13 +550,13 @@ def metrics_access(test: Test, server: Server) -> Row:
             ("scrape token", allowed, (200,)),
             (f"signed by {whose}", web.request("GET", url, token=foreign), (401, 403)),
             ("admin's cookie", web.request("GET", url, headers=cookie(test, server)), (200,)),
-            ("admin's token", web.request("GET", url, token=test.admin(server)), (403,)),
+            ("admin's token", web.request("GET", url, token=test.web.admin(server)), (403,)),
         ],
         extra,
     )
 
 
-def promql_access(test: Test, server: Server) -> Row:
+def promql_access(test: Test, server: Server) -> CaseRow:
     """Check who may query server's Prometheus.
 
     No one with no token (401 or 403); a token of its own issuer with
@@ -593,17 +566,17 @@ def promql_access(test: Test, server: Server) -> Row:
     promql = f'up{{job="{SELF_JOB}"}}'
     token = test.web_token(server, (credentials.QUERY_SCOPE,))
     scrape = test.web_token(server, (credentials.SCRAPE_SCOPE,))
-    answered = query(server, promql, token)
+    answered = webapi.promql(server.web_url, promql, token)
     extra: list[str] = []
     if answered.status == 200 and vector(answered) is None:
         extra.append("the query token's 200 is no successful query")
     return judge(
         f"{server.name} promql",
         [
-            ("none", query(server, promql), (401, 403)),
+            ("none", webapi.promql(server.web_url, promql), (401, 403)),
             ("query token", answered, (200,)),
-            ("admin's cookie", query(server, promql, headers=cookie(test, server)), (200,)),
-            ("scrape token", query(server, promql, scrape), (403,)),
+            ("admin's cookie", webapi.promql(server.web_url, promql, headers=cookie(test, server)), (200,)),
+            ("scrape token", webapi.promql(server.web_url, promql, scrape), (403,)),
         ],
         extra,
     )
@@ -648,7 +621,7 @@ def servers_scrape_problems(found: Series | None, want: Mapping[tuple[str, str],
     return problems
 
 
-def scrape_rows(test: Test) -> list[Row]:
+def scrape_rows(test: Test) -> list[CaseRow]:
     """Check that each server's scrapes are up within SCRAPE_WAIT seconds.
 
     Each server's scrape of itself must be up (`up` of job prometheus is
@@ -662,9 +635,11 @@ def scrape_rows(test: Test) -> list[Row]:
 
     def problems_of(server: Server) -> list[str]:
         token = test.web_token(server, (credentials.QUERY_SCOPE,))
-        problems = self_scrape_problems(vector(query(server, f'up{{job="{SELF_JOB}"}}', token)))
+        problems = self_scrape_problems(
+            vector(webapi.promql(server.web_url, f'up{{job="{SELF_JOB}"}}', token))
+        )
         if server in directors:
-            answer = query(server, f'up{{job="{SERVERS_JOB}"}}', token)
+            answer = webapi.promql(server.web_url, f'up{{job="{SERVERS_JOB}"}}', token)
             problems += servers_scrape_problems(vector(answer), targets)
         return problems
 
@@ -677,7 +652,7 @@ def scrape_rows(test: Test) -> list[Row]:
         if not pending or time.monotonic() >= deadline:
             break
         time.sleep(HEALTH_POLL)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for server in test.servers:
         what = f"itself and {len(targets)} origin(s) and cache(s)"
         note = what if server in directors else "itself"
@@ -685,7 +660,7 @@ def scrape_rows(test: Test) -> list[Row]:
     return rows
 
 
-def metric_authorization(test: Test) -> list[Row]:
+def metric_authorization(test: Test) -> list[CaseRow]:
     """Check Pelican's metric and PromQL authorization, and the scrapes.
 
     The framework leaves the authorization on. At every server: who may
@@ -694,7 +669,7 @@ def metric_authorization(test: Test) -> list[Row]:
     (scrape_rows()).
     """
     rows = each_server(test, lambda server: [metrics_access(test, server), promql_access(test, server)])
-    return rows + guarded(functools.partial(scrape_rows, test))
+    return rows + suite.attempt_cases(functools.partial(scrape_rows, test), (accounts.ApiError,))
 
 
 # --------------------------------------------------------------------------
@@ -723,7 +698,7 @@ def shown(series: Mapping[metrics.Labels, float]) -> str:
     )
 
 
-def http_metrics(test: Test) -> list[Row]:
+def http_metrics(test: Test) -> list[CaseRow]:
     """Check that the first origin's counters count what the suite sends it.
 
     At the first origin, served by Pelican, straight: a PUT of
@@ -758,7 +733,7 @@ def http_metrics(test: Test) -> list[Row]:
     exact = not fed.multiuser
     username = test.subject if exact else ""
     token = test.storage_token(namespace, RWM)
-    unknown = test.storage_token(namespace, R, credentials.keys(fed)["unknown"])
+    unknown = test.storage_token(namespace, R, credentials.UNKNOWN_KEY)
     data = common.digest(test.run.encode()).encode() * (OBJECT_SIZE // 64)
     target = stores.url(origin, namespace, test.rel("http-metrics"))
 
@@ -799,7 +774,7 @@ def http_metrics(test: Test) -> list[Row]:
         if not series:
             problems.append(f"{counter} did not rise")
 
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     problems: list[str] = []
     if put.status != 201:
         problems.append(f"the PUT got {put.describe()}, not 201")
@@ -850,12 +825,12 @@ def level_status(test: Test, server: Server) -> dict[str, Any]:
     """Return server's log levels, as its admin reads them.
 
     Raises:
-        Missing: Reading them fails.
+        suite.SetupError: Reading them fails.
     """
-    answer = web.request("GET", server.web_url + LOG_LEVEL, token=test.admin(server))
+    answer = web.request("GET", server.web_url + LOG_LEVEL, token=test.web.admin(server))
     found = answer.object()
     if answer.status != 200 or "currentLevel" not in found:
-        raise Missing(f"GET {LOG_LEVEL} as the admin: {answer.describe()}")
+        raise suite.SetupError(f"GET {LOG_LEVEL} as the admin: {answer.describe()}")
     return found
 
 
@@ -905,10 +880,9 @@ def change_level(
     return web.request(
         "POST",
         server.web_url + LOG_LEVEL,
-        token=test.admin(server) if token is None else token,
-        upload=json.dumps(body).encode(),
-        headers=accounts.JSON,
+        token=test.web.admin(server) if token is None else token,
         timeout=120,
+        json_body=body,
     )
 
 
@@ -932,7 +906,7 @@ def delete_change(test: Test, server: Server, change: str) -> web.Response:
     """DELETE server's log level change, as its admin."""
     if change in test.changes.get(server.name, []):
         test.changes[server.name].remove(change)
-    return web.request("DELETE", f"{server.web_url}{LOG_LEVEL}/{change}", token=test.admin(server))
+    return web.request("DELETE", f"{server.web_url}{LOG_LEVEL}/{change}", token=test.web.admin(server))
 
 
 def undo_changes(test: Test) -> None:
@@ -963,7 +937,7 @@ class Raised:
     deadline: float
 
 
-def raise_row(test: Test, server: Server) -> tuple[Row, Raised | None]:
+def raise_row(test: Test, server: Server) -> tuple[CaseRow, Raised | None]:
     """Raise server's log level for LEVEL_DURATION seconds.
 
     The POST must get 200 and a change ID, and the level must then be the
@@ -995,7 +969,7 @@ def raise_row(test: Test, server: Server) -> tuple[Row, Raised | None]:
     return (case, *outcome(problems, f"{before} to {level} for {LEVEL_DURATION}s")), found
 
 
-def expiry_rows(test: Test, changes: Sequence[Raised]) -> list[Row]:
+def expiry_rows(test: Test, changes: Sequence[Raised]) -> list[CaseRow]:
     """Check that each of changes is dropped by itself, on time.
 
     Each must be dropped within EXPIRY_SLACK seconds of its deadline: the
@@ -1016,7 +990,7 @@ def expiry_rows(test: Test, changes: Sequence[Raised]) -> list[Row]:
                 pending.remove(c)
         if time.monotonic() >= deadline:
             break
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for c in changes:
         case = f"{c.server.name} expiry"
         if c.server.name in reverted:
@@ -1035,7 +1009,7 @@ def expiry_rows(test: Test, changes: Sequence[Raised]) -> list[Row]:
     return rows
 
 
-def delete_row(test: Test, server: Server) -> Row:
+def delete_row(test: Test, server: Server) -> CaseRow:
     """Check that a change deleted by its ID goes.
 
     The first DELETE must get 200, the second 404, and the level then be
@@ -1058,7 +1032,7 @@ def delete_row(test: Test, server: Server) -> Row:
     return judge(case, [("first", first_delete, (200,)), ("second", second_delete, (404,))], extra)
 
 
-def refusal_row(test: Test, server: Server) -> Row:
+def refusal_row(test: Test, server: Server) -> CaseRow:
     """Check that server's API refuses the changes it must.
 
     As the admin, a level that is none, a duration over 24 hours
@@ -1081,14 +1055,14 @@ def refusal_row(test: Test, server: Server) -> Row:
         answer = change_level(test, server, level, duration, parameter, token)
         made(test, server, answer)
         expects.append((label, answer, allowed))
-    body = json.dumps({"level": "debug", "duration": LEVEL_DURATION}).encode()
-    none = web.request("POST", server.web_url + LOG_LEVEL, upload=body, headers=accounts.JSON)
+    body = {"level": "debug", "duration": LEVEL_DURATION}
+    none = web.request("POST", server.web_url + LOG_LEVEL, json_body=body)
     made(test, server, none)
     expects.append(("none", none, (401,)))
     return judge(f"{server.name} refusals", expects)
 
 
-def cli_row(test: Test, server: Server) -> Row:
+def cli_row(test: Test, server: Server) -> CaseRow:
     """Check that `pelican-server server set-logging-level` makes a change.
 
     `pelican-server server set-logging-level <level> <duration> --server
@@ -1096,34 +1070,29 @@ def cli_row(test: Test, server: Server) -> Row:
     that the API then lists, which the suite deletes.
     """
     case = f"{server.name} cli"
-    binary = test.session.pelican_server
-    if binary is None:
+    if test.session.pelican_server is None:
         return case, SKIP, "no pelican-server, which has `server set-logging-level`"
     before = str(level_status(test, server).get("currentLevel"))
     level = raised(before) or "info"
     token_file = test.session.path(f"tokens/observability.admin.{server.name}")
     with open(token_file, "w", encoding="utf-8") as f:
-        f.write(test.admin(server))
-    command = [binary, "server", "set-logging-level", level, f"{LEVEL_DURATION}s"]
-    command += ["--server", server.web_url, "--token", token_file]
-    try:
-        done = subprocess.run(
-            command,
-            env=test.session.env,
-            cwd=test.session.tmp,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return case, FAIL, "it ran for 120s"
-    found = re.search(r"Change ID: (\S+)", done.stdout)
+        f.write(test.web.admin(server))
+    status, out, err = test.session.server_cmd(
+        "server",
+        "set-logging-level",
+        level,
+        f"{LEVEL_DURATION}s",
+        "--server",
+        server.web_url,
+        "--token",
+        token_file,
+        timeout=120,
+    )
+    found = re.search(r"Change ID: (\S+)", out)
     if found:
         remember(test, server, found.group(1))
-    if done.returncode != 0 or not found:
-        return case, FAIL, f"exit {done.returncode}: {last_line(done.stderr or done.stdout)}"
+    if status != 0 or not found:
+        return case, FAIL, f"exit {status}: {last_line(err or out)}"
     change = found.group(1)
     listed = active(level_status(test, server))
     delete_change(test, server, change)
@@ -1132,7 +1101,7 @@ def cli_row(test: Test, server: Server) -> Row:
     return case, PASS, f"change {change}, to {level}"
 
 
-def log_level(test: Test) -> list[Row]:
+def log_level(test: Test) -> list[CaseRow]:
     """Check that each server's log level changes take, and fall back.
 
     At every server, as its admin: a change of its log level must take
@@ -1143,14 +1112,14 @@ def log_level(test: Test) -> list[Row]:
     """
     raised_at: list[Raised] = []
 
-    def raise_check(server: Server) -> list[Row]:
+    def raise_check(server: Server) -> list[CaseRow]:
         row, change = raise_row(test, server)
         if change is not None:
             raised_at.append(change)
         return [row]
 
     rows = each_server(test, raise_check)
-    rows += guarded(functools.partial(expiry_rows, test, raised_at))
+    rows += suite.attempt_cases(functools.partial(expiry_rows, test, raised_at), (accounts.ApiError,))
     rows += each_server(test, lambda server: [delete_row(test, server)])
     rows += each_server(test, lambda server: [refusal_row(test, server)])
     rows += each_server(test, lambda server: [cli_row(test, server)], test.servers[:1])
@@ -1173,20 +1142,20 @@ def tail(test: Test, server: Server, since: str = "", limit: int = 0) -> dict[st
         limit: How many of the newest lines to read; 0 for no limit.
 
     Raises:
-        Missing: Reading it fails.
+        suite.SetupError: Reading it fails.
     """
     asked = {"since": since} if since else {}
     if limit:
         asked["limit"] = str(limit)
     url = server.web_url + LOG_TAIL + (f"?{urlencode(asked)}" if asked else "")
-    answer = web.request("GET", url, token=test.admin(server))
+    answer = web.request("GET", url, token=test.web.admin(server))
     found = answer.object()
     if answer.status != 200 or found.get("enabled") is not True:
-        raise Missing(f"GET {LOG_TAIL} as the admin: {answer.describe()}, {found or 'no JSON'}")
+        raise suite.SetupError(f"GET {LOG_TAIL} as the admin: {answer.describe()}, {found or 'no JSON'}")
     return found
 
 
-def tail_access(test: Test, server: Server) -> Row:
+def tail_access(test: Test, server: Server) -> CaseRow:
     """Check who may read server's log tail.
 
     No one with no credentials (401), not an ordinary user (403), and its
@@ -1198,7 +1167,7 @@ def tail_access(test: Test, server: Server) -> Row:
         [
             ("none", web.request("GET", url), (401,)),
             ("user", web.request("GET", url, token=test.web.user(server)), (403,)),
-            ("admin", web.request("GET", url, token=test.admin(server)), (200,)),
+            ("admin", web.request("GET", url, token=test.web.admin(server)), (200,)),
         ],
     )
 
@@ -1229,7 +1198,7 @@ def present(test: Test, server: Server, token: str) -> list[str]:
     return silent
 
 
-def redaction_row(test: Test, server: Server) -> Row:
+def redaction_row(test: Test, server: Server) -> CaseRow:
     """Check that a token presented to server never reaches its log tail.
 
     With server's log level raised to debug, present a fresh token
@@ -1264,7 +1233,7 @@ def redaction_row(test: Test, server: Server) -> Row:
     return case, PASS, f"{len(content.splitlines())} line(s) read; {note}"
 
 
-def log_redaction(test: Test) -> list[Row]:
+def log_redaction(test: Test) -> list[CaseRow]:
     """Check each origin's and cache's log tail, and who may read it.
 
     At every origin and cache: who may read its log tail (tail_access()),
@@ -1462,7 +1431,7 @@ def named_problems(test: Test, target: XrootdTarget) -> list[str]:
     return [f"after {NAMED_WAIT}s, only {named() or 'no director'} named {host}"]
 
 
-def xrootd_rows(test: Test, target: XrootdTarget) -> list[Row]:
+def xrootd_rows(test: Test, target: XrootdTarget) -> list[CaseRow]:
     """Check that a change of target's XRootD log level restarts XRootD.
 
     At target, as its admin: a change of its XRootD log level for its
@@ -1518,7 +1487,7 @@ def xrootd_rows(test: Test, target: XrootdTarget) -> list[Row]:
     return rows
 
 
-def log_level_xrootd(test: Test) -> list[Row]:
+def log_level_xrootd(test: Test) -> list[CaseRow]:
     """Check XRootD's log level where it serves the origins or a cache.
 
     It is checked at the first of each (xrootd_rows()).
@@ -1526,9 +1495,10 @@ def log_level_xrootd(test: Test) -> list[Row]:
     targets = xrootd_targets(test)
     if not targets:
         return [("", SKIP, "XRootD serves no origin or federated cache here")]
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for target in targets:
-        for case, status, note in guarded(functools.partial(xrootd_rows, test, target)):
+        found = suite.attempt_cases(functools.partial(xrootd_rows, test, target), (accounts.ApiError,))
+        for case, status, note in found:
             rows.append((case or target.svc, status, note))
     return rows
 
@@ -1536,7 +1506,7 @@ def log_level_xrootd(test: Test) -> list[Row]:
 # --------------------------------------------------------------------------
 
 
-RUN: dict[str, Callable[[Test], list[Row]]] = {
+RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
     "health-api": health_api,
     "health-metrics": health_metrics,
     "metric-authorization": metric_authorization,
@@ -1561,8 +1531,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     test = Test(session)
     try:
         for name in selected:
-            for case, status, note in guarded(functools.partial(RUN[name], test)):
-                results.add(f"{name} {case}" if case else name, status, note)
+            found = suite.attempt_cases(functools.partial(RUN[name], test), (accounts.ApiError,))
+            suite.record(results, name, found)
     finally:
         undo_changes(test)
         test.web.wait_for_logins()

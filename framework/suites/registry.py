@@ -25,11 +25,12 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from testlib import accounts, common, credentials, director, registry, web
+from testlib import accounts, common, credentials, director, jwt, registry, suite, web
 from testlib.common import first, outcome, warn
-from testlib.registry import REGISTRATIONS, REGISTRY, SERVERS
+from testlib.registry import DOWNTIME, REGISTRATIONS, REGISTRY, SERVERS
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
+from testlib.suite import CaseRow
 
 SCENARIOS = {
     "register": "refused prefixes, key chaining, LIKE wildcards, again, deletion, the CLI",
@@ -45,10 +46,6 @@ SCENARIOS = {
 # suites/__init__.py).
 ONE_PROFILE = tuple(SCENARIOS)
 
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note.
-Row = tuple[str, str, str]
-
 # What every prefix, site name, and downtime description of the suite's
 # own has in it, by which it finds them to remove.
 MARKER = "registry-test-"
@@ -58,16 +55,10 @@ MARKER = "registry-test-"
 USER = "test-registry"
 HEIR = "test-registry-heir"
 
-# How long the suite's web tokens last, in seconds.
-TOKEN_LIFETIME = 3600
-
-# A server's web API routes (web_ui/ui.go): its record of itself, and its
-# downtimes; the registry serves the latter too, for every server.
+# A server's record of itself (web_ui/ui.go). Its downtimes are at
+# DOWNTIME, which the registry serves too, for every server.
 LOCAL_METADATA = "/api/v1.0/server/localMetadata"
-DOWNTIME = "/api/v1.0/downtime"
-# The directors' views of the servers and their downtimes
-# (director/director_ui.go).
-DIRECTOR_SERVERS = "/api/v1.0/director_ui/servers"
+# The directors' view of the servers' downtimes (director/director_ui.go).
 DIRECTOR_DOWNTIMES = "/api/v1.0/director_ui/downtimes"
 
 # How long a downtime takes to reach the directors, in seconds: they ask
@@ -126,15 +117,10 @@ def servers(fed: common.Federation) -> list[Server]:
 
     A site-local cache registers nothing.
     """
-    found = [Server(o.svc, "origin", o.web_url, f"issuer-keys/{o.svc}") for o in fed.origins]
-    found += [Server(o.origin.svc, "origin", o.web_url, o.key_dir) for o in fed.owners]
-    found += [Server(c.svc, "cache", c.web_url, f"issuer-keys/{c.svc}") for c in fed.federated_caches]
-    return found
-
-
-def path_of(prefix: str) -> str:
-    """Return prefix, as a URL's path quotes it."""
-    return quote(prefix, safe="/:")
+    found = [("origin", o.svc, o.web_url) for o in fed.origins]
+    found += [("origin", o.origin.svc, o.web_url) for o in fed.owners]
+    found += [("cache", c.svc, c.web_url) for c in fed.federated_caches]
+    return [Server(svc, kind, url, credentials.key_dir_of(fed, url)) for kind, svc, url in found]
 
 
 def millis() -> int:
@@ -142,14 +128,9 @@ def millis() -> int:
     return int(time.time() * 1000)
 
 
-def entries(answer: web.Response) -> list[dict[str, Any]]:
-    """Return the JSON array in answer's body; {} for each non-object."""
-    return [common.as_object(e) or {} for e in common.as_array(answer.json()) or []]
-
-
 def status_row(
     case: str, answer: web.Response | accounts.Answer, want: int, note: str, what: str = ""
-) -> Row:
+) -> CaseRow:
     """Return case's row: PASS with note if answer's status is want.
 
     Args:
@@ -172,7 +153,6 @@ class Test:
 
     Attributes:
         registry: The registry's URL.
-        registry_host: The registry's host.
         tag: registry-test-<run>, which every prefix, site name, and
             downtime description of the run's has in it.
         chaining: Whether the registry requires key chaining.
@@ -185,7 +165,6 @@ class Test:
         self.session = session
         self.fed = session.fed
         self.registry = self.fed.registry_url
-        self.registry_host = director.host(self.registry)
         self.tag = f"{MARKER}{session.run}"
         # fed.sh turns Registry.RequireKeyChaining off under
         # `topo-multi-owner`, whose origin-2 registers prefixes inside
@@ -193,7 +172,6 @@ class Test:
         self.chaining = not self.fed.owners
         self.servers = servers(self.fed)
         self.protected = next((ns for ns in credentials.PROTECTED if ns in self.fed.exports), None)
-        self._apis: dict[tuple[str, str], accounts.Api] = {}
         self._csrf: dict[str, str] = {}
         self._users: dict[str, tuple[accounts.Api, str]] = {}
         self._metadata: dict[str, dict[str, Any]] = {}
@@ -218,32 +196,13 @@ class Test:
 
     # Web APIs, and the registry's users.
 
-    def web_api(self, web_url: str, key: str, username: str = "admin") -> accounts.Api:
-        """Return the web API at web_url, as username, made once.
-
-        Its token is signed with key, the server's own (see
-        credentials.mint_web_user()).
-        """
-        if (web_url, username) not in self._apis:
-            token = credentials.mint_web_user(
-                self.fed,
-                self.session.path(f"tokens/registry.{username}.{director.host(web_url)}"),
-                web_url,
-                username,
-                TOKEN_LIFETIME,
-                key=key,
-            )
-            self._apis[(web_url, username)] = accounts.Api(web_url, token)
-        return self._apis[(web_url, username)]
-
-    @property
-    def registry_key(self) -> str:
-        """The registry's active signing key."""
-        return common.signing_key(f"issuer-keys/{self.registry_host}")
+    def web_api(self, web_url: str, username: str = "admin") -> accounts.Api:
+        """Return the web API at web_url, as username."""
+        return accounts.Api(web_url, self.session.web_token(web_url, username))
 
     def admin(self) -> accounts.Api:
         """Return the registry's web API, as its admin."""
-        return self.web_api(self.registry, self.registry_key)
+        return self.web_api(self.registry)
 
     def csrf(self) -> dict[str, str]:
         """Return the headers with which the admin may change things.
@@ -267,7 +226,7 @@ class Test:
             admin = self.admin()
             accounts.agree_to_aup(admin)
             user_id = accounts.ensure_user(admin, name)
-            api = self.web_api(self.registry, self.registry_key, name)
+            api = self.web_api(self.registry, name)
             accounts.agree_to_aup(api)
             self._users[name] = (api, user_id)
         return self._users[name]
@@ -284,7 +243,7 @@ class Test:
         It is as anyone may read it (/api/v1.0/registry/<prefix>,
         getNamespaceHandler), pubkey and all.
         """
-        answer = self.get(REGISTRY + path_of(prefix))
+        answer = self.get(registry.prefix_route(prefix))
         if answer.status != 200:
             return None
         return common.as_object(answer.json())
@@ -301,18 +260,18 @@ class Test:
 
     def jwks(self, prefix: str) -> web.Response:
         """GET the JWKS the registry serves for prefix."""
-        return self.get(f"{REGISTRY}{path_of(prefix)}/.well-known/issuer.jwks")
+        return self.get(f"{registry.prefix_route(prefix)}/.well-known/issuer.jwks")
 
     def openid(self, prefix: str) -> web.Response:
         """GET the openid-configuration the registry serves for prefix."""
-        return self.get(f"{REGISTRY}{path_of(prefix)}/.well-known/openid-configuration")
+        return self.get(f"{registry.prefix_route(prefix)}/.well-known/openid-configuration")
 
     def registration(self, reg_id: int) -> dict[str, Any]:
         """Return registration reg_id, as the admin reads it."""
         return accounts.must(
             self.admin().call("GET", f"{REGISTRATIONS}/{reg_id}"),
             f"reading registration {reg_id}",
-        ).object
+        ).object()
 
     def status_of(self, prefix: str) -> str:
         """Return prefix's registration's status, or "" if there is none."""
@@ -341,7 +300,7 @@ class Test:
 
     def server_admin(self, server: Server) -> accounts.Api:
         """Return server's web API, as its admin."""
-        return self.web_api(server.web_url, server.key)
+        return self.web_api(server.web_url)
 
     def metadata(self, server: Server) -> dict[str, Any]:
         """Return what server records of itself, as the registry told it.
@@ -357,7 +316,7 @@ class Test:
                 self.server_admin(server).call("GET", LOCAL_METADATA),
                 f"{server.svc}'s {LOCAL_METADATA}",
             )
-            self._metadata[server.web_url] = answer.object
+            self._metadata[server.web_url] = answer.object()
         return self._metadata[server.web_url]
 
     def server_prefix(self, server: Server) -> str:
@@ -419,7 +378,7 @@ class Test:
 # register
 
 
-def register(test: Test) -> list[Row]:
+def register(test: Test) -> list[CaseRow]:
     """Check the registration of prefixes of the run's own.
 
     Register them as a server or `pelican namespace register` does,
@@ -437,7 +396,7 @@ def register(test: Test) -> list[Row]:
     return rows
 
 
-def invalid(test: Test, key: str) -> Row:
+def invalid(test: Test, key: str) -> CaseRow:
     """Check that each prefix that validatePrefix refuses gets 400."""
     problems: list[str] = []
     for pattern in INVALID:
@@ -448,7 +407,7 @@ def invalid(test: Test, key: str) -> Row:
     return ("invalid", *outcome(problems, f"{len(INVALID)} prefixes refused (400)"))
 
 
-def chaining(test: Test, k1: str) -> list[Row]:
+def chaining(test: Test, k1: str) -> list[CaseRow]:
     """Check key chaining for the prefixes inside a protected export.
 
     With key chaining on, a prefix inside a protected export's may be
@@ -487,7 +446,7 @@ def chaining(test: Test, k1: str) -> list[Row]:
     return rows
 
 
-def like_decoys(test: Test, k1: str, k2: str) -> list[Row]:
+def like_decoys(test: Test, k1: str, k2: str) -> list[CaseRow]:
     """Check that a LIKE wildcard in a prefix is not taken as a pattern.
 
     A registered prefix with a LIKE wildcard in it (`_` or `%`) must not
@@ -499,7 +458,7 @@ def like_decoys(test: Test, k1: str, k2: str) -> list[Row]:
     if not test.chaining:
         why = "key chaining is off, so no superspace is consulted"
         return [("like-underscore", SKIP, why), ("like-percent", SKIP, why)]
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for case, decoy, victim in (
         ("like-underscore", test.prefix("a_b"), test.prefix("aXb/c")),
         ("like-percent", test.prefix("p%q"), test.prefix("pXYZq/c")),
@@ -518,7 +477,7 @@ def like_decoys(test: Test, k1: str, k2: str) -> list[Row]:
     return rows
 
 
-def again(test: Test, k2: str) -> Row:
+def again(test: Test, k2: str) -> CaseRow:
     """Check that an export's prefix registered again keeps its keys.
 
     A protected export's prefix, registered again with another key: 200,
@@ -545,7 +504,7 @@ def again(test: Test, k2: str) -> Row:
     return ("again", *outcome(problems, f"{export}, with another key: 200, keys unchanged"))
 
 
-def deletion(test: Test, k1: str, k2: str) -> list[Row]:
+def deletion(test: Test, k1: str, k2: str) -> list[CaseRow]:
     """Check that a DELETE of a registration takes a token of its own key.
 
     DELETE /api/v1.0/registry/<prefix> takes a token of
@@ -559,7 +518,7 @@ def deletion(test: Test, k1: str, k2: str) -> list[Row]:
     made = test.register(prefix, k1)
     if made.status != 201:
         return [("delete", FAIL, f"registering {prefix}: {made.describe()}, not 201")]
-    url = test.registry + REGISTRY + path_of(prefix)
+    url = test.registry + registry.prefix_route(prefix)
 
     def delete(key: str, target: str = url) -> web.Response:
         tok = registry.token(key, registry.NAMESPACE_DELETE, "origin", url, audience="registry")
@@ -572,7 +531,7 @@ def deletion(test: Test, k1: str, k2: str) -> list[Row]:
     if gone.status != 404:
         problems.append(f"its JWKS afterward: {gone.describe()}, not 404")
     rows.append(("delete-owner", *outcome(problems, f"{prefix}, with its key's token: 200, then 404")))
-    unknown = delete(k1, test.registry + REGISTRY + path_of(never))
+    unknown = delete(k1, test.registry + registry.prefix_route(never))
     problems = [] if unknown.status == 400 else [f"{unknown.describe()}, not 400"]
     count = registry.documents(unknown.body)
     if count != 1:
@@ -581,7 +540,7 @@ def deletion(test: Test, k1: str, k2: str) -> list[Row]:
     return rows
 
 
-def approval(test: Test, key: str) -> Row:
+def approval(test: Test, key: str) -> CaseRow:
     """Check when a new registration's keys are served.
 
     A new registration, which starts Incomplete (keySignChallengeCommit),
@@ -638,7 +597,7 @@ def key_dir_of(test: Test, name: str, keys: Sequence[str]) -> str:
     return path
 
 
-def cli(test: Test, k1: str, k2: str) -> list[Row]:
+def cli(test: Test, k1: str, k2: str) -> list[CaseRow]:
     """Check `pelican namespace register` and `delete`.
 
     With the key the client is configured with, it must register the prefix
@@ -646,7 +605,7 @@ def cli(test: Test, k1: str, k2: str) -> list[Row]:
     key directory and --privkey, it must register the prefix with
     --privkey's key.
     """
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     prefix = test.prefix("cli")
     env = cli_env(test, key_dir_of(test, "cli", [k1]))
     code, out, err = test.session.pelican_cmd("namespace", "register", "--prefix", prefix, env=env)
@@ -691,7 +650,7 @@ def cli(test: Test, k1: str, k2: str) -> list[Row]:
 # jwks
 
 
-def jwks(test: Test) -> list[Row]:
+def jwks(test: Test) -> list[CaseRow]:
     """Check the keys the registry serves for each prefix.
 
     It serves them at /api/v1.0/registry/<prefix>/.well-known/issuer.jwks
@@ -700,7 +659,7 @@ def jwks(test: Test) -> list[Row]:
     material in any JWKS the federation serves.
     """
     exports = test.export_servers()
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     problems: list[str] = []
     for prefix, server in exports.items():
         problems += served_problems(test, prefix, server)
@@ -770,7 +729,7 @@ def openid_problems(test: Test, prefix: str) -> list[str]:
     return []
 
 
-def private_keys(test: Test, prefixes: Sequence[str]) -> Row:
+def private_keys(test: Test, prefixes: Sequence[str]) -> CaseRow:
     """Check that no JWKS the federation serves holds private key material.
 
     Private key material is any of registry.PRIVATE_MEMBERS. The JWKS
@@ -818,14 +777,15 @@ def private_keys(test: Test, prefixes: Sequence[str]) -> Row:
     for prefix in prefixes:
         documents[f"the registry's JWKS of {prefix}"] = fetch(
             f"the registry's JWKS of {prefix}",
-            f"{test.registry}{REGISTRY}{path_of(prefix)}/.well-known/issuer.jwks",
+            f"{test.registry}{registry.prefix_route(prefix)}/.well-known/issuer.jwks",
         )
-    listed = common.as_array(fetch("/api/v1.0/registry", test.registry + REGISTRY)) or []
-    for entry in (common.as_object(e) or {} for e in listed):
+    for entry in common.objects(fetch("/api/v1.0/registry", test.registry + REGISTRY)):
         prefix, reg_id = str(entry.get("prefix", "")), entry.get("id")
         documents[f"{prefix}, as listed"] = entry.get("pubkey")
         documents[f"{prefix}, as served"] = (
-            common.as_object(fetch(f"{prefix}'s registration", test.registry + REGISTRY + path_of(prefix)))
+            common.as_object(
+                fetch(f"{prefix}'s registration", test.registry + registry.prefix_route(prefix))
+            )
             or {}
         ).get("pubkey")
         answer = test.admin().call("GET", f"{REGISTRATIONS}/{reg_id}/pubkey")
@@ -840,7 +800,7 @@ def private_keys(test: Test, prefixes: Sequence[str]) -> Row:
     for name, document in documents.items():
         if document is None:
             continue
-        if registry.as_jwks(document) is None:
+        if jwt.jwks_keys(document) is None:
             problems.append(f"{name} is no JWKS")
         problems += [f"{name} holds private key material: {p}" for p in registry.private_members(document)]
     read = sum(1 for d in documents.values() if d is not None)
@@ -869,7 +829,7 @@ def namespace_issuers(fed: common.Federation) -> list[str]:
 # registry-ui
 
 
-def registry_ui(test: Test) -> list[Row]:
+def registry_ui(test: Test) -> list[CaseRow]:
     """Check the registry's web API (/api/v1.0/registry_ui; registry_ui.go).
 
     That is, listing registrations (listNamespaces), seeing one
@@ -878,7 +838,7 @@ def registry_ui(test: Test) -> list[Row]:
     """
     key = test.key("k1")
     listed, unlisted = test.prefix("listed"), test.prefix("unlisted")
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for prefix in (listed, unlisted):
         made = test.register(prefix, key)
         if made.status != 201:
@@ -899,7 +859,7 @@ def registry_ui(test: Test) -> list[Row]:
     return rows
 
 
-def public_listing(test: Test, listed: str, unlisted: str) -> Row:
+def public_listing(test: Test, listed: str, unlisted: str) -> CaseRow:
     """Check that the public listing is of Approved registrations alone.
 
     With no credentials, the registrations are Approved ones alone, without
@@ -909,7 +869,7 @@ def public_listing(test: Test, listed: str, unlisted: str) -> Row:
     answer = test.get(REGISTRATIONS)
     if answer.status != 200:
         return ("list-public", FAIL, f"{answer.describe()}, not 200")
-    found = entries(answer)
+    found = common.objects(answer.json())
     problems: list[str] = []
     for entry in found:
         prefix, status = entry.get("prefix"), registry.admin_metadata(entry).get("status")
@@ -925,7 +885,7 @@ def public_listing(test: Test, listed: str, unlisted: str) -> Row:
     return ("list-public", *outcome(problems, f"{len(found)} listed, all Approved, without keys"))
 
 
-def bad_status(test: Test) -> Row:
+def bad_status(test: Test) -> CaseRow:
     """Check that the admin's ?status=Bogus gets 400.
 
     Its body must be one JSON document.
@@ -938,7 +898,7 @@ def bad_status(test: Test) -> Row:
     return ("bad-status", *outcome(problems, "?status=Bogus as the admin: 400, one body"))
 
 
-def non_owner(test: Test) -> Row:
+def non_owner(test: Test) -> CaseRow:
     """Check that an ordinary user may not see another's registration.
 
     The registration is an export's, which no user owns (403).
@@ -953,9 +913,11 @@ def non_owner(test: Test) -> Row:
     return status_row("non-owner", answer, 403, f"/{test.protected}'s registration, as {USER}: 403")
 
 
-def unknown_id(test: Test) -> Row:
+def unknown_id(test: Test) -> CaseRow:
     """Check that approving or denying an unknown registration gets 404."""
-    unknown = max((int(e.get("id", 0)) for e in entries(test.get(REGISTRY))), default=0) + 100000
+    unknown = (
+        max((int(e.get("id", 0)) for e in common.objects(test.get(REGISTRY).json())), default=0) + 100000
+    )
     problems: list[str] = []
     for action in ("approve", "deny"):
         answer = test.admin().call("PATCH", f"{REGISTRATIONS}/{unknown}/{action}", headers=test.csrf())
@@ -964,7 +926,7 @@ def unknown_id(test: Test) -> Row:
     return ("unknown-id", *outcome(problems, f"approve and deny of registration {unknown}: 404"))
 
 
-def denied(test: Test, key: str) -> Row:
+def denied(test: Test, key: str) -> CaseRow:
     """Check that a denied registration's JWKS gets 403.
 
     It is checked under `-p registry-approval` alone.
@@ -981,7 +943,7 @@ def denied(test: Test, key: str) -> Row:
     return status_row("denied", test.jwks(prefix), 403, f"{prefix}, denied: its JWKS 403", "its JWKS")
 
 
-def server_list(test: Test) -> list[Row]:
+def server_list(test: Test) -> list[CaseRow]:
     """Check that /servers lists each of the shape's servers once.
 
     Each is listed with its registry prefix among its registrations;
@@ -990,7 +952,7 @@ def server_list(test: Test) -> list[Row]:
     answer = test.get(SERVERS)
     if answer.status != 200:
         return [("servers", FAIL, f"{SERVERS}: {answer.describe()}")]
-    listed = entries(answer)
+    listed = common.objects(answer.json())
     problems: list[str] = []
     prefixes: dict[str, list[str]] = {}
     for entry in listed:
@@ -1031,7 +993,7 @@ def edit_token(test: Test, key: str) -> str:
     return registry.token(key, registry.EDIT_REGISTRATION, "admin", f"https://{test.tag}.invalid:8444")
 
 
-def completeness(test: Test) -> list[Row]:
+def completeness(test: Test) -> list[CaseRow]:
     """Check the completeness of a server's registration.
 
     A server's registration starts Incomplete (keySignChallengeCommit),
@@ -1102,7 +1064,7 @@ def completeness(test: Test) -> list[Row]:
     return rows
 
 
-def shape_completeness(test: Test) -> Row:
+def shape_completeness(test: Test) -> CaseRow:
     """Check that the shape's server registrations are incomplete.
 
     The completeness check says so of each, since no one has filled in its
@@ -1139,10 +1101,7 @@ def check_problems(test: Test, prefixes: Mapping[str, int], complete: bool, page
             for any.
     """
     answer = web.request(
-        "POST",
-        test.registry + registry.CHECK_STATUS,
-        upload=json.dumps({"prefixes": list(prefixes)}).encode(),
-        headers=accounts.JSON,
+        "POST", test.registry + registry.CHECK_STATUS, json_body={"prefixes": list(prefixes)}
     )
     if answer.status != 200:
         return [f"the completeness check: {answer.describe()}"]
@@ -1170,7 +1129,7 @@ REDEEM_OWNERSHIP = "/api/v1.0/invites/redeem/registration-ownership"
 INVITE_TOO_LONG = "800h"
 
 
-def ownership(test: Test) -> list[Row]:
+def ownership(test: Test) -> list[CaseRow]:
     """Check who owns a registration, and what that lets them do.
 
     The registration, /registry-test-<run>-own, starts unowned
@@ -1198,7 +1157,7 @@ def ownership(test: Test) -> list[Row]:
     heir, heir_id = test.user(HEIR)
     headers = {USER: accounts.csrf(owner), HEIR: accounts.csrf(heir)}
     apis = {USER: owner, HEIR: heir}
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
 
     def owned_by() -> str:
         return str(registry.admin_metadata(test.registration(reg_id)).get("user_id") or "")
@@ -1341,7 +1300,7 @@ def ownership(test: Test) -> list[Row]:
         {"expiresIn": "1h"},
         test.csrf(),
     )
-    if answer.status != 201 or not answer.object.get("inviteToken"):
+    if answer.status != 201 or not answer.object().get("inviteToken"):
         problems.append(f"the admin's invite: {answer.describe()}, not 201 with a token")
     rows.append(
         (
@@ -1354,23 +1313,23 @@ def ownership(test: Test) -> list[Row]:
 
     # invite-transfer
     answer = invite(USER, {"expiresIn": "1h"})
-    token = str(answer.object.get("inviteToken") or "")
+    token = str(answer.object().get("inviteToken") or "")
     if answer.status != 201 or not token:
         rows.append(("invite-transfer", FAIL, f"the owner's invite: {answer.describe()}, with no token"))
         return rows
     problems = []
-    if answer.object.get("isSingleUse") is not True:
+    if answer.object().get("isSingleUse") is not True:
         problems.append("the invite does not say that it is single-use")
     redeemed = heir.call("POST", REDEEM_OWNERSHIP, {"token": token}, headers[HEIR])
     if not redeemed.ok:
         problems.append(f"{HEIR}'s redemption: {redeemed.describe()}, not 200")
     elif (
-        redeemed.object.get("registrationId") != reg_id
-        or redeemed.object.get("registrationPrefix") != prefix
+        redeemed.object().get("registrationId") != reg_id
+        or redeemed.object().get("registrationPrefix") != prefix
     ):
         problems.append(
-            f"the redemption names registration {redeemed.object.get('registrationId')}"
-            + f" ({redeemed.object.get('registrationPrefix')}), not {reg_id} ({prefix})"
+            f"the redemption names registration {redeemed.object().get('registrationId')}"
+            + f" ({redeemed.object().get('registrationPrefix')}), not {reg_id} ({prefix})"
         )
     if owned_by() != heir_id:
         problems.append(f"redeemed, it is {owned_by() or 'no one'}'s, not {HEIR}'s")
@@ -1404,7 +1363,7 @@ def ownership(test: Test) -> list[Row]:
 # identity
 
 
-def identity(test: Test) -> list[Row]:
+def identity(test: Test) -> list[CaseRow]:
     """Check that each server's ID agrees everywhere it is known.
 
     That is, as it records it (/api/v1.0/server/localMetadata, which it
@@ -1424,7 +1383,7 @@ def identity(test: Test) -> list[Row]:
             continue
         ids[server_id] = server
         prefix = test.server_prefix(server)
-        answer = test.get(f"{REGISTRY}/server{path_of(prefix)}")
+        answer = test.get(f"{REGISTRY}/server{quote(prefix, safe='/:')}")
         found = answer.object()
         if answer.status != 200:
             problems.append(f"{prefix}'s server: {answer.describe()}")
@@ -1435,7 +1394,7 @@ def identity(test: Test) -> list[Row]:
             )
     rows = [("lookup", *outcome(problems, f"{len(test.servers)} server(s): the same ID at both"))]
     answer = test.get(SERVERS)
-    listed = entries(answer)
+    listed = common.objects(answer.json())
     problems = [] if answer.status == 200 else [f"{SERVERS}: {answer.describe()}"]
     for server_id, server in ids.items():
         count = sum(1 for e in listed if e.get("id") == server_id)
@@ -1482,12 +1441,11 @@ def downtime_request(
         method,
         f"{test.registry}{DOWNTIME}/{downtime_id}",
         token=token,
-        upload=None if body is None else json.dumps(body).encode(),
-        headers=None if body is None else accounts.JSON,
+        json_body=body,
     )
 
 
-def downtime(test: Test) -> list[Row]:
+def downtime(test: Test) -> list[CaseRow]:
     """Check downtimes recorded at the registry (web_ui/server_api.go).
 
     That is, a cache's own, which it tells the registry of; a registered
@@ -1506,7 +1464,7 @@ def downtime(test: Test) -> list[Row]:
     cache_meta, origin_meta = test.metadata(cache), test.metadata(origin)
     cache_id, cache_name = str(cache_meta.get("id", "")), str(cache_meta.get("name", ""))
     origin_id, origin_name = str(origin_meta.get("id", "")), str(origin_meta.get("name", ""))
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     now = millis()
     later = (now + DAY_MS, now + 2 * DAY_MS)
 
@@ -1573,7 +1531,7 @@ def bound(
     cache_id: str,
     cache_name: str,
     later: tuple[int, int],
-) -> list[Row]:
+) -> list[CaseRow]:
     """Check that a server's token creates a downtime only of its own.
 
     The token is origin's, a registered server's: the registry records its
@@ -1625,7 +1583,7 @@ def director_entries(test: Test, cache: Server) -> dict[str, list[dict[str, Any]
     return {
         url: [
             e
-            for e in entries(web.request("GET", url + DIRECTOR_SERVERS))
+            for e in common.objects(web.request("GET", url + director.SERVERS).json())
             if director.host(str(e.get("url", ""))) == cache.host
         ]
         for url in test.fed.directors
@@ -1659,7 +1617,7 @@ def routing_path(test: Test) -> str:
     return f"/{next(iter(test.fed.exports))}/data/0.0"
 
 
-def admin_current(test: Test, cache: Server, cache_id: str, cache_name: str) -> Row:
+def admin_current(test: Test, cache: Server, cache_id: str, cache_name: str) -> CaseRow:
     """Check that a current downtime takes the cache out of routing.
 
     The registry's admin declares the cache down now: within
@@ -1709,7 +1667,7 @@ def admin_current(test: Test, cache: Server, cache_id: str, cache_name: str) -> 
     )
 
 
-def future(test: Test, cache: Server, cache_id: str, cache_name: str, later: tuple[int, int]) -> Row:
+def future(test: Test, cache: Server, cache_id: str, cache_name: str, later: tuple[int, int]) -> CaseRow:
     """Check that a downtime that begins tomorrow is listed, not applied.
 
     A downtime of the cache's that begins tomorrow (later, in milliseconds),
@@ -1736,8 +1694,12 @@ def future(test: Test, cache: Server, cache_id: str, cache_name: str, later: tup
             if not names[url]:
                 missing.append(f"{director.host(url)} does not list {cache.svc}")
                 continue
-            for route in (DIRECTOR_DOWNTIMES, f"{DIRECTOR_SERVERS}/{quote(names[url])}/downtimes"):
-                match = [e for e in entries(web.request("GET", url + route)) if e.get("id") == downtime_id]
+            for route in (DIRECTOR_DOWNTIMES, f"{director.SERVERS}/{quote(names[url])}/downtimes"):
+                match = [
+                    e
+                    for e in common.objects(web.request("GET", url + route).json())
+                    if e.get("id") == downtime_id
+                ]
                 if not match:
                     missing.append(f"{director.host(url)}'s {route} lacks it")
                 elif (match[0].get("severity"), match[0].get("createdBy")) != (SEVERITY, "admin"):
@@ -1814,7 +1776,7 @@ def sweep(test: Test) -> list[str]:
         try:
             api = test.server_admin(server)
             answer = api.call("GET", f"{DOWNTIME}?status=all")
-            for entry in common.objects(answer.array):
+            for entry in common.objects(answer.array()):
                 if MARKER in str(entry.get("description", "")):
                     gone = api.call("DELETE", f"{DOWNTIME}/{entry.get('id')}", headers=accounts.csrf(api))
                     if not gone.ok and gone.status != 404:
@@ -1822,7 +1784,7 @@ def sweep(test: Test) -> list[str]:
         except accounts.ApiError as e:
             problems.append(f"{server.svc}'s downtimes: {e}")
     listed = accounts.Api(test.registry, None).call("GET", f"{DOWNTIME}?status=all")
-    for entry in common.objects(listed.array):
+    for entry in common.objects(listed.array()):
         if MARKER in str(entry.get("description", "")):
             if registry_downtime(test, str(entry.get("id"))).status == 404:
                 continue
@@ -1836,7 +1798,7 @@ def sweep(test: Test) -> list[str]:
         admin, headers = test.admin(), test.csrf()
         for route, field, what in ((SERVERS, "name", "server"), (REGISTRATIONS, "prefix", "registration")):
             listed = accounts.must(admin.call("GET", route), f"listing {what}s")
-            for entry in common.objects(listed.array):
+            for entry in common.objects(listed.array()):
                 if MARKER in str(entry.get(field, "")):
                     target = f"{route}/{quote(str(entry.get('id')))}"
                     gone = admin.call("DELETE", target, headers=headers)
@@ -1848,7 +1810,7 @@ def sweep(test: Test) -> list[str]:
 
 
 # Each scenario, by name: it returns its rows, one per case.
-RUN: dict[str, Callable[[Test], list[Row]]] = {
+RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
     "register": register,
     "jwks": jwks,
     "registry-ui": registry_ui,
@@ -1871,11 +1833,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     print(f"Testing the registry at {test.registry}, with prefixes /{test.tag}-*\n")
     try:
         for name in selected:
-            rows = common.guarded(
-                functools.partial(RUN[name], test), lambda note: [("", FAIL, note)], (accounts.ApiError,)
+            suite.record(
+                results, name, suite.attempt_cases(functools.partial(RUN[name], test), (accounts.ApiError,))
             )
-            for case, status, note in rows:
-                results.add(f"{name} {case}".strip(), status, note)
     finally:
         errors = sweep(test)
         if errors:

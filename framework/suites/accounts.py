@@ -8,7 +8,7 @@ embedded issuer and a protected namespace, and skips with the issuer off
 or the external one. Its namespace is the first protected one exported.
 
 Every user and group the suite makes is the run's own, acct-<role>-<run>,
-and acts through a web token (credentials.mint_web_user()), or through the
+and acts through a web token (Session.web_token()), or through the
 cookie of a login, with a password set through an invite. Tokens for
 data come from the namespace's issuer through its device flow, approved
 as the user, with a client the admin creates. Collections are the
@@ -36,7 +36,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from testlib import accounts, collections, common, credentials, issuer, suite, web, webapi
+from testlib import accounts, collections, common, issuer, suite, web, webapi
 from testlib.accounts import Api, ApiError, must
 from testlib.collections import create, delete, get, grant, grants, listed, patch, remove_under, user_target
 from testlib.common import die, objects, outcome, warn
@@ -44,6 +44,7 @@ from testlib.credentials import PROTECTED
 from testlib.issuer import IssuerError, Tokens, User
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
+from testlib.suite import CaseRow
 
 SCENARIOS = {
     "user-status": "an inactive or deleted user's cookie, login, token, and issuer flows",
@@ -57,10 +58,6 @@ SCENARIOS = {
 # its issuer's (see suites/__init__.py).
 ONE_PROFILE = tuple(SCENARIOS)
 
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note.
-Row = tuple[str, str, str]
-
 # How the run's users and groups are named: acct-<role>-<run>.
 PREFIX = "acct-"
 # The authorities that framework/config.d/base/40-origin.yaml configures.
@@ -68,8 +65,7 @@ SERVER_ADMINS = "test-server-admins"
 COLLECTION_ADMINS = "test-collection-admins"
 USER_ADMIN = "test-user-admin"
 
-LOG_TAIL = "/api/v1.0/logs/tail?limit=1"
-CONFIG = "/api/v1.0/config"
+LOG_TAIL = f"{webapi.LOG_TAIL}?limit=1"
 
 # What a user asks the device flow for in `user-status`: what any user
 # is granted, and a refresh token.
@@ -100,7 +96,6 @@ class Test(suite.Test):
         self.web = fed.origin_web_url
         self.passwords: dict[str, str] = {}
         self.clients: dict[str, issuer.Client] = {}
-        self._web_tokens: dict[str, str] = {}
 
     def name(self, role: str) -> str:
         """Return the run's name for role: acct-<role>-<run>."""
@@ -111,16 +106,7 @@ class Test(suite.Test):
 
         It stands for whoever is named so when it is presented.
         """
-        if username not in self._web_tokens:
-            self._web_tokens[username] = credentials.mint_web_user(
-                self.fed,
-                self.session.path(f"tokens/accounts-web.{username}"),
-                self.web,
-                username,
-                lifetime=3600,
-                key=self.fed.origin_key,
-            )
-        return self._web_tokens[username]
+        return self.session.web_token(self.web, username)
 
     def api(self, username: str) -> Api:
         """Return the issuer origin's web API, as username."""
@@ -174,7 +160,7 @@ def make_user(test: Test, username: str) -> str:
         f"creating user {username}",
     )
     accounts.agree_to_aup(test.api(username))
-    return str(made.object.get("id", ""))
+    return made.id()
 
 
 def log_in(test: Test, username: str, user_id: str) -> str:
@@ -187,10 +173,7 @@ def log_in(test: Test, username: str, user_id: str) -> str:
         The login cookie, which carries the groups they are in now.
     """
     if username not in test.passwords:
-        invite = accounts.password_invite(test.api("admin"), user_id)
-        password = secrets.token_urlsafe(12)
-        accounts.set_password(test.web, invite, password)
-        test.passwords[username] = password
+        test.passwords[username] = accounts.new_password(test.api("admin"), user_id)
     return accounts.login(test.web, username, test.passwords[username])
 
 
@@ -200,8 +183,9 @@ def make_collection(test: Test, name: str) -> str:
     Returns:
         Its ID.
     """
-    made = must(create(test.api("admin"), name, test.path(test.rel(name))), f"creating collection {name}")
-    return str(made.object.get("id", ""))
+    return must(
+        create(test.api("admin"), name, test.path(test.rel(name))), f"creating collection {name}"
+    ).id()
 
 
 def scope_route(user_id: str, scope: str = "") -> str:
@@ -211,7 +195,7 @@ def scope_route(user_id: str, scope: str = "") -> str:
 
 def whoami(test: Test, cookie: str) -> dict[str, Any]:
     """Return what /whoami says of the user whose login cookie this is."""
-    return Api(test.web, None, cookie).call("GET", accounts.WHOAMI).object
+    return Api(test.web, None, cookie).call("GET", accounts.WHOAMI).object()
 
 
 def sweep(test: Test, this_run: bool) -> None:
@@ -229,12 +213,12 @@ def sweep(test: Test, this_run: bool) -> None:
         name = str(row.get(key, ""))
         return name.startswith(PREFIX) and name.endswith(f"-{test.run}") == this_run
 
-    for row in objects(admin.call("GET", accounts.GROUPS).array):
+    for row in objects(admin.call("GET", accounts.GROUPS).array()):
         if named(row, "name"):
             failed = accounts.delete_group(admin, str(row.get("id")))
             if failed:
                 warn(f"could not remove group {row.get('name')}: {failed}")
-    for row in objects(admin.call("GET", accounts.USERS).array):
+    for row in objects(admin.call("GET", accounts.USERS).array()):
         if named(row, "username"):
             failed = accounts.delete_user(admin, str(row.get("id")))
             if failed:
@@ -266,7 +250,7 @@ def finish(test: Test) -> None:
             warn(f"could not remove the {kind} client: {failed}")
 
 
-def checked(rows: list[Row], case: str, check: Callable[[], tuple[str, str]]) -> None:
+def checked(rows: list[CaseRow], case: str, check: Callable[[], tuple[str, str]]) -> None:
     """Append case's row to rows: check()'s status and note.
 
     It fails if check() raises (suite.attempt()).
@@ -363,7 +347,7 @@ def issuer_refusals(test: Test, user: User, refresh: str) -> list[str]:
     return problems
 
 
-def user_status(test: Test) -> list[Row]:
+def user_status(test: Test) -> list[CaseRow]:
     """Check that a user is refused while inactive or deleted.
 
     A user, logged in and holding a refresh token, is made inactive,
@@ -381,7 +365,7 @@ def user_status(test: Test) -> list[Row]:
     if not held.refresh:
         return [("", FAIL, "the device flow, asked for offline_access, issued no refresh token")]
     refresh = held.refresh
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
 
     def active() -> tuple[str, str]:
         problems = web_problems(test, username, cookie, allowed=True)
@@ -442,7 +426,7 @@ def user_status(test: Test) -> list[Row]:
 # scope-grants
 
 
-def scope_grants(test: Test) -> list[Row]:
+def scope_grants(test: Test) -> list[CaseRow]:
     """Check that scopes the admin grants a user work at once, and no more.
 
     The admin grants a user scopes (POST /users/:id/scopes), which the
@@ -452,7 +436,7 @@ def scope_grants(test: Test) -> list[Row]:
     is refused (400).
     """
     admin = test.api("admin")
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
 
     def granted(user_id: str, scope: str) -> None:
         answer = admin.call("POST", scope_route(user_id), {"scope": scope})
@@ -487,7 +471,7 @@ def scope_grants(test: Test) -> list[Row]:
                 api.call(
                     "PATCH",
                     f"{accounts.USERS}/{admin_id}",
-                    {"displayName": str(label.object.get("displayName", ""))},
+                    {"displayName": str(label.object().get("displayName", ""))},
                 ),
             ),
             (
@@ -516,9 +500,9 @@ def scope_grants(test: Test) -> list[Row]:
         answer = api.call("GET", LOG_TAIL)
         if answer.status != 200:
             problems.append(f"GET {LOG_TAIL}: {answer.describe()}, not 200")
-        answer = api.call("GET", CONFIG)
+        answer = api.call("GET", webapi.CONFIG)
         if answer.status != 403:
-            problems.append(f"GET {CONFIG}: {answer.describe()}, not 403")
+            problems.append(f"GET {webapi.CONFIG}: {answer.describe()}, not 403")
         revoked(user_id, "pelican.log_read")
         answer = api.call("GET", LOG_TAIL)
         if answer.status != 403:
@@ -539,7 +523,7 @@ def scope_grants(test: Test) -> list[Row]:
         if answer.status != 201:
             problems.append(f"creating a collection: {answer.describe()}, not 201")
         else:
-            must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
+            must(delete(admin, answer.id()), "deleting the collection")
         revoked(user_id, "server.collection_admin")
         answer = create(api, "by-scope", namespace)
         if answer.status != 403:
@@ -594,14 +578,14 @@ def scope_grants(test: Test) -> list[Row]:
             if answer.status != 201:
                 problems.append(f"creating a collection with the admin's token: {answer.describe()}")
             else:
-                must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
+                must(delete(admin, answer.id()), "deleting the collection")
         finally:
             drop(admin_cookie, token_id)
         answer = create(api, "by-token", namespace)
         if answer.status not in (401, 403):
             problems.append(f"creating a collection with the token once deleted: {answer.describe()}")
             if answer.status == 201:
-                must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
+                must(delete(admin, answer.id()), "deleting the collection")
         return outcome(
             problems,
             "a user is refused one; the admin's creates a collection, and is refused once deleted",
@@ -614,7 +598,7 @@ def scope_grants(test: Test) -> list[Row]:
             return FAIL, f"granting storage.read:/: {answer.describe()}, not 400"
         held = {
             str(row.get("scope"))
-            for row in objects(must(admin.call("GET", scope_route(user_id)), "listing").array)
+            for row in objects(must(admin.call("GET", scope_route(user_id)), "listing").array())
         }
         if "storage.read:/" in held:
             return FAIL, "storage.read:/ is listed among the user's scopes"
@@ -632,7 +616,7 @@ def scope_grants(test: Test) -> list[Row]:
 # authority-groups
 
 
-def authority_groups(test: Test) -> list[Row]:
+def authority_groups(test: Test) -> list[CaseRow]:
     """Check that the configured authority groups and user admin work.
 
     The groups are Server.AdminGroups and Server.CollectionAdminGroups,
@@ -654,7 +638,7 @@ def authority_groups(test: Test) -> list[Row]:
             )
             return [("", FAIL, why)]
         reserved[name] = found
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
 
     def names() -> tuple[str, str]:
         username = test.name("squatter")
@@ -665,7 +649,7 @@ def authority_groups(test: Test) -> list[Row]:
             if answer.status != 409:
                 problems.append(f"a user's creating {name}: {answer.describe()}, not 409")
             if answer.ok:
-                accounts.delete_group(admin, str(answer.object.get("id")))
+                accounts.delete_group(admin, answer.id())
             answer = admin.call("DELETE", f"{accounts.GROUPS}/{gid}")
             if answer.status != 409:
                 problems.append(f"the admin's deleting {name}: {answer.describe()}, not 409")
@@ -683,7 +667,7 @@ def authority_groups(test: Test) -> list[Row]:
             if answer.status != status:
                 problems.append(f"creating a collection {when}: {answer.describe()}, not {status}")
             if answer.ok:
-                must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
+                must(delete(admin, answer.id()), "deleting the collection")
 
         creates("before joining", 403)
         accounts.add_member(admin, gid, user_id)
@@ -742,7 +726,7 @@ def authority_groups(test: Test) -> list[Row]:
         answer = api.call("POST", scope_route(user_id), {"scope": "server.admin"})
         if answer.status != 403:
             problems.append(f"{USER_ADMIN}'s granting itself server.admin: {answer.describe()}")
-        said = api.call("GET", accounts.WHOAMI).object
+        said = api.call("GET", accounts.WHOAMI).object()
         if said.get("role") != "user":
             problems.append(f"{USER_ADMIN}'s /whoami role: {said.get('role')!r}, not 'user'")
         if "server.user_admin" not in (common.as_array(said.get("scopes")) or []):
@@ -761,7 +745,7 @@ def authority_groups(test: Test) -> list[Row]:
 # id-keyed-grants
 
 
-def id_keyed_grants(test: Test) -> list[Row]:
+def id_keyed_grants(test: Test) -> list[CaseRow]:
     """Check that grants are kept by the IDs of users and groups, not names.
 
     A deleted group's grants go with it, and a new group of its name
@@ -770,7 +754,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
     grant nothing (Pelican's docs/user-group-design.md).
     """
     admin = test.api("admin")
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
 
     def group_deleted() -> tuple[str, str]:
         member = test.name("member")
@@ -790,7 +774,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
         problems: list[str] = []
         if grants(admin, cid):
             problems.append(f"the deleted group's grant is still listed: {grants(admin, cid)}")
-        if get(admin, cid).object.get("adminId"):
+        if get(admin, cid).object().get("adminId"):
             problems.append("the collection still names the deleted group its admin group")
         if read in test.data_scopes(member):
             problems.append(f"the member's next token still has {read}")
@@ -798,7 +782,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
         accounts.add_member(admin, new_gid, member_id)
         if grants(admin, cid):
             problems.append(f"with a new group of the name, the ACL lists {grants(admin, cid)}")
-        if get(admin, cid).object.get("adminId") == new_gid:
+        if get(admin, cid).object().get("adminId") == new_gid:
             problems.append("the new group of the name is the collection's admin group")
         if read in test.data_scopes(member):
             problems.append(f"a member of the new group of the name gets {read}")
@@ -889,7 +873,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
 # group-invites
 
 
-def group_invites(test: Test) -> list[Row]:
+def group_invites(test: Test) -> list[CaseRow]:
     """Check that a group's invite links work, and are the owner's alone.
 
     A group's owner makes invite links: a single-use one joins the first
@@ -901,14 +885,14 @@ def group_invites(test: Test) -> list[Row]:
     joiners = {role: test.name(f"joiner-{role}") for role in ("a", "b", "c")}
     ids = {role: make_user(test, name) for role, name in joiners.items()}
     gid = accounts.create_group(test.api(owner), test.name("invited"))
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
 
     def invite(single: bool) -> str:
         made = must(
             test.api(owner).call("POST", f"{accounts.GROUPS}/{gid}/invites", {"isSingleUse": single}),
             "making an invite link",
         )
-        token = str(made.object.get("inviteToken", ""))
+        token = str(made.object().get("inviteToken", ""))
         if made.status != 201 or not token:
             raise ApiError(f"making an invite link: {made.describe()}, with no token")
         return token
@@ -917,7 +901,7 @@ def group_invites(test: Test) -> list[Row]:
         return test.api(joiners[role]).call("POST", accounts.REDEEM_GROUP, {"token": token})
 
     def member(role: str) -> bool:
-        mine = test.api(joiners[role]).call("GET", accounts.MY_GROUPS).array
+        mine = test.api(joiners[role]).call("GET", accounts.MY_GROUPS).array()
         return gid in {str(row.get("id")) for row in objects(mine)}
 
     def single_use() -> tuple[str, str]:
@@ -954,7 +938,7 @@ def group_invites(test: Test) -> list[Row]:
 # aup
 
 
-def aup(test: Test) -> list[Row]:
+def aup(test: Test) -> list[CaseRow]:
     """Check that a new AUP gates the admin until they agree to it.
 
     The admin puts up a new AUP (PUT /aup): until they agree to it, the
@@ -968,18 +952,18 @@ def aup(test: Test) -> list[Row]:
     found = admin.call("GET", accounts.AUP)
     if found.status == 404:
         return [("", SKIP, "the origin has no AUP (Server.AUPFile is none)")]
-    original = must(found, f"GET {accounts.AUP}").object
+    original = must(found, f"GET {accounts.AUP}").object()
     content, version = str(original.get("content", "")), str(original.get("version", ""))
     if not content or not version:
         return [("", FAIL, f"GET {accounts.AUP}: no content, or no version")]
     signer = test.name("signer")
     make_user(test, signer)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
 
     def put_up(n: int) -> str:
         text = f"The Pelican test framework's acceptable use policy {n}, run {test.run}.\n"
         made = must(admin.call("PUT", accounts.AUP, {"content": text}), "putting up a new AUP")
-        new = str(made.object.get("version", ""))
+        new = str(made.object().get("version", ""))
         if not new or new == version:
             raise ApiError(f"PUT {accounts.AUP}: version {new!r}, not a new one")
         return new
@@ -991,7 +975,7 @@ def aup(test: Test) -> list[Row]:
         to new.
         """
         answer = api.call("GET", route)
-        said = answer.object
+        said = answer.object()
         if answer.status != 403:
             return f"GET {route}: {answer.describe()}, not 403"
         if said.get("requires_aup") is not True or said.get("aup_version") != new:
@@ -1006,9 +990,9 @@ def aup(test: Test) -> list[Row]:
         if why:
             problems.append(f"as the admin, {why}")
         public = Api(test.web, None).call("GET", accounts.AUP)
-        if public.status != 200 or public.object.get("version") != new:
+        if public.status != 200 or public.object().get("version") != new:
             problems.append(f"GET {accounts.AUP} with no token: {public.describe()}, not the new")
-        said = admin.call("GET", accounts.WHOAMI).object
+        said = admin.call("GET", accounts.WHOAMI).object()
         if said.get("requires_aup") is not True or said.get("aup_version") != new:
             problems.append(f"/whoami says requires_aup {said.get('requires_aup')!r}")
         admin.call("POST", accounts.MY_AUP, {"version": version})
@@ -1028,7 +1012,7 @@ def aup(test: Test) -> list[Row]:
 
     def restored() -> tuple[str, str]:
         back = must(admin.call("PUT", accounts.AUP, {"content": content}), "restoring the AUP")
-        found = str(back.object.get("version", ""))
+        found = str(back.object().get("version", ""))
         if found != version:
             return FAIL, f"the restored AUP's version is {found!r}, not {version!r}"
         answer = test.api(signer).call("GET", accounts.MY_GROUPS)
@@ -1053,7 +1037,7 @@ def aup(test: Test) -> list[Row]:
 
 
 # Each scenario, by name: it returns its rows, one per case.
-RUN: dict[str, Callable[[Test], list[Row]]] = {
+RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
     "user-status": user_status,
     "scope-grants": scope_grants,
     "authority-groups": authority_groups,
@@ -1075,12 +1059,10 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         die(f"could not set up the suite: {e}")
     try:
         for name in selected:
-            rows = common.guarded(
-                functools.partial(RUN[name], test),
-                lambda note: [("", FAIL, note)],
-                (ApiError, IssuerError),
+            suite.record(
+                results,
+                name,
+                suite.attempt_cases(functools.partial(RUN[name], test), (ApiError, IssuerError)),
             )
-            for case, status, note in rows:
-                results.add(f"{name} {case}".strip(), status, note)
     finally:
         finish(test)

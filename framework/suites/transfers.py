@@ -154,7 +154,7 @@ def runnable(fed: common.Federation, selected: list[str], report: Report) -> lis
     moot: dict[str, str] = {}
     for scenario in (transfers.placed(transfers.BY_NAME[n], fed.exports) for n in selected):
         why: str | None = None
-        if not transfers.exported(scenario, fed.exports):
+        if scenario.namespace not in fed.exports:
             why = f"this shape does not export /{scenario.namespace}"
         elif scenario.named and not fed.federated_caches:
             why = "this shape has no federated cache for the client to name"

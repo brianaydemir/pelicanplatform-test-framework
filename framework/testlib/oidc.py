@@ -58,6 +58,8 @@ class IdpUser:
     Attributes:
         preferred_username: The claim a server takes the username from.
         sub: The subject the provider names them by.
+        provider: The provider's issuer URL, the only place their
+            password goes.
     """
 
     username: str
@@ -67,6 +69,7 @@ class IdpUser:
     groups: tuple[str, ...]
     preferred_username: str
     sub: str
+    provider: str
 
 
 def users(issuer: str) -> dict[str, IdpUser]:
@@ -88,6 +91,7 @@ def users(issuer: str) -> dict[str, IdpUser]:
             tuple(str(g) for g in common.as_array(user.get("groups")) or []),
             str(user.get("preferred_username") or name),
             str(user.get("sub") or f"{issuer}/users/{name}"),
+            issuer,
         )
     return found
 
@@ -136,16 +140,19 @@ def authorize(authorize_url: str, user: IdpUser) -> web.Response:
     Returns:
         The provider's answer, a redirect (302) to the callback with the
         code.
+
+    Raises:
+        LoginError: authorize_url is not at user's provider, so user's
+            password is not sent.
     """
     parts = urlsplit(authorize_url)
+    provider = urlsplit(user.provider)
+    if (parts.scheme, parts.netloc) != (provider.scheme, provider.netloc):
+        sent_to = urlunsplit(parts._replace(query="", fragment=""))
+        raise LoginError(f"the login sends {user.username} to {sent_to}, not the provider")
     form = {k: v[0] for k, v in parse_qs(parts.query).items()}
     form.update({"username": user.username, "password": user.password})
-    return web.request(
-        "POST",
-        urlunsplit(parts._replace(query="")),
-        upload=urlencode(form).encode(),
-        headers=accounts.FORM,
-    )
+    return web.request("POST", urlunsplit(parts._replace(query="")), form=form)
 
 
 def callback_at(web_url: str, location: str) -> str:
@@ -197,11 +204,6 @@ def api(web_url: str, cookie: str) -> accounts.Api:
     return accounts.Api(web_url, None, cookie)
 
 
-def whoami(web_url: str, cookie: str) -> dict[str, Any]:
-    """Return what the server at web_url says of cookie's user."""
-    return api(web_url, cookie).call("GET", accounts.WHOAMI).object
-
-
 def approve_device(issuer: str, user_code: str, user: IdpUser) -> web.Response:
     """Approve the device flow with user_code at the provider.
 
@@ -211,7 +213,7 @@ def approve_device(issuer: str, user_code: str, user: IdpUser) -> web.Response:
         The provider's answer.
     """
     form = {"user_code": user_code, "username": user.username, "password": user.password}
-    return web.request("POST", f"{issuer}/device", upload=urlencode(form).encode(), headers=accounts.FORM)
+    return web.request("POST", f"{issuer}/device", form=form)
 
 
 def user_code_in(line: str) -> str | None:

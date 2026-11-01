@@ -20,13 +20,13 @@ import glob
 import json
 import os
 import shutil
-import subprocess
 import time
 from collections.abc import Callable, Sequence
 from urllib.parse import urlsplit
 
 from testlib import (
     accounts,
+    blocks,
     common,
     control,
     credentials,
@@ -43,6 +43,7 @@ from testlib.common import die, first, outcome, warn
 from testlib.issuer import User
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
+from testlib.suite import NAMESPACE, CaseRow
 
 SCENARIOS = {
     "hot-add": (
@@ -67,12 +68,8 @@ SCENARIOS = {
     ),
 }
 
-NAMESPACE = "protected-a"
 # See suites/__init__.py.
 ONE_PROFILE = tuple(SCENARIOS)
-# A row: its case (appended to the scenario's name, if any), its status,
-# and its note. A scenario returns its rows.
-Row = tuple[str, str, str]
 
 # How long the registry and a server's JWKS may take to show a key added
 # or removed: the servers reread their key directories every minute.
@@ -193,7 +190,7 @@ def key_ids_at(url: str) -> frozenset[str] | None:
     if answer.status != 200:
         return None
     try:
-        return credentials.key_ids(answer.body)
+        return jwt.key_ids(answer.body)
     except ValueError:
         return None
 
@@ -213,7 +210,7 @@ class Test(suite.Test):
     """
 
     def __init__(self, session: Session):
-        super().__init__(session, "keys", NAMESPACE)
+        super().__init__(session, "keys")
         self.data = os.urandom(PROBE_SIZE)
         self._probed = False
         self.origin_dirs = key_dirs_of(self.fed, "origins")
@@ -239,7 +236,7 @@ class Test(suite.Test):
 
     def registry_jwks(self, prefix: str) -> str:
         """Return the URL of the registry's JWKS for prefix."""
-        return f"{self.fed.registry_url}/api/v1.0/registry{prefix}/.well-known/issuer.jwks"
+        return f"{self.fed.registry_url}{registry.prefix_route(prefix)}/.well-known/issuer.jwks"
 
     def origin_prefix(self) -> str:
         """Return origin-0's registry prefix (GetOriginNs).
@@ -259,19 +256,11 @@ class Test(suite.Test):
         if self._cache_name is None:
             self._cache_name = ""
             if self.cache:
-                api = accounts.Api(
-                    self.cache.web_url,
-                    credentials.mint_web_user(
-                        self.fed,
-                        self.session.path(f"tokens/keys.admin.{self.cache.svc}"),
-                        self.cache.web_url,
-                        "admin",
-                        key=self.cache_key,
-                    ),
-                )
+                token = self.session.web_token(self.cache.web_url, key=self.cache_key)
+                api = accounts.Api(self.cache.web_url, token)
                 answer = api.call("GET", "/api/v1.0/server/localMetadata")
                 if answer.status == 200:
-                    self._cache_name = str(answer.object.get("name") or "")
+                    self._cache_name = str(answer.object().get("name") or "")
         return self._cache_name
 
     def named(self, route: str, host: str) -> list[str]:
@@ -356,7 +345,7 @@ def put_back(test: Test) -> None:
 # hot-add
 
 
-def hot_add(test: Test) -> list[Row]:
+def hot_add(test: Test) -> list[CaseRow]:
     """Check that a verify-only key added to the origins comes and goes.
 
     The key sorts last in the origins' key directories. Within KEY_WAIT
@@ -380,7 +369,7 @@ def hot_add(test: Test) -> list[Row]:
         "registry-server": test.registry_jwks(test.origin_prefix()),
     }
     host = test.origin_host()
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     # How far into a watch a director first dropped origin-0, if one did.
     dropped: list[float] = []
 
@@ -429,7 +418,7 @@ def hot_add(test: Test) -> list[Row]:
 # hot-rotate
 
 
-def hot_rotate(test: Test) -> list[Row]:
+def hot_rotate(test: Test) -> list[CaseRow]:
     """Check new signing keys on the origins and the first V2 cache.
 
     The keys are watched for ROTATE_WINDOW seconds, every
@@ -454,13 +443,7 @@ def hot_rotate(test: Test) -> list[Row]:
     client: issuer.Client | None = None
     admin_web = ""
     if fed.embedded_issuer and not fed.external_issuer:
-        admin_web = credentials.mint_web_user(
-            test.fed,
-            test.session.path("tokens/keys.admin.origin"),
-            fed.origin_web_url,
-            "admin",
-            key=test.origin_key,
-        )
+        admin_web = test.session.web_token(fed.origin_web_url, key=test.origin_key)
         client = issuer.create_client(
             fed.origin_web_url,
             f"/{NAMESPACE}",
@@ -514,7 +497,7 @@ def hot_rotate(test: Test) -> list[Row]:
         if client and issuer_kid_at is None:
             try:
                 minted = issuer.token(client, User(token=admin_web), ("storage.read:/",))
-                if issuer.header(minted).get("kid") == new_kid:
+                if jwt.header_of(minted).get("kid") == new_kid:
                     issuer_kid_at = now
             except issuer.IssuerError:
                 pass
@@ -531,7 +514,7 @@ def hot_rotate(test: Test) -> list[Row]:
         if now >= ROTATE_WINDOW:
             break
         time.sleep(ROTATE_INTERVAL)
-    rows: list[Row] = []
+    rows: list[CaseRow] = []
     for svc, _, _ in watched:
         if svc in dropped:
             rows.append(
@@ -650,7 +633,7 @@ def sealed_with(path: str) -> frozenset[str] | None:
 
 def master_key_path(cache: common.Cache) -> str:
     """Return the master key file of cache, under framework/var."""
-    return f"data/cache/{cache.svc.rsplit('-', 1)[-1]}/{MASTER_KEY}"
+    return f"{blocks.cache_dir(cache)}/{MASTER_KEY}"
 
 
 def pstore_key_path(origin: common.Origin) -> str:
@@ -658,7 +641,7 @@ def pstore_key_path(origin: common.Origin) -> str:
     return f"{origin.store}/{PSTORE_MASTER_KEY}"
 
 
-def sealed_row(case: str, path: str, keys: Sequence[str]) -> Row:
+def sealed_row(case: str, path: str, keys: Sequence[str]) -> CaseRow:
     """Return a row: whether master key file path is sealed with keys.
 
     keys are the files of private keys, each of whose kids it must hold.
@@ -765,21 +748,20 @@ def hold_probe(test: Test, cache: common.Cache) -> str | None:
     probe = test.rel(PROBE)
     if held_with_age(test, cache) is not None:
         return None
-    last: list[str | None] = [None]
 
-    def read() -> bool:
+    def read() -> str | None:
         answer = web.request("GET", test.url(cache.url, probe), token=test.setup, timeout=120)
-        last[0] = web.served(answer, test.data)
-        return last[0] is None
+        return web.served(answer, test.data)
 
-    if not common.wait_for(read, PROBE_WAIT, 5):
-        return f"{PROBE_WAIT}s on, a GET of the probe got {last[0]}"
+    why = common.wait_last(read, lambda found: found is None, PROBE_WAIT, 5)
+    if why is not None:
+        return f"{PROBE_WAIT}s on, a GET of the probe got {why}"
     if not common.wait_for(lambda: held_with_age(test, cache) is not None, suite.HELD_WAIT, 1):
         return f"no Age within {suite.HELD_WAIT}s of a whole read of the probe"
     return None
 
 
-def master_key(test: Test) -> list[Row]:
+def master_key(test: Test) -> list[CaseRow]:
     """Check that a V2 cache's master key is sealed with each of its keys.
 
     The first V2 cache's master key file must seal the master key with
@@ -807,7 +789,7 @@ def master_key(test: Test) -> list[Row]:
     with_verify_only_key(test, dirs, f"{cache.svc}'s")
     keys = sorted(glob.glob(os.path.join(dirs[0], "[0-9][0-9]-*.pem")))
     host = director.host(cache.url)
-    rows: list[Row] = [sealed_row("sealed", path, keys)]
+    rows: list[CaseRow] = [sealed_row("sealed", path, keys)]
     try:
         control.restart(cache.svc)
     except control.ControlError as e:
@@ -899,7 +881,7 @@ def stored_probe(test: Test, origin: common.Origin, key: str | None = None) -> s
     return None
 
 
-def pstore_master_key(test: Test) -> list[Row]:
+def pstore_master_key(test: Test) -> list[CaseRow]:
     """Check a pstore origin's master key, as master_key() a V2 cache's.
 
     The first pstore origin's store is encrypted with a master key that the
@@ -928,7 +910,7 @@ def pstore_master_key(test: Test) -> list[Row]:
     with_verify_only_key(test, test.origin_dirs, "the origins'")
     own = f"issuer-keys/{origin.svc}"
     keys = sorted(glob.glob(os.path.join(own, "[0-9][0-9]-*.pem")))
-    rows: list[Row] = [sealed_row("sealed", path, keys)]
+    rows: list[CaseRow] = [sealed_row("sealed", path, keys)]
     try:
         control.restart(origin.svc)
     except control.ControlError as e:
@@ -990,29 +972,7 @@ def services_of(fed: common.Federation) -> list[tuple[str, str]]:
     return found
 
 
-def verify_backup(server: str, path: str, env: dict[str, str], cwd: str) -> tuple[int, str, str]:
-    """Run `pelican-server server database backup verify path`.
-
-    Returns:
-        Its exit status (124 if it timed out), stdout, and stderr.
-    """
-    try:
-        done = subprocess.run(
-            [server, "server", "database", "backup", "verify", path],
-            env=env,
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return 124, "", "timed out after 120s"
-    return done.returncode, done.stdout, done.stderr
-
-
-def backups(test: Test) -> list[Row]:
+def backups(test: Test) -> list[CaseRow]:
     """Check each server's backups of its database.
 
     They are under framework/var/state/<service>/backups/
@@ -1022,8 +982,7 @@ def backups(test: Test) -> list[Row]:
     backup verify`, given a copy of the server's keys; without a
     pelican-server, that check is left out.
     """
-    rows: list[Row] = []
-    server = test.session.pelican_server
+    rows: list[CaseRow] = []
     for svc, key_dir in services_of(test.fed):
         found = sorted(glob.glob(f"state/{svc}/{BACKUPS}/*.bak"))
         if not found:
@@ -1044,7 +1003,7 @@ def backups(test: Test) -> list[Row]:
         if problems:
             rows.append((svc, FAIL, first(problems)))
             continue
-        if server is None:
+        if test.session.pelican_server is None:
             rows.append(
                 (
                     svc,
@@ -1069,7 +1028,16 @@ def backups(test: Test) -> list[Row]:
             env["PELICAN_FEDERATION_DISCOVERYURL"] = test.fed.discovery_url
         verified = 0
         for path in found:
-            status, out, err = verify_backup(server, os.path.abspath(path), env, test.tmp)
+            status, out, err = test.session.server_cmd(
+                "server",
+                "database",
+                "backup",
+                "verify",
+                os.path.abspath(path),
+                env=env,
+                cwd=test.tmp,
+                timeout=120,
+            )
             if status != 0:
                 problems.append(f"verify {os.path.basename(path)}: exit {status}: {last_line(err or out)}")
                 break
@@ -1080,7 +1048,7 @@ def backups(test: Test) -> list[Row]:
 
 # --------------------------------------------------------------------------
 
-RUN: dict[str, Callable[[Test], list[Row]]] = {
+RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
     "hot-add": hot_add,
     "hot-rotate": hot_rotate,
     "master-key": master_key,
@@ -1098,9 +1066,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     print(f"Keys against {session.fed.url}, the probe at {test.path(test.rel(PROBE))}\n")
     try:
         for name in selected:
-            rows = common.guarded(functools.partial(RUN[name], test), lambda why: [("", FAIL, why)])
-            for case, status, note in rows:
-                results.add(f"{name} {case}".strip(), status, note)
+            suite.record(results, name, suite.attempt_cases(functools.partial(RUN[name], test)))
     finally:
         put_back(test)
         test.clean("after the run")

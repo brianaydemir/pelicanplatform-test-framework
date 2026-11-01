@@ -46,6 +46,7 @@ from testlib import blocks, common, credentials, stores, suite, transfers
 from testlib.common import die, first
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, json_object, json_objects, last_line
+from testlib.suite import Row
 
 SCENARIOS = {
     "ls-protected-a": "`ls -l --json` of /protected-a: names, sizes, and collections",
@@ -196,8 +197,6 @@ MODIFIED_SLACK = 60
 # --------------------------------------------------------------------------
 # What a failed command said.
 
-refused = transfers.refused
-
 
 def not_found(text: str) -> bool:
     """Return whether a command's output says there is no such object."""
@@ -219,7 +218,7 @@ def no_token_refusal(code: int, out: str, err: str, standalone: bool) -> str | N
         return "succeeded, but should have been refused: no token"
     if re.search(r"Error code 4010\b", out + err):
         return None
-    if standalone and refused(out + err):
+    if standalone and transfers.refused(out + err):
         return None
     return (
         f"failed, but the client did not refuse for want of a token (Error code 4010):"
@@ -266,10 +265,6 @@ class Test(suite.Test):
         self.trees = {ns: own[self.fed.storage_namespace(ns)] for ns in self.namespaces}
 
     # URLs, paths, and stores.
-
-    def federation_url(self, namespace: str, rel: str) -> str:
-        """Return the federation URL of rel in namespace."""
-        return f"{self.fed.url}/{namespace}/{rel}"
 
     def holdings(self, namespace: str, rel: str) -> list[str | None]:
         """Return what each store holds at rel in namespace.
@@ -331,7 +326,7 @@ class Test(suite.Test):
         """Return why a command was not refused, or None if it was."""
         if code == 0:
             return "succeeded, but should have been refused"
-        if refused(out + err) is None:
+        if transfers.refused(out + err) is None:
             return f"failed, but not by refusal: {last_line(err or out)}"
         return None
 
@@ -357,9 +352,9 @@ class Test(suite.Test):
         code: int,
         out: str,
         err: str,
-        passed: Callable[[], tuple[str, str]],
+        passed: Callable[[], Row],
         untouched: Callable[[], str | None] = lambda: None,
-    ) -> tuple[str, str]:
+    ) -> Row:
         """Return a scenario's verdict on its command.
 
         It is passed() if the command succeeded as it should. Where the
@@ -371,7 +366,7 @@ class Test(suite.Test):
             why = self.expect_refusal(code, out, err) or untouched()
             if why:
                 return FAIL, why
-            return PASS, f"refused ({refused(out + err)}): no {', '.join(sorted(self.lacks))}"
+            return PASS, f"refused ({transfers.refused(out + err)}): no {', '.join(sorted(self.lacks))}"
         if code != 0:
             return FAIL, f"exit {code}: {last_line(err)}"
         return passed()
@@ -437,14 +432,14 @@ def nowhere(test: Test, rels: list[str]) -> str | None:
 # ls
 
 
-def ls_tree(test: Test, namespace: str) -> tuple[str, str]:
+def ls_tree(test: Test, namespace: str) -> Row:
     """Check `ls -l --json` of the tree in namespace."""
     args = ["object", "ls", "-l", "--json"]
     if namespace == "protected-a":
         args += test.token_args(namespace)
-    code, out, err = test.pelican_cmd(*args, test.federation_url(namespace, test.rel("tree")))
+    code, out, err = test.pelican_cmd(*args, test.pelican_url(test.rel("tree"), namespace=namespace))
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         try:
             entries = {basename(e["Name"]): e for e in json_objects(out)}
         except (ValueError, KeyError, TypeError) as e:
@@ -463,27 +458,27 @@ def ls_tree(test: Test, namespace: str) -> tuple[str, str]:
     return test.outcome(code, out, err, passed)
 
 
-def ls_protected_a(test: Test) -> tuple[str, str]:
+def ls_protected_a(test: Test) -> Row:
     """Run ls_tree() in /protected-a."""
     return ls_tree(test, "protected-a")
 
 
-def ls_public(test: Test) -> tuple[str, str]:
+def ls_public(test: Test) -> Row:
     """Run ls_tree() in /public, with no token."""
     return ls_tree(test, "public")
 
 
-def ls_recursive(test: Test) -> tuple[str, str]:
+def ls_recursive(test: Test) -> Row:
     """Check that `ls -r` lists every object in the tree.
 
     Each must be listed once, by its path in the tree.
     """
-    url = test.federation_url("protected-a", test.rel("tree"))
+    url = test.pelican_url(test.rel("tree"))
     code, out, err = test.pelican_cmd(
         "object", "ls", "-r", "-l", "--json", *test.token_args("protected-a"), url
     )
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         try:
             objects = tree_objects(json_objects(out), normal_path(url))
         except (ValueError, KeyError, TypeError) as e:
@@ -496,13 +491,13 @@ def ls_recursive(test: Test) -> tuple[str, str]:
     return test.outcome(code, out, err, passed)
 
 
-def ls_missing(test: Test) -> tuple[str, str]:
+def ls_missing(test: Test) -> Row:
     """Check that `ls` of a missing path fails as not found."""
     code, out, err = test.pelican_cmd(
         "object",
         "ls",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("tree/nope")),
+        test.pelican_url(test.rel("tree/nope")),
     )
     why = test.expect_not_found(code, out, err)
     if why:
@@ -510,13 +505,13 @@ def ls_missing(test: Test) -> tuple[str, str]:
     return PASS, ""
 
 
-def ls_no_token(test: Test) -> tuple[str, str]:
+def ls_no_token(test: Test) -> Row:
     """Check that `ls` of /protected-a with no token is refused."""
-    code, out, err = test.pelican_cmd("object", "ls", test.federation_url("protected-a", test.rel("tree")))
+    code, out, err = test.pelican_cmd("object", "ls", test.pelican_url(test.rel("tree")))
     why = no_token_refusal(code, out, err, test.fed.standalone)
     if why:
         return FAIL, why
-    return PASS, f"refused ({refused(out + err)}): no token"
+    return PASS, f"refused ({transfers.refused(out + err)}): no token"
 
 
 # --------------------------------------------------------------------------
@@ -552,7 +547,7 @@ def modified_problem(test: Test, namespace: str, info: dict[str, Any]) -> str | 
     return None
 
 
-def stat_object(test: Test, namespace: str) -> tuple[str, str]:
+def stat_object(test: Test, namespace: str) -> Row:
     """Check what `stat` says of an object's size, ModTime, and checksums.
 
     The checksums are those that the origins' storage can report.
@@ -564,7 +559,7 @@ def stat_object(test: Test, namespace: str) -> tuple[str, str]:
         args += ["--checksums", kind]
     if namespace == "protected-a":
         args += test.token_args(namespace)
-    code, out, err = test.pelican_cmd(*args, test.federation_url(namespace, test.rel("tree/b")))
+    code, out, err = test.pelican_cmd(*args, test.pelican_url(test.rel("tree/b"), namespace=namespace))
     if code != 0:
         return FAIL, f"exit {code}: {last_line(err)}"
     try:
@@ -589,24 +584,24 @@ def stat_object(test: Test, namespace: str) -> tuple[str, str]:
     return PASS, "; ".join(notes)
 
 
-def stat_protected_a(test: Test) -> tuple[str, str]:
+def stat_protected_a(test: Test) -> Row:
     """Run stat_object() in /protected-a."""
     return stat_object(test, "protected-a")
 
 
-def stat_public(test: Test) -> tuple[str, str]:
+def stat_public(test: Test) -> Row:
     """Run stat_object() in /public, with no token."""
     return stat_object(test, "public")
 
 
-def stat_collection(test: Test) -> tuple[str, str]:
+def stat_collection(test: Test) -> Row:
     """Check that `stat` of a collection says so."""
     code, out, err = test.pelican_cmd(
         "object",
         "stat",
         "--json",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("tree/sub")),
+        test.pelican_url(test.rel("tree/sub")),
     )
     if code != 0:
         return FAIL, f"exit {code}: {last_line(err)}"
@@ -619,13 +614,13 @@ def stat_collection(test: Test) -> tuple[str, str]:
     return PASS, ""
 
 
-def stat_missing(test: Test) -> tuple[str, str]:
+def stat_missing(test: Test) -> Row:
     """Check that `stat` of a missing object fails as not found."""
     code, out, err = test.pelican_cmd(
         "object",
         "stat",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("tree/nope")),
+        test.pelican_url(test.rel("tree/nope")),
     )
     why = test.expect_not_found(code, out, err)
     if why:
@@ -637,16 +632,16 @@ def stat_missing(test: Test) -> tuple[str, str]:
 # delete (a hidden command, which warns that it is)
 
 
-def delete_object(test: Test) -> tuple[str, str]:
+def delete_object(test: Test) -> Row:
     """Check that `delete` removes an object."""
     rel = test.rel("del/object")
     data = os.urandom(2000)
     test.seed("protected-a", rel, data)
     code, out, err = test.pelican_cmd(
-        "object", "delete", *test.token_args("protected-a"), test.federation_url("protected-a", rel)
+        "object", "delete", *test.token_args("protected-a"), test.pelican_url(rel)
     )
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         if not test.gone_somewhere("protected-a", rel):
             return FAIL, "every origin still holds the object"
         return PASS, ""
@@ -654,7 +649,7 @@ def delete_object(test: Test) -> tuple[str, str]:
     return test.outcome(code, out, err, passed, lambda: unchanged(test, {rel: data}))
 
 
-def delete_recursive(test: Test) -> tuple[str, str]:
+def delete_recursive(test: Test) -> Row:
     """Check that `delete -r` removes a collection and what it holds."""
     rels = [test.rel("del/tree/1"), test.rel("del/tree/sub/2")]
     data = {rel: os.urandom(1000) for rel in rels}
@@ -665,10 +660,10 @@ def delete_recursive(test: Test) -> tuple[str, str]:
         "delete",
         "-r",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("del/tree")),
+        test.pelican_url(test.rel("del/tree")),
     )
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         held = [test.holdings("protected-a", rel) for rel in rels]
         # Some origin (the one the director chose) must hold none of them.
         if not any(all(h[i] is None for h in held) for i in range(len(held[0]))):
@@ -678,7 +673,7 @@ def delete_recursive(test: Test) -> tuple[str, str]:
     return test.outcome(code, out, err, passed, lambda: unchanged(test, data))
 
 
-def delete_nonempty(test: Test) -> tuple[str, str]:
+def delete_nonempty(test: Test) -> Row:
     """Check that `delete` refuses a non-empty collection without -r."""
     rel = test.rel("del/full/1")
     data = os.urandom(1000)
@@ -687,7 +682,7 @@ def delete_nonempty(test: Test) -> tuple[str, str]:
         "object",
         "delete",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("del/full")),
+        test.pelican_url(test.rel("del/full")),
     )
     if test.lacks:
         return test.outcome(code, out, err, lambda: (PASS, ""), lambda: unchanged(test, {rel: data}))
@@ -700,14 +695,14 @@ def delete_nonempty(test: Test) -> tuple[str, str]:
     return PASS, "refused: non-empty collection"
 
 
-def delete_missing(test: Test) -> tuple[str, str]:
+def delete_missing(test: Test) -> Row:
     """Check that `delete` of a missing object fails as not found."""
     test.make_dirs(test.rel("del"))
     code, out, err = test.pelican_cmd(
         "object",
         "delete",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("del/nope")),
+        test.pelican_url(test.rel("del/nope")),
     )
     why = test.expect_not_found(code, out, err)
     if why:
@@ -715,7 +710,7 @@ def delete_missing(test: Test) -> tuple[str, str]:
     return PASS, ""
 
 
-def delete_refused(test: Test, name: str, args: list[str]) -> tuple[str, str]:
+def delete_refused(test: Test, name: str, args: list[str]) -> Row:
     """Check that `delete` with args is refused.
 
     The object deleted is del/<name>, put in place first. If args name no
@@ -724,7 +719,7 @@ def delete_refused(test: Test, name: str, args: list[str]) -> tuple[str, str]:
     rel = test.rel("del", name)
     data = os.urandom(1000)
     test.seed("protected-a", rel, data)
-    code, out, err = test.pelican_cmd("object", "delete", *args, test.federation_url("protected-a", rel))
+    code, out, err = test.pelican_cmd("object", "delete", *args, test.pelican_url(rel))
     if args:
         why = test.expect_refusal(code, out, err)
     else:
@@ -733,20 +728,20 @@ def delete_refused(test: Test, name: str, args: list[str]) -> tuple[str, str]:
         return FAIL, why
     if not test.everywhere("protected-a", rel, data):
         return FAIL, "refused, but an origin no longer holds the object"
-    return PASS, f"refused ({refused(out + err)})"
+    return PASS, f"refused ({transfers.refused(out + err)})"
 
 
-def delete_read_only(test: Test) -> tuple[str, str]:
+def delete_read_only(test: Test) -> Row:
     """Check that `delete` with a read-only token is refused."""
     return delete_refused(test, "read-only", ["-t", test.read_only])
 
 
-def delete_no_token(test: Test) -> tuple[str, str]:
+def delete_no_token(test: Test) -> Row:
     """Check that `delete` with no token is refused."""
     return delete_refused(test, "no-token", [])
 
 
-def delete_public(test: Test) -> tuple[str, str]:
+def delete_public(test: Test) -> Row:
     """Check that `delete` in /public, with its `server` token, is refused.
 
     /public takes no writes; where it does (`-p origin-public-writes`),
@@ -756,7 +751,7 @@ def delete_public(test: Test) -> tuple[str, str]:
     data = os.urandom(1000)
     test.seed("public", rel, data)
     code, out, err = test.pelican_cmd(
-        "object", "delete", *test.token_args("public"), test.federation_url("public", rel)
+        "object", "delete", *test.token_args("public"), test.pelican_url(rel, namespace="public")
     )
     if "Writes" in test.fed.exports["public"]:
         if code != 0:
@@ -768,7 +763,7 @@ def delete_public(test: Test) -> tuple[str, str]:
         return FAIL, why
     if not test.everywhere("public", rel, data):
         return FAIL, "refused, but an origin no longer holds the object"
-    return PASS, f"refused ({refused(out + err)})"
+    return PASS, f"refused ({transfers.refused(out + err)})"
 
 
 # --------------------------------------------------------------------------
@@ -802,7 +797,7 @@ def temporary_files(path: str) -> list[str]:
     return sorted(n for n in os.listdir(directory) if n.startswith(f".{name}."))
 
 
-def get_existing_file(test: Test) -> tuple[str, str]:
+def get_existing_file(test: Test) -> Row:
     """Check that `get` replaces a larger local file with the object (G1).
 
     The file is three times the object's size, and must then hold the
@@ -815,18 +810,18 @@ def get_existing_file(test: Test) -> tuple[str, str]:
         "object",
         "get",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("tree/a")),
+        test.pelican_url(test.rel("tree/a")),
         target,
     )
     if code != 0:
         return FAIL, f"exit {code}: {last_line(err or out)}"
-    if common.sha256(target) != common.digest(data):
+    if not common.file_holds(target, data):
         return FAIL, f"the file holds {os.path.getsize(target)} bytes, not the object alone"
     code, out, err = test.pelican_cmd(
         "object",
         "get",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("tree/nope")),
+        test.pelican_url(test.rel("tree/nope")),
         target,
     )
     if code == 0:
@@ -836,7 +831,7 @@ def get_existing_file(test: Test) -> tuple[str, str]:
             FAIL,
             f"a get of a missing object failed, but not with not found: {last_line(err)}",
         )
-    if common.sha256(target) != common.digest(data):
+    if not common.file_holds(target, data):
         return FAIL, "a get of a missing object changed the file"
     left = temporary_files(target)
     if left:
@@ -844,7 +839,7 @@ def get_existing_file(test: Test) -> tuple[str, str]:
     return PASS, "replaced, then left alone"
 
 
-def get_collection(test: Test) -> tuple[str, str]:
+def get_collection(test: Test) -> Row:
     """Check that the client refuses `get` of a collection without -r (G4).
 
     The target is an existing directory, and the client must refuse,
@@ -857,7 +852,7 @@ def get_collection(test: Test) -> tuple[str, str]:
         "object",
         "get",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("tree/sub")),
+        test.pelican_url(test.rel("tree/sub")),
         target,
     )
     if code == 0:
@@ -871,7 +866,7 @@ def get_collection(test: Test) -> tuple[str, str]:
     return PASS, "refused: a collection"
 
 
-def get_recursive(test: Test) -> tuple[str, str]:
+def get_recursive(test: Test) -> Row:
     """Check that `get -r` of the tree lays it out flat (G5, G6).
 
     The target is an existing directory (G5), and then a path that does
@@ -889,7 +884,7 @@ def get_recursive(test: Test) -> tuple[str, str]:
             "get",
             "-r",
             *test.token_args("protected-a"),
-            test.federation_url("protected-a", test.rel("tree")),
+            test.pelican_url(test.rel("tree")),
             target,
         )
         if test.lacks:
@@ -911,7 +906,7 @@ def get_recursive(test: Test) -> tuple[str, str]:
     return PASS, f"{len(want)} objects, flat, both ways"
 
 
-def put_exists(test: Test) -> tuple[str, str]:
+def put_exists(test: Test) -> Row:
     """Check that the client refuses `put` to an existing object (P2).
 
     Overwrites are off, as by default, and the object must be left
@@ -926,7 +921,7 @@ def put_exists(test: Test) -> tuple[str, str]:
         "put",
         *test.token_args("protected-a"),
         source,
-        test.federation_url("protected-a", rel),
+        test.pelican_url(rel),
         env=test.sync_env,
     )
     if code == 0:
@@ -939,7 +934,7 @@ def put_exists(test: Test) -> tuple[str, str]:
     return PASS, "refused: it already exists"
 
 
-def put_overwrite(test: Test) -> tuple[str, str]:
+def put_overwrite(test: Test) -> Row:
     """Check that `put`, with overwrites on, replaces an object.
 
     The file is a fifth the object's size, and the origin that takes it
@@ -950,10 +945,10 @@ def put_overwrite(test: Test) -> tuple[str, str]:
     test.seed("protected-a", rel, old)
     source = test.local("put-overwrite", new)
     code, out, err = test.pelican_cmd(
-        "object", "put", *test.token_args("protected-a"), source, test.federation_url("protected-a", rel)
+        "object", "put", *test.token_args("protected-a"), source, test.pelican_url(rel)
     )
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         if not test.somewhere("protected-a", rel, new):
             return FAIL, "no origin holds the new bytes alone"
         return PASS, ""
@@ -961,7 +956,7 @@ def put_overwrite(test: Test) -> tuple[str, str]:
     return test.outcome(code, out, err, passed, lambda: unchanged(test, {rel: old}))
 
 
-def put_into_collection(test: Test) -> tuple[str, str]:
+def put_into_collection(test: Test) -> Row:
     """Check that `put` of a file to a collection lands in it (P3-cli).
 
     The collection exists, and the object must be named as the file is.
@@ -975,11 +970,11 @@ def put_into_collection(test: Test) -> tuple[str, str]:
         "put",
         *test.token_args("protected-a"),
         source,
-        test.federation_url("protected-a", collection),
+        test.pelican_url(collection),
     )
     rel = f"{collection}/into-me"
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         if not test.somewhere("protected-a", rel, data):
             return FAIL, f"no origin holds {rel}"
         return PASS, ""
@@ -987,7 +982,7 @@ def put_into_collection(test: Test) -> tuple[str, str]:
     return test.outcome(code, out, err, passed, lambda: nowhere(test, [rel]))
 
 
-def put_directory(test: Test) -> tuple[str, str]:
+def put_directory(test: Test) -> Row:
     """Check that the client refuses `put` of a directory without -r (P4).
 
     Nothing may be uploaded.
@@ -1000,7 +995,7 @@ def put_directory(test: Test) -> tuple[str, str]:
         "put",
         *test.token_args("protected-a"),
         source,
-        test.federation_url("protected-a", remote),
+        test.pelican_url(remote),
     )
     if code == 0:
         return FAIL, "succeeded, though the source is a directory and -r was not given"
@@ -1012,7 +1007,7 @@ def put_directory(test: Test) -> tuple[str, str]:
     return PASS, "refused: a directory"
 
 
-def put_recursive(test: Test) -> tuple[str, str]:
+def put_recursive(test: Test) -> Row:
     """Check that `put -r` of a local tree lays it out flat (P5, P6).
 
     The tree has an empty file in it, and goes to a collection that does
@@ -1035,7 +1030,7 @@ def put_recursive(test: Test) -> tuple[str, str]:
             "-r",
             *test.token_args("protected-a"),
             source,
-            test.federation_url("protected-a", remote),
+            test.pelican_url(remote),
         )
         rels = [f"{remote}/{p}" for p in files]
         if test.lacks:
@@ -1057,17 +1052,17 @@ def put_recursive(test: Test) -> tuple[str, str]:
 # copy
 
 
-def copy_upload(test: Test) -> tuple[str, str]:
+def copy_upload(test: Test) -> Row:
     """Check `copy` of a local file to /protected-a."""
     test.make_dirs(test.rel("copy"))
     data = os.urandom(4321)
     source = test.local("copy-up", data)
     rel = test.rel("copy/up")
     code, out, err = test.pelican_cmd(
-        "object", "copy", *test.token_args("protected-a"), source, test.federation_url("protected-a", rel)
+        "object", "copy", *test.token_args("protected-a"), source, test.pelican_url(rel)
     )
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         if not test.somewhere("protected-a", rel, data):
             return FAIL, "no origin holds the upload"
         return PASS, ""
@@ -1075,24 +1070,24 @@ def copy_upload(test: Test) -> tuple[str, str]:
     return test.outcome(code, out, err, passed, lambda: nowhere(test, [rel]))
 
 
-def copy_download(test: Test) -> tuple[str, str]:
+def copy_download(test: Test) -> Row:
     """Check `copy` of an object to a local file."""
     target = os.path.join(test.tmp, "copy-down")
     code, out, err = test.pelican_cmd(
         "object",
         "copy",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("tree/b")),
+        test.pelican_url(test.rel("tree/b")),
         target,
     )
     if code != 0:
         return FAIL, f"exit {code}: {last_line(err or out)}"
-    if common.sha256(target) != common.digest(test.trees["protected-a"]["b"]):
+    if not common.file_holds(target, test.trees["protected-a"]["b"]):
         return FAIL, "the local file differs from the object"
     return PASS, ""
 
 
-def copy_tpc(test: Test, name: str, source_ns: str, path: str, direct: bool = False) -> tuple[str, str]:
+def copy_tpc(test: Test, name: str, source_ns: str, path: str, direct: bool = False) -> Row:
     """Check `copy` from source_ns to /protected-a: a third-party copy.
 
     Args:
@@ -1111,11 +1106,11 @@ def copy_tpc(test: Test, name: str, source_ns: str, path: str, direct: bool = Fa
         args.append("--direct")
     code, out, err = test.pelican_cmd(
         *args,
-        test.federation_url(source_ns, test.rel("tree", path)),
-        test.federation_url("protected-a", rel),
+        test.pelican_url(test.rel("tree", path), namespace=source_ns),
+        test.pelican_url(rel),
     )
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         if not test.somewhere("protected-a", rel, test.trees[source_ns][path]):
             return FAIL, "no origin holds the copy"
         return PASS, ""
@@ -1123,22 +1118,22 @@ def copy_tpc(test: Test, name: str, source_ns: str, path: str, direct: bool = Fa
     return test.outcome(code, out, err, passed, lambda: nowhere(test, [rel]))
 
 
-def copy_tpc_protected_a(test: Test) -> tuple[str, str]:
+def copy_tpc_protected_a(test: Test) -> Row:
     """Run copy_tpc() from /protected-a."""
     return copy_tpc(test, "tpc", "protected-a", "b")
 
 
-def copy_tpc_public(test: Test) -> tuple[str, str]:
+def copy_tpc_public(test: Test) -> Row:
     """Run copy_tpc() from /public."""
     return copy_tpc(test, "tpc-public", "public", "a")
 
 
-def copy_tpc_direct(test: Test) -> tuple[str, str]:
+def copy_tpc_direct(test: Test) -> Row:
     """Run copy_tpc() with --direct, from an origin."""
     return copy_tpc(test, "tpc-direct", "protected-a", "sub/deeper/d", direct=True)
 
 
-def copy_to_public(test: Test) -> tuple[str, str]:
+def copy_to_public(test: Test) -> Row:
     """Check that `copy` to /public, with its `server` token, is refused.
 
     /public takes no writes; where it does (`-p origin-public-writes`),
@@ -1150,7 +1145,7 @@ def copy_to_public(test: Test) -> tuple[str, str]:
     source = test.local("copy-public", data)
     rel = test.rel("copy/public")
     code, out, err = test.pelican_cmd(
-        "object", "copy", *test.token_args("public"), source, test.federation_url("public", rel)
+        "object", "copy", *test.token_args("public"), source, test.pelican_url(rel, namespace="public")
     )
     if "Writes" in test.fed.exports["public"]:
         if code != 0:
@@ -1162,7 +1157,7 @@ def copy_to_public(test: Test) -> tuple[str, str]:
         return FAIL, why
     if not test.nowhere("public", rel):
         return FAIL, "refused, but an origin holds the upload"
-    return PASS, f"refused ({refused(out + err)})"
+    return PASS, f"refused ({transfers.refused(out + err)})"
 
 
 # --------------------------------------------------------------------------
@@ -1189,7 +1184,7 @@ def upload_lines(text: str) -> list[str]:
     return [line for line in text.splitlines() if "UPLOAD:" in line]
 
 
-def sync_upload(test: Test) -> tuple[str, str]:
+def sync_upload(test: Test) -> Row:
     """Check `sync` of a local tree to a new collection."""
     test.make_dirs(test.rel("sync"))
     source, files = local_tree(test, "sync-up")
@@ -1199,11 +1194,11 @@ def sync_upload(test: Test) -> tuple[str, str]:
         "sync",
         *test.token_args("protected-a"),
         source,
-        test.federation_url("protected-a", remote),
+        test.pelican_url(remote),
         env=test.sync_env,
     )
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         missing = [
             p for p, data in files.items() if not test.somewhere("protected-a", f"{remote}/{p}", data)
         ]
@@ -1214,7 +1209,7 @@ def sync_upload(test: Test) -> tuple[str, str]:
     return test.outcome(code, out, err, passed, lambda: nowhere(test, [f"{remote}/{p}" for p in files]))
 
 
-def sync_unchanged(test: Test) -> tuple[str, str]:
+def sync_unchanged(test: Test) -> Row:
     """Check that `sync --dry-run` of an unchanged tree lists nothing.
 
     The origins already hold the tree.
@@ -1229,11 +1224,11 @@ def sync_unchanged(test: Test) -> tuple[str, str]:
         "--dry-run",
         *test.token_args("protected-a"),
         source,
-        test.federation_url("protected-a", remote),
+        test.pelican_url(remote),
         env=test.sync_env,
     )
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         if upload_lines(out + err):
             return FAIL, f"would upload: {'; '.join(upload_lines(out + err))}"
         return PASS, "nothing to upload"
@@ -1241,7 +1236,7 @@ def sync_unchanged(test: Test) -> tuple[str, str]:
     return test.outcome(code, out, err, passed)
 
 
-def sync_changed(test: Test) -> tuple[str, str]:
+def sync_changed(test: Test) -> Row:
     """Check that `sync` uploads only the local file whose size changed."""
     source, files = local_tree(test, "sync-changed")
     remote = test.rel("sync/changed")
@@ -1255,7 +1250,7 @@ def sync_changed(test: Test) -> tuple[str, str]:
             "sync",
             *test.token_args("protected-a"),
             source,
-            test.federation_url("protected-a", remote),
+            test.pelican_url(remote),
             env=test.sync_env,
         )
         return test.outcome(
@@ -1271,7 +1266,7 @@ def sync_changed(test: Test) -> tuple[str, str]:
         "--dry-run",
         *test.token_args("protected-a"),
         source,
-        test.federation_url("protected-a", remote),
+        test.pelican_url(remote),
         env=test.sync_env,
     )
     if code != 0:
@@ -1284,7 +1279,7 @@ def sync_changed(test: Test) -> tuple[str, str]:
         "sync",
         *test.token_args("protected-a"),
         source,
-        test.federation_url("protected-a", remote),
+        test.pelican_url(remote),
         env=test.sync_env,
     )
     if code != 0:
@@ -1294,23 +1289,23 @@ def sync_changed(test: Test) -> tuple[str, str]:
     return PASS, "uploaded only x"
 
 
-def sync_download(test: Test) -> tuple[str, str]:
+def sync_download(test: Test) -> Row:
     """Check `sync` of a collection to a local directory."""
     target = os.path.join(test.tmp, "sync-down")
     code, out, err = test.pelican_cmd(
         "object",
         "sync",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("tree")),
+        test.pelican_url(test.rel("tree")),
         target,
         env=test.sync_env,
     )
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         wrong = [
             p
             for p, data in test.trees["protected-a"].items()
-            if common.sha256(os.path.join(target, p)) != common.digest(data)
+            if not common.file_holds(os.path.join(target, p), data)
         ]
         if wrong:
             return FAIL, f"missing or different locally: {', '.join(wrong)}"
@@ -1319,7 +1314,7 @@ def sync_download(test: Test) -> tuple[str, str]:
     return test.outcome(code, out, err, passed)
 
 
-def sync_tpc(test: Test) -> tuple[str, str]:
+def sync_tpc(test: Test) -> Row:
     """Check `sync` of a collection to another: third-party copies."""
     test.make_dirs(test.rel("sync"))
     remote = test.rel("sync/tpc")
@@ -1327,12 +1322,12 @@ def sync_tpc(test: Test) -> tuple[str, str]:
         "object",
         "sync",
         *test.token_args("protected-a"),
-        test.federation_url("protected-a", test.rel("tree")),
-        test.federation_url("protected-a", remote),
+        test.pelican_url(test.rel("tree")),
+        test.pelican_url(remote),
         env=test.sync_env,
     )
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         missing = [
             p
             for p, data in test.trees["protected-a"].items()
@@ -1414,20 +1409,20 @@ def du_counts(rows: Iterable[tuple[str, Any, Any, Any]], arg: str) -> dict[str, 
 def du_run(
     test: Test,
     namespace: str,
-    check: Callable[[list[dict[str, Any]], str], tuple[str, str]],
+    check: Callable[[list[dict[str, Any]], str], Row],
     *flags: str,
-) -> tuple[str, str]:
+) -> Row:
     """Run `du --json` of the tree, with flags, and judge its rows by check.
 
     check takes the rows and the argument given to du.
     """
-    arg = test.federation_url(namespace, test.rel("tree"))
+    arg = test.pelican_url(test.rel("tree"), namespace=namespace)
     args = ["object", "du", "--json", *flags]
     if namespace == "protected-a":
         args += test.token_args(namespace)
     code, out, err = test.pelican_cmd(*args, arg)
 
-    def passed() -> tuple[str, str]:
+    def passed() -> Row:
         try:
             rows = json_objects(out)
         except ValueError as e:
@@ -1437,14 +1432,14 @@ def du_run(
     return test.outcome(code, out, err, passed)
 
 
-def du_tree(test: Test, namespace: str) -> tuple[str, str]:
+def du_tree(test: Test, namespace: str) -> Row:
     """Check `du --json` of the tree, and then `du --count`.
 
     `du --json`'s rows always have the counts; `--count` adds them to the
     text output (and changes nothing else).
     """
 
-    def check(rows: list[dict[str, Any]], arg: str) -> tuple[str, str]:
+    def check(rows: list[dict[str, Any]], arg: str) -> Row:
         try:
             got = du_counts(
                 [
@@ -1467,7 +1462,7 @@ def du_tree(test: Test, namespace: str) -> tuple[str, str]:
     status, note = du_run(test, namespace, check)
     if status != PASS or test.lacks:
         return status, note
-    arg = test.federation_url(namespace, test.rel("tree"))
+    arg = test.pelican_url(test.rel("tree"), namespace=namespace)
     args = ["object", "du", "--count"]
     if namespace == "protected-a":
         args += test.token_args(namespace)
@@ -1483,20 +1478,20 @@ def du_tree(test: Test, namespace: str) -> tuple[str, str]:
     return PASS, "13300 bytes, 4 objects, 2 collections, in JSON and in text"
 
 
-def du_protected_a(test: Test) -> tuple[str, str]:
+def du_protected_a(test: Test) -> Row:
     """Run du_tree() in /protected-a."""
     return du_tree(test, "protected-a")
 
 
-def du_public(test: Test) -> tuple[str, str]:
+def du_public(test: Test) -> Row:
     """Run du_tree() in /public, with no token."""
     return du_tree(test, "public")
 
 
-def du_summarize(test: Test) -> tuple[str, str]:
+def du_summarize(test: Test) -> Row:
     """Check that `du -s` gives only the total."""
 
-    def check(rows: list[dict[str, Any]], _arg: str) -> tuple[str, str]:
+    def check(rows: list[dict[str, Any]], _arg: str) -> Row:
         if len(rows) != 1 or rows[0].get("bytes") != 13300:
             return FAIL, f"got {rows}, not one row of 13300 bytes"
         return PASS, "13300 bytes"
@@ -1504,13 +1499,13 @@ def du_summarize(test: Test) -> tuple[str, str]:
     return du_run(test, "protected-a", check, "-s")
 
 
-def du_no_token(test: Test) -> tuple[str, str]:
+def du_no_token(test: Test) -> Row:
     """Check that `du` of /protected-a with no token is refused."""
-    code, out, err = test.pelican_cmd("object", "du", test.federation_url("protected-a", test.rel("tree")))
+    code, out, err = test.pelican_cmd("object", "du", test.pelican_url(test.rel("tree")))
     why = no_token_refusal(code, out, err, test.fed.standalone)
     if why:
         return FAIL, why
-    return PASS, f"refused ({refused(out + err)}): no token"
+    return PASS, f"refused ({transfers.refused(out + err)}): no token"
 
 
 # The scenarios, by name: each takes the Test, and returns its status

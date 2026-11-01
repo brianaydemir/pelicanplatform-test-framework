@@ -71,8 +71,7 @@ SUITE_DIRS = (
 def federation_url() -> str:
     """Return the federation's URL, from fed.sh, or the full topology's."""
     try:
-        with open("generated/federation-url", encoding="utf-8") as f:
-            return f.read().strip()
+        return common.read_text("generated/federation-url")
     except FileNotFoundError:
         return "pelican://discovery:8444"
 
