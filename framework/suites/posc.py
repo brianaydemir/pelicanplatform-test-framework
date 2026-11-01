@@ -1,5 +1,7 @@
 """Uploads interrupted, or racing, and what an origin keeps of them.
 
+See docs/tests/posc-and-metadata.md.
+
 The suite interrupts uploads to the first origin, or races two, and
 checks what its store shows, and what it serves meanwhile. It judges
 each by the staging that the shape has (Test.kind):
@@ -16,14 +18,14 @@ Whatever the staging, an upload cut short must leave no object, an
 overwrite cut short the old one, and a reader must never see a
 half-written one.
 
-Uploads go straight to the first origin in framework/var/generated/origins,
-under /protected-a/data/posc/, with a token of the session's profile;
-what the stores hold is read, and removed, with a WLCG token either way.
-Only `client` goes through the director. An interruption is judged only
-once the upload is seen under way: by a new staging file, by growth in
-pstore/objects on pstore, or, on a plain origin, by the object
-appearing or growing. Afterward, /protected-a/data/posc is emptied on
-every store.
+Uploads go straight to the first origin in
+framework/var/generated/origins, as /protected-a/data/posc/<run>-<name>,
+with a token of the session's profile; what the stores hold is read, and
+removed, with a WLCG token either way. Only `client` goes through the
+director. An interruption is judged only once the upload is seen under
+way: by a new staging file, by growth in pstore/objects on pstore, or,
+on a plain origin, by the object appearing or growing. Afterward,
+/protected-a/data/posc is emptied on every store.
 
 `posc-expiry` checks the native POSC's reaping of abandoned staging
 files, and its guard on the staging directory. Its `idle` row restarts
@@ -42,17 +44,17 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
 from functools import partial
 from html.parser import HTMLParser
 from http.client import HTTPException, HTTPSConnection
 from typing import override
 from urllib.parse import unquote, urlsplit
 
-from testlib import blocks, common, control, director, metrics, stores, web, webdav
+from testlib import blocks, common, control, metrics, stores, suite, web, webdav
 from testlib.common import die, first, outcome, shown, wait_for, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
+from testlib.suite import Row
 
 SCENARIOS = {
     "commit": "a complete upload lands, whole, and leaves no staging file",
@@ -66,8 +68,7 @@ SCENARIOS = {
     "posc-expiry": "stale staging files are reaped, an idle upload kept, and staging guarded",
 }
 
-# A row: its status and note.
-Row = tuple[str, str]
+NAMESPACE = "protected-a"
 
 # posc-expiry's cases, each a row named `posc-expiry <case>`.
 EXPIRY_CASES = ("mode", "stale", "staging-put", "staging-mkcol", "idle")
@@ -114,8 +115,6 @@ SHORT_STALE_AGE = 40
 IDLE = 35
 REAP_WAIT = 15
 CONFIG_FILE = "90-posc.yaml"
-# How long the federation may take to serve again after the restart.
-SETTLE_WAIT = 150
 
 MIB = 1 << 20
 
@@ -268,11 +267,12 @@ def wrong_answer(status: str | None) -> str | None:
     return None
 
 
-class Test:
-    """What every scenario needs: a token, the first origin, and the stores.
+class Test(suite.Test):
+    """The pass, the first origin, and the stores.
 
-    The director may send `client` to any origin, so every store is watched.
-    A pstore origin's store is asked over HTTPS what it holds.
+    The director may send `client` to any origin, so every store is
+    watched. A pstore origin's store is asked over HTTPS what it holds.
+    Objects go in data/posc itself, named for the run (not in Test.base).
 
     Attributes:
         pelican: The path of the pelican client.
@@ -286,22 +286,15 @@ class Test:
         stores: /protected-a's storage in each store.
         roots: The stores themselves, where a pstore keeps its objects and
             XRootD its staging files.
-        tmp: A directory of the suite's own, for files of its own.
-        run: The run's ID, with which each object's name begins.
         base_url: Where the objects go, at the first origin.
-        token_file: A file that holds token.
-        token: The token for /protected-a, of the session's profile, which
-            the uploads present.
-        setup: The token for /protected-a, of the WLCG profile, for
-            finding, reading, and removing what the stores hold.
         before: The staging files there were at mark().
         before_sizes: On pstore, the sizes of its objects' files at mark();
             on a plain origin, of the files under data/posc in each store.
     """
 
     def __init__(self, session: Session):
-        fed = session.fed
-        self.fed = fed
+        super().__init__(session, "posc", NAMESPACE)
+        fed = self.fed
         self.pelican = session.pelican
         self.env = session.env
         self.origin = fed.origins[0]
@@ -316,21 +309,15 @@ class Test:
         self.pstore = self.kind == "pstore"
         self.plain = self.kind == "plain"
         self.origins = stores.unique(fed.origins)
-        self.stores = sorted({o.store_of("protected-a") for o in fed.origins})
+        self.stores = sorted({o.store_of(NAMESPACE) for o in fed.origins})
         self.roots = sorted({o.store for o in fed.origins})
-        self.tmp = session.path("posc")
-        os.makedirs(self.tmp)
-        self.run = session.run
-        self.base_url = f"{self.origin.url}/protected-a/data/posc"
-        self.token_file = session.token_file("protected-a")
-        self.token = session.token("protected-a")
-        self.setup = session.setup_token("protected-a")
+        self.base_url = f"{self.origin.url}/{NAMESPACE}/data/posc"
         self.before: set[str] = set()
         self.before_sizes: dict[str, int] = {}
         # So that the collection is there before any upload, whichever
         # scenario comes first, and whatever a backend makes of a PUT
         # into a collection that is not.
-        errors = stores.make_dirs(fed.origins, "protected-a", "data/posc", self.setup)
+        errors = stores.make_dirs(fed.origins, NAMESPACE, "data/posc", self.setup)
         if errors:
             die(f"could not make /protected-a/data/posc: {errors[0]}")
 
@@ -419,7 +406,7 @@ class Test:
         if not self.pstore:
             return self.object_file(name)
         for origin in self.origins:
-            url = f"{origin.url}/protected-a/data/posc/{name}"
+            url = stores.url(origin, NAMESPACE, f"data/posc/{name}")
             answer = web.request("HEAD", url, token=self.setup)
             if answer.status == 200:
                 return url
@@ -430,7 +417,7 @@ class Test:
     def size(self, where: str) -> str:
         """Return how big the object found() at where is."""
         if not self.pstore:
-            return str(size_of(where))
+            return str(os.path.getsize(where))
         return web.request("HEAD", where, token=self.setup).header("Content-Length") or "?"
 
     def holds(self, name: str, data: bytes) -> bool:
@@ -439,15 +426,15 @@ class Test:
             path = self.object_file(name)
             return path is not None and holds(path, data)
         return common.digest(data) in stores.held_anywhere(
-            self.origins, "protected-a", f"data/posc/{name}", {"protected-a": self.setup}
+            self.origins, NAMESPACE, f"data/posc/{name}", {NAMESPACE: self.setup}
         )
 
     def remove(self, name: str) -> None:
         """Remove the object, wherever it is."""
         for origin in self.origins:
-            stores.delete(origin, "protected-a", f"data/posc/{name}", self.setup)
+            stores.delete(origin, NAMESPACE, f"data/posc/{name}", self.setup)
 
-    def full_put(self, data: bytes, name: str) -> web.Response:
+    def full_put(self, name: str, data: bytes) -> web.Response:
         """Upload all of data to object name."""
         return web.request("PUT", f"{self.base_url}/{name}", token=self.token, upload=data)
 
@@ -572,21 +559,16 @@ def holds(path: str, data: bytes) -> bool:
         return f.read() == data
 
 
-def size_of(path: str) -> int:
-    """Return the size of the file at path."""
-    return os.path.getsize(path)
-
-
 # --------------------------------------------------------------------------
 # The scenarios.
 
 
-def commit(test: Test) -> tuple[str, str]:
+def commit(test: Test) -> Row:
     """Check that a complete upload lands, and leaves no staging file."""
     name = f"{test.run}-commit"
     data = os.urandom(MIB)
     test.mark()
-    answer = test.full_put(data, name)
+    answer = test.full_put(name, data)
     if answer.status not in (200, 201, 204):
         return FAIL, f"upload got {answer.describe()}"
     path = test.found(name)
@@ -599,7 +581,7 @@ def commit(test: Test) -> tuple[str, str]:
     return PASS, shown(path)
 
 
-def held_open(test: Test, name: str) -> tuple[str, str]:
+def held_open(test: Test, name: str) -> Row:
     """Return `stalled`'s verdict on object name's upload.
 
     Call it while the upload is held open and its staging file exists.
@@ -622,7 +604,7 @@ def held_open(test: Test, name: str) -> tuple[str, str]:
     return PASS, shown(staged) if staged else "nothing of the upload is to be seen"
 
 
-def stalled(test: Test) -> tuple[str, str]:
+def stalled(test: Test) -> Row:
     """Check that while an upload stalls, only its staging file exists.
 
     While it is held open, there is no object, a HEAD answers 404, and
@@ -631,7 +613,7 @@ def stalled(test: Test) -> tuple[str, str]:
     name = f"{test.run}-stalled"
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
-    verdict: tuple[str, str] | None = None
+    verdict: Row | None = None
     try:
         seen = watch(test, upload)
         if seen or blind(test, upload, seen):
@@ -643,21 +625,17 @@ def stalled(test: Test) -> tuple[str, str]:
     return verdict
 
 
-def interrupted(test: Test, scenario: str, mode: str, total: int, send: int) -> tuple[str, str]:
+def interrupted(test: Test, scenario: str, mode: str, total: int, send: int) -> Row:
     """Check that an upload in mode, cut short, leaves nothing.
 
     The upload is held open until it is seen under way, then cut short:
     nothing may be left of it, and the answer, if any, may not be a success.
 
     Args:
-        test: The test.
         scenario: The scenario's name, which names the object.
         mode: As for partial_put().
         total: As for partial_put().
         send: As for partial_put().
-
-    Returns:
-        The scenario's status and note.
     """
     name = f"{test.run}-{scenario}"
     test.mark()
@@ -685,12 +663,12 @@ def interrupted(test: Test, scenario: str, mode: str, total: int, send: int) -> 
     return PASS, f"{http(status)}; {BLIND}" if unseen_but_judged else http(status)
 
 
-def sized(test: Test) -> tuple[str, str]:
+def sized(test: Test) -> Row:
     """Check that an upload short of its Content-Length leaves nothing."""
     return interrupted(test, "sized", "sized", 2 * MIB, MIB)
 
 
-def chunked(test: Test) -> tuple[str, str]:
+def chunked(test: Test) -> Row:
     """Check that a chunked upload cut short leaves nothing.
 
     It sends a bit more than pstore buffers before spilling into
@@ -699,7 +677,7 @@ def chunked(test: Test) -> tuple[str, str]:
     return interrupted(test, "chunked", "chunked", 0, blocks.SPILL + 64 * 1024)
 
 
-def overwrite(test: Test) -> tuple[str, str]:
+def overwrite(test: Test) -> Row:
     """Check that an overwrite cut short leaves the old object intact.
 
     The overwrite is held open until it is seen under way, then cut short.
@@ -708,7 +686,7 @@ def overwrite(test: Test) -> tuple[str, str]:
     """
     name = f"{test.run}-overwrite"
     original = os.urandom(MIB)
-    answer = test.full_put(original, name)
+    answer = test.full_put(name, original)
     path = test.found(name)
     if path is None:
         return FAIL, f"the original's upload did not land ({answer.describe()})"
@@ -741,7 +719,7 @@ def overwrite(test: Test) -> tuple[str, str]:
     return PASS, http(status)
 
 
-def concurrent(test: Test) -> tuple[str, str]:
+def concurrent(test: Test) -> Row:
     """Check that two whole uploads of one object at once leave one, whole.
 
     The uploads, of different bytes to one new object, start together: once
@@ -754,7 +732,7 @@ def concurrent(test: Test) -> tuple[str, str]:
 
     def put(data: bytes) -> web.Response:
         barrier.wait(timeout=60)
-        return test.full_put(data, name)
+        return test.full_put(name, data)
 
     test.mark()
     with common.pool(len(versions)) as pool:
@@ -773,7 +751,7 @@ def concurrent(test: Test) -> tuple[str, str]:
     return PASS, f"{said}; the object is upload {whole[0] + 1}"
 
 
-def client(test: Test) -> tuple[str, str]:
+def client(test: Test) -> Row:
     """Check that killing `pelican object put` midway leaves nothing."""
     name = f"{test.run}-client"
     total = 1 << 30
@@ -783,7 +761,7 @@ def client(test: Test) -> tuple[str, str]:
         f.truncate(total)
     log_file = os.path.join(test.tmp, "client.log")
     args = ["object", "put", "--token", test.token_file, source]
-    args.append(f"{test.fed.url}/protected-a/data/posc/{name}")
+    args.append(test.pelican_url(f"data/posc/{name}"))
     test.mark()
     with (
         open(log_file, "wb") as log,
@@ -859,7 +837,7 @@ def linked(body: bytes) -> set[str]:
     return links.names
 
 
-def hidden(test: Test) -> tuple[str, str]:
+def hidden(test: Test) -> Row:
     """Check that no listing of the export shows .pelican-posc.
 
     It lists the export while an upload is held open, so that .pelican-posc
@@ -869,7 +847,7 @@ def hidden(test: Test) -> tuple[str, str]:
     """
     name = f"{test.run}-hidden"
     posc_dir = staging_root(test)
-    url = f"{test.origin.url}/protected-a/"
+    url = f"{test.origin.url}/{NAMESPACE}/"
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
     answer: web.Response | None = None
@@ -889,7 +867,7 @@ def hidden(test: Test) -> tuple[str, str]:
     if listed.status != 207:
         return FAIL, f"PROPFIND {url}: {listed.describe()}, not 207"
     try:
-        entries = webdav.relative(webdav.parse(listed.body), "/protected-a")
+        entries = webdav.relative(webdav.parse(listed.body), f"/{NAMESPACE}")
     except ValueError as e:
         return FAIL, f"PROPFIND {url}: {e}"
     if "data" not in entries:
@@ -917,14 +895,9 @@ class Problem(Exception):
     """
 
 
-def guarded(check: Callable[[], Row]) -> Row:
-    """Return check's row, or a FAIL if it could not set up, or raised."""
-    return common.guarded(check, lambda note: (FAIL, note), (Problem,))
-
-
 def staging_root(test: Test) -> str:
     """Return the first origin's POSC staging directory in /protected-a."""
-    return f"{test.origin.store_of('protected-a')}/.pelican-posc"
+    return f"{test.origin.store_of(NAMESPACE)}/.pelican-posc"
 
 
 def planted_dir(test: Test) -> str:
@@ -952,10 +925,10 @@ def plant(test: Test, age: float) -> str:
     if not os.path.isdir(staging_root(test)):
         raise Problem(f"{shown(staging_root(test))} does not exist, though an upload has been staged")
     rel = f".pelican-posc/expiry-{test.run}/in_progress.{int(time.time())}.{os.getpid()}"
-    error = stores.write_file(test.origin.store_of("protected-a"), rel, b"abandoned\n")
+    error = stores.write_file(test.origin.store_of(NAMESPACE), rel, b"abandoned\n")
     if error:
         raise Problem(error)
-    path = f"{test.origin.store_of('protected-a')}/{rel}"
+    path = f"{test.origin.store_of(NAMESPACE)}/{rel}"
     then = time.time() - age
     os.utime(path, (then, then))
     return path
@@ -973,7 +946,6 @@ def reaped(test: Test, age: float, timeout: str) -> list[str]:
     in POSC_EXPIRED, since it is older than Origin.Posc.FileTimeout.
 
     Args:
-        test: The test.
         age: How long ago the file was last modified, in seconds.
         timeout: Origin.Posc.FileTimeout, as a note shows it.
     """
@@ -1002,7 +974,7 @@ def expiry_mode(test: Test) -> Row:
     there is none yet.
     """
     name = f"{test.run}-mode"
-    answer = test.full_put(os.urandom(4096), name)
+    answer = test.full_put(name, os.urandom(4096))
     if not answer.ok:
         return FAIL, f"upload got {answer.describe()}"
     path = test.object_file(name)
@@ -1031,7 +1003,7 @@ def expiry_staging_put(test: Test) -> Row:
     parent is missing (409), and write nothing there.
     """
     name = f"{test.run}-put"
-    url = f"{test.origin.url}/protected-a/.pelican-posc/{name}"
+    url = f"{test.origin.url}/{NAMESPACE}/.pelican-posc/{name}"
     answer = web.request("PUT", url, token=test.token, upload=b"staged\n")
     problems: list[str] = []
     if answer.status != 409:
@@ -1049,7 +1021,7 @@ def expiry_staging_mkcol(test: Test) -> Row:
     405, and make nothing there.
     """
     name = f"{test.run}-mkcol"
-    url = f"{test.origin.url}/protected-a/.pelican-posc/{name}"
+    url = f"{test.origin.url}/{NAMESPACE}/.pelican-posc/{name}"
     answer = web.request("MKCOL", url, token=test.token)
     problems: list[str] = []
     if answer.status != 405:
@@ -1106,65 +1078,19 @@ def expiry_idle(test: Test) -> Row:
     return outcome(problems, f"idled {IDLE}s, past the {FILE_TIMEOUT}s timeout; HTTP {status}, whole")
 
 
-def unrestartable(test: Test) -> str | None:
-    """Return why the first origin cannot be restarted, or None if it can.
-
-    The restart would give it configuration of the suite's own.
-    """
-    if test.fed.tiny:
-        return "the tiny topology's origin is the whole federation's process"
-    return control.unavailable()
-
-
-def serving(test: Test) -> str | None:
-    """Return why the namespace is not served as before, or None if it is.
-
-    Every origin must answer a HEAD of the probe, every director name every
-    origin for it, and every federated cache answer a HEAD of it, with the
-    setup token.
-    """
-    path = f"/protected-a/data/posc/{test.run}-probe"
-    for origin in test.fed.origins:
-        answer = web.request("HEAD", f"{origin.url}{path}", token=test.setup)
-        if answer.status != 200:
-            return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
-    for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.setup)
-        for origin in test.fed.origins:
-            if not where.names(director.host(origin.url)):
-                return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
-    for cache in test.fed.federated_caches:
-        answer = web.request("HEAD", f"{cache.url}{path}", token=test.setup)
-        if answer.status != 200:
-            return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
-    return None
-
-
-def settle(test: Test) -> str | None:
-    """Wait until the federation serves the namespace as before.
-
-    See serving(). A server that exited on its own ends the wait at once
-    (control.settle()).
-
-    Returns:
-        Why it doesn't within SETTLE_WAIT seconds, or None.
-    """
-    return control.settle(lambda: serving(test), SETTLE_WAIT)
-
-
 def idle_restarted(test: Test) -> Row:
     """Return expiry_idle()'s row, with the first origin restarted for it.
 
     The restart gives the origin the short timeout and keepalive. Then
     restore it, and wait until the federation serves again.
     """
-    why = unrestartable(test)
+    why = control.unrestartable(test.fed)
     if why:
         return SKIP, why
-    for origin in stores.unique(test.fed.origins):
-        error = stores.write_file(origin.store_of("protected-a"), f"data/posc/{test.run}-probe", b"probe\n")
-        if error:
-            return FAIL, f"putting the probe: {error}"
+    probe = f"data/posc/{test.run}-probe"
+    error = stores.write_file_everywhere(test.origins, NAMESPACE, probe, b"probe\n")
+    if error:
+        return FAIL, f"putting the probe: {error}"
     text = "\n".join(
         [
             "Origin:",
@@ -1178,13 +1104,13 @@ def idle_restarted(test: Test) -> Row:
     rows: list[Row] = []
     try:
         with control.restart_with(svc, {CONFIG_FILE: text + "\n"}):
-            rows.append(guarded(lambda: expiry_idle(test)))
+            rows.append(suite.attempt(lambda: expiry_idle(test), (Problem,)))
     except control.ControlError as e:
         # Restarting, or restoring, failed: the row fails if it never ran.
         warn(f"restarting {svc}, or restoring it: {e}")
         if not rows:
             rows.append((FAIL, f"restarting {svc}: {e}"))
-    why = settle(test)
+    why = test.settle(probe)
     if why:
         warn(f"with {svc} restored, {why}")
     return rows[0]
@@ -1197,10 +1123,10 @@ def posc_expiry(test: Test) -> dict[str, Row]:
     and its guard on its staging directory.
     """
     return {
-        "mode": guarded(lambda: expiry_mode(test)),
-        "stale": guarded(lambda: expiry_stale(test)),
-        "staging-put": guarded(lambda: expiry_staging_put(test)),
-        "staging-mkcol": guarded(lambda: expiry_staging_mkcol(test)),
+        "mode": suite.attempt(lambda: expiry_mode(test), (Problem,)),
+        "stale": suite.attempt(lambda: expiry_stale(test), (Problem,)),
+        "staging-put": suite.attempt(lambda: expiry_staging_put(test), (Problem,)),
+        "staging-mkcol": suite.attempt(lambda: expiry_staging_mkcol(test), (Problem,)),
         "idle": idle_restarted(test),
     }
 
@@ -1220,11 +1146,8 @@ RUN = {
 
 
 def skip(fed: common.Federation) -> str | None:
-    """Return why there is nothing to test, or None if there is something.
-
-    There is nothing without writes.
-    """
-    if "Writes" not in fed.exports.get("protected-a", ()):
+    """Return why there is nothing to test, or None."""
+    if "Writes" not in fed.exports.get(NAMESPACE, ()):
         return "/protected-a takes no writes"
     return None
 
@@ -1254,22 +1177,15 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 for case, row in posc_expiry(test).items():
                     results.add(f"{name} {case}", *row)
                 continue
-            results.add(
-                name,
-                *common.guarded(partial(RUN[name], test), lambda note: (FAIL, note), (CouldNotConnect,)),
-            )
+            results.add(name, *suite.attempt(partial(RUN[name], test), (CouldNotConnect,)))
     finally:
         # Every scenario's objects, and whatever an interrupted upload left;
         # and posc-expiry's own staging directory.
-        errors = stores.empty_tree_everywhere(
-            session.fed.origins, session.fed.exports, "data/posc", session.setup_tokens()
-        )
+        test.clean("after the run")
         if test.kind == "posc":
             try:
                 shutil.rmtree(planted_dir(test))
             except FileNotFoundError:
                 pass
             except OSError as e:
-                errors.append(f"removing framework/var/{planted_dir(test)}: {e.strerror}")
-        if errors:
-            warn(f"could not empty /protected-a/data/posc: {first(errors)}")
+                warn(f"removing framework/var/{planted_dir(test)}: {e.strerror}")

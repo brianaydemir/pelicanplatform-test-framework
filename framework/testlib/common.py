@@ -118,6 +118,59 @@ def select(args: Sequence[str], suites: Mapping[str, Sequence[str]]) -> dict[str
 # framework/var and the Pelican binaries in it.
 
 
+def enter_var() -> None:
+    """Change to framework/var."""
+    try:
+        os.chdir(VAR)
+    except OSError:
+        die("framework/var is missing; run ./fed.sh init on the host")
+
+
+def _bin(name: str) -> str:
+    """Return the path of framework/var/bin/<os>/<name>."""
+    return os.path.join("bin", platform.system().lower(), name)
+
+
+def binary(name: str) -> str:
+    """Return the path of framework/var/bin/<os>/<name>; it must exist."""
+    path = _bin(name)
+    if not os.path.exists(path):
+        die(f"framework/var/{path} is missing; run ./fed.sh init on the host")
+    return path
+
+
+def server_binary() -> str | None:
+    """Return the pelican-server to run server-only commands with.
+
+    The client lacks those commands.
+
+    Returns:
+        The container's own, if it has one; otherwise
+        framework/var/bin/<os>/pelican-server, if there is one; otherwise
+        None.
+    """
+    found = shutil.which("pelican-server")
+    if found is not None:
+        return found
+    path = _bin("pelican-server")
+    return path if os.path.exists(path) else None
+
+
+def shown(path: str | None) -> str:
+    """Return how a message names path: one under framework/var, or a URL.
+
+    Returns:
+        The name; "" if there is no path.
+    """
+    if not path:
+        return ""
+    return path if "://" in path else f"framework/var/{path}"
+
+
+# --------------------------------------------------------------------------
+# Helpers.
+
+
 def as_object(value: Any) -> dict[str, Any] | None:
     """Return value, a parsed JSON value, if it is an object; else None."""
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
@@ -138,39 +191,6 @@ def objects(items: Iterable[Any]) -> list[dict[str, Any]]:
     return [found for found in (as_object(item) for item in items) if found is not None]
 
 
-def enter_var() -> None:
-    """Change to framework/var."""
-    try:
-        os.chdir(VAR)
-    except OSError:
-        die("framework/var is missing; run ./fed.sh init on the host")
-
-
-def binary(name: str) -> str:
-    """Return the path of framework/var/bin/<os>/<name>; it must exist."""
-    path = os.path.join("bin", platform.system().lower(), name)
-    if not os.path.exists(path):
-        die(f"framework/var/{path} is missing; run ./fed.sh init on the host")
-    return path
-
-
-def server_binary() -> str | None:
-    """Return the pelican-server to run server-only commands with.
-
-    The client lacks those commands.
-
-    Returns:
-        The container's own, if it has one; otherwise
-        framework/var/bin/<os>/pelican-server, if there is one; otherwise
-        None.
-    """
-    found = shutil.which("pelican-server")
-    if found is not None:
-        return found
-    path = os.path.join("bin", platform.system().lower(), "pelican-server")
-    return path if os.path.exists(path) else None
-
-
 def digest(data: bytes) -> str:
     """Return the SHA-256 of data."""
     return hashlib.sha256(data).hexdigest()
@@ -186,6 +206,12 @@ def sha256(path: str) -> str | None:
     except FileNotFoundError:
         return None
     return found.hexdigest()
+
+
+def read_text(path: str) -> str:
+    """Return the text of the file at path, stripped, e.g. a token's."""
+    with open(path, encoding="utf-8") as f:
+        return f.read().strip()
 
 
 @contextlib.contextmanager
@@ -211,7 +237,10 @@ def pool(workers: int) -> Generator[ThreadPoolExecutor, None, None]:
 def wait_for(condition: Callable[[], bool], seconds: float, interval: float = 0.5) -> bool:
     """Return whether condition holds within seconds.
 
-    It asks every interval.
+    Args:
+        condition: What to ask.
+        seconds: How long to wait.
+        interval: How long to wait between asks, in seconds.
     """
     deadline = time.time() + seconds
     while not condition():
@@ -219,17 +248,6 @@ def wait_for(condition: Callable[[], bool], seconds: float, interval: float = 0.
             return False
         time.sleep(interval)
     return True
-
-
-def shown(path: str | None) -> str:
-    """Return how a message names path: one under framework/var, or a URL.
-
-    Returns:
-        The name; "" if there is no path.
-    """
-    if not path:
-        return ""
-    return path if "://" in path else f"framework/var/{path}"
 
 
 def first(problems: Sequence[str]) -> str:
@@ -476,6 +494,11 @@ def signing_key(key_dir: str) -> str:
     return keys[0]
 
 
+def _rows(text: str) -> list[list[str]]:
+    """Return the fields of each of text's lines that is not blank."""
+    return [line.split() for line in text.splitlines() if line.strip()]
+
+
 def parse_owners(owners: str, exports: str) -> list[Owner]:
     """Parse generated/owners, with each owner's lines of owner-exports.
 
@@ -487,16 +510,12 @@ def parse_owners(owners: str, exports: str) -> list[Owner]:
             per line.
     """
     found: dict[str, list[Export]] = {}
-    for line in exports.splitlines():
-        if line.strip():
-            svc, prefix, like, caps, issuer = line.split()
-            found.setdefault(svc, []).append(Export(prefix, like, frozenset(caps.split(",")), issuer))
-    result: list[Owner] = []
-    for line in owners.splitlines():
-        if line.strip():
-            svc, url, store, key_dir, web_url = line.split()
-            result.append(Owner(Origin(svc, url, store, ""), key_dir, web_url, tuple(found.get(svc, ()))))
-    return result
+    for svc, prefix, like, caps, issuer in _rows(exports):
+        found.setdefault(svc, []).append(Export(prefix, like, frozenset(caps.split(",")), issuer))
+    return [
+        Owner(Origin(svc, url, store, ""), key_dir, web_url, tuple(found.get(svc, ())))
+        for svc, url, store, key_dir, web_url in _rows(owners)
+    ]
 
 
 @dataclass(frozen=True)
@@ -598,6 +617,7 @@ class Federation:
     """
 
     def _read(self, name: str) -> str:
+        """Return generated/<name>; it must exist."""
         path = os.path.join("generated", name)
         try:
             with open(path, encoding="utf-8") as f:
@@ -606,7 +626,12 @@ class Federation:
             die(f"framework/var/{path} is missing; run ./fed.sh init")
 
     def _line(self, name: str) -> str:
+        """Return generated/<name>'s one line."""
         return self._read(name).strip()
+
+    def _flag(self, name: str) -> bool:
+        """Return whether generated/<name> says `true`."""
+        return self._line(name) == "true"
 
     @cached_property
     def url(self) -> str:
@@ -632,12 +657,7 @@ class Federation:
         writes (`-p origin-public-writes`), and the shape may not export
         every namespace. `<namespace> <URL>` per line.
         """
-        found: dict[str, str] = {}
-        for line in self._read("issuer-urls").splitlines():
-            if line.strip():
-                namespace, url = line.split()
-                found[namespace] = url
-        return found
+        return dict(_rows(self._read("issuer-urls")))
 
     def issuer_of(self, namespace: str) -> str:
         """Return the issuer URL of namespace, e.g. `protected-a`."""
@@ -650,7 +670,7 @@ class Federation:
         That is the federation's, instead of the origins' (see
         presets/auth-external-issuer.sh).
         """
-        return self._line("external-issuer") == "true"
+        return self._flag("external-issuer")
 
     @cached_property
     def embedded_issuer(self) -> bool:
@@ -659,7 +679,7 @@ class Federation:
         It is Pelican's embedded OAuth2 issuer, which gives each protected
         namespace an issuer of its own (see presets/default.sh).
         """
-        return self._line("origin-enable-issuer") == "true"
+        return self._flag("origin-enable-issuer")
 
     @cached_property
     def origin_web_url(self) -> str:
@@ -675,12 +695,9 @@ class Federation:
 
         Names are like `protected-a`. `<prefix> <capability>,...` per line.
         """
-        found: dict[str, frozenset[str]] = {}
-        for line in self._read("exports").splitlines():
-            if line.strip():
-                prefix, caps = line.split()
-                found[prefix.strip("/")] = frozenset(caps.split(","))
-        return found
+        return {
+            prefix.strip("/"): frozenset(caps.split(",")) for prefix, caps in _rows(self._read("exports"))
+        }
 
     @cached_property
     def origin_key(self) -> str:
@@ -690,8 +707,7 @@ class Federation:
     @cached_property
     def origins(self) -> list[Origin]:
         """One per running origin: `<service> <URL> <store> [pstore]`."""
-        rows = [line.split() for line in self._read("origins").splitlines() if line.strip()]
-        return [Origin(r[0], r[1], r[2], r[3] if len(r) > 3 else "") for r in rows]
+        return [Origin(r[0], r[1], r[2], r[3] if len(r) > 3 else "") for r in _rows(self._read("origins"))]
 
     @cached_property
     def owners(self) -> list[Owner]:
@@ -701,8 +717,7 @@ class Federation:
     @cached_property
     def caches(self) -> list[Cache]:
         """One per running cache: `<service> <URL> <kind> <role>`."""
-        rows = [line.split() for line in self._read("caches").splitlines() if line.strip()]
-        return [Cache(*r) for r in rows]
+        return [Cache(*r) for r in _rows(self._read("caches"))]
 
     @property
     def federated_caches(self) -> list[Cache]:
@@ -742,12 +757,12 @@ class Federation:
     @cached_property
     def posc(self) -> bool:
         """ORIGIN_POSC (see presets/origin-posc.sh)."""
-        return self._line("origin-posc") == "true"
+        return self._flag("origin-posc")
 
     @cached_property
     def atomic_uploads(self) -> bool:
         """ORIGIN_ATOMIC_UPLOADS (see presets/origin-atomic-uploads.sh)."""
-        return self._line("origin-atomic-uploads") == "true"
+        return self._flag("origin-atomic-uploads")
 
     @cached_property
     def origin_cache_control(self) -> str:
@@ -760,12 +775,12 @@ class Federation:
     @cached_property
     def multiuser(self) -> bool:
         """ORIGIN_MULTIUSER (see presets/origin-multiuser.sh)."""
-        return self._line("origin-multiuser") == "true"
+        return self._flag("origin-multiuser")
 
     @cached_property
     def drop_privileges(self) -> bool:
         """SERVER_DROP_PRIVILEGES (see presets/server-unprivileged.sh)."""
-        return self._line("server-drop-privileges") == "true"
+        return self._flag("server-drop-privileges")
 
     @cached_property
     def discovery(self) -> dict[str, Any]:
@@ -799,7 +814,7 @@ class Federation:
         It is at director_url, and each director has the shared name as
         its external URL (see presets/director-ha.sh).
         """
-        return self._line("director-ha") == "true"
+        return self._flag("director-ha")
 
     @property
     def registry_url(self) -> str:
@@ -825,7 +840,7 @@ class Federation:
         If so, a registration serves nothing until an administrator
         approves it (see presets/registry-approval.sh).
         """
-        return self._line("registry-approval") == "true"
+        return self._flag("registry-approval")
 
     @cached_property
     def issuer_lifetimes(self) -> IssuerLifetimes:
@@ -844,17 +859,21 @@ class Federation:
         Whether the /protected-b export has authorization templates of its
         own.
         """
-        return self._line("export-templates") == "true"
+        return self._flag("export-templates")
 
     @cached_property
     def metadata(self) -> str:
-        """`off`, `eventual`, or `transactional`."""
+        """The origins' metadata mode: off, eventual, or transactional.
+
+        It is ORIGIN_METADATA_MODE, or `off` without ORIGIN_METADATA (see
+        presets/origin-metadata.sh).
+        """
         return self._line("origin-metadata")
 
     @cached_property
     def broker(self) -> bool:
         """ORIGIN_BROKER (see presets/origin-broker.sh)."""
-        return self._line("origin-broker") == "true"
+        return self._flag("origin-broker")
 
     @cached_property
     def firewalled(self) -> bool:
@@ -863,7 +882,7 @@ class Federation:
         Whether origin-0 is cut off from the caches, which then reach it
         only through the connection broker.
         """
-        return self._line("origin-firewalled") == "true"
+        return self._flag("origin-firewalled")
 
     @cached_property
     def transfer_api(self) -> TransferApi | None:
@@ -883,12 +902,10 @@ class Federation:
 
         `<service> <mode> <threshold> <directory>` per line, none if off.
         """
-        found: dict[str, TierTarget] = {}
-        for line in self._read("tiering").splitlines():
-            if line.strip():
-                svc, mode, threshold, directory = line.split()
-                found[svc] = TierTarget(svc, mode, int(threshold), directory)
-        return found
+        return {
+            svc: TierTarget(svc, mode, int(threshold), directory)
+            for svc, mode, threshold, directory in _rows(self._read("tiering"))
+        }
 
     @cached_property
     def eviction(self) -> dict[str, tuple[int, int]]:
@@ -898,12 +915,7 @@ class Federation:
         and the low one, down to which it does. `<service> <high> <low>`
         per line, none if the stores are unbounded.
         """
-        found: dict[str, tuple[int, int]] = {}
-        for line in self._read("eviction").splitlines():
-            if line.strip():
-                svc, high, low = line.split()
-                found[svc] = (int(high), int(low))
-        return found
+        return {svc: (int(high), int(low)) for svc, high, low in _rows(self._read("eviction"))}
 
     @cached_property
     def oidc_issuer(self) -> str | None:

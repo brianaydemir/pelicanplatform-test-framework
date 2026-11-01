@@ -119,8 +119,8 @@ x-needs-origin: &needs-origin
   origin-0: { condition: service_healthy }
   s3: { condition: service_healthy, required: false }
 
-# Only matters under `-p origin-ssh`; `required: false` makes it a no-op
-# when the lab server is not started.
+# Only under `-p origin-ssh`; `required: false` makes it a no-op when the
+# lab server is not started.
 x-needs-lab: &needs-lab
   lab-server: { condition: service_healthy, required: false }
 
@@ -223,7 +223,7 @@ services:
       - ./var/generated/discovery.json:/etc/nginx/html/discovery.json:ro
       - ./var/generated/openid-configuration.json:/etc/nginx/html/openid-configuration.json:ro
       # A directory, so that fed.sh can add and remove the external
-      # issuer's documents (`auth-external-issuer`) while nginx runs.
+      # issuer's documents (`-p auth-external-issuer`) while nginx runs.
       - ./var/generated/issuer:/etc/nginx/html/issuer:ro
     secrets:
       - source: tls-crt
@@ -340,9 +340,9 @@ services:
     volumes:
       - ./etc/nginx-director.conf:/etc/nginx/nginx.conf:ro
 
-  # It starts after director-0, which under `-p director-discovery` it
-  # discovers the federation through, and after the directors' load
-  # balancer, through which it does under `-p director-ha` too; a
+  # It starts after director-0, through which it finds the federation
+  # under `-p director-discovery`, and after the directors' load
+  # balancer, through which it does under `-p director-ha` too. A
   # director needs no registry to start.
   registry:
     hostname: registry
@@ -379,8 +379,8 @@ services:
 
   origin-0:
     hostname: origin-0
-    # Behind a firewall (`origin-firewalled`), a network the caches are
-    # not on.
+    # Behind a firewall (`-p origin-firewalled`), a network the caches
+    # are not on.
     networks: ["${ORIGIN_0_NETWORK:?run through ./fed.sh}"]
     image: "${IMAGE_ORIGIN:?run through ./fed.sh}"
     healthcheck: *pelican-health
@@ -490,8 +490,8 @@ services:
   cache-0:
     hostname: cache-0
     image: "${IMAGE_CACHE:?run through ./fed.sh}"
-    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the
-    # cache's own loopback, where nothing listens on its ports, so a
+    # Behind a firewall (`-p origin-firewalled`), origin-0 resolves to
+    # the cache's own loopback, where nothing listens on its ports, so a
     # connection is refused at once, as by a firewall that rejects.
     extra_hosts: ["${CACHES_BLACKHOLE:?run through ./fed.sh}:127.0.0.1"]
     profiles: ["cache"]
@@ -525,9 +525,7 @@ services:
   cache-1:
     hostname: cache-1
     image: "${IMAGE_CACHE:?run through ./fed.sh}"
-    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the
-    # cache's own loopback, where nothing listens on its ports, so a
-    # connection is refused at once, as by a firewall that rejects.
+    # As for cache-0.
     extra_hosts: ["${CACHES_BLACKHOLE:?run through ./fed.sh}:127.0.0.1"]
     profiles: ["multi-cache"]
     healthcheck: *pelican-health
@@ -562,9 +560,7 @@ services:
   cache-2:
     hostname: cache-2
     image: "${IMAGE_CACHE:?run through ./fed.sh}"
-    # Behind a firewall (`origin-firewalled`), origin-0 resolves to the
-    # cache's own loopback, where nothing listens on its ports, so a
-    # connection is refused at once, as by a firewall that rejects.
+    # As for cache-0.
     extra_hosts: ["${CACHES_BLACKHOLE:?run through ./fed.sh}:127.0.0.1"]
     profiles: ["site-local-cache"]
     healthcheck: *pelican-health
@@ -693,8 +689,8 @@ services:
       - ./var/data/lab-server:/data
       - ./var/generated/ssh/authorized_keys:/home/alice/.ssh/authorized_keys:ro
 
-  # The backend of https and httpsv2 origins (-p origin-https,
-  # -p origin-httpsv2): rclone serving each origin's store,
+  # The backend of https and httpsv2 origins (`-p origin-https`,
+  # `-p origin-httpsv2`): rclone serving each origin's store,
   # ./var/data/origin/<N>, as /origin-<N>, over WebDAV
   # (golang.org/x/net/webdav, as in Pelican's own tests). The tests read
   # and write the stores directly too, so it caches no directory
@@ -767,15 +763,16 @@ services:
       - source: tls-key
         target: /certs/tls.key
 
-  # The backend of s3 and s3v2 origins (-p origin-s3, -p origin-s3v2):
-  # rclone serving each origin's store as bucket origin-<N>, over S3; each
-  # export's directory in it as bucket origin-<N>-<directory>, for an s3
-  # origin, which takes a bucket per export (fed_s3_bucket in fed.sh); and
-  # ./var/data/tier as bucket `tier` (-p cache-tiered). The credentials
-  # are the origins', which fed.sh copies from framework/etc/ or
-  # local/etc/. It keeps the directories that init-data.py made, writable
-  # by any uid, even when their last object goes. Multipart uploads, as
-  # the caches' are, take memory to buffer.
+  # The backend of s3 and s3v2 origins (`-p origin-s3`, `-p origin-s3v2`):
+  # rclone serving, over S3, each origin's store as bucket origin-<N>;
+  # for an s3 origin, which takes a bucket per export (fed_s3_bucket in
+  # fed.sh), each export's directory in it as bucket
+  # origin-<N>-<directory>; and ./var/data/tier as bucket `tier`
+  # (`-p cache-tiered`). The credentials are the origins', which fed.sh
+  # copies from framework/etc/ or local/etc/. It keeps the directories
+  # that init-data.py made, writable by any uid, even when their last
+  # object goes. Multipart uploads, such as the caches', take memory to
+  # buffer.
   s3:
     hostname: s3
     networks: [default, firewalled]
@@ -805,13 +802,13 @@ services:
       - ./var/data/origin/2/other:/srv/origin-2-other
       - ./var/data/origin/2/public-other:/srv/origin-2-public-other
       - ./var/data/origin/2/public-secret:/srv/origin-2-public-secret
-      # Bucket `tier`, which the caches tier to (-p cache-tiered).
+      # Bucket `tier`, which the caches tier to (`-p cache-tiered`).
       - ./var/data/tier:/srv/tier
       - ./var/generated/s3-access-key:/fed/s3-access-key:ro
       - ./var/generated/s3-secret-key:/fed/s3-secret-key:ro
     secrets: *rclone-secrets
 
-  # The origins' metadata receiver (-p origin-metadata). The recorder
+  # The origins' metadata receiver (`-p origin-metadata`). The recorder
   # saves each request in ./var/data/metadata and passes it to the
   # verifier, whose answer it returns. It can also fail on purpose; see
   # metadata-server/recorder.py.
@@ -893,13 +890,13 @@ services:
 #===========================================================================
 # Networks
 #
-# Every service is on `default`, but origin-0, which is on the network
-# that ORIGIN_0_NETWORK names: `default`, or `firewalled` behind a
-# firewall (`origin-firewalled`), which the caches are not on, so that
-# they reach it only through the connection broker; and the caches then
+# Every service is on `default` but origin-0, which is on the network
+# that ORIGIN_0_NETWORK names: `default`, or, behind a firewall
+# (`-p origin-firewalled`), `firewalled`, which the caches are not on, so
+# that they reach it only through the connection broker. The caches then
 # resolve its name to their own loopback (CACHES_BLACKHOLE), so that a
-# connection is refused rather than the name unknown, as a firewall
-# leaves it. The services that the origin must reach, and that a site's
+# connection is refused rather than the name unknown, as behind a
+# firewall. The services that the origin must reach, and that a site's
 # own hosts would, are on both.
 #===========================================================================
 

@@ -2,29 +2,8 @@
 
 The owner is origin-2, with a key and an issuer of its own, exporting
 /other (like /protected-a) and /public/other (like /public, and nested
-in it), as far as the shape exports those (see
-framework/testlib/owners.py).
-
-  ready       origin-2's objects come back through the federation, and
-              from each cache: 20 tries, 15 seconds apart, while the
-              servers learn of it
-  keys        origin-2 and its issuer publish its keys, and none of the
-              origins' or the tests'; the origins publish none of its
-  routing     each director sends a client's direct read (?directread)
-              of origin-2's prefixes to it alone, and of the origins' to
-              them alone, or where the export takes no direct clients,
-              finds no origin (405) and names none; and through each
-              cache, /public/other/... is origin-2's object, never what
-              origin-0's /public holds at other/..., while
-              /public/others-<run>/... is origin-0's
-  <credential>
-              each credential of the table in testlib/owners.py, on both
-              sides of each pair: GET, HEAD, PUT, and DELETE straight to
-              the side's origins, and GET and HEAD to each cache
-  get, direct-get, put, cross-get, cross-put
-              the client: origin-2's objects through a cache and from
-              origin-2, an upload with origin-2's token, and each
-              owner's token in the other's namespace
+in it), as far as the shape exports those (framework/testlib/owners.py).
+Each pair is one of its exports and the origins' namespace it is like.
 
 `ready` runs first, whatever else is asked for, since nothing else can
 pass until origin-2 serves; the suite stops if it can't pass.
@@ -32,12 +11,7 @@ pass until origin-2 serves; the suite stops if it can't pass.
 Objects go under data/owners/<run>/ in each namespace's storage, and are
 removed after the suite, from a pstore origin too. Responses go to
 framework/var/data/owners-test/ (in the SciTokens pass,
-data/owners-test-scitokens/).
-
-Each credential's token, and each client's, is of the session's
-profile; `ready` waits with WLCG tokens either way, since what it waits
-for is the federation, and `keys` and `routing` present none, so the
-three run in the WLCG pass alone.
+data/owners-test-scitokens/). See docs/tests/another-owner.md.
 """
 
 import os
@@ -45,7 +19,7 @@ import shutil
 import time
 from functools import partial
 
-from testlib import common, credentials, director, owners, stores, transfers, web
+from testlib import common, credentials, director, owners, stores, suite, transfers, web
 from testlib.common import die, first, outcome
 from testlib.credentials import ALLOW
 from testlib.owners import CREDENTIALS, OwnerCredential, Pair
@@ -71,7 +45,8 @@ SCENARIOS = {
 SCENARIOS.update({c.name: f"{c.description}, on both sides of each pair" for c in CREDENTIALS})
 SCENARIOS.update(CLIENT)
 # The scenarios that present no token of the session's profile (see
-# suites/__init__.py).
+# suites/__init__.py): `ready` waits with WLCG tokens, since what it
+# waits for is the federation, and the others present none.
 ONE_PROFILE = ("ready", "keys", "routing")
 
 # How long `ready` waits: tries, and seconds between them.
@@ -90,21 +65,24 @@ def skip(fed: common.Federation) -> str | None:
     return None
 
 
-class Test:
-    """The pairs, the stores, and the credentials' tokens.
+class Test(suite.Test):
+    """The pairs, the stores, the credentials' tokens, and the rows.
+
+    The suite works in both namespaces of each pair, so the base's
+    namespace, and its tokens, go unused.
 
     Attributes:
+        pairs: The pairs.
         origins: The origins, each store once.
         storages: The storage of every namespace on either side of a
             pair, which the suite writes in: the other owners', then the
             origins'.
-        base: Where the suite's objects go, in each namespace's storage.
         out: Where the responses go, under framework/var.
+        report: Where the rows go.
     """
 
-    def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
+    def __init__(self, session: Session, report: Report):
+        super().__init__(session, "owners")
         self.pairs = owners.pairs(self.fed)
         self.origins = stores.unique(self.fed.origins)
         self.storages = list(
@@ -113,17 +91,19 @@ class Test:
                 + [o.store_of(p.like) for o in self.origins for p in self.pairs]
             )
         )
-        self.base = f"data/owners/{session.run}"
         self.out = session.var_dir(OUT)
+        self.report = report
         self._tokens: dict[tuple[str, str, str, str], tuple[str | None, str | None]] = {}
 
-    def token(
+    def credential_token(
         self, cred: OwnerCredential, pair: Pair, side: str, profile: str | None = None
     ) -> tuple[str | None, str | None]:
         """Return cred's token for side of pair, and its file.
 
         The token is of the session's profile, unless profile names one.
-        Return (None, None) for `none`.
+
+        Returns:
+            The token and its file; (None, None) for `none`.
         """
         profile = profile or self.session.profile
         key = (cred.name, pair.export.name, side, profile)
@@ -138,7 +118,7 @@ class Test:
         return [pair.owner.origin] if side == "owner" else self.origins
 
     @staticmethod
-    def path(origin: common.Origin, pair: Pair, side: str, rel: str) -> str:
+    def store_path(origin: common.Origin, pair: Pair, side: str, rel: str) -> str:
         """Return rel's path in origin's storage of pair.namespace(side)."""
         return f"{origin.store_of(pair.namespace(side))}/{rel}"
 
@@ -149,12 +129,25 @@ class Test:
         side's namespace.
         """
         sides = [(pair.owner.origin, "owner")] + [(o, "origins") for o in self.origins]
-        return [o.svc for o, side in sides if common.sha256(self.path(o, pair, side, rel))]
+        return [o.svc for o, side in sides if common.sha256(self.store_path(o, pair, side, rel))]
 
     @staticmethod
     def object_rel(side: str, n: int = 0) -> str:
         """Return one of the side's test objects (see init-data.py)."""
         return f"data/{'2' if side == 'owner' else '0'}.{n}"
+
+    @staticmethod
+    def labels(cred: str, target: str, namespace: str, op: str) -> tuple[str, str]:
+        """Return a row's heading, as printed, and its case, as recorded."""
+        return f"{cred:<11} {target:<10} {namespace:<12} {op:<6}", f"{cred} {target} {namespace} {op}"
+
+    def row(self, cred: str, target: str, namespace: str, op: str, answer: web.Response, why: str) -> None:
+        """Print and record the row of one request."""
+        record(self.report, *self.labels(cred, target, namespace, op), answer, why)
+
+    def skip_row(self, cred: str, target: str, namespace: str, op: str, why: str) -> None:
+        """Print and record the row of a request skipped because of why."""
+        record_skip(self.report, *self.labels(cred, target, namespace, op), why)
 
 
 def hosts_named(answer: director.Answer, hosts: list[str]) -> list[str]:
@@ -175,6 +168,35 @@ def reader(pair: Pair) -> OwnerCredential:
 # ready
 
 
+def not_ready(test: Test) -> str:
+    """Return why origin-2's objects do not come back, or "".
+
+    They must come back through `pelican object get`, and from each
+    cache, with WLCG tokens.
+    """
+    fed = test.fed
+    for pair in test.pairs:
+        rel = test.object_rel("owner")
+        want = common.sha256(test.store_path(pair.owner.origin, pair, "owner", rel))
+        token, token_file = test.credential_token(reader(pair), pair, "owner", credentials.WLCG)
+        target = os.path.join(test.tmp, f"ready-{pair.export.name}")
+        if os.path.exists(target):
+            os.remove(target)
+        args = ["--token", token_file] if token_file else []
+        code, out, err = test.session.pelican_cmd(
+            "object", "get", *args, f"{fed.url}{pair.export.prefix}/{rel}", target
+        )
+        if code != 0:
+            return f"`pelican object get` of {pair.export.prefix}/{rel}: {last_line(err or out)}"
+        if common.sha256(target) != want:
+            return f"`pelican object get` of {pair.export.prefix}/{rel}: not the object"
+        for cache in fed.caches:
+            answer = web.request("GET", f"{cache.url}{pair.export.prefix}/{rel}", token=token)
+            if answer.status != 200 or common.digest(answer.body) != want:
+                return f"{cache.svc}: GET {pair.export.prefix}/{rel}: {answer.describe()}"
+    return ""
+
+
 def ready(test: Test) -> tuple[str, str]:
     """Check that origin-2's objects come back, waiting until they do.
 
@@ -193,35 +215,6 @@ def ready(test: Test) -> tuple[str, str]:
         if n < TRIES:
             time.sleep(INTERVAL)
     die(f"gave up waiting for origin-2 after {TRIES} tries, {INTERVAL}s apart ({why})")
-
-
-def not_ready(test: Test) -> str:
-    """Return why origin-2's objects do not yet come back.
-
-    They must come back through `pelican object get`, and from each
-    cache, with WLCG tokens. Return "" if they do.
-    """
-    fed = test.fed
-    for pair in test.pairs:
-        rel = test.object_rel("owner")
-        want = common.sha256(test.path(pair.owner.origin, pair, "owner", rel))
-        token, token_file = test.token(reader(pair), pair, "owner", credentials.WLCG)
-        target = test.session.path(f"owners-ready-{pair.export.name}")
-        if os.path.exists(target):
-            os.remove(target)
-        args = ["--token", token_file] if token_file else []
-        code, out, err = test.session.pelican_cmd(
-            "object", "get", *args, f"{fed.url}{pair.export.prefix}/{rel}", target
-        )
-        if code != 0:
-            return f"`pelican object get` of {pair.export.prefix}/{rel}: {last_line(err or out)}"
-        if common.sha256(target) != want:
-            return f"`pelican object get` of {pair.export.prefix}/{rel}: not the object"
-        for cache in fed.caches:
-            answer = web.request("GET", f"{cache.url}{pair.export.prefix}/{rel}", token=token)
-            if answer.status != 200 or common.digest(answer.body) != want:
-                return f"{cache.svc}: GET {pair.export.prefix}/{rel}: {answer.describe()}"
-    return ""
 
 
 # --------------------------------------------------------------------------
@@ -274,7 +267,7 @@ def keys(test: Test) -> tuple[str, str]:
             answer = web.request("GET", f"{export.issuer}/.well-known/openid-configuration")
             save(f"{test.out}/responses/keys-{export.name}-discovery", answer)
             want = f"{export.issuer}/.well-known/issuer.jwks"
-            have = (common.as_object(answer.json()) or {}).get("jwks_uri") if answer.status == 200 else None
+            have = answer.object().get("jwks_uri") if answer.status == 200 else None
             if have != want:
                 problems.append(
                     f"{export.prefix}'s discovery document: {answer.describe()},"
@@ -308,6 +301,39 @@ def keys(test: Test) -> tuple[str, str]:
 
 # --------------------------------------------------------------------------
 # routing
+
+
+def nested(test: Test, pair: Pair) -> list[str]:
+    """Return what is wrong with how each cache serves /public/other.
+
+    Through each cache, /public/other/<rel> must be origin-2's, never
+    what origin-0's /public holds at other/<rel> (a decoy); and
+    /public/others-<run>/probe origin-0's, since a prefix matches whole
+    path segments. The objects are written straight to storage.
+    """
+    fed = test.fed
+    rel = test.rel("routed")
+    mine, decoy, sibling = os.urandom(3000), os.urandom(3000), os.urandom(3000)
+    sibling_rel = f"others-{test.run}/probe"
+    errors = [stores.write_file(pair.owner.origin.store_of(pair.export.path), rel, mine)]
+    for origin in test.origins:
+        errors.append(stores.write_file(origin.store_of(pair.like), f"other/{rel}", decoy))
+        errors.append(stores.write_file(origin.store_of(pair.like), sibling_rel, sibling))
+    if any(errors):
+        return [e for e in errors if e]
+    problems: list[str] = []
+    for cache in fed.caches:
+        for path, want in ((f"/public/other/{rel}", mine), (f"/public/{sibling_rel}", sibling)):
+            answer = web.request("GET", f"{cache.url}{path}")
+            if answer.status != 200:
+                problems.append(f"{cache.svc}: GET {path}: {answer.describe()}")
+            elif answer.body == decoy:
+                problems.append(
+                    f"{cache.svc}: GET {path}: served what origin-0's /public holds" + " at other/..."
+                )
+            elif answer.body != want:
+                problems.append(f"{cache.svc}: GET {path}: not the object")
+    return problems
 
 
 def routing(test: Test) -> tuple[str, str]:
@@ -364,120 +390,71 @@ def routing(test: Test) -> tuple[str, str]:
     return outcome(problems, "; ".join(notes))
 
 
-def nested(test: Test, pair: Pair) -> list[str]:
-    """Return what is wrong with how each cache serves /public/other.
-
-    Through each cache, /public/other/<rel> must be origin-2's, never
-    what origin-0's /public holds at other/<rel> (a decoy); and
-    /public/others-<run>/probe origin-0's, since a prefix matches whole
-    path segments. The objects are written straight to storage.
-    """
-    fed = test.fed
-    rel = f"{test.base}/routed"
-    mine, decoy, sibling = os.urandom(3000), os.urandom(3000), os.urandom(3000)
-    sibling_rel = f"others-{test.session.run}/probe"
-    errors = [stores.write_file(pair.owner.origin.store_of(pair.export.path), rel, mine)]
-    for origin in test.origins:
-        errors.append(stores.write_file(origin.store_of(pair.like), f"other/{rel}", decoy))
-        errors.append(stores.write_file(origin.store_of(pair.like), sibling_rel, sibling))
-    if any(errors):
-        return [e for e in errors if e]
-    problems: list[str] = []
-    for cache in fed.caches:
-        for path, want in ((f"/public/other/{rel}", mine), (f"/public/{sibling_rel}", sibling)):
-            answer = web.request("GET", f"{cache.url}{path}")
-            if answer.status != 200:
-                problems.append(f"{cache.svc}: GET {path}: {answer.describe()}")
-            elif answer.body == decoy:
-                problems.append(
-                    f"{cache.svc}: GET {path}: served what origin-0's /public holds" + " at other/..."
-                )
-            elif answer.body != want:
-                problems.append(f"{cache.svc}: GET {path}: not the object")
-    return problems
-
-
 def clean_nested(test: Test) -> None:
     """Remove what nested() put in the origins' storage of /public."""
     for origin in test.origins:
         public = origin.store_of("public")
         shutil.rmtree(f"{public}/other", ignore_errors=True)
-        shutil.rmtree(f"{public}/others-{test.session.run}", ignore_errors=True)
+        shutil.rmtree(f"{public}/others-{test.run}", ignore_errors=True)
 
 
 # --------------------------------------------------------------------------
 # The credentials, straight to each server.
 
 
-def check_credential(test: Test, cred: OwnerCredential, report: Report) -> None:
+def check_credential(test: Test, cred: OwnerCredential) -> None:
     """Present cred on both sides of each pair, at every server."""
     fed = test.fed
     for pair in test.pairs:
         if not owners.applies(fed, cred, pair):
             continue
         for side in owners.SIDES:
-            ns, name = pair.namespace(side), pair.name(side)
-            token, _ = test.token(cred, pair, side)
-            rel = test.object_rel(side)
-            want = common.sha256(test.path(test.stores_of(pair, side)[0], pair, side, rel))
-            targets: list[tuple[str, str, common.Origin | None]] = [
-                (label(o.svc, "origin"), o.url, o) for o in test.stores_of(pair, side)
-            ]
-            targets += [(label(c.svc, "cache"), c.url, None) for c in fed.caches]
-            for target, url, origin in targets:
-                direct = origin is not None
-                for op in ("get", "head"):
-                    answer = web.request(op.upper(), f"{url}/{ns}/{rel}", token=token)
-                    save(f"{test.out}/responses/{cred.name}-{target}-{name}-{op}", answer)
-                    ok = owners.expected(fed, cred, pair, side, op, direct) == ALLOW
-                    why = ""
-                    if ok and answer.status != 200:
-                        why = "expected 200"
-                    elif ok and op == "get" and common.digest(answer.body) != want:
-                        why = "the body is not the object"
-                    elif not ok and answer.status not in (401, 403):
-                        why = "expected 401 or 403"
-                    elif not ok and op == "get" and common.digest(answer.body) == want:
-                        why = "refused, but the body is the object"
-                    row(report, cred, target, name, op, answer, why)
-                if origin is not None:
-                    check_put(test, report, cred, pair, side, target, origin, token)
-                    check_delete(test, report, cred, pair, side, target, origin, token)
+            for origin in test.stores_of(pair, side):
+                target = label(origin.svc, "origin")
+                check_read(test, cred, pair, side, target, origin.url, "get", direct=True)
+                check_read(test, cred, pair, side, target, origin.url, "head", direct=True)
+                check_put(test, cred, pair, side, target, origin)
+                check_delete(test, cred, pair, side, target, origin)
+            for cache in fed.caches:
+                target = label(cache.svc, "cache")
+                check_read(test, cred, pair, side, target, cache.url, "get", direct=False)
+                check_read(test, cred, pair, side, target, cache.url, "head", direct=False)
 
 
-def row(
-    report: Report,
-    cred: OwnerCredential,
-    target: str,
-    name: str,
-    op: str,
-    answer: web.Response,
-    why: str,
+def check_read(
+    test: Test, cred: OwnerCredential, pair: Pair, side: str, target: str, url: str, op: str, direct: bool
 ) -> None:
-    """Print and record the row of one request."""
-    record(
-        report,
-        f"{cred.name:<11} {target:<10} {name:<12} {op:<6}",
-        f"{cred.name} {target} {name} {op}",
-        answer,
-        why,
-    )
+    """GET or HEAD (op) side's test object at the server at url.
+
+    url is an origin's if direct.
+    """
+    ns, name = pair.namespace(side), pair.name(side)
+    rel = test.object_rel(side)
+    want = common.sha256(test.store_path(test.stores_of(pair, side)[0], pair, side, rel))
+    token, _ = test.credential_token(cred, pair, side)
+    answer = web.request(op.upper(), f"{url}/{ns}/{rel}", token=token)
+    save(f"{test.out}/responses/{cred.name}-{target}-{name}-{op}", answer)
+    allowed = owners.expected(test.fed, cred, pair, side, op, direct) == ALLOW
+    why = ""
+    if allowed and answer.status != 200:
+        why = "expected 200"
+    elif allowed and op == "get" and common.digest(answer.body) != want:
+        why = "the body is not the object"
+    elif not allowed and answer.status not in (401, 403):
+        why = "expected 401 or 403"
+    elif not allowed and op == "get" and common.digest(answer.body) == want:
+        why = "refused, but the body is the object"
+    test.row(cred.name, target, name, op, answer, why)
 
 
 def check_put(
-    test: Test,
-    report: Report,
-    cred: OwnerCredential,
-    pair: Pair,
-    side: str,
-    target: str,
-    origin: common.Origin,
-    token: str | None,
+    test: Test, cred: OwnerCredential, pair: Pair, side: str, target: str, origin: common.Origin
 ) -> None:
-    """PUT new bytes to side of pair at origin, with token."""
+    """PUT new bytes to side of pair at origin."""
     ns, name = pair.namespace(side), pair.name(side)
-    rel = f"{test.base}/{cred.name}-{target}-{name}-put"
+    rel = test.rel(f"{cred.name}-{target}-{name}-put")
     data = os.urandom(4096)
+    token, _ = test.credential_token(cred, pair, side)
     answer = web.request("PUT", f"{origin.url}/{ns}/{rel}", token=token, upload=data)
     save(f"{test.out}/responses/{cred.name}-{target}-{name}-put", answer)
     held = test.holders(pair, rel)
@@ -485,50 +462,41 @@ def check_put(
     if owners.expected(test.fed, cred, pair, side, "put", True) == ALLOW:
         if not answer.ok:
             why = "expected 2xx"
-        elif common.sha256(test.path(origin, pair, side, rel)) != common.digest(data):
+        elif common.sha256(test.store_path(origin, pair, side, rel)) != common.digest(data):
             why = f"{origin.svc}'s store does not hold the object"
     elif answer.status not in (401, 403):
         why = "expected 401 or 403"
     elif held:
         why = f"refused, but {', '.join(held)} hold the object"
-    row(report, cred, target, name, "put", answer, why)
+    test.row(cred.name, target, name, "put", answer, why)
 
 
 def check_delete(
-    test: Test,
-    report: Report,
-    cred: OwnerCredential,
-    pair: Pair,
-    side: str,
-    target: str,
-    origin: common.Origin,
-    token: str | None,
+    test: Test, cred: OwnerCredential, pair: Pair, side: str, target: str, origin: common.Origin
 ) -> None:
-    """DELETE an object put in origin's store for it, with token."""
+    """DELETE an object put at origin for the purpose.
+
+    It is put in origin's storage of side of pair. Skip the row if the
+    DELETE should succeed but the origin's storage cannot delete.
+    """
     ns, name = pair.namespace(side), pair.name(side)
+    allowed = owners.expected(test.fed, cred, pair, side, "delete", True) == ALLOW
     cannot_delete = stores.cannot(test.fed, "delete")
-    if cannot_delete and owners.expected(test.fed, cred, pair, side, "delete", True) == ALLOW:
-        heading = f"{cred.name:<11} {target:<10} {name:<12} {'delete':<6}"
-        record_skip(report, heading, f"{cred.name} {target} {name} delete", cannot_delete)
+    if cannot_delete and allowed:
+        test.skip_row(cred.name, target, name, "delete", cannot_delete)
         return
-    rel = f"{test.base}/{cred.name}-{target}-{name}-delete"
-    error = stores.write_file(origin.store_of(pair.namespace(side)), rel, os.urandom(4096))
+    rel = test.rel(f"{cred.name}-{target}-{name}-delete")
+    error = stores.write_file(origin.store_of(ns), rel, os.urandom(4096))
     if error:
-        row(
-            report,
-            cred,
-            target,
-            name,
-            "delete",
-            web.Response(None),
-            f"could not put the object to delete in place ({error})",
-        )
+        why = f"could not put the object to delete in place ({error})"
+        test.row(cred.name, target, name, "delete", web.Response(None), why)
         return
+    token, _ = test.credential_token(cred, pair, side)
     answer = web.request("DELETE", f"{origin.url}/{ns}/{rel}", token=token)
     save(f"{test.out}/responses/{cred.name}-{target}-{name}-delete", answer)
-    there = common.sha256(test.path(origin, pair, side, rel)) is not None
+    there = common.sha256(test.store_path(origin, pair, side, rel)) is not None
     why = ""
-    if owners.expected(test.fed, cred, pair, side, "delete", True) == ALLOW:
+    if allowed:
         if not answer.ok:
             why = "expected 2xx"
         elif there:
@@ -537,7 +505,7 @@ def check_delete(
         why = "expected 401 or 403"
     elif not there:
         why = "refused, but the store no longer holds the object"
-    row(report, cred, target, name, "delete", answer, why)
+    test.row(cred.name, target, name, "delete", answer, why)
 
 
 # --------------------------------------------------------------------------
@@ -556,15 +524,11 @@ def client_get(
         What went wrong, or None.
     """
     fed = test.fed
-    _, token_file = test.token(cred, pair, side)
+    _, token_file = test.credential_token(cred, pair, side)
     rel = test.object_rel(side, 1)
-    into = test.session.path(f"owners-{tag}")
-    shutil.rmtree(into, ignore_errors=True)
-    os.makedirs(into)
+    into = test.directory(tag)
     target = os.path.join(into, rel.rsplit("/", 1)[-1])
     stats = f"{into}.json"
-    if os.path.exists(stats):
-        os.remove(stats)
     args = ["--token", token_file] if token_file else []
     if direct:
         args.append("--direct")
@@ -581,7 +545,9 @@ def client_get(
         return None
     if code != 0:
         return f"{what}: exit {code}: {last_line(err or out)}"
-    if common.sha256(target) != common.sha256(test.path(test.stores_of(pair, side)[0], pair, side, rel)):
+    if common.sha256(target) != common.sha256(
+        test.store_path(test.stores_of(pair, side)[0], pair, side, rel)
+    ):
         return f"{what}: not the object"
     found = transfers.read_stats(stats)
     if found is None:
@@ -604,12 +570,10 @@ def client_put(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: st
         What went wrong, or None.
     """
     fed = test.fed
-    _, token_file = test.token(cred, pair, side)
+    _, token_file = test.credential_token(cred, pair, side)
     data = os.urandom(5000)
-    source = test.session.path(f"owners-{tag}")
-    with open(source, "wb") as f:
-        f.write(data)
-    rel = f"{test.base}/{tag}"
+    source = test.local(tag, data)
+    rel = test.rel(tag)
     ns = pair.namespace(side)
     args = ["--token", token_file] if token_file else []
     code, out, err = test.session.pelican_cmd("object", "put", *args, source, f"{fed.url}/{ns}/{rel}")
@@ -628,7 +592,7 @@ def client_put(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: st
     right = [
         o
         for o in test.stores_of(pair, side)
-        if common.sha256(test.path(o, pair, side, rel)) == common.digest(data)
+        if common.sha256(test.store_path(o, pair, side, rel)) == common.digest(data)
     ]
     if not right:
         return f"{what}: no store of the side holds it"
@@ -677,7 +641,7 @@ def client(test: Test, name: str) -> tuple[str, str]:
 CHECKS = {"ready": ready, "keys": keys, "routing": routing}
 
 
-def clean(test: Test) -> list[str]:
+def remove_objects(test: Test) -> list[str]:
     """Empty data/owners in each of test.storages.
 
     A pstore origin's encrypted store, which only it can change, is
@@ -708,12 +672,12 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     `ready` runs first, whatever else is selected.
     """
     fed = session.fed
-    test = Test(session)
+    test = Test(session, results.report)
     for storage in test.storages:
         if not os.path.isdir(f"{storage}/data/owners"):
             die(f"framework/var/{storage}/data/owners is missing; run ./fed.sh init")
     # Earlier runs' objects come out first.
-    errors = clean(test)
+    errors = remove_objects(test)
     if errors:
         die(f"could not remove earlier runs' objects: {first(errors)}")
     shutil.rmtree(test.out, ignore_errors=True)
@@ -732,9 +696,9 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             ready(test)
         for name in selected:
             if name in CHECKS:
-                results.add(name, *common.guarded(partial(CHECKS[name], test), lambda note: (FAIL, note)))
+                results.add(name, *suite.attempt(partial(CHECKS[name], test)))
             elif name in CLIENT:
-                results.add(name, *common.guarded(partial(client, test, name), lambda note: (FAIL, note)))
+                results.add(name, *suite.attempt(partial(client, test, name)))
             else:
                 if not header:
                     print(
@@ -742,12 +706,12 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                         + f" {'code':>4}  result"
                     )
                     header = True
-                check = partial(check_credential, test, owners.BY_NAME[name], results.report)
+                check = partial(check_credential, test, owners.BY_NAME[name])
                 common.guarded(check, partial(results.add, name, FAIL))
     finally:
         clean_nested(test)
         # The origins' files are theirs, and on a Linux host beyond
         # init-data.py's reach.
-        errors = clean(test)
+        errors = remove_objects(test)
         if errors:
             common.warn(f"could not remove the suite's objects: {first(errors)}")

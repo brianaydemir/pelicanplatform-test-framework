@@ -1,29 +1,9 @@
 """The tests' own helpers, against the running federation.
 
-The suite checks that each does what the suites that use it rely on.
-
-  trailers  testlib.web keeps a chunked body's trailers: a V2 cache's
-            X-Transfer-Status, which it sends when asked
-            (`X-Transfer-Status: true` and `TE: trailers`), and only then
-  jwt       testlib.jwt signs tokens that the origins take: one with
-            credentials.server_claims(), as `pelican token create` mints
-            them in the session's profile, is taken by every origin, and
-            refused once expired
-  metrics   testlib.metrics reads /metrics: a GET straight to a native
-            origin raises its pelican_http_requests_total
-  restart-cache
-            testlib.control restarts a service mid-run: cache-0, once it
-            holds the object whole, comes back, every director names it
-            again, and it serves the object, a V2 cache from its store
-  pool      testlib.common.pool(), which runs a suite's tasks at once,
-            drops the tasks it has not started when an exception that
-            no suite catches, as test.py's watchdog raises, leaves its
-            block, and waits for every one otherwise
-
-Each but `pool` reads an object of its own under
-/protected-a/data/selftest/<run>/, which the suite puts in place and
-removes. Each presents a read token of the session's profile, but
-`restart-cache`, which presents the setup token.
+Each scenario checks that a helper does what the suites rely on. Each
+but `pool` reads one object, which the suite puts under
+/protected-a/data/selftest/<run>/ and removes. See
+docs/tests/self-tests.md.
 """
 
 import functools
@@ -32,10 +12,9 @@ import os
 import threading
 import time
 from concurrent.futures import Future
-from dataclasses import dataclass
 
-from testlib import common, control, credentials, director, jwt, metrics, stores, web
-from testlib.common import die, first, outcome, warn
+from testlib import common, control, credentials, director, jwt, metrics, stores, suite, web
+from testlib.common import die, first, outcome
 from testlib.credentials import R
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session
@@ -49,7 +28,7 @@ ONE_PROFILE = ("restart-cache", "pool")
 SCENARIOS = {
     "trailers": "a V2 cache's X-Transfer-Status trailer comes back when asked for, and only then",
     "jwt": (
-        "a token jwt.encode() signs with the origins' key is taken, and refused once expired;"
+        "a token jwt.sign() signs with the origins' key is taken, and refused once expired;"
         " jwt.verify() finds its key in the origins' JWKS, and in no other"
     ),
     "metrics": "a GET straight to a native origin raises its pelican_http_requests_total",
@@ -73,64 +52,41 @@ REQUESTS = "pelican_http_requests_total"
 
 # The cache that `restart-cache` restarts.
 RESTARTED = "cache-0"
-# How long it waits for a V2 cache to say, with Age, that it holds the
-# object whole, and for every director to name the cache, in seconds.
-# The directors drop a cache that says, as it stops, that it is shutting
-# down, until it advertises again, as it does when it starts and then
-# every 30 seconds here (Server.AdvertisementInterval).
-HELD_WAIT, NAMED_WAIT = 30, 150
-# How long it waits for the cache to serve the object again: a cache
-# just started refuses a namespace's tokens until it has learned the
-# namespace's issuers.
+# How long it waits for the cache to serve the object again, in seconds:
+# a cache just started refuses a namespace's tokens until it has learned
+# the namespace's issuers.
 SERVED_WAIT = 300
 
 
 def skip(fed: common.Federation) -> str | None:
-    """Return why there is nothing to test: no /protected-a to read from."""
-    if NAMESPACE not in fed.exports:
-        return f"this shape does not export /{NAMESPACE}"
-    return None
+    """Return why there is nothing to test, or None.
+
+    There is nothing without /protected-a.
+    """
+    return suite.unexported(fed)
 
 
-@dataclass(frozen=True)
-class Test:
-    """What every scenario needs: the federation, the object, and a token.
+class Test(suite.Test):
+    """The object that the scenarios read, and a read token for it.
 
     Attributes:
-        rel: The object's path, in /protected-a.
-        data: The object's contents.
-        token: A read token for the object, of the pass's profile.
-        setup: A read token for the object, of the WLCG profile, for
-            what is setup rather than the check (`restart-cache`).
-        profile: token's profile.
+        object: The object's rel.
+        data: The object's bytes.
+        read_token: A read token for /protected-a, of the session's
+            profile.
+        read_setup: A read token for /protected-a, of the WLCG profile,
+            for what is setup rather than the check (`restart-cache`).
     """
 
-    fed: common.Federation
-    rel: str
-    data: bytes
-    token: str
-    setup: str
-    profile: str
-
-    @property
-    def direct(self) -> bool:
-        """Whether the origins take direct clients."""
-        return "DirectReads" in self.fed.exports[NAMESPACE]
-
-    def url(self, server_url: str) -> str:
-        """Return the object's URL at server_url, a server's data URL."""
-        return f"{server_url}/{NAMESPACE}/{self.rel}"
-
-    def served(self, answer: web.Response) -> str | None:
-        """Return why answer is not the object, or None if it is."""
-        if not answer.ok:
-            return answer.describe()
-        if answer.body != self.data:
-            return f"{len(answer.body)} bytes that are not the object's"
-        return None
+    def __init__(self, session: Session):
+        super().__init__(session, "selftest", NAMESPACE)
+        self.object = self.rel("object")
+        self.data = os.urandom(200_000)
+        self.read_token = session.token(NAMESPACE, R)
+        self.read_setup = session.setup_token(NAMESPACE, R)
 
 
-def trailers(test: Test) -> tuple[str, str]:
+def trailers(test: Test) -> suite.Row:
     """Check that testlib.web keeps a chunked body's trailers.
 
     A GET of the object at each V2 cache, with `X-Transfer-Status: true`
@@ -144,9 +100,9 @@ def trailers(test: Test) -> tuple[str, str]:
     asked = {"X-Transfer-Status": "true", "TE": "trailers"}
     problems: list[str] = []
     for cache in caches:
-        url = test.url(cache.url)
-        answer = web.request("GET", url, token=test.token, headers=asked)
-        why = test.served(answer)
+        url = test.url(cache.url, test.object)
+        answer = web.request("GET", url, token=test.read_token, headers=asked)
+        why = web.served(answer, test.data)
         announced = [n.strip().lower() for n in answer.header("Trailer").split(",")]
         if why:
             problems.append(f"{cache.svc}: asked for the trailer, GET got {why}")
@@ -155,8 +111,8 @@ def trailers(test: Test) -> tuple[str, str]:
         elif answer.trailer("X-Transfer-Status") != TRANSFER_OK:
             got = answer.trailer("X-Transfer-Status") or "none"
             problems.append(f"{cache.svc}: X-Transfer-Status trailer is '{got}'")
-        answer = web.request("GET", url, token=test.token)
-        why = test.served(answer)
+        answer = web.request("GET", url, token=test.read_token)
+        why = web.served(answer, test.data)
         if why:
             problems.append(f"{cache.svc}: unasked, GET got {why}")
         elif answer.trailers or answer.header("Trailer"):
@@ -186,10 +142,10 @@ def claims_problems(ours: dict[str, object], theirs: dict[str, object], profile:
     return problems
 
 
-def jwt_tokens(test: Test) -> tuple[str, str]:
+def jwt_tokens(test: Test) -> suite.Row:
     """Check that testlib.jwt signs tokens that the origins take.
 
-    A token that jwt.encode() signs with the origins' key, with the
+    A token that jwt.sign() signs with the origins' key, with the
     claims and header of the `server` token that `pelican token create`
     mints (credentials.server_claims(), jwt.header(), jwt.key_id()),
     must read the object at every origin; the same token, expired ten
@@ -203,20 +159,21 @@ def jwt_tokens(test: Test) -> tuple[str, str]:
     fed = test.fed
     key = fed.origin_key
     head = jwt.header(jwt.algorithm(key), jwt.key_id(key))
-    claims = credentials.server_claims(fed, NAMESPACE, R, profile=test.profile)
-    minted_head, minted = jwt.decode(test.token)
-    problems = claims_problems(claims, minted, test.profile)
+    profile = test.session.profile
+    claims = credentials.server_claims(fed, NAMESPACE, R, profile=profile)
+    minted_head, minted = jwt.decode(test.read_token)
+    problems = claims_problems(claims, minted, profile)
     if head != minted_head:
         problems.append(f"header {head}, not token create's {minted_head}")
     if problems:
         return FAIL, "unlike token create's: " + first(problems)
-    token = jwt.encode(head, claims, key=key)
+    token = jwt.sign(claims, key)
     now = int(time.time())
     stale = {**claims, "iat": now - 1200, "nbf": now - 1200, "exp": now - 600}
-    expired = jwt.encode(head, stale, key=key)
+    expired = jwt.sign(stale, key)
     for origin in stores.unique(fed.origins):
-        url = test.url(origin.url)
-        why = test.served(web.request("GET", url, token=token))
+        url = test.url(origin.url, test.object)
+        why = web.served(web.request("GET", url, token=token), test.data)
         if why:
             return FAIL, f"{origin.svc}: GET with the token got {why}"
         answer = web.request("GET", url, token=expired)
@@ -249,7 +206,7 @@ def verify_problem(fed: common.Federation, token: str, kid: str) -> str | None:
     return None
 
 
-def http_requests(test: Test) -> tuple[str, str]:
+def http_requests(test: Test) -> suite.Row:
     """Check that testlib.metrics reads /metrics.
 
     A GET of the object straight to each native origin must raise its
@@ -268,7 +225,8 @@ def http_requests(test: Test) -> tuple[str, str]:
         before = metrics.fetch(origin.web_url)
         if before is None:
             return FAIL, f"{origin.svc}: GET {origin.web_url}/metrics failed"
-        why = test.served(web.request("GET", test.url(origin.url), token=test.token))
+        answer = web.request("GET", test.url(origin.url, test.object), token=test.read_token)
+        why = web.served(answer, test.data)
         if why:
             return FAIL, f"{origin.svc}: GET of the object got {why}"
         after = metrics.fetch(origin.web_url)
@@ -281,22 +239,17 @@ def http_requests(test: Test) -> tuple[str, str]:
     return PASS, ", ".join(notes)
 
 
-def age(answer: web.Response) -> int | None:
-    """Return answer's Age, in seconds, or None if it has none."""
-    value = answer.header("Age")
-    return int(value) if value.isdigit() else None
-
-
-def restart_cache(test: Test) -> tuple[str, str]:
+def restart_cache(test: Test) -> suite.Row:
     """Check that testlib.control restarts a service mid-run.
 
     Read the object through cache-0 until it holds it whole (a V2 cache
     sends Age then, and only then), and see every director name it;
-    restart it (testlib.control). Within NAMED_WAIT seconds every
-    director must name it again, and within SERVED_WAIT it must serve
-    the object; a V2 cache from its store, with an Age at least the
-    seconds since it first said it held it all, which only the record
-    it kept across the restart can give.
+    restart it (testlib.control). Within suite.SETTLE_WAIT seconds every
+    director must name it again: the directors drop a cache that says,
+    as it stops, that it is shutting down, until it advertises again.
+    Within SERVED_WAIT it must serve the object; a V2 cache from its
+    store, with an Age at least the seconds since it first said it held
+    it all, which only the record it kept across the restart can give.
     """
     fed = test.fed
     if fed.standalone:
@@ -309,34 +262,29 @@ def restart_cache(test: Test) -> tuple[str, str]:
     why = control.unavailable()
     if why:
         return SKIP, why
-    url = test.url(cache.url)
-    path = f"/{NAMESPACE}/{test.rel}"
+    url = test.url(cache.url, test.object)
+    path = test.path(test.object)
     host = director.host(cache.url)
     v2 = cache.kind == "v2"
-
-    def unnamed() -> str | None:
-        named = director.naming(fed.directors, "object", path, host)
-        return None if len(named) == len(fed.directors) else f"only {named} named {host}"
-
-    why = test.served(web.request("GET", url, token=test.setup))
+    why = web.served(web.request("GET", url, token=test.read_setup), test.data)
     if why:
         return FAIL, f"before the restart, GET got {why}"
     held = 0.0
     if v2:
 
         def says_held() -> bool:
-            return age(web.request("HEAD", url, token=test.setup)) is not None
+            return web.age(web.request("HEAD", url, token=test.read_setup)) is not None
 
-        if not common.wait_for(says_held, HELD_WAIT, interval=1):
-            return FAIL, f"before the restart, no Age within {HELD_WAIT}s of a whole read"
+        if not common.wait_for(says_held, suite.HELD_WAIT, interval=1):
+            return FAIL, f"before the restart, no Age within {suite.HELD_WAIT}s of a whole read"
         held = time.time()
-    why = unnamed()
+    why = director.unnamed(fed.directors, "object", path, host)
     if why:
         return FAIL, f"before the restart, {why}"
 
     control.restart(cache.svc)
     restarted = time.time()
-    why = control.settle(unnamed, NAMED_WAIT)
+    why = director.wait_named(fed.directors, "object", path, host, suite.SETTLE_WAIT)
     if why:
         return FAIL, f"after the restart, {why}"
     took = time.time() - restarted
@@ -345,18 +293,18 @@ def restart_cache(test: Test) -> tuple[str, str]:
 
     def serves() -> bool:
         nonlocal answer
-        answer = web.request("GET", url, token=test.setup)
+        answer = web.request("GET", url, token=test.read_setup)
         return answer.ok
 
     common.wait_for(serves, SERVED_WAIT, interval=5)
-    why = test.served(answer)
+    why = web.served(answer, test.data)
     if why:
         return FAIL, f"after the restart, GET got {why} (waited up to {SERVED_WAIT}s)"
     note = f"{cache.svc}: every director named it again {took:.0f}s after its restart"
     if not v2:
         return PASS, f"{note}, and it serves the object"
     since = int(time.time() - held)
-    found = age(answer)
+    found = web.age(answer)
     if found is None:
         return FAIL, "after the restart, it served the object with no Age, as if it held none"
     # Age is whole seconds, rounded down, and the clocks are one host's.
@@ -372,7 +320,7 @@ class Abandoned(BaseException):
     """What `pool` leaves a pool's block with, as test.py's Stalled does."""
 
 
-def pool(_test: Test) -> tuple[str, str]:
+def pool(_test: Test) -> suite.Row:
     """Check what testlib.common.pool() does as its block ends.
 
     Ten tasks are queued on a pool of two workers, each of which holds
@@ -433,37 +381,15 @@ RUN = {
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Put the object in place, run the selected scenarios, and remove it.
-
-    The object is put in place at every origin.
-    """
-    fed = session.fed
-    stores.require_dirs(fed.origins, [NAMESPACE], "data/selftest")
-    tokens = session.setup_tokens()
-
-    def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/selftest", tokens)
-        if errors:
-            warn(f"emptying data/selftest {when}: {first(errors)}")
-
-    clean("before the run")
-    base = f"data/selftest/{session.run}"
-    read = session.token(NAMESPACE, R)
-    setup = session.setup_token(NAMESPACE, R)
-    test = Test(fed, f"{base}/object", os.urandom(200_000), read, setup, session.profile)
+    """Put the object in place, run the selected scenarios, and clean up."""
+    stores.require_dirs(session.fed.origins, [NAMESPACE], "data/selftest")
+    test = Test(session)
+    test.clean("before the run")
     try:
-        errors = stores.make_dirs(fed.origins, NAMESPACE, base, tokens[NAMESPACE])
-        errors += stores.seed_everywhere(
-            fed.origins,
-            NAMESPACE,
-            test.rel,
-            test.data,
-            tokens[NAMESPACE],
-            fed.exports[NAMESPACE],
-        )
-        if errors:
-            die(f"could not put the object in place: {errors[0]}")
+        why = test.put({test.object: test.data})
+        if why:
+            die(f"could not put the object in place: {why}")
         for name in selected:
-            results.add(name, *common.guarded(functools.partial(RUN[name], test), lambda why: (FAIL, why)))
+            results.add(name, *suite.attempt(functools.partial(RUN[name], test)))
     finally:
-        clean("after the run")
+        test.clean("after the run")

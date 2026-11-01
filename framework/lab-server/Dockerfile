@@ -25,7 +25,7 @@ RUN <<ENDRUN
   sed -i -e '/^[[:space:]]*#\{0,1\}[[:space:]]*StrictModes[[:space:]]/d' \
       /etc/ssh/sshd_config
   printf '\nStrictModes no\n' >>/etc/ssh/sshd_config
-  # A drop-in in sshd_config.d could override the line above.
+  # Fail if a drop-in in sshd_config.d overrides it.
   /usr/sbin/sshd -T | grep -qx 'strictmodes no'
 
   dnf clean all

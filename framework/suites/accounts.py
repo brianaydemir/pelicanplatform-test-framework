@@ -1,66 +1,33 @@
-"""Accounts: the life cycle of the identities that the issuer origin keeps.
+"""Accounts: the life cycle of the identities the issuer origin keeps.
 
-The issuer origin (origin-0, or `fed`) keeps them in its database
-(Pelican's docs/user-group-design.md). The suite checks that life cycle,
-and who may act as whom because of it: deactivating and deleting users;
-granting roles by scope and by authority group; what becomes of
-collection grants when users and groups are deleted, renamed, or
-recreated; group invites; and the acceptable use policy (AUP). A
-mistake in any of these is a privilege escalation, or a grant that
-outlives its owner. The suite needs the embedded issuer and a protected
-namespace, and skips with the issuer off or the external one.
+The issuer origin (origin-0, or `fed`) keeps its users and groups in its
+database (Pelican's docs/user-group-design.md). The suite checks their
+life cycle, and who may act as whom because of it: a mistake there is a
+privilege escalation, or a grant that outlives its owner. It needs the
+embedded issuer and a protected namespace, and skips with the issuer off
+or the external one. Its namespace is the first protected one exported.
 
-Every user and group the suite makes is the run's own, named
-acct-<role>-<run>, and acts through a bearer token that the origin's web
-API takes as theirs (credentials.mint_user()), or through the cookie of
-a login, with a password set through an invite. Tokens for data come
-from the namespace's issuer through its device flow, approved as the
-user, with a client that the admin creates. Collections are the admin's,
-under /<namespace>/data/accounts/<run>/.
+Every user and group the suite makes is the run's own, acct-<role>-<run>,
+and acts through a web token (credentials.mint_web_user()), or through the
+cookie of a login, with a password set through an invite. Tokens for
+data come from the namespace's issuer through its device flow, approved
+as the user, with a client the admin creates. Collections are the
+admin's, under data/accounts/<run>/. The suite's authorities are
+configured in framework/config.d/base/40-origin.yaml: the groups
+test-server-admins (Server.AdminGroups) and test-collection-admins
+(Server.CollectionAdminGroups), which the origin reserves as it starts,
+and the user test-user-admin (Server.UserAdminUsers), whom the admin
+creates once and later runs reuse.
 
-framework/config.d/base/40-origin.yaml names the suite's authorities:
-the groups test-server-admins (Server.AdminGroups) and
-test-collection-admins (Server.CollectionAdminGroups), which the origin
-reserves as it starts, and the user test-user-admin
-(Server.UserAdminUsers), whom the admin creates once and later runs
-reuse. The scenarios:
-
-  user-status       a user made inactive, then active, then deleted:
-                    their login cookie, logging in, their web token,
-                    and the issuer's device flow, authorization page,
-                    and refresh tokens, for each
-  scope-grants      the scopes the admin grants a user: server.user_admin
-                    (no power over the admin, nor to grant), and
-                    pelican.log_read and server.collection_admin, each
-                    obeyed at once, and revoked at once; an API token of
-                    the latter, the admin's alone; a data scope is
-                    refused
-  authority-groups  the configured groups' names are reserved; their
-                    members are collection administrators and server
-                    administrators, from their next login; the
-                    configured user administrator manages users and
-                    grants nothing
-  id-keyed-grants   a deleted group's grants go with it, and a deleted
-                    user's collection stays out of reach of a new user
-                    of the same name; a renamed group and user keep
-                    their grants, and the names they leave grant
-                    nothing
-  group-invites     a group's invite links: one redeemed once, if
-                    single-use, and by many, if not; only the owner
-                    makes them
-  aup               a new AUP gates the admin until they agree to it,
-                    and the policy is public; it is restored afterward,
-                    which restores every earlier agreement
-
-`aup` comes last: for a moment, it gates every user of the origin,
-the admin included. It puts back the policy it found, whose version
-is the hash of its text, so every user who had agreed to it has again,
-and the admin agrees again. Should that fail, every suite that uses
-the routes it gates agrees to the AUP again as it starts.
+`aup` comes last: for a moment, it gates every user of the origin, the
+admin included. It puts back the policy it found, whose version is the
+hash of its text, so that every user who had agreed to it has again,
+and the admin agrees again. Should that fail, every suite that uses the
+routes it gates agrees to the AUP again as it starts.
 
 The run's collections, groups, and users are removed afterward, and
-those that earlier runs left. The server only marks a deleted user or
-group deleted, and frees its name.
+those that earlier runs left; the server only marks a deleted user or
+group deleted, and frees its name. See docs/tests/accounts.md.
 """
 
 import functools
@@ -69,9 +36,9 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from testlib import accounts, collections, common, credentials, issuer, web, webapi
+from testlib import accounts, collections, common, credentials, issuer, suite, web, webapi
 from testlib.accounts import Api, ApiError, must
-from testlib.collections import create, delete, get, grant, grants, listed, patch
+from testlib.collections import create, delete, get, grant, grants, listed, patch, remove_under, user_target
 from testlib.common import die, objects, outcome, warn
 from testlib.credentials import PROTECTED
 from testlib.issuer import IssuerError, Tokens, User
@@ -112,34 +79,25 @@ REFRESHABLE = ("openid", "offline_access")
 def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
-    That is so with no embedded issuer, or no protected namespace.
+    There is nothing without the embedded issuer, or a protected
+    namespace.
     """
     return collections.missing(fed)
 
 
-class Test:
-    """The issuer origin and its namespace, and the run's users.
-
-    It keeps tokens and clients for them.
+class Test(suite.Test):
+    """The issuer origin, the suite's namespace, and the run's users.
 
     Attributes:
         web: The issuer origin's web URL.
-        namespace: Its namespace: the first protected one exported.
-        base: The run's path in the namespace: data/accounts/<run>.
-        prefix: The run's path in the federation: /<namespace>/<base>.
         passwords: The passwords set, by username.
         clients: The admin's clients (see client()), by kind.
     """
 
     def __init__(self, session: Session):
         fed = session.fed
-        self.session = session
-        self.fed = fed
-        self.run = session.run
+        super().__init__(session, "accounts", next(ns for ns in PROTECTED if ns in fed.exports))
         self.web = fed.origin_web_url
-        self.namespace = next(ns for ns in PROTECTED if ns in fed.exports)
-        self.base = f"data/accounts/{self.run}"
-        self.prefix = f"/{self.namespace}/{self.base}"
         self.passwords: dict[str, str] = {}
         self.clients: dict[str, issuer.Client] = {}
         self._web_tokens: dict[str, str] = {}
@@ -149,27 +107,27 @@ class Test:
         return f"{PREFIX}{role}-{self.run}"
 
     def web_token(self, username: str) -> str:
-        """Return a token that the origin's web API takes as username's.
+        """Return a token of username's for the issuer origin's web API.
 
-        That is whoever is named so when it is presented.
+        It stands for whoever is named so when it is presented.
         """
         if username not in self._web_tokens:
-            self._web_tokens[username] = credentials.mint_user(
+            self._web_tokens[username] = credentials.mint_web_user(
                 self.fed,
                 self.session.path(f"tokens/accounts-web.{username}"),
-                credentials.local_issuer(self.fed, self.web),
-                self.fed.origin_key,
+                self.web,
                 username,
                 lifetime=3600,
+                key=self.fed.origin_key,
             )
         return self._web_tokens[username]
 
     def api(self, username: str) -> Api:
-        """Return the origin's web API, as username, by bearer token."""
+        """Return the issuer origin's web API, as username."""
         return Api(self.web, self.web_token(username))
 
     def client(self, kind: str) -> issuer.Client:
-        """Return the admin's client of the namespace's issuer.
+        """Return the admin's client of the namespace's issuer, made once.
 
         Args:
             kind: `device`, for the device flow, or `code`, for the
@@ -190,24 +148,15 @@ class Test:
     def data_scopes(self, username: str) -> frozenset[str]:
         """Return the data scopes the namespace's issuer grants username.
 
-        It asks now, for everything they might have.
+        They are those of a token of everything they might have, minted
+        when asked.
         """
         tok = issuer.token(self.client("device"), User(token=self.web_token(username)), issuer.DATA_SCOPES)
         return issuer.data_scopes(tok)
 
-    def path(self, name: str) -> str:
-        """Return the namespace of the run's collection name.
-
-        It is the collection's federation path.
-        """
-        return f"{self.prefix}/{name}"
-
     def read_scope(self, name: str) -> str:
-        """Return the scope that reads the run's collection name.
-
-        It is as the namespace's issuer mints it.
-        """
-        return f"storage.read:/{self.base}/{name}"
+        """Return the scope that reads the run's collection name."""
+        return issuer.scope("read", self.rel(name))
 
 
 # --------------------------------------------------------------------------
@@ -251,7 +200,7 @@ def make_collection(test: Test, name: str) -> str:
     Returns:
         Its ID.
     """
-    made = must(create(test.api("admin"), name, test.path(name)), f"creating collection {name}")
+    made = must(create(test.api("admin"), name, test.path(test.rel(name))), f"creating collection {name}")
     return str(made.object.get("id", ""))
 
 
@@ -268,31 +217,25 @@ def whoami(test: Test, cookie: str) -> dict[str, Any]:
 def sweep(test: Test, this_run: bool) -> None:
     """Remove the suite's collections, groups, and users.
 
-    Args:
-        test: The suite's run.
-        this_run: Whether to remove the run's, rather than earlier runs'
-            leftovers.
+    Remove the run's, if this_run, or else earlier runs' leftovers.
     """
     admin = test.api("admin")
-    directory = f"/{test.namespace}/data/accounts/"
-    for row in objects(admin.call("GET", collections.COLLECTIONS).array):
-        namespace = str(row.get("namespace", ""))
-        if namespace.startswith(directory) and namespace.startswith(test.prefix + "/") == this_run:
-            gone = delete(admin, str(row.get("id")))
-            if not gone.ok:
-                warn(f"could not remove collection {row.get('name')}: {gone.describe()}")
+    directory, ours = test.path("data/accounts/"), test.path(test.base + "/")
+    problems = remove_under(admin, ours) if this_run else remove_under(admin, directory, keep=ours)
+    for problem in problems:
+        warn(problem)
 
-    def ours(row: dict[str, Any], key: str) -> bool:
+    def named(row: dict[str, Any], key: str) -> bool:
         name = str(row.get(key, ""))
         return name.startswith(PREFIX) and name.endswith(f"-{test.run}") == this_run
 
     for row in objects(admin.call("GET", accounts.GROUPS).array):
-        if ours(row, "name"):
+        if named(row, "name"):
             failed = accounts.delete_group(admin, str(row.get("id")))
             if failed:
                 warn(f"could not remove group {row.get('name')}: {failed}")
     for row in objects(admin.call("GET", accounts.USERS).array):
-        if ours(row, "username"):
+        if named(row, "username"):
             failed = accounts.delete_user(admin, str(row.get("id")))
             if failed:
                 warn(f"could not remove user {row.get('username')}: {failed}")
@@ -326,13 +269,9 @@ def finish(test: Test) -> None:
 def checked(rows: list[Row], case: str, check: Callable[[], tuple[str, str]]) -> None:
     """Append case's row to rows: check()'s status and note.
 
-    It is a failing one if check() raised ApiError or IssuerError.
+    It fails if check() raises (suite.attempt()).
     """
-    try:
-        status, note = check()
-    except (ApiError, IssuerError) as e:
-        status, note = FAIL, str(e)
-    rows.append((case, status, note))
+    rows.append((case, *suite.attempt(check, (ApiError, IssuerError))))
 
 
 # --------------------------------------------------------------------------
@@ -382,7 +321,7 @@ def approves(client: issuer.Client, user: User) -> tuple[bool, str]:
     except IssuerError as e:
         return False, str(e)
     return (
-        done.status == 200 and issuer.decoded(done).get("status") == "approved",
+        done.status == 200 and done.object().get("status") == "approved",
         done.describe(),
     )
 
@@ -407,7 +346,6 @@ def issuer_refusals(test: Test, user: User, refresh: str) -> list[str]:
     or honor the user's refresh token (it should say invalid_grant).
 
     Args:
-        test: The suite's run.
         user: How the issuer knows the user.
         refresh: The user's unused refresh token, or "" if they hold none.
     """
@@ -591,18 +529,19 @@ def scope_grants(test: Test) -> list[Row]:
         username = test.name("curator")
         user_id = make_user(test, username)
         api = test.api(username)
+        namespace = test.path(test.rel("by-scope"))
         problems: list[str] = []
-        answer = create(api, "by-scope", test.path("by-scope"))
+        answer = create(api, "by-scope", namespace)
         if answer.status != 403:
             problems.append(f"creating a collection before the grant: {answer.describe()}")
         granted(user_id, "server.collection_admin")
-        answer = create(api, "by-scope", test.path("by-scope"))
+        answer = create(api, "by-scope", namespace)
         if answer.status != 201:
             problems.append(f"creating a collection: {answer.describe()}, not 201")
         else:
             must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
         revoked(user_id, "server.collection_admin")
-        answer = create(api, "by-scope", test.path("by-scope"))
+        answer = create(api, "by-scope", namespace)
         if answer.status != 403:
             problems.append(f"creating a collection once revoked: {answer.describe()}, not 403")
         return outcome(problems, "creates a collection; refused once revoked")
@@ -649,15 +588,16 @@ def scope_grants(test: Test) -> list[Row]:
             return outcome(problems, "")
         token, token_id, _ = made
         api = Api(test.web, token)
+        namespace = test.path(test.rel("by-token"))
         try:
-            answer = create(api, "by-token", test.path("by-token"))
+            answer = create(api, "by-token", namespace)
             if answer.status != 201:
                 problems.append(f"creating a collection with the admin's token: {answer.describe()}")
             else:
                 must(delete(admin, str(answer.object.get("id"))), "deleting the collection")
         finally:
             drop(admin_cookie, token_id)
-        answer = create(api, "by-token", test.path("by-token"))
+        answer = create(api, "by-token", namespace)
         if answer.status not in (401, 403):
             problems.append(f"creating a collection with the token once deleted: {answer.describe()}")
             if answer.status == 201:
@@ -739,7 +679,7 @@ def authority_groups(test: Test) -> list[Row]:
 
         def creates(when: str, status: int) -> None:
             cookie = log_in(test, username, user_id)
-            answer = create(Api(test.web, None, cookie), "by-group", test.path("by-group"))
+            answer = create(Api(test.web, None, cookie), "by-group", test.path(test.rel("by-group")))
             if answer.status != status:
                 problems.append(f"creating a collection {when}: {answer.describe()}, not {status}")
             if answer.ok:
@@ -870,7 +810,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
         cid = make_collection(test, "y")
         read = test.read_scope("y")
         must(patch(admin, cid, ownerId=old_id), "handing the collection to the user")
-        must(grant(admin, cid, f"user-{username}", "read"), "granting the user read")
+        must(grant(admin, cid, user_target(username), "read"), "granting the user read")
         api = test.api(username)
         if cid not in listed(api) or read not in test.data_scopes(username):
             return FAIL, f"the owner does not see the collection, or lacks {read}"
@@ -909,7 +849,7 @@ def id_keyed_grants(test: Test) -> list[Row]:
         cid = make_collection(test, "z")
         read = test.read_scope("z")
         must(grant(admin, cid, old_group, "read"), "granting the group read")
-        must(grant(admin, cid, f"user-{old_user}", "read"), "granting the user read")
+        must(grant(admin, cid, user_target(old_user), "read"), "granting the user read")
         if read not in test.data_scopes(holder) or read not in test.data_scopes(old_user):
             return FAIL, f"the group's member or the user lacks {read} before the renames"
         must(

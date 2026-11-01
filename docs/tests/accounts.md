@@ -2,18 +2,23 @@
 
 Part of [What the tests check](README.md).
 
-The `accounts` suite checks how the issuer origin (origin-0, or `fed`)
-treats an account through its life (Pelican's `docs/user-group-design.md`):
+The [`accounts`](../../framework/suites/accounts.py) suite checks how the
+issuer origin (origin-0, or `fed`) treats an account through its life
+([Pelican](https://pelicanplatform.org/)'s
+[`docs/user-group-design.md`](https://github.com/PelicanPlatform/pelican/blob/main/docs/user-group-design.md)):
 deactivated, deleted, granted scopes and stripped of them, added to
-authority groups and removed, renamed, and recreated under a freed name. The
-suite skips under `-p auth-no-issuer` and `-p auth-external-issuer`
-([presets](../../README.md#presets)), and runs in the WLCG pass only
-([token profiles](README.md#token-profiles)). A case's row is named
-`<scenario> <case>`.
+authority groups and removed, renamed, and recreated under a freed name. It
+skips under [`-p auth-no-issuer`](../../framework/presets/auth-no-issuer.sh)
+and
+[`-p auth-external-issuer`](../../framework/presets/auth-external-issuer.sh),
+and runs in the [WLCG pass](../glossary.md#pass) only
+([token profiles](README.md#token-profiles)). Each
+[case](../glossary.md#case)'s row is named `<scenario> <case>`.
 
 Its users and groups are the run's own (`acct-<role>-<run>`).
-`framework/config.d/base/40-origin.yaml` names its authorities: the groups
-`test-server-admins` (`Server.AdminGroups`) and `test-collection-admins`
+[`framework/config.d/base/40-origin.yaml`](../../framework/config.d/base/40-origin.yaml)
+names its authorities: the groups `test-server-admins`
+(`Server.AdminGroups`) and `test-collection-admins`
 (`Server.CollectionAdminGroups`), whose names the server reserves as it
 starts, so a federation started before they were configured needs a restart;
 and the user `test-user-admin` (`Server.UserAdminUsers`). A group confers
@@ -23,10 +28,10 @@ authority from the user's next login (`Issuer.GroupSource: internal`).
   active again, then deleted. While inactive or deleted:
 
   - their cookie is refused at `/api/v1.0/me` (401) and cleared, and a new
-    login and their bearer token are refused (401) (`inactive-web`,
+    login and their bearer token are refused (401; `inactive-web`,
     `deleted-web`);
   - the issuer approves no device flow, sends no authorization code, and
-    refuses their refresh token (`invalid_grant`) (`inactive-issuer`,
+    refuses their refresh token (`invalid_grant`; `inactive-issuer`,
     `deleted-issuer`).
 
   While active, before and after, each works (`active`, `reactivated`).
@@ -39,7 +44,7 @@ authority from the user's next login (`Issuer.GroupSource: internal`).
   - `log-read`: `pelican.log_read` lets a user read `/api/v1.0/logs/tail`,
     but not `/api/v1.0/config` (403).
   - `collection-admin`: `server.collection_admin` lets a user create a
-    collection.
+    [collection](collections.md).
   - `collection-admin-token`: Only the admin may make an API token
     (`POST /api/v1.0/tokens`; 403 for a collection administrator). The
     admin's token creates a collection, and is refused once deleted.
@@ -92,6 +97,6 @@ authority from the user's next login (`Issuer.GroupSource: internal`).
   - `again`: Another new policy gates the admin and other users again.
   - `restored`: The original policy, put back, needs no new agreement, since
     its version is the hash of its text (`Server.AUPFile` in Pelican's
-    `docs/parameters.yaml`).
+    [`docs/parameters.yaml`](https://github.com/PelicanPlatform/pelican/blob/main/docs/parameters.yaml)).
 
   Runs last, since it briefly gates every user of the origin.

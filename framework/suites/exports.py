@@ -1,51 +1,6 @@
 """What a native origin does with each export's capabilities, on its own.
 
-The capabilities are Listings, DirectReads, and Copies (which
-Origin.DisableCopies turns off). The suite also checks a third-party
-COPY's progress, its failures, and what a failed one leaves; and a PUT
-of a multipart body. These are where an origin could serve, or destroy,
-more than its configuration allows.
-
-  multipart-put            with metadata off, a PUT typed
-                           multipart/form-data is stored as sent, shaped
-                           as Pelican's metadata uploads are or not
-  tpc-body                 a third-party COPY streams Perf Markers whose
-                           byte counts never fall, then `success:
-                           Created`, and the destination holds the
-                           source's bytes
-  tpc-failures             a COPY from a Source that is no http(s) URL
-                           (400), that answers an error (502), that has
-                           no such object, or that fails partway, writes
-                           nothing, and leaves an object it was to
-                           replace intact where uploads are staged
-  disable-copies           a COPY to /public, where it takes no writes,
-                           is refused; under Origin.DisableCopies, a COPY
-                           to a writable export too, and OPTIONS / names
-                           no COPY
-  listings-capability      an export without Listings refuses a PROPFIND
-                           of Depth 1 and an HTML listing, but not a
-                           Depth 0 one
-  direct-reads-capability  an export without DirectReads, beside others
-                           with it, refuses a GET straight to the origin,
-                           and serves one through a cache
-  nested-export            an export nested in /public, which takes a
-                           token: the origin starts and serves both, the
-                           nested one to a token for it alone, and to no
-                           one without a token
-  backend-token            an https or httpsv2 origin that reaches its
-                           backend with a static token
-                           (Origin.HttpAuthTokenFile): every request it
-                           sends carries it, and never a client's, and
-                           everything still works
-  backend-passthrough      an httpsv2 origin that forwards the client's
-                           token (Origin.HttpAuthTokenPassthrough): each
-                           request of the client's carries it, and none
-                           the static token
-  sentinel                 the first origin, each export of which names
-                           a SentinelLocation, a file that its storage
-                           must hold to show that it is mounted: it
-                           starts and serves where each does, and
-                           refuses to start where one does not
+See docs/tests/exports-and-copies.md.
 
 No shape gives what several scenarios need, so the suite restarts
 origins as the last of their configuration layers
@@ -69,30 +24,31 @@ whose origin is the whole federation's process; elsewhere its rows skip.
 Each scenario asks only the native origins (origin_serve/ in Pelican),
 but multipart-put and disable-copies's `public` row, which ask XRootD
 origins too, as a control; nested-export, which asks every origin; and
-backend-token, which asks XRootD's `https` origins too. Everything goes
-under /<namespace>/data/exports/<run>/, which the suite removes
-afterward. A COPY's failing sources are a stub HTTP server in the dev
-container (testlib/stub.py). The requests that the scenarios check,
-among them the client's that backend-passthrough forwards, present
-tokens of the session's profile; setup presents WLCG tokens either way.
+backend-token, which asks XRootD's `https` origins too. Objects go under
+/<namespace>/data/exports/<run>/ (Test.base). A COPY's failing sources
+are a stub HTTP server in the dev container (testlib/stub.py). The
+requests that the scenarios check, among them the client's that
+backend-passthrough forwards, present tokens of the session's profile;
+setup presents WLCG tokens either way.
 """
 
 import contextlib
 import os
 import re
 import time
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from urllib.parse import quote
 
-from testlib import common, control, credentials, director, jwt, registry, stores, web, webdav
+from testlib import common, control, credentials, jwt, registry, stores, suite, web, webdav
 from testlib.common import Findings, die, first, outcome, warn
 from testlib.recorder import index
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
 from testlib.stub import HOST as STUB_HOST
 from testlib.stub import Reply, Stub
+from testlib.suite import Row
 from testlib.webdav import copy_or_move, root_url
 
 SCENARIOS = {
@@ -123,9 +79,6 @@ SCENARIOS = {
         " to where one lacks it"
     ),
 }
-
-# A row's status, and its note.
-Row = tuple[str, str]
 
 NAMESPACE = "protected-a"
 
@@ -175,11 +128,6 @@ SHORT_CLAIMED = 4 << 20
 SHORT_SENT = 1 << 20
 # How long the metadata recorder is given to receive an event.
 EVENT_WAIT = 15
-
-# How long the federation may take to serve again after the origins
-# restart: every director must name every origin, and every cache
-# answer.
-SETTLE_WAIT = 150
 
 # The capability restart's configuration layer: the exports restated,
 # and copies off.
@@ -239,68 +187,44 @@ LISTING_REFUSED = (401, 403, 405)
 NO_COPY = (404, 405)
 PUBLIC_COPY_REFUSED = (401, 403, 404, 405)
 
+# Why the origins cannot take an export with DirectReads or Listings.
+UNDIRECTED = (
+    "the origins take no direct clients (Origin.DisableDirectClients), with which Pelican"
+    " refuses an export with DirectReads or Listings"
+)
+
 
 class SetupError(Exception):
     """A scenario could not put in place what it checks."""
 
 
-@dataclass
-class Test:
-    """What every scenario needs.
+# The exceptions by which a check reports a problem (suite.attempt()).
+EXPECTED = (SetupError, stores.Unreadable)
 
-    That is the federation, the `server` token for /protected-a, the
-    run's collection, and the stub source.
+
+class Test(suite.Test):
+    """The pass, the run's collection in /protected-a, and the stub source.
 
     Attributes:
-        token: The `server` token for /protected-a, of the session's
-            profile.
-        token_file: The file that holds token.
-        setup: The `server` token for /protected-a, of the WLCG profile,
-            for putting objects in place.
+        stub: The stub source.
         stub_down: Why the stub does not serve, if it does not.
     """
 
-    session: Session
-    stub: Stub
-    token: str
-    token_file: str
-    setup: str
-    stub_down: str | None = None
-
-    @property
-    def fed(self) -> common.Federation:
-        """The federation."""
-        return self.session.fed
-
-    @property
-    def base(self) -> str:
-        """The run's collection, in each namespace."""
-        return f"data/exports/{self.session.run}"
-
-    def rel(self, origin: common.Origin, name: str) -> str:
-        """Return object name's path in origin's collection of the run.
-
-        The path is within /protected-a.
-        """
-        return f"{self.base}/{origin.svc}/{name}"
-
-    def native(self) -> str | None:
-        """Return why the origins are not Pelican's native ones, or None."""
-        if self.fed.native_origins:
-            return None
-        return f"XRootD serves the origins ({self.fed.origin_variant}), not Pelican"
+    def __init__(self, session: Session, stub: Stub):
+        super().__init__(session, "exports", NAMESPACE)
+        self.stub = stub
+        self.stub_down: str | None = None
 
     def writable(self) -> str | None:
         """Return why direct clients cannot write /protected-a, or None."""
-        caps = self.fed.exports[NAMESPACE]
-        if "DirectReads" not in caps:
+        if not self.direct:
             return "the origins take no direct clients"
-        if "Writes" not in caps:
+        if not self.writes:
             return f"/{NAMESPACE} takes no writes"
         return None
 
-    def put(self, origin: common.Origin, rel: str, data: bytes) -> None:
-        """Put data at rel in /protected-a at origin.
+    def put_at(self, origin: common.Origin, rel: str, data: bytes) -> None:
+        """Put data at rel in /protected-a at origin alone.
 
         Raises:
             SetupError: The PUT failed.
@@ -319,8 +243,12 @@ class Test:
     ) -> str | None:
         """Return what is wrong with what origin holds at rel in namespace.
 
-        origin should hold want there (None: nothing); the answer calls
-        that what, and is None if nothing is wrong.
+        Args:
+            want: What origin should hold there; None for nothing.
+            what: What the answer calls the object.
+
+        Returns:
+            What is wrong, or None.
 
         Raises:
             stores.Unreadable: The origin could not say what it holds.
@@ -377,7 +305,9 @@ def snippet(body: bytes) -> str:
 def multipart(boundary: str, parts: Sequence[tuple[str, bytes]]) -> bytes:
     """Return a multipart/form-data body (RFC 7578) of parts.
 
-    Each of parts is a form field's name and its bytes.
+    Args:
+        boundary: The boundary between parts.
+        parts: Each a form field's name, and its bytes.
     """
     body = b""
     for name, data in parts:
@@ -403,7 +333,7 @@ def multipart_case(test: Test, case: str) -> Row:
             body = multipart(boundary, (("metadata", METADATA_PART), ("object", data)))
         else:
             body = multipart(boundary, (("file", data),))
-        rel = test.rel(origin, f"multipart-{case}")
+        rel = test.rel(origin.svc, f"multipart-{case}")
         url = stores.url(origin, NAMESPACE, rel)
         answer = web.request(
             "PUT",
@@ -454,7 +384,10 @@ def multipart_put(test: Test) -> dict[str, Row]:
         )
     if why:
         return {row: (SKIP, why) for row in rows}
-    return {row: attempt(partial(multipart_case, test, case)) for case, row in zip(MULTIPART_CASES, rows)}
+    return {
+        row: suite.attempt(partial(multipart_case, test, case), EXPECTED)
+        for case, row in zip(MULTIPART_CASES, rows)
+    }
 
 
 # --------------------------------------------------------------------------
@@ -566,21 +499,19 @@ def tpc_body(test: Test) -> dict[str, Row]:
     object. The row's note counts the markers.
     """
     (row,) = ROWS["tpc-body"]
-    why = test.native() or test.writable()
+    why = stores.not_native(test.fed) or test.writable()
     if why:
         return {row: (SKIP, why)}
     data = os.urandom(SOURCE_SIZE)
-    source_rel = f"{test.base}/{SOURCE}"
+    source_rel = test.rel(SOURCE)
     errors = stores.put_everywhere(test.fed.origins, NAMESPACE, source_rel, data, test.setup)
     if errors:
         raise SetupError(f"could not put the source in place: {first(errors)}")
     found = Findings()
     for origin in test.fed.origins:
         source_url, source_name = source_of(test, origin)
-        rel = test.rel(origin, "tpc-body")
-        answer = test.copy(
-            origin, NAMESPACE, rel, f"{source_url}/{NAMESPACE}/{quote(source_rel)}", test.token
-        )
+        rel = test.rel(origin.svc, "tpc-body")
+        answer = test.copy(origin, NAMESPACE, rel, test.url(source_url, source_rel), test.token)
         if answer.status != 201:
             found.problems.append(
                 f"{origin.svc}: a COPY from {source_name} got {answer.describe()}"
@@ -622,7 +553,7 @@ def bad_source(test: Test, found: Findings) -> None:
     """
     for origin in test.fed.origins:
         for name, source in (("ftp", f"ftp://{STUB_HOST}/x"), ("file", "file:///etc/passwd")):
-            rel = test.rel(origin, f"bad-source-{name}")
+            rel = test.rel(origin.svc, f"bad-source-{name}")
             answer = test.copy(origin, NAMESPACE, rel, source)
             if answer.status != 400:
                 found.problems.append(
@@ -642,9 +573,9 @@ def source_error(test: Test, found: Findings) -> None:
     """
     for origin in test.fed.origins:
         for code in (404, 500):
-            path = f"/{test.session.run}/{origin.svc}/status-{code}"
+            path = f"/{test.run}/{origin.svc}/status-{code}"
             source = test.stub.reply(path, Reply(code, b"the stub's error\n"))
-            rel = test.rel(origin, f"source-error-{code}")
+            rel = test.rel(origin.svc, f"source-error-{code}")
             answer = test.copy(origin, NAMESPACE, rel, source)
             if not test.stub.seen(path):
                 found.doubts.append(
@@ -669,11 +600,11 @@ def missing_source(test: Test, found: Findings) -> None:
     `pelican object copy` of such an object to /protected-a must exit
     non-zero, and no origin hold the destination.
     """
-    missing = f"{test.base}/missing"
+    missing = test.rel("missing")
     for origin in test.fed.origins:
         source_url, source_name = source_of(test, origin)
-        rel = test.rel(origin, "missing-source")
-        answer = test.copy(origin, NAMESPACE, rel, f"{source_url}/{NAMESPACE}/{quote(missing)}", test.token)
+        rel = test.rel(origin.svc, "missing-source")
+        answer = test.copy(origin, NAMESPACE, rel, test.url(source_url, missing), test.token)
         why = failed(answer)
         if why:
             found.problems.append(f"{origin.svc}: a COPY of a missing object: {why}")
@@ -681,7 +612,7 @@ def missing_source(test: Test, found: Findings) -> None:
         if problem:
             found.problems.append(f"{origin.svc}: from a missing object, {problem}")
         found.notes.append(f"{origin.svc} from {source_name}: {answer.describe()}")
-    rel = f"{test.base}/client-missing"
+    rel = test.rel("client-missing")
     code, out, err = test.session.pelican_cmd(
         "object",
         "copy",
@@ -689,8 +620,8 @@ def missing_source(test: Test, found: Findings) -> None:
         test.token_file,
         "--dest-token",
         test.token_file,
-        f"{test.fed.url}/{NAMESPACE}/{missing}",
-        f"{test.fed.url}/{NAMESPACE}/{rel}",
+        test.pelican_url(missing),
+        test.pelican_url(rel),
     )
     if code == 0:
         found.problems.append("`pelican object copy` of a missing object exited 0")
@@ -720,10 +651,10 @@ def mid_stream(test: Test, found: Findings) -> None:
     """
     kept: list[str] = []
     for origin in test.fed.origins:
-        rel = test.rel(origin, "mid-stream")
+        rel = test.rel(origin.svc, "mid-stream")
         before = os.urandom(65536)
-        test.put(origin, rel, before)
-        path = f"/{test.session.run}/{origin.svc}/short"
+        test.put_at(origin, rel, before)
+        path = f"/{test.run}/{origin.svc}/short"
         source = test.stub.reply(path, Reply(200, os.urandom(SHORT_SENT), length=SHORT_CLAIMED))
         answer = test.copy(origin, NAMESPACE, rel, source)
         if not test.stub.seen(path):
@@ -737,7 +668,7 @@ def mid_stream(test: Test, found: Findings) -> None:
         have = stores.held(origin, NAMESPACE, rel, test.setup)
         staged = test.fed.posc or origin.pstore
         if have == common.digest(before):
-            kept.append(f"/{NAMESPACE}/{rel}")
+            kept.append(test.path(rel))
             found.notes.append(f"{origin.svc} kept X")
         elif have is not None:
             found.problems.append(f"{origin.svc}: the object it was to replace holds other bytes")
@@ -780,10 +711,13 @@ def tpc_failures(test: Test) -> dict[str, Row]:
     Each case has a row; see its function.
     """
     rows = ROWS["tpc-failures"]
-    why = test.native() or test.writable()
+    why = stores.not_native(test.fed) or test.writable()
     if why:
         return {row: (SKIP, why) for row in rows}
-    return {row: attempt(partial(failure_case, test, case)) for case, row in zip(FAILURE_CASES, rows)}
+    return {
+        row: suite.attempt(partial(failure_case, test, case), EXPECTED)
+        for case, row in zip(FAILURE_CASES, rows)
+    }
 
 
 # --------------------------------------------------------------------------
@@ -799,8 +733,9 @@ def copies_to_public(test: Test) -> Row:
     (PUBLIC_COPY_REFUSED), and write nothing. XRootD origins are asked
     too, as a control.
     """
-    if "public" not in test.fed.exports:
-        return SKIP, "this shape does not export /public"
+    why = suite.unexported(test.fed, "public")
+    if why:
+        return SKIP, why
     if "Writes" in test.fed.exports["public"]:
         return SKIP, "/public takes writes ('-p origin-public-writes'), and so copies"
     why = test.writable()
@@ -808,8 +743,8 @@ def copies_to_public(test: Test) -> Row:
         return SKIP, why
     found = Findings()
     for origin in test.fed.origins:
-        rel = f"{test.base}/{origin.svc}-copied"
-        source = stores.url(origin, NAMESPACE, f"{test.base}/{PROBE}")
+        rel = test.rel(f"{origin.svc}-copied")
+        source = stores.url(origin, NAMESPACE, test.rel(PROBE))
         answer = test.copy(origin, "public", rel, source, test.token)
         if answer.status not in PUBLIC_COPY_REFUSED:
             found.problems.append(
@@ -845,19 +780,15 @@ class Layout:
 def unrestartable(test: Test) -> str | None:
     """Return why the origins cannot be restarted with other exports.
 
-    Return None if they can.
+    Returns:
+        Why, or None if they can.
     """
-    fed = test.fed
-    if not fed.native_origins:
-        return f"XRootD serves the origins ({fed.origin_variant}); the check is of Pelican's native origin"
-    if "DirectReads" not in fed.exports[NAMESPACE]:
-        return (
-            "the origins take no direct clients (Origin.DisableDirectClients), with which Pelican"
-            " refuses an export with DirectReads or Listings"
-        )
-    if fed.tiny:
-        return "the tiny topology's origin is the whole federation's process"
-    return test.writable() or control.unavailable()
+    why = stores.not_native(test.fed)
+    if why:
+        return why
+    if not test.direct:
+        return UNDIRECTED
+    return test.writable() or control.unrestartable(test.fed)
 
 
 def layout_of(fed: common.Federation) -> Layout:
@@ -945,7 +876,7 @@ def seed_restart(test: Test, layout: Layout) -> dict[str, bytes]:
         SetupError: An object could not be put in place.
     """
     fed = test.fed
-    tree = f"{test.base}/tree"
+    tree = test.rel("tree")
     data = {"tree/obj": os.urandom(3000), "public-obj": os.urandom(4000)}
     token = test.session.setup_token(layout.listless)
     errors = stores.make_dirs(fed.origins, layout.listless, tree, token)
@@ -958,7 +889,7 @@ def seed_restart(test: Test, layout: Layout) -> dict[str, bytes]:
         fed.exports[layout.listless],
     )
     if layout.directless:
-        rel = f"{test.base}/public-obj"
+        rel = test.rel("public-obj")
         for origin in stores.unique(fed.origins):
             storage = origin.storage_namespace(layout.directless)
             error = stores.seed(
@@ -976,61 +907,6 @@ def seed_restart(test: Test, layout: Layout) -> dict[str, bytes]:
     return data
 
 
-@contextlib.contextmanager
-def restarted(test: Test, files: Mapping[str, Mapping[str, str]]) -> Generator[None, None, None]:
-    """Restart every origin with its files, and afterward, as it was.
-
-    files maps each origin's service name to its files: YAML text, by
-    file name.
-
-    Raises:
-        control.ControlError: An origin could not be restarted or
-            restored.
-    """
-    with contextlib.ExitStack() as stack:
-        for origin in test.fed.origins:
-            stack.enter_context(control.restart_with(origin.svc, files[origin.svc]))
-        yield
-
-
-def serving(test: Test) -> str | None:
-    """Return why /protected-a is not served as before, or None.
-
-    To be served, every origin must answer a HEAD of the probe, every
-    director name every origin for it, and every federated cache answer
-    a HEAD of it. Each is asked with the setup token, since this is a
-    check of the shape, not of the pass's tokens.
-    """
-    rel = f"{test.base}/{PROBE}"
-    for origin in test.fed.origins:
-        answer = web.request("HEAD", stores.url(origin, NAMESPACE, rel), token=test.setup)
-        if answer.status != 200:
-            return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
-    path = f"/{NAMESPACE}/{rel}"
-    for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.setup)
-        for origin in test.fed.origins:
-            if not where.names(director.host(origin.url)):
-                return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
-    for cache in test.fed.federated_caches:
-        answer = web.request("HEAD", f"{cache.url}/{NAMESPACE}/{quote(rel)}", token=test.setup)
-        if answer.status != 200:
-            return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
-    return None
-
-
-def settle(test: Test) -> str | None:
-    """Wait until the federation serves /protected-a as before.
-
-    See serving(). A server that exited on its own ends the wait at once
-    (control.settle()).
-
-    Returns:
-        Why it doesn't within SETTLE_WAIT seconds, or None.
-    """
-    return control.settle(lambda: serving(test), SETTLE_WAIT)
-
-
 def copies_disabled(test: Test, _layout: Layout, _data: Mapping[str, bytes]) -> Row:
     """Check a native origin's COPY and OPTIONS under Origin.DisableCopies.
 
@@ -1042,8 +918,8 @@ def copies_disabled(test: Test, _layout: Layout, _data: Mapping[str, bytes]) -> 
     """
     found = Findings()
     for origin in test.fed.origins:
-        rel = test.rel(origin, "no-copy")
-        source = stores.url(origin, NAMESPACE, f"{test.base}/{PROBE}")
+        rel = test.rel(origin.svc, "no-copy")
+        source = stores.url(origin, NAMESPACE, test.rel(PROBE))
         answer = test.copy(origin, NAMESPACE, rel, source, test.token)
         if answer.status not in NO_COPY:
             found.problems.append(
@@ -1078,7 +954,7 @@ def listings_capability(test: Test, layout: Layout, data: Mapping[str, bytes]) -
     token = test.session.token(namespace)
     found = Findings()
     for origin in test.fed.origins:
-        tree = stores.url(origin, namespace, f"{test.base}/tree")
+        tree = stores.url(origin, namespace, test.rel("tree"))
         listing = webdav.propfind(f"{tree}/", "1", token)
         if listing.status not in LISTING_REFUSED:
             found.problems.append(
@@ -1124,7 +1000,7 @@ def direct_reads_capability(test: Test, layout: Layout, data: Mapping[str, bytes
     if layout.directless is None:
         return SKIP, "this shape does not export /public"
     namespace = layout.directless
-    rel = f"{test.base}/public-obj"
+    rel = test.rel("public-obj")
     want = data["public-obj"]
     found = Findings()
     for origin in test.fed.origins:
@@ -1136,7 +1012,7 @@ def direct_reads_capability(test: Test, layout: Layout, data: Mapping[str, bytes
             )
         if want in answer.body:
             found.problems.append(f"{origin.svc}: a GET straight to it got the object's bytes")
-        probe = web.request("GET", stores.url(origin, NAMESPACE, f"{test.base}/{PROBE}"), token=test.token)
+        probe = web.request("GET", stores.url(origin, NAMESPACE, test.rel(PROBE)), token=test.token)
         if probe.status != 200:
             found.problems.append(
                 f"{origin.svc}: a GET in /{NAMESPACE}, which keeps DirectReads, got"
@@ -1160,24 +1036,13 @@ def direct_reads_capability(test: Test, layout: Layout, data: Mapping[str, bytes
 
 
 def unnestable(test: Test) -> str | None:
-    """Return why no export can be nested in /public for a while, or None.
-
-    The origins must export /public, and take direct clients, since
-    Pelican refuses an export with DirectReads or Listings beside
-    Origin.DisableDirectClients; and the restart needs a control helper,
-    and a topology other than `tiny`.
-    """
-    fed = test.fed
-    if "public" not in fed.exports:
-        return "this shape does not export /public"
-    if "DirectReads" not in fed.exports[NAMESPACE]:
-        return (
-            "the origins take no direct clients (Origin.DisableDirectClients), with which Pelican"
-            " refuses an export with DirectReads or Listings"
-        )
-    if fed.tiny:
-        return "the tiny topology's origin is the whole federation's process"
-    return control.unavailable()
+    """Return why no export can be nested in /public, or None."""
+    why = suite.unexported(test.fed, "public")
+    if why:
+        return why
+    if not test.direct:
+        return UNDIRECTED
+    return control.unrestartable(test.fed)
 
 
 def nested_issuer(fed: common.Federation, prefix: str) -> str:
@@ -1270,12 +1135,12 @@ def seed_nested(test: Test) -> dict[str, bytes]:
     for origin in stores.unique(test.fed.origins):
         storage = origin.storage_namespace("public")
         token = test.session.setup_token(storage)
-        errors += stores.make_dirs([origin], storage, f"{test.base}/{NESTED}", token)
+        errors += stores.make_dirs([origin], storage, test.rel(NESTED), token)
         for name, content in data.items():
             error = stores.seed(
                 origin,
                 storage,
-                f"{test.base}/{name}",
+                test.rel(name),
                 content,
                 token,
                 test.fed.exports[storage],
@@ -1292,7 +1157,7 @@ def nested_token(test: Test, prefix: str, scope_path: str) -> str:
 
     It is like the `server` token, but names the issuer that the origins
     give the export (nested_issuer()), and is scoped to scope_path within
-    it; the origins' key signs it.
+    it. The origins' key signs it.
     """
     fed = test.fed
     body = credentials.server_claims(
@@ -1304,8 +1169,7 @@ def nested_token(test: Test, prefix: str, scope_path: str) -> str:
         profile=test.session.profile,
     )
     body["iss"] = nested_issuer(fed, prefix)
-    key = fed.origin_key
-    return jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), body, key=key)
+    return jwt.sign(body, fed.origin_key)
 
 
 def unregister(test: Test, prefix: str) -> str | None:
@@ -1336,7 +1200,7 @@ def unregister(test: Test, prefix: str) -> str | None:
 
 def nested_get(test: Test, origin: common.Origin, name: str, token: str | None) -> web.Response:
     """GET object name of the nested export's collection at origin, in /public."""
-    return web.request("GET", stores.url(origin, "public", f"{test.base}/{name}"), token=token)
+    return web.request("GET", stores.url(origin, "public", test.rel(name)), token=token)
 
 
 def nested_served(test: Test, prefix: str, data: Mapping[str, bytes], _token: str, _wrong: str) -> Row:
@@ -1434,7 +1298,7 @@ def nested_export(test: Test) -> dict[str, Row]:
     if why:
         return {row: (SKIP, f"needs the origins restarted with a nested export, but {why}") for row in rows}
     fed = test.fed
-    prefix = f"/public/{test.base}/{NESTED}"
+    prefix = f"/public/{test.rel(NESTED)}"
     caps = sorted(fed.exports[NAMESPACE])
     issuer = nested_issuer(fed, prefix)
     try:
@@ -1445,8 +1309,8 @@ def nested_export(test: Test) -> dict[str, Row]:
     print(f"\nRestarting the origins with {prefix} exported, nested in /public")
     found: dict[str, Row] = {}
     try:
-        with restarted(test, files):
-            why = settle(test)
+        with control.restart_all_with(files):
+            why = test.settle(test.rel(PROBE))
             token = nested_token(test, prefix, "/")
             wrong = nested_token(test, prefix, "/elsewhere/")
             for case in NESTED_CASES:
@@ -1456,15 +1320,15 @@ def nested_export(test: Test) -> dict[str, Row]:
                         f"with the origins restarted, {why}",
                     )
                 else:
-                    found[f"nested-export {case}"] = attempt(
-                        partial(NESTED_CHECKS[case], test, prefix, data, token, wrong)
+                    found[f"nested-export {case}"] = suite.attempt(
+                        partial(NESTED_CHECKS[case], test, prefix, data, token, wrong), EXPECTED
                     )
     except control.ControlError as e:
         # Restarting, or restoring, failed: what is left unrun fails.
         for row in rows:
             found.setdefault(row, (FAIL, f"restarting the origins with {prefix} nested in /public: {e}"))
         warn(f"restarting the origins with {prefix} nested in /public: {e}")
-    why = settle(test)
+    why = test.settle(test.rel(PROBE))
     if why:
         warn(f"with the origins restored, {why}")
     error = unregister(test, prefix)
@@ -1480,10 +1344,11 @@ def nested_export(test: Test) -> dict[str, Row]:
 def ungated(test: Test, passthrough: bool) -> str | None:
     """Return why the origins cannot reach their backend through the gate.
 
-    It is that their storage is no HTTPS backend; for passthrough, that
-    XRootD's HTTPS plugin has none; that /protected-a cannot be written
-    straight at the origins; or that there is no control helper. It is
-    None if they can.
+    Args:
+        passthrough: Whether they are to forward the client's token.
+
+    Returns:
+        Why, or None if they can.
     """
     fed = test.fed
     if fed.origin_variant not in ("https", "httpsv2"):
@@ -1503,8 +1368,7 @@ def static_token() -> str:
         SetupError: TOKEN_FILE cannot be read.
     """
     try:
-        with open(TOKEN_FILE, encoding="utf-8") as f:
-            return f.read().strip()
+        return common.read_text(TOKEN_FILE)
     except OSError:
         raise SetupError(f"framework/var/{TOKEN_FILE} is missing; run ./fed.sh init") from None
 
@@ -1570,7 +1434,7 @@ def gated_exercise(test: Test, origin: common.Origin, mode: str) -> tuple[list[s
         What went wrong, and the paths it asked for, under /protected-a.
     """
     problems: list[str] = []
-    collection = f"{test.base}/{origin.svc}"
+    collection = test.rel(origin.svc)
     declared, chunked = f"{collection}/{mode}-put", f"{collection}/{mode}-chunked"
     paths = [declared, chunked]
     data = {declared: os.urandom(GATED_SIZE), chunked: os.urandom(GATED_SIZE)}
@@ -1644,10 +1508,10 @@ def gated_clients(test: Test, mode: str) -> tuple[list[str], str]:
     problems: list[str] = []
     fed = test.fed
     origin = fed.origins[0]
-    rel = f"{test.base}/{origin.svc}/{mode}-put"
-    target = test.session.path(f"exports-{mode}-get")
+    rel = test.rel(origin.svc, f"{mode}-put")
+    target = os.path.join(test.tmp, f"{mode}-get")
     code, out, err = test.session.pelican_cmd(
-        "object", "get", "--token", test.token_file, f"{fed.url}/{NAMESPACE}/{rel}", target
+        "object", "get", "--token", test.token_file, test.pelican_url(rel), target
     )
     try:
         held = stores.held(origin, NAMESPACE, rel, test.setup)
@@ -1658,13 +1522,11 @@ def gated_clients(test: Test, mode: str) -> tuple[list[str], str]:
         problems.append(f"`pelican object get` of {rel}: exit {code}: {last_line(err or out)}")
     elif common.sha256(target) != held:
         problems.append(f"`pelican object get` of {rel}: the file is not the object")
-    source = test.session.path(f"exports-{mode}-client")
     data = os.urandom(GATED_SIZE)
-    with open(source, "wb") as f:
-        f.write(data)
-    uploaded = f"{test.base}/{origin.svc}/{mode}-client"
+    source = test.local(f"{mode}-client", data)
+    uploaded = test.rel(origin.svc, f"{mode}-client")
     code, out, err = test.session.pelican_cmd(
-        "object", "put", "--token", test.token_file, source, f"{fed.url}/{NAMESPACE}/{uploaded}"
+        "object", "put", "--token", test.token_file, source, test.pelican_url(uploaded)
     )
     if code != 0:
         problems.append(f"`pelican object put` of {uploaded}: exit {code}: {last_line(err or out)}")
@@ -1684,20 +1546,25 @@ def log_problems(
 ) -> tuple[list[str], str]:
     """Return what is wrong with what the gate logged, and a note on it.
 
-    entries are what it logged since the origins were restarted. With the
-    static token, every request must carry it, and none a client's. With
-    passthrough, each request for a path the test asked an origin for
-    straight (direct) must carry the client's token, and none may carry
-    the static one; the rest (the origin's own probes, and what it
-    fetched for a cache) are counted. Either way, the gate must have
+    With the static token, every request must carry it, and none a
+    client's. With passthrough, each request for a path that the test
+    asked an origin for straight must carry the client's token, and none
+    may carry the static one; the rest (the origin's own probes, and what
+    it fetched for a cache) are counted. Either way, the gate must have
     seen a GET, a PUT, and a DELETE.
+
+    Args:
+        entries: What the gate logged since the origins were restarted.
+        static: The static token.
+        passthrough: Whether the origins forward the client's token.
+        direct: The paths that the test asked an origin for straight.
     """
     client = test.token
     if not entries:
         return ["the gate logged no request: the origins did not reach their backend through it"], ""
     problems: list[str] = []
     if passthrough:
-        asked = {f"/{NAMESPACE}/{p}" for p in direct}
+        asked = {test.path(p) for p in direct}
         own = [e for e in entries if any(e[1].rstrip("/").endswith(p) for p in asked)]
         for method, path, auth in own:
             if auth != f"Bearer {client}":
@@ -1731,13 +1598,17 @@ def log_problems(
 def gated_checks(test: Test, passthrough: bool, static: str, before: int) -> Row:
     """Use the backend through the gate, and judge what the gate logged.
 
-    The origins are restarted to reach their backend through the gate.
-    Once the federation serves as before, use the backend straight at
+    With the origins restarted to reach their backend through the gate,
+    and once the federation serves again, use the backend straight at
     each origin (gated_exercise()) and through the federation
     (gated_clients()), then judge what the gate logged (log_problems()).
-    before is how many lines the gate had logged before the restart.
+
+    Args:
+        passthrough: Whether the origins forward the client's token.
+        static: The static token.
+        before: How many lines the gate had logged before the restart.
     """
-    why = settle(test)
+    why = test.settle(test.rel(PROBE))
     if why:
         return FAIL, f"with the origins restarted, {why}"
     mode = "passthrough" if passthrough else "token"
@@ -1777,12 +1648,12 @@ def gated(test: Test, passthrough: bool) -> Row:
     print(f"\nRestarting the origins to reach their backend through {GATE_URL}, with {how}")
     before = len(gate_log())
     try:
-        with restarted(test, files):
-            row = attempt(partial(gated_checks, test, passthrough, static, before))
+        with control.restart_all_with(files):
+            row = suite.attempt(partial(gated_checks, test, passthrough, static, before), EXPECTED)
     except control.ControlError as e:
         row = (FAIL, f"restarting the origins: {e}")
         warn(f"restarting the origins to reach their backend through the gate: {e}")
-    why = settle(test)
+    why = test.settle(test.rel(PROBE))
     if why:
         warn(f"with the origins restored, {why}")
     return row
@@ -1801,8 +1672,9 @@ RESTART_CHECKS: dict[str, Callable[[Test, Layout, Mapping[str, bytes]], Row]] = 
 def run_restarted(test: Test, rows: Sequence[str], record: Callable[[str, Row], None]) -> None:
     """Run the RESTARTED rows with the origins restarted, then restore them.
 
-    The origins are restarted with the capability layout, and each of
-    rows goes to record with its result.
+    Args:
+        rows: The rows to run.
+        record: Takes each row, and its result.
     """
     why = unrestartable(test)
     if why:
@@ -1813,7 +1685,7 @@ def run_restarted(test: Test, rows: Sequence[str], record: Callable[[str, Row], 
     try:
         files = {o.svc: restart_files(o.svc, layout) for o in test.fed.origins}
         data = seed_restart(test, layout)
-    except (SetupError, stores.Unreadable) as e:
+    except EXPECTED as e:
         for row in rows:
             record(row, (FAIL, str(e)))
         return
@@ -1821,13 +1693,13 @@ def run_restarted(test: Test, rows: Sequence[str], record: Callable[[str, Row], 
     print(f"\nRestarting the origins with copies off, and {changes}")
     done: set[str] = set()
     try:
-        with restarted(test, files):
-            why = settle(test)
+        with control.restart_all_with(files):
+            why = test.settle(test.rel(PROBE))
             for row in rows:
                 if why:
                     record(row, (FAIL, f"with the origins restarted, {why}"))
                 else:
-                    record(row, attempt(partial(RESTART_CHECKS[row], test, layout, data)))
+                    record(row, suite.attempt(partial(RESTART_CHECKS[row], test, layout, data), EXPECTED))
                 done.add(row)
     except control.ControlError as e:
         # Restarting, or restoring, failed: what is left unrun fails.
@@ -1835,7 +1707,7 @@ def run_restarted(test: Test, rows: Sequence[str], record: Callable[[str, Row], 
             if row not in done:
                 record(row, (FAIL, f"restarting the origins: {e}"))
         warn(f"restarting the origins with other exports: {e}")
-    why = settle(test)
+    why = test.settle(test.rel(PROBE))
     if why:
         warn(f"with the origins restored, {why}")
 
@@ -1878,7 +1750,7 @@ def sentinel_present(test: Test, origin: common.Origin, text: str) -> Row:
 
     It must start, and serve the probe again.
     """
-    name = f"sentinel-{test.session.run}"
+    name = f"sentinel-{test.run}"
     for storage in sentinel_storages(test, origin):
         error = stores.seed(
             origin,
@@ -1892,9 +1764,7 @@ def sentinel_present(test: Test, origin: common.Origin, text: str) -> Row:
             raise SetupError(f"could not put the sentinel in place: {error}")
     try:
         with control.restart_with(origin.svc, {SENTINEL_FILE: with_sentinel(text, name)}):
-            answer = web.request(
-                "HEAD", stores.url(origin, NAMESPACE, f"{test.base}/{PROBE}"), token=test.setup
-            )
+            answer = web.request("HEAD", stores.url(origin, NAMESPACE, test.rel(PROBE)), token=test.setup)
             if answer.status != 200:
                 return (
                     FAIL,
@@ -1914,7 +1784,7 @@ def sentinel_missing(test: Test, origin: common.Origin, text: str) -> Row:
     It must exit within SENTINEL_WAIT seconds, rather than serve exports
     whose storage may not be there.
     """
-    name = f"sentinel-{test.session.run}-missing"
+    name = f"sentinel-{test.run}-missing"
     try:
         with control.restart_with(origin.svc, {SENTINEL_FILE: with_sentinel(text, name)}, serves=False):
             started = time.monotonic()
@@ -1941,42 +1811,28 @@ def sentinel_location(test: Test) -> dict[str, Row]:
     again.
     """
     rows = ROWS["sentinel"]
-    why = test.writable() or control.unavailable()
-    if test.fed.tiny:
-        why = "the tiny topology's origin is the whole federation's process"
+    why = test.writable() or control.unrestartable(test.fed)
     if why:
         return {row: (SKIP, why) for row in rows}
     origin = test.fed.origins[0]
     text = generated_exports(origin.svc)
     print(f"\nRestarting {origin.svc} with a SentinelLocation for each export")
-    found = {"sentinel present": attempt(partial(sentinel_present, test, origin, text))}
+    found = {"sentinel present": suite.attempt(partial(sentinel_present, test, origin, text), EXPECTED)}
     if found["sentinel present"][0] == PASS:
-        found["sentinel missing"] = attempt(partial(sentinel_missing, test, origin, text))
+        found["sentinel missing"] = suite.attempt(partial(sentinel_missing, test, origin, text), EXPECTED)
     else:
         found["sentinel missing"] = (
             INCONCLUSIVE,
             f"{origin.svc} did not start with its sentinels in place either, so its refusal"
             + " would show nothing",
         )
-    why = settle(test)
+    why = test.settle(test.rel(PROBE))
     if why:
         warn(f"with {origin.svc} restored, {why}")
     return found
 
 
 # --------------------------------------------------------------------------
-
-
-def attempt(check: Callable[[], Row]) -> Row:
-    """Return check's row; a FAIL if it could not set up, or raised."""
-    return common.guarded(check, lambda note: (FAIL, note), (SetupError, stores.Unreadable))
-
-
-def attempt_all(rows: Sequence[str], check: Callable[[], dict[str, Row]]) -> dict[str, Row]:
-    """Return check's rows; each a FAIL if it could not set up or raised."""
-    return common.guarded(
-        check, lambda note: {row: (FAIL, note) for row in rows}, (SetupError, stores.Unreadable)
-    )
 
 
 # Each scenario checked whole: its check, which returns a Row for each of
@@ -1990,13 +1846,8 @@ SCENARIO_CHECKS: dict[str, Callable[[Test], dict[str, Row]]] = {
 
 
 def skip(fed: common.Federation) -> str | None:
-    """Return why there is nothing to test, or None if there is something.
-
-    There is nothing without /protected-a.
-    """
-    if NAMESPACE not in fed.exports:
-        return f"this shape does not export /{NAMESPACE}"
-    return None
+    """Return why there is nothing to test, or None."""
+    return suite.unexported(fed)
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
@@ -2006,24 +1857,12 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     what they wrote.
     """
     fed = session.fed
-    tokens = session.setup_tokens()
-    test = Test(
-        session,
-        Stub(),
-        session.token(NAMESPACE),
-        session.token_file(NAMESPACE),
-        session.setup_token(NAMESPACE),
-    )
-
-    def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/exports", tokens)
-        if errors:
-            warn(f"emptying data/exports {when}: {first(errors)}")
+    test = Test(session, Stub())
 
     def record(row: str, found: Row) -> None:
         results.add(row, *found)
 
-    clean("before the run")
+    test.clean("before the run")
     print(f"Exports test against {fed.url}, objects under /<namespace>/{test.base}/")
     try:
         with contextlib.ExitStack() as stack:
@@ -2034,13 +1873,13 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 warn(test.stub_down)
             if not test.writable():
                 for origin in fed.origins:
-                    errors = stores.make_dirs([origin], NAMESPACE, f"{test.base}/{origin.svc}", test.setup)
+                    errors = stores.make_dirs([origin], NAMESPACE, test.rel(origin.svc), test.setup)
                     if errors:
                         die(f"could not make the run's collection: {errors[0]}")
                 errors = stores.put_everywhere(
                     fed.origins,
                     NAMESPACE,
-                    f"{test.base}/{PROBE}",
+                    test.rel(PROBE),
                     os.urandom(PROBE_SIZE),
                     test.setup,
                 )
@@ -2050,12 +1889,12 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 if name in SCENARIO_CHECKS:
                     print(f"  {name} ...")
                     rows = ROWS[name]
-                    found = attempt_all(rows, partial(SCENARIO_CHECKS[name], test))
+                    found = suite.attempt_all(rows, partial(SCENARIO_CHECKS[name], test), EXPECTED)
                     for row in rows:
                         record(row, found[row])
             if "disable-copies" in selected:
                 print("  disable-copies ...")
-                record("disable-copies public", attempt(partial(copies_to_public, test)))
+                record("disable-copies public", suite.attempt(partial(copies_to_public, test), EXPECTED))
             later = [r for name in selected for r in ROWS[name] if r in RESTARTED]
             if later:
                 run_restarted(test, later, record)
@@ -2069,7 +1908,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                     record(name, gated(test, name == "backend-passthrough"))
             if "sentinel" in selected:
                 print("  sentinel ...")
-                for row, result in attempt_all(ROWS["sentinel"], partial(sentinel_location, test)).items():
+                found = suite.attempt_all(ROWS["sentinel"], partial(sentinel_location, test), EXPECTED)
+                for row, result in found.items():
                     record(row, result)
     finally:
-        clean("after the run")
+        test.clean("after the run")

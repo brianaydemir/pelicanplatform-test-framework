@@ -5,10 +5,10 @@
 # embedded catalog).
 #
 # Nothing outside the running origin can write the store, so init-data.py
-# writes a plain copy of the test objects beside it, which the
-# transfers suite uploads to /protected-a and /protected-b before its
-# transfers. Each has storage of its own in the store, and /public, which
-# takes no writes, reads /protected-a's.
+# writes a plain copy of the test objects beside it, which the transfers
+# suite uploads to /protected-a and /protected-b before its transfers.
+# Each has storage of its own in the store, and /public, which takes no
+# writes, reads /protected-a's.
 
 ORIGIN_VARIANT=pstore
 ORIGIN_MEM=768M

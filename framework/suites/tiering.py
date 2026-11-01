@@ -1,5 +1,7 @@
 """Cache tiering (`-p cache-tiered`): caches serving objects from a bucket.
 
+See docs/tests/tiering.md.
+
 Each V2 cache that holds all of an object of at least its threshold
 (16 MiB) uploads it to its prefix of the `s3` service's bucket `tier`,
 framework/var/data/tier/<cache>/, and from then on serves it from
@@ -13,31 +15,6 @@ size and SHA-256, since the cache names it by a hash. Only `tampered`
 touches the bucket, as corruption or a substitution there would;
 nothing touches the caches' stores.
 
-  tiered       a cold read of an object over the threshold: it lands in
-               the bucket, and the cache counts a successful upload
-  threshold    an object of exactly the threshold is tiered; one a byte
-               smaller is not
-  redirect     a read of a tiered object: a redirect (307) to a
-               pre-signed URL in the bucket, without the token, which
-               serves the object, and with the object's Digest, by which
-               a client checks what the bucket sends; or, where the
-               cache proxies, the object; and the same through each
-               director, where the cache is the only one the directors
-               know of
-  ranges       ranges of a tiered object, through the redirect or the
-               proxy
-  client-get   `pelican object get` of a tiered object, from the cache,
-               named, and through the director where the cache is the
-               only federated one; and stash_plugin's, preferring the
-               cache
-  tampered     a tiered object whose copy in the bucket is replaced by
-               other bytes of its size: a proxying cache must not serve
-               them, and fetch the object afresh; through a redirecting
-               one, `pelican object get` must fail rather than keep them
-  overwritten  a tiered object overwritten at the origins: every read is
-               all one version, and under ORIGIN_CACHE_CONTROL, the new
-               one once the old is stale
-
 The reads present tokens of the session's profile; the objects are put
 at the origins with WLCG tokens either way.
 """
@@ -49,9 +26,9 @@ from collections.abc import Callable
 from functools import partial
 from urllib.parse import urlsplit
 
-from testlib import blocks, common, digests, director, metrics, stores, transfers, web
+from testlib import blocks, common, digests, director, metrics, stores, suite, transfers, web
 from testlib.common import die, first, outcome
-from testlib.report import FAIL, INCONCLUSIVE, PASS
+from testlib.report import INCONCLUSIVE, PASS
 from testlib.session import Session, last_line
 
 SCENARIOS = {
@@ -69,10 +46,6 @@ SCENARIOS = {
     "tampered": "a tiered object replaced in the bucket: never served, nor kept by the client",
     "overwritten": "a tiered object overwritten at the origins: each read all one version",
 }
-
-# How long past an object's freshness a cache may take to serve the new
-# version.
-REVALIDATION_MARGIN = 45
 
 # How long a cache may take to tier an object it holds, in seconds.
 TIER_WAIT = 60
@@ -97,9 +70,7 @@ def skip(fed: common.Federation) -> str | None:
     """
     if not fed.tiering:
         return "no cache tiers ('-p cache-tiered')"
-    if "protected-a" not in fed.exports:
-        return "this shape does not export /protected-a"
-    return None
+    return suite.unexported(fed)
 
 
 def snapshot(cache: common.Cache) -> metrics.Snapshot:
@@ -111,7 +82,10 @@ def snapshot(cache: common.Cache) -> metrics.Snapshot:
 def counted(cache: common.Cache, name: str, **labels: str) -> float:
     """Return the sum of the cache's series of metric name with labels.
 
-    The labels are keywords, e.g. result="success".
+    Args:
+        cache: The cache.
+        name: The metric.
+        **labels: The labels, e.g. result="success".
     """
     return snapshot(cache).value(name, **labels)
 
@@ -140,51 +114,39 @@ def in_bucket(target: common.TierTarget, data: bytes) -> bool:
     return bucket_file(target, data) is not None
 
 
-class Test:
-    """The tiering caches, the run's objects, and the token.
+class Test(suite.Test):
+    """The tiering caches, and what each has tiered.
 
     Attributes:
-        base: The run's collection, within /protected-a.
-        token: The `server` token for /protected-a, of the session's
-            profile.
-        setup: The `server` token for /protected-a, of the WLCG profile,
-            for putting objects at the origins.
-        tmp: A directory of the run's own, for the clients' files.
+        caches: The caches that tier.
         tiered: The objects that each cache has tiered (their bytes), by
             cache, then name.
     """
 
     def __init__(self, session: Session, caches: list[common.Cache]):
-        self.session = session
-        self.fed = session.fed
+        super().__init__(session, "tiering")
         self.caches = caches
-        self.base = f"data/tiering/{session.run}"
-        self.token = session.token("protected-a")
-        self.setup = session.setup_token("protected-a")
-        self.tmp = session.path("tiering")
-        os.makedirs(self.tmp)
         self.tiered: dict[str, dict[str, bytes]] = {c.svc: {} for c in caches}
 
     def target(self, cache: common.Cache) -> common.TierTarget:
         """Return where cache tiers objects."""
         return self.fed.tiering[cache.svc]
 
-    def rel(self, cache: common.Cache, name: str) -> str:
-        """Return where object name of cache is in /protected-a."""
-        return f"{self.base}/{cache.svc}-{name}"
+    def object_rel(self, cache: common.Cache, name: str) -> str:
+        """Return the rel of cache's object name."""
+        return self.rel(f"{cache.svc}-{name}")
 
-    def put(self, cache: common.Cache, name: str, size: int) -> bytes:
+    def put_new(self, cache: common.Cache, name: str, size: int) -> bytes:
         """Put a new object of size, cache's object name, at every origin.
 
         Returns:
             Its bytes.
         """
         data = os.urandom(size)
-        caps = self.fed.exports["protected-a"]
-        rel = self.rel(cache, name)
-        errors = stores.seed_everywhere(self.fed.origins, "protected-a", rel, data, self.setup, caps)
-        if errors:
-            die(f"could not put {rel} in place: {first(errors)}")
+        rel = self.object_rel(cache, name)
+        why = self.put({rel: data})
+        if why:
+            die(f"could not put {rel} in place: {why}")
         return data
 
     def fetch(self, cache: common.Cache, name: str) -> web.Response:
@@ -192,25 +154,10 @@ class Test:
 
         A redirect is followed without the token.
         """
-        answer = web.request("GET", f"{cache.url}/protected-a/{self.rel(cache, name)}", token=self.token)
+        answer = web.request("GET", self.url(cache.url, self.object_rel(cache, name)), token=self.token)
         if answer.status == 307:
             answer = web.request("GET", answer.header("Location"))
         return answer
-
-    def read(self, cache: common.Cache, name: str, data: bytes) -> str | None:
-        """Read cache's object name, holding data, whole through cache.
-
-        A redirect is followed without the token.
-
-        Returns:
-            What went wrong, or None.
-        """
-        answer = self.fetch(cache, name)
-        if answer.status != 200:
-            return answer.describe()
-        if answer.body != data:
-            return f"{len(answer.body)} bytes, not the object"
-        return None
 
     def tier(self, cache: common.Cache, name: str, size: int) -> str | None:
         """Have cache tier a new object of size, cache's object name.
@@ -221,8 +168,8 @@ class Test:
         Returns:
             What went wrong, or None.
         """
-        data = self.put(cache, name, size)
-        why = self.read(cache, name, data)
+        data = self.put_new(cache, name, size)
+        why = web.served(self.fetch(cache, name), data)
         if why:
             return f"the cold read: {why}"
         if not common.wait_for(lambda: in_bucket(self.target(cache), data), TIER_WAIT, 2):
@@ -256,20 +203,20 @@ class Test:
         """Run stash_plugin on cache's object name, preferring cache alone.
 
         It prefers the cache by Client.PreferredCaches, and presents the
-        server's token.
+        token.
 
         Returns:
             Whether it says the transfer succeeded, the file it wrote, and
             its result ads (or, where it wrote none, its output).
         """
-        work = os.path.join(self.tmp, f"plugin-{cache.svc}-{name}")
-        os.makedirs(work)
-        url = f"{self.fed.url}/protected-a/{self.rel(cache, name)}"
+        key = f"plugin-{cache.svc}-{name}"
+        work = self.directory(key)
+        url = self.pelican_url(self.object_rel(cache, name))
         local = transfers.local_name(url)
         _, out, err, ads = self.session.plugin_run(
-            f"tiering/plugin-{cache.svc}-{name}",
+            f"{self.area}/{key}",
             [(url, local)],
-            {"server.use": self.session.token_file("protected-a")},
+            {"server.use": self.token_file},
             cache=cache.url,
             cwd=work,
         )
@@ -282,7 +229,7 @@ class Test:
         which, under an origin's Cache-Control (`-p origin-max-age`), it
         may be: then a 200 is asked again, once.
         """
-        url = f"{cache.url}/protected-a/{self.rel(cache, name)}"
+        url = self.url(cache.url, self.object_rel(cache, name))
         answer = web.request("GET", url, token=self.token, headers=headers)
         if answer.status == 200 and self.fed.sent_cache_control:
             answer = web.request("GET", url, token=self.token, headers=headers)
@@ -292,8 +239,10 @@ class Test:
 def each_cache(test: Test, check: Callable[[common.Cache], str | None]) -> tuple[str, str]:
     """Run check() at each tiering cache, and sum up the problems.
 
-    check() says what is wrong at a cache, or None; NotTiered, raised,
-    counts as a problem.
+    Args:
+        test: The test.
+        check: Returns what is wrong at a cache, or None; NotTiered,
+            raised, counts as a problem.
 
     Returns:
         FAIL with the first problem, or PASS naming each cache and its
@@ -315,16 +264,16 @@ def tiered(test: Test) -> tuple[str, str]:
 
     It must land in the bucket, and the cache count a successful upload.
     """
+    metric = "pelican_cache_tiering_uploads_total"
 
     def check(cache: common.Cache) -> str | None:
-        name = "uploads_total"
-        before = counted(cache, f"pelican_cache_tiering_{name}", result="success")
+        before = counted(cache, metric, result="success")
         why = test.tier(cache, "tiered", test.target(cache).threshold + OVER)
         if why:
             return why
-        after = counted(cache, f"pelican_cache_tiering_{name}", result="success")
+        after = counted(cache, metric, result="success")
         if after <= before:
-            return f"in the bucket, but pelican_cache_tiering_{name} stayed at {before:g}"
+            return f"in the bucket, but {metric} stayed at {before:g}"
         return None
 
     return each_cache(test, check)
@@ -339,8 +288,8 @@ def threshold(test: Test) -> tuple[str, str]:
 
     def check(cache: common.Cache) -> str | None:
         size = test.target(cache).threshold
-        under = test.put(cache, "under", size - 1)
-        why = test.read(cache, "under", under)
+        under = test.put_new(cache, "under", size - 1)
+        why = web.served(test.fetch(cache, "under"), under)
         if why:
             return f"a byte under the threshold, the cold read: {why}"
         why = test.tier(cache, "exact", size)
@@ -356,11 +305,16 @@ def threshold(test: Test) -> tuple[str, str]:
 def redirect_problem(test: Test, cache: common.Cache, data: bytes, answer: web.Response) -> str | None:
     """Return why answer is not right for a tiered object, or None.
 
-    answer is a cache's answer to a GET of a tiered object whose bytes
-    are data. From a proxying cache, it must be the object; from a
-    redirecting one, a 307 to a pre-signed URL in the bucket, without
-    the token and with the object's Digest, which serves the object to
-    anyone holding it.
+    From a proxying cache, it must be the object; from a redirecting
+    one, a 307 to a pre-signed URL in the bucket, without the token and
+    with the object's Digest, which serves the object to anyone holding
+    it.
+
+    Args:
+        test: The test.
+        cache: The cache.
+        data: The object's bytes.
+        answer: The cache's answer to a GET of it.
     """
     if test.target(cache).mode == "proxy":
         if answer.status != 200 or answer.body != data:
@@ -414,7 +368,7 @@ def redirect(test: Test) -> tuple[str, str]:
             notes.append(f"{cache.svc}: not through a director, {unknown_to_directors(cache)}")
             return None
         for url in test.fed.directors:
-            sent = director.ask(url, "object", f"/protected-a/{test.rel(cache, name)}")
+            sent = director.ask(url, "object", test.path(test.object_rel(cache, name)))
             if sent.status != 307 or sent.location != director.host(cache.url):
                 return f"{director.host(url)}: {sent.describe()}, not 307 to {cache.svc}"
             why = redirect_problem(test, cache, data, test.get_tiered(cache, name, {}))
@@ -463,6 +417,32 @@ def ranges(test: Test) -> tuple[str, str]:
     return status, note
 
 
+def object_get(test: Test, cache: common.Cache, name: str, *flags: str) -> tuple[int, str, str]:
+    """Run `pelican object get` of cache's object name, into a new file.
+
+    Args:
+        test: The test.
+        cache: The cache.
+        name: The object's name.
+        *flags: The client's flags, e.g. --cache.
+
+    Returns:
+        The client's exit status, the file, and the last line of what it
+        said.
+    """
+    target = os.path.join(test.directory(f"{cache.svc}-{name}"), name)
+    code, out, err = test.session.pelican_cmd(
+        "object",
+        "get",
+        *flags,
+        "--token",
+        test.token_file,
+        test.pelican_url(test.object_rel(cache, name)),
+        target,
+    )
+    return code, target, last_line(err or out)
+
+
 def client_get(test: Test) -> tuple[str, str]:
     """Check that the clients get a tiered object.
 
@@ -475,25 +455,15 @@ def client_get(test: Test) -> tuple[str, str]:
 
     def check(cache: common.Cache) -> str | None:
         name, data = test.tiered_object(cache)
-        url = f"{test.fed.url}/protected-a/{test.rel(cache, name)}"
         ways = [("named", ["--cache", cache.url])]
         if test.sole(cache):
             ways.append(("director", []))
         else:
             notes.append(f"{cache.svc}: not through a director, {unknown_to_directors(cache)}")
         for key, flags in ways:
-            target = os.path.join(test.tmp, f"{cache.svc}-{name}-{key}")
-            code, out, err = test.session.pelican_cmd(
-                "object",
-                "get",
-                *flags,
-                "--token",
-                test.session.token_file("protected-a"),
-                url,
-                target,
-            )
+            code, target, said = object_get(test, cache, name, *flags)
             if code != 0:
-                return f"{key}: exit {code}: {last_line(err or out)}"
+                return f"{key}: exit {code}: {said}"
             if common.sha256(target) != common.digest(data):
                 return f"{key}: the file is not the object"
         passed, target, said = test.plugin(cache, name)
@@ -509,37 +479,20 @@ def client_get(test: Test) -> tuple[str, str]:
     return status, note
 
 
-def client_get_file(test: Test, cache: common.Cache, name: str) -> tuple[int, str, str]:
-    """Run `pelican object get --cache` of cache's object name.
-
-    The object goes into a file of its own.
-
-    Returns:
-        The client's exit status, the file, and the last line of what it
-        said.
-    """
-    target = os.path.join(test.tmp, f"{cache.svc}-{name}")
-    code, out, err = test.session.pelican_cmd(
-        "object",
-        "get",
-        "--cache",
-        cache.url,
-        "--token",
-        test.session.token_file("protected-a"),
-        f"{test.fed.url}/protected-a/{test.rel(cache, name)}",
-        target,
-    )
-    return code, target, last_line(err or out)
-
-
 def proxied_after_tampering(
     test: Test, cache: common.Cache, name: str, data: bytes, other: bytes
 ) -> str | None:
     """Return why a proxying cache mishandled its tampered object, or None.
 
-    That is, why it served the bucket's substitute (other) for its
-    object name (data), or did not serve the object again within
-    TIER_WAIT seconds.
+    That is, why it served the bucket's substitute for its object, or did
+    not serve the object again within TIER_WAIT seconds.
+
+    Args:
+        test: The test.
+        cache: The cache.
+        name: The object's name.
+        data: Its bytes.
+        other: The bucket's substitute.
     """
     answer = test.fetch(cache, name)
     if answer.body == other:
@@ -553,7 +506,7 @@ def proxied_after_tampering(
         nonlocal substituted
         again = test.fetch(cache, name)
         substituted = substituted or again.body == other
-        return again.status == 200 and again.body == data
+        return web.served(again, data) is None
 
     fetched = common.wait_for(fetched_again, TIER_WAIT, 2)
     if substituted:
@@ -569,10 +522,17 @@ def redirected_after_tampering(
     """Return why the client kept a tampered object's bytes, or None.
 
     That is, why `pelican object get` through a redirecting cache kept
-    the bucket's substitute (other) for its object name (data), or kept
-    anything but the object.
+    the bucket's substitute for its object, or kept anything but the
+    object.
+
+    Args:
+        test: The test.
+        cache: The cache.
+        name: The object's name.
+        data: Its bytes.
+        other: The bucket's substitute.
     """
-    code, target, said = client_get_file(test, cache, name)
+    code, target, said = object_get(test, cache, name, "--cache", cache.url)
     got = common.sha256(target)
     if got == common.digest(other):
         return "`pelican object get` kept the bucket's substitute"
@@ -620,7 +580,7 @@ def overwritten(test: Test) -> tuple[str, str]:
     each whole read through the cache must be all the old version or all
     the new. With ORIGIN_CACHE_CONTROL (`-p origin-max-age`) at native
     origins, the cache must serve the new version once the old is stale,
-    within REVALIDATION_MARGIN seconds; without it, and at XRootD
+    within blocks.REVALIDATION_MARGIN seconds; without it, and at XRootD
     origins, which send none, the cache decides for itself how long its
     copy stays fresh.
     """
@@ -637,16 +597,9 @@ def overwritten(test: Test) -> tuple[str, str]:
         name, v1 = test.tiered_object(cache, "overwritten")
         cached_at = time.time()
         v2 = os.urandom(len(v1))
-        errors = stores.seed_everywhere(
-            test.fed.origins,
-            "protected-a",
-            test.rel(cache, name),
-            v2,
-            test.setup,
-            test.fed.exports["protected-a"],
-        )
-        if errors:
-            return first(errors)
+        why = test.put({test.object_rel(cache, name): v2})
+        if why:
+            return why
         versions = {"v1": v1, "v2": v2}
         seen = version(cache, name, versions)
         if seen not in versions:
@@ -654,7 +607,7 @@ def overwritten(test: Test) -> tuple[str, str]:
         if fresh is None:
             notes.append(f"{cache.svc} served {seen}")
             return None
-        deadline = cached_at + fresh + REVALIDATION_MARGIN
+        deadline = cached_at + fresh + blocks.REVALIDATION_MARGIN
         while seen == "v1" and time.time() <= deadline:
             time.sleep(3)
             seen = version(cache, name, versions)
@@ -690,7 +643,6 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     fed = session.fed
     stores.require_dirs(fed.origins, ["protected-a"], "data/tiering")
     caches = [c for c in fed.caches if c.svc in fed.tiering]
-    tokens = session.setup_tokens()
     test = Test(session, caches)
     print(
         f"Tiering through {', '.join(c.svc for c in caches)},"
@@ -698,11 +650,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     )
     try:
         for name in selected:
-            status, note = common.guarded(partial(RUN[name], test), lambda note: (FAIL, note))
-            results.add(name, status, note)
+            results.add(name, *suite.attempt(partial(RUN[name], test)))
     finally:
         # Only the origins' copies: the caches own the bucket and their
         # stores.
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/tiering", tokens)
-        if errors:
-            common.warn(f"could not remove the run's objects: {first(errors)}")
+        test.clean("after the run")

@@ -16,6 +16,9 @@ from .credentials import PROTECTED
 
 COLLECTIONS = "/api/v1.0/origin_ui/collections"
 
+# What an ACL names a user by, before their username.
+USER_PREFIX = "user-"
+
 
 def missing(fed: common.Federation) -> str | None:
     """Return why there are no collections to test, or None if there are.
@@ -68,13 +71,39 @@ def delete(api: Api, cid: str) -> Answer:
     return api.call("DELETE", f"{COLLECTIONS}/{cid}")
 
 
+def remove_under(api: Api, prefix: str, keep: str = "") -> list[str]:
+    """Delete the collections under prefix that the caller may see.
+
+    Args:
+        api: The caller.
+        prefix: The start of their namespaces, e.g. /protected-a/data/x/.
+        keep: The start of the namespaces of those to keep, if any.
+
+    Returns:
+        What went wrong; empty if nothing did.
+    """
+    problems: list[str] = []
+    for row in common.objects(api.call("GET", COLLECTIONS).array):
+        namespace = str(row.get("namespace", ""))
+        if namespace.startswith(prefix) and not (keep and namespace.startswith(keep)):
+            gone = delete(api, str(row.get("id")))
+            if not gone.ok:
+                problems.append(f"could not remove collection {row.get('name')}: {gone.describe()}")
+    return problems
+
+
+def user_target(username: str) -> str:
+    """Return the ACL target that is the user username: user-<username>."""
+    return f"{USER_PREFIX}{username}"
+
+
 def grant(api: Api, cid: str, target: str, role: str, expires_at: str | None = None) -> Answer:
     """Grant role on a collection to target, until expires_at if given.
 
     Args:
         api: The caller.
         cid: The collection's ID.
-        target: A group name, a user (`user-<username>`), or
+        target: A group name, a user (user_target()), or
             `@authenticated`, every authenticated user.
         role: `read` or `write`.
         expires_at: When the grant ends, in RFC 3339.
@@ -102,7 +131,8 @@ def grants(api: Api, cid: str) -> set[tuple[str, str]]:
     """
     rows = common.objects(must(api.call("GET", f"{COLLECTIONS}/{cid}/acl"), "listing the ACL").array)
     return {
-        (str(row.get("subjectName", "")).removeprefix("user-"), str(row.get("role", ""))) for row in rows
+        (str(row.get("subjectName", "")).removeprefix(USER_PREFIX), str(row.get("role", "")))
+        for row in rows
     }
 
 

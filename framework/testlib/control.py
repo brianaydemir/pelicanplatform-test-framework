@@ -4,7 +4,7 @@ A test may restart, stop, start, pause, unpause, or kill a service, or
 restart one with configuration of its own. It may stop and resume the
 XRootD daemons in a service, leaving the rest of it running. It may ask
 what state a service's container is in, and which servers have exited
-on their own (exited(), crashed()).
+on their own.
 
 The dev container has no Docker, so a helper on the host,
 framework/control.py, acts for the tests: `./fed.sh test` runs one
@@ -16,18 +16,15 @@ They talk through files under framework/var/control/:
   requests/<id>.res   the helper's answer: {"ok": ..., "output": ...}
   config/<service>/   configuration of a test's own: the last of the
                       service's configuration layers
-                      (/fed/control.instance; see framework/etc/pelican.yaml),
-                      and empty but while restart_with() runs
+                      (/fed/control.instance; see
+                      framework/etc/pelican.yaml), empty but while
+                      restart_with() runs
 
 The helper takes the actions in ACTIONS, one at a time, on the shape's
-services but `dev`, and refuses anything else; `state` and `exited`
-only look. Each call here returns once its action is done, and raises
-ControlError if it failed. A Pelican server that is restarted, started,
-or unpaused must also answer on its web port within SERVE_WAIT seconds,
-and fails at once if it exits first. settle() waits for the federation
-to serve again after a restart, and ends at once if a Pelican server
-has exited on its own, since none comes back by itself; one that panics
-as it starts may answer its health check first.
+services but `dev`, and refuses anything else. Each call here returns
+once its action is done, and raises ControlError if it failed. A
+Pelican server that is restarted, started, or unpaused must also answer
+on its web port within SERVE_WAIT seconds.
 
 A scenario should put back whatever it stops, pauses, kills, or
 configures, even if it fails. The helper puts back what is left only
@@ -51,10 +48,13 @@ SERVING = os.path.join(DIR, "serving")
 REQUESTS = os.path.join(DIR, "requests")
 CONFIG = os.path.join(DIR, "config")
 
+# The actions that signal the XRootD daemons in a service's container,
+# rather than the container, each by its signal: `docker compose exec`
+# of `pkill -<signal> -x xrootd` there.
+SIGNALS = {"freeze-xrootd": "STOP", "thaw-xrootd": "CONT"}
 # What the helper does, each by `docker compose <action> <service>` but
 # `ping`, which only answers; `state` and `exited`, which only look
-# (`docker compose ps`); and those of SIGNALS. And what puts back what an
-# action leaves undone.
+# (`docker compose ps`); and those of SIGNALS.
 ACTIONS = (
     "ping",
     "state",
@@ -68,11 +68,8 @@ ACTIONS = (
     "freeze-xrootd",
     "thaw-xrootd",
 )
+# What puts back what each action leaves undone.
 UNDO = {"stop": "start", "kill": "start", "pause": "unpause", "freeze-xrootd": "thaw-xrootd"}
-# The actions that signal the XRootD daemons in a service's container,
-# rather than the container, each by its signal: `docker compose exec`
-# of `pkill -<signal> -x xrootd` there.
-SIGNALS = {"freeze-xrootd": "STOP", "thaw-xrootd": "CONT"}
 
 # How long the helper lets an action run, and how long a request waits
 # for its answer, in seconds.
@@ -100,7 +97,12 @@ class ControlError(Exception):
 
 
 def _ask(action: str, service: str, seconds: float = ANSWER_WAIT) -> str:
-    """Ask the helper to do action to service, and return what it said."""
+    """Ask the helper to do action to service, and return what it said.
+
+    Raises:
+        ControlError: It did not answer within seconds, or the action
+            failed.
+    """
     ident = f"{time.time_ns():020d}-{uuid.uuid4().hex[:12]}"
     request = os.path.join(REQUESTS, f"{ident}.req")
     answer = os.path.join(REQUESTS, f"{ident}.res")
@@ -141,6 +143,16 @@ def unavailable() -> str | None:
     return None
 
 
+def unrestartable(fed: common.Federation) -> str | None:
+    """Return why the tests can't restart an origin alone, or None.
+
+    The tiny topology's origin is the whole federation's process.
+    """
+    if fed.tiny:
+        return "the tiny topology's origin is the whole federation's process"
+    return unavailable()
+
+
 def pelican_server(svc: str) -> bool:
     """Return whether svc is a Pelican server."""
     return PELICAN_SERVER.fullmatch(svc) is not None
@@ -179,9 +191,11 @@ def exited() -> dict[str, int]:
     """Return each Pelican server that exited on its own, by its exit code.
 
     That is one whose container exited, or died, without a test's
-    stopping or killing it, as one that panics as it starts. Return none
-    where no helper serves this run, or it does not answer: knowing is
-    only a way to stop waiting sooner.
+    stopping or killing it, as one that panics as it starts.
+
+    Returns:
+        The servers; none where no helper serves this run, or it does
+        not answer, since knowing is only a way to stop waiting sooner.
     """
     if unavailable():
         return {}
@@ -200,7 +214,8 @@ def exited() -> dict[str, int]:
 def crashed(services: Sequence[str] | None = None) -> str | None:
     """Return which Pelican server exited on its own (exited()), or None.
 
-    Only those of services count, if they are given.
+    Args:
+        services: The servers that count, if not every one.
     """
     for svc, code in sorted(exited().items()):
         if services is None or svc in services:
@@ -214,7 +229,8 @@ def settle(problem: Callable[[], str | None], seconds: float, interval: float = 
     It is asked at once, and then every interval seconds, as the
     federation is waited for after a restart. Each time it finds
     something, a Pelican server that exited on its own (crashed()) ends
-    the wait, since none comes back by itself.
+    the wait, since none comes back by itself; one that panics as it
+    starts may answer its health check first.
 
     Returns:
         None once problem() finds nothing; otherwise which server exited,
@@ -380,3 +396,22 @@ def restart_with(svc: str, files: Mapping[str, str], serves: bool = True) -> Gen
             with contextlib.suppress(FileNotFoundError):
                 os.remove(path)
         restart(svc)
+
+
+@contextlib.contextmanager
+def restart_all_with(files_by_svc: Mapping[str, Mapping[str, str]]) -> Generator[None, None, None]:
+    """Run restart_with() for each service, in order, with its own files.
+
+    Afterward, even on failure, each is restored, in reverse order.
+
+    Args:
+        files_by_svc: Each service's files, by service: YAML text, by
+            file name.
+
+    Raises:
+        ControlError: A restart or a restore failed.
+    """
+    with contextlib.ExitStack() as stack:
+        for svc, files in files_by_svc.items():
+            stack.enter_context(restart_with(svc, files))
+        yield

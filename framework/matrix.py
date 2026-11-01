@@ -1,33 +1,32 @@
 #!/usr/bin/env -S uv run --quiet --frozen --no-dev
 """A federation's choices, and the shapes that smoke.sh runs by default.
 
-  framework/matrix.py check     check smoke.sh's shapes (see below)
+  framework/matrix.py check     check smoke.sh's shapes
   framework/matrix.py pairs     list every pair of choices a shape can make
   framework/matrix.py generate  rewrite SHAPES_FILE, keeping what it can
   framework/matrix.py generate --fresh
                                 rewrite SHAPES_FILE from scratch
 
-Each preset makes one choice (see PRESETS); rotating every key, which
+Each preset makes one choice (PRESETS); rotating every key, which
 smoke.sh does after the tests in some shapes, is one more. A shape is
-the choices its presets make, and every other factor's default. Some
-shapes fed.sh refuses (REFUSED, which mirrors its checks), and some
-smoke.sh does not run (SMOKE_LIMITS), since they would test nothing, or
+the choices its presets make, and every other factor's default. fed.sh
+refuses some shapes (REFUSED, which mirrors its checks), and smoke.sh
+does not run some (SMOKE_LIMITS), since they would test nothing, or
 nothing that simpler shapes don't. Of the rest, every pair of choices
 must be in some shape that smoke.sh runs. A pair is possible if some
 such shape makes it with at most SEARCH_DEPTH other factors away from
-their defaults (see completion()): there are too many shapes to try
-them all.
+their defaults: there are too many shapes to try them all.
 
 smoke.sh runs the BASELINES, and as many other shapes as are useful,
 each as simple as it can be: each makes at most MAX_CHOICES choices,
 makes some pair that no other shape makes, and would leave some pair
 uncovered if any one of its choices were the default instead.
-SHAPES_FILE lists them, as `generate` writes it.
+SHAPES_FILE lists them.
 
 `check` reads the shapes from `smoke.sh --table`, and reports any shape
 that makes no sense, that fed.sh would refuse, that breaks the rules
-above, or that is misnamed (see name_of()); any preset no shape runs;
-and any pair no shape covers. It exits 1 if it found any.
+above, or that is misnamed (name_of()); any preset no shape runs; and
+any pair no shape covers. It exits 1 if it found any.
 
 `generate` keeps the shapes in SHAPES_FILE that still pass (or none,
 with --fresh), picks shapes greedily until they cover every pair, then
@@ -43,7 +42,17 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
-TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# No __pycache__ in the checkout, where the dev container would leave it
+# root's.
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# pylint: disable=wrong-import-position
+from testlib import common
+
+# pylint: enable=wrong-import-position
+
+TOP = os.path.dirname(common.FRAMEWORK)
 
 # Each factor's levels, its default first.
 FACTORS: dict[str, tuple[str, ...]] = {
@@ -132,6 +141,8 @@ PRESETS: dict[str, tuple[str, str]] = {
     "origin-short-tokens": ("tokens", "short"),
     "origin-export-templates": ("templates", "export"),
 }
+# Each choice's preset.
+PRESET_OF = {choice: preset for preset, choice in PRESETS.items()}
 
 # Presets smoke.sh does not run, and why.
 NOT_RUN: dict[str, str] = {
@@ -174,7 +185,7 @@ BASELINES: dict[str, tuple[tuple[str, ...], bool, str]] = {
 }
 
 # The shapes that smoke.sh runs, which `generate` writes.
-SHAPES_FILE = os.path.join(TOP, "framework", "smoke-shapes.tsv")
+SHAPES_FILE = os.path.join(common.FRAMEWORK, "smoke-shapes.tsv")
 
 Pair = tuple[tuple[str, str], tuple[str, str]]
 
@@ -186,6 +197,7 @@ class Shape:
     levels: Mapping[str, str]
 
     def __getitem__(self, factor: str) -> str:
+        """Return factor's level."""
         return self.levels[factor]
 
     def pairs(self) -> set[Pair]:
@@ -581,7 +593,8 @@ def pair_counts(shapes: Iterable[Shape], valid: set[Pair]) -> Counter[Pair]:
 def adds_nothing(shape: Shape, counts: Counter[Pair], valid: set[Pair]) -> bool:
     """Return whether another shape makes every pair of valid that shape does.
 
-    counts is pair_counts() of every shape, shape among them.
+    Args:
+        counts: pair_counts() of every shape, shape among them.
     """
     return all(counts[p] > 1 for p in shape.pairs() & valid)
 
@@ -590,8 +603,10 @@ def simpler(shape: Shape, counts: Counter[Pair], valid: set[Pair]) -> Shape | No
     """Return shape with one of its choices the default, if that loses no pair.
 
     The simpler shape must be one that smoke.sh could run, and make every
-    pair of valid that shape makes and no other does. counts is
-    pair_counts() of every shape, shape among them.
+    pair of valid that shape makes and no other does.
+
+    Args:
+        counts: pair_counts() of every shape, shape among them.
 
     Returns:
         The first such shape, by FACTORS' order, or None.
@@ -673,9 +688,8 @@ def presets_of(shape: Shape) -> list[str]:
         NAMED_FIRST first, then the rest in FACTORS' order, as name_of()
         names them.
     """
-    by_choice = {choice: preset for preset, choice in PRESETS.items()}
     order = [*NAMED_FIRST, *(f for f in FACTORS if f not in NAMED_FIRST)]
-    return [by_choice[(f, shape[f])] for f in order if f != "keys" and shape[f] != FACTORS[f][0]]
+    return [PRESET_OF[(f, shape[f])] for f in order if f != "keys" and shape[f] != FACTORS[f][0]]
 
 
 def name_of(shape: Shape) -> str:
@@ -694,14 +708,13 @@ def name_of(shape: Shape) -> str:
         parts = ["nocache", shape["origin"]]
     else:
         parts = [shape["origin"], shape["cache"]]
-    by_choice = {choice: preset for preset, choice in PRESETS.items()}
     for factor, levels in FACTORS.items():
         if factor in NAMED_FIRST or shape[factor] == levels[0]:
             continue
         if factor == "keys":
             parts.append("rotated")
         else:
-            parts.append(by_choice[(factor, shape[factor])].split("-", 1)[1])
+            parts.append(PRESET_OF[(factor, shape[factor])].split("-", 1)[1])
     return "-".join(parts)
 
 
@@ -722,7 +735,7 @@ class SmokeShape:
     presets: tuple[str, ...]
 
 
-def parse_table(text: str) -> list[SmokeShape]:
+def parse_shapes(text: str) -> list[SmokeShape]:
     """Return the shapes in the output of `smoke.sh --table`.
 
     Args:
@@ -745,14 +758,14 @@ def smoke_shapes() -> list[SmokeShape]:
         capture_output=True,
         text=True,
     ).stdout
-    return parse_table(table)
+    return parse_shapes(table)
 
 
 def all_presets() -> set[str]:
     """Return every preset in framework/presets/ but `default`."""
     return {
         name[: -len(".sh")]
-        for name in os.listdir(os.path.join(TOP, "framework", "presets"))
+        for name in os.listdir(os.path.join(common.FRAMEWORK, "presets"))
         if name.endswith(".sh") and name != "default.sh"
     }
 
@@ -825,6 +838,7 @@ def write_shapes(shapes: Sequence[Shape]) -> None:
     """Write SHAPES_FILE: the BASELINES, then shapes, in their order."""
 
     def row(name: str, rotated: bool, presets: Iterable[str]) -> str:
+        """Return a shape's row."""
         return f"{name}\t{'yes' if rotated else 'no'}\t{' '.join(presets)}\n"
 
     text = SHAPES_HEADER
@@ -841,7 +855,7 @@ def write_shapes(shapes: Sequence[Shape]) -> None:
 def main() -> None:
     """Run the command that the arguments name."""
     args = sys.argv[1:]
-    if not args or args[0] in ("-h", "--help"):
+    if args[:1] in ([], ["-h"], ["--help"]):
         print((__doc__ or "").strip("\n"))
         sys.exit(0 if args else 2)
     command, rest = args[0], args[1:]
@@ -868,11 +882,7 @@ def main() -> None:
         for (f1, l1), (f2, l2) in sorted(valid_pairs()):
             print(f"{f1}={l1} {f2}={l2}")
     else:
-        print(
-            f"matrix.py: unknown command: {' '.join(args)} (try: check, pairs, generate)",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+        common.die_usage(f"unknown command: {' '.join(args)} (try: check, pairs, generate)")
 
 
 if __name__ == "__main__":

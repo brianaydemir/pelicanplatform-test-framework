@@ -1,8 +1,8 @@
 """A Pelican server's web API, as one of its users.
 
-This covers JSON requests with the user's bearer token
-(credentials.mint_user()); its users and groups; and logging a user in
-(login()), for the cookie that stands for them elsewhere.
+That is JSON requests with the user's bearer token
+(credentials.mint_user()) or login cookie; the server's users and
+groups; and logging a user in.
 
 Users and groups are records in each server's database (Pelican's
 docs/user-group-design.md). A user administrator creates users (the
@@ -36,7 +36,10 @@ MY_GROUPS = "/api/v1.0/me/groups"
 JSON = {"Content-Type": "application/json"}
 FORM = {"Content-Type": "application/x-www-form-urlencoded"}
 
-# The server allows an address one login a second (Server.UILoginRateLimit).
+# The server allows an address one login a second
+# (Server.UILoginRateLimit): how far apart to send logins, in seconds,
+# and how many times to try one that it refuses as too soon (429).
+LOGIN_SPACING = 1.1
 LOGIN_TRIES = 5
 
 
@@ -86,7 +89,7 @@ class Api:
     Attributes:
         url: The server's web URL.
         token: The user's bearer token, if any.
-        cookie: The user's login cookie (see login()), if any.
+        cookie: The user's login cookie, if any.
     """
 
     url: str
@@ -147,10 +150,10 @@ def csrf(api: Api) -> dict[str, str]:
 def agree_to_aup(api: Api) -> None:
     """Have api's user agree to the server's acceptable use policy, if any.
 
-    They would agree on first logging in. Every server serves a built-in
-    policy unless Server.AUPFile is `none` (web_ui/aup.go in Pelican).
-    Until they agree, it refuses them its routes for users, groups, and
-    much of /me (RequireAUPCompliance), its admin included.
+    A user would agree on first logging in. Every server serves a
+    built-in policy unless Server.AUPFile is `none` (web_ui/aup.go in
+    Pelican). Until a user agrees, it refuses them its routes for users,
+    groups, and much of /me (RequireAUPCompliance), its admin included.
 
     Raises:
         ApiError: Reading or agreeing to the policy fails.
@@ -164,17 +167,25 @@ def agree_to_aup(api: Api) -> None:
     must(api.call("POST", MY_AUP, {"version": version}), f"agreeing to AUP {version}")
 
 
+def _find_id(api: Api, route: str, kind: str, field: str, value: str) -> str | None:
+    """Return the ID of the first of kind at route whose field is value.
+
+    Raises:
+        ApiError: Listing them fails.
+    """
+    for found in common.objects(must(api.call("GET", route), f"listing {kind}").array):
+        if found.get(field) == value:
+            return str(found.get("id", ""))
+    return None
+
+
 def find_user(api: Api, username: str) -> str | None:
     """Return the ID of the user named username, if there is one.
 
     Raises:
         ApiError: Listing the users fails.
     """
-    for user in must(api.call("GET", USERS), "listing users").array:
-        found = common.as_object(user) or {}
-        if found.get("username") == username:
-            return str(found.get("id", ""))
-    return None
+    return _find_id(api, USERS, "users", "username", username)
 
 
 def ensure_user(api: Api, username: str) -> str:
@@ -215,18 +226,17 @@ def find_group(api: Api, name: str) -> str | None:
     Raises:
         ApiError: Listing the groups fails.
     """
-    for group in must(api.call("GET", GROUPS), "listing groups").array:
-        found = common.as_object(group) or {}
-        if found.get("name") == name:
-            return str(found.get("id", ""))
-    return None
+    return _find_id(api, GROUPS, "groups", "name", name)
 
 
 def create_group(api: Api, name: str, eligible: bool = False) -> str:
     """Create the group named name, as its owner, and return its ID.
 
-    With eligible, ask that it may match the issuer's authorization
-    templates, which the server grants only an administrator.
+    Args:
+        api: The web API, as the group's owner.
+        name: The group's name.
+        eligible: Whether to ask that it may match the issuer's
+            authorization templates, which only an administrator may.
 
     Raises:
         ApiError: Creating the group fails.
@@ -332,7 +342,7 @@ def set_password(web_url: str, invite: str, password: str) -> None:
 def try_login(web_url: str, username: str, password: str) -> web.Response:
     """Try to log in to the server at web_url as username.
 
-    Waits out the server's limit of a login a second.
+    It waits out the server's limit of a login a second.
 
     Returns:
         The server's answer, which sets the login cookie if it succeeded.
@@ -343,14 +353,14 @@ def try_login(web_url: str, username: str, password: str) -> web.Response:
         answer = web.request("POST", web_url + LOGIN, upload=form, headers=FORM)
         if answer.status != 429:
             break
-        time.sleep(1.1)
+        time.sleep(LOGIN_SPACING)
     return answer
 
 
 def login(web_url: str, username: str, password: str) -> str:
     """Log in to the server at web_url as username, and return the cookie.
 
-    Waits out the server's limit of a login a second.
+    It waits out the server's limit of a login a second.
 
     Raises:
         ApiError: The server sets no login cookie.

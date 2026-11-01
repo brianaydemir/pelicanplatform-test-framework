@@ -2,38 +2,40 @@
 
 Part of [What the tests check](README.md).
 
-The `blocks` suite writes objects of sizes on either side of the block
-boundaries of [pstore](pstore.md), the V2 cache, and the XRootD cache
+The [`blocks`](../../framework/suites/blocks.py) suite writes objects of
+sizes on either side of the block boundaries of [pstore](pstore.md), the V2
+cache, and the XRootD cache
 ([native and XRootD](../glossary.md#native-and-xrootd)), from 0 bytes to
 just over 8 MiB. It reads them back from each origin, through each cache and
-director, and with both clients, whole and in byte ranges that straddle
-those boundaries and the edges of XRootD's 8 MiB reads.
-`framework/testlib/blocks.py` lists the sizes and ranges. A suffix longer
-than an object must bring all of it, and a range past the end must stop at
-its last byte; in a set of ranges, one past the end is passed over
-(RFC 9110).
+director, and with [both clients](../glossary.md#client), whole and in byte
+ranges that straddle those boundaries and the edges of XRootD's 8 MiB reads.
+[`blocks.py`](../../framework/testlib/blocks.py) lists the sizes and ranges.
+A suffix longer than an object must bring all of it, and a range past the
+end must stop at its last byte; in a set of ranges, one past the end is
+passed over ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110)).
 
 How a V2 cache first sees an object decides how it fills, so the objects
 come in four sets, each first read a different way: whole through each
-cache, in ranges through each cache, by `pelican object get`, and by
-stash_plugin. Other scenarios use objects of their own, cold where they are
-read. Where `/protected-a` takes no writes, the objects are put straight in
-the stores, and the upload scenarios skip. Where it takes no direct clients,
-direct reads must be refused, and the scenarios that ask origins directly
-skip.
+cache, in ranges through each cache, by
+[`pelican object get`](../glossary.md#pelican-client), and by
+[`stash_plugin`](../glossary.md#stash_plugin). Other scenarios use objects
+of their own, cold where they are read. Where `/protected-a` takes no
+writes, the objects are put straight in the stores, and the upload scenarios
+[skip](../glossary.md#skip). Where it takes no direct clients, direct reads
+must be refused, and the scenarios that ask origins directly skip.
 
 The suite skips where the shape does not export `/protected-a`, and its
 cache scenarios where the shape has no cache. Scenarios that name federated
 caches leave out a [site-local cache](site-local-cache.md). The origins must
 report `crc32c` and `md5` (`Want-Digest`) where their storage can
-(`framework/testlib/stores.py` says which); the digest scenarios skip where
-it reports none.
+([`stores.py`](../../framework/testlib/stores.py) says which); the digest
+scenarios skip where it reports none.
 
 - `put-declared`, `put-chunked`: Every size must upload straight to every
   origin, with a `Content-Length`, or in chunks with none. A pstore origin's
   `/metrics` must count each upload in the tier its size predicts.
 - `put-client`, `put-plugin`: Every size, uploaded by `pelican object put`
-  or stash_plugin, must reach an origin intact, and, at a pstore origin,
+  or `stash_plugin`, must reach an origin intact, and, at a pstore origin,
   land in its tier.
 - `put-checksum`: `pelican object put --require-checksum` of every size must
   succeed, with the objects intact, where the storage reports a digest, and
@@ -50,12 +52,15 @@ it reports none.
 - `director-read`: A [plain HTTP client](../glossary.md#plain-http-client)
   asks each director for every object of the whole-first set, whole and in
   every range, and follows the 307 to a federated cache (an origin under
-  `-p topo-no-cache`). Each must come back. Skips for a standalone origin.
+  [`-p topo-no-cache`](../../framework/presets/topo-no-cache.sh)). Each must
+  come back. Skips for a standalone origin
+  ([`-p topo-standalone`](../../framework/presets/topo-standalone.sh)).
 - `cache-range-first`: Each cache reads its set cold in a range, then in
   every range, then whole.
 - `cache-stored`: Each XRootD cache's store on disk must hold every block
-  that an object's `.cinfo` records, at its place in the file. Inconclusive
-  where no `.cinfo` remains. Skips without an XRootD cache.
+  that an object's `.cinfo` records, at its place in the file.
+  [Inconclusive](../ci.md#results) where no `.cinfo` remains. Skips without
+  an XRootD cache.
 - `cache-overlap`: Each cache reads ranges that each cover blocks already
   fetched and blocks not yet fetched, at both block sizes, then overlapping
   ranges at once. The whole object must come back intact after each.
@@ -82,22 +87,23 @@ it reports none.
   within 30 seconds bring the whole object intact. Skips without a V2 cache
   and its chaos API.
 - `transfer-status`: Each federated cache, asked for the transfer's status
-  (`X-Transfer-Status: true`, `TE: trailers`; `docs/pelican-http-headers.md`
-  in Pelican's repository), must announce `Trailer: X-Transfer-Status` and
-  end with the trailer `200: OK`, cold and warm, of a whole object, a range,
-  a suffix, and a 512-byte object, which a V2 cache should hold inline
-  (`is_inline`; inconclusive otherwise). A GET that does not ask must get no
-  trailer; a HEAD that asks, 200.
+  (`X-Transfer-Status: true`, `TE: trailers`;
+  [`docs/pelican-http-headers.md`](https://github.com/PelicanPlatform/pelican/blob/main/docs/pelican-http-headers.md)
+  in [Pelican](https://pelicanplatform.org/)'s repository), must announce
+  `Trailer: X-Transfer-Status` and end with the trailer `200: OK`, cold and
+  warm, of a whole object, a range, a suffix, and a 512-byte object, which a
+  V2 cache should hold inline (`is_inline`; inconclusive otherwise). A GET
+  that does not ask must get no trailer; a HEAD that asks, 200.
 - `transfer-status-failure`: Each federated V2 cache's chaos API corrupts
   the fourth block of an object it holds, which is then removed from every
   origin. A GET that asks for the status must get a trailer reporting a
   failure, or fail before the body. Through that cache alone,
-  `pelican object get --cache` and stash_plugin must fail, but not by a
+  `pelican object get --cache` and `stash_plugin` must fail, but not by a
   refusal, and leave nothing. The plugin's ad must say
   `TransferRetryable = true`, unless the director found no origin holding
   the object. Inconclusive where the cache serves the object intact (as
-  under `-p cache-memory`). Skips without a federated V2 cache and its chaos
-  API.
+  under [`-p cache-memory`](../../framework/presets/cache-memory.sh)). Skips
+  without a federated V2 cache and its chaos API.
 - `origin-transfer-status`: Each origin, so asked, must send the trailer
   too, `200: OK`.
 - `digests`: Every server is asked each object's digest, by each of
@@ -115,7 +121,8 @@ it reports none.
     `Origin.DefaultChecksumTypes`);
   - with `Want-Digest: crc32c, md5`, a native origin must send both, in one
     `Digest`; an XRootD origin, at least one;
-  - with `Want-Digest: md5;q=0.5, crc32c;q=1` (RFC 3230), every origin must
+  - with `Want-Digest: md5;q=0.5, crc32c;q=1`
+    ([RFC 3230](https://www.rfc-editor.org/rfc/rfc3230)), every origin must
     send at least one;
   - at a `posixv2` origin, the file's `user.XrdCks.crc32c` and
     `user.XrdCks.md5` must hold the digests, and a PUT must replace or
@@ -156,11 +163,12 @@ it reports none.
   `If-None-Match: *`; `If-Match` naming a stale or other `ETag`; and
   `If-Match: *` of a missing object. One whose condition holds must succeed.
 - `etag-agreement`: Each origin must report one `ETag` for a version
-  (RFC 9110, section 8.8.3), to the PUT that wrote it, GET, HEAD, and
-  PROPFIND (`getetag`). That ETag must satisfy `If-Match` on a GET and a
-  PUT, and `If-Range` on a ranged GET (206). Without writes, only GETs are
-  sent.
-- `conditional-edges`: Each origin, at the edges of RFC 9110, section 13:
+  ([RFC 9110, section 8.8.3](https://www.rfc-editor.org/rfc/rfc9110#section-8.8.3)),
+  to the PUT that wrote it, GET, HEAD, and PROPFIND (`getetag`). That ETag
+  must satisfy `If-Match` on a GET and a PUT, and `If-Range` on a ranged GET
+  (206). Without writes, only GETs are sent.
+- `conditional-edges`: Each origin, at the edges of
+  [RFC 9110, section 13](https://www.rfc-editor.org/rfc/rfc9110#section-13):
   - `If-None-Match` of a missing object must get 404, not 304;
   - an invalid `If-Modified-Since` is ignored;
   - a failing `If-None-Match` beats a holding `If-Modified-Since`;
@@ -169,7 +177,7 @@ it reports none.
   - a PUT with `If-None-Match: *, "junk"` over an object must get 412;
   - of 8 PUTs at once of a new object with `If-None-Match: *`, exactly one
     may succeed, and the store hold its bytes; the rest must get 412 or 423
-    (RFC 4918).
+    ([RFC 4918](https://www.rfc-editor.org/rfc/rfc4918)).
 - `mixed-version`: An object is overwritten at the origins once each cache
   holds its first block. Later reads, of a range in its third XRootD block
   and of the whole, must succeed, and be entirely one version, the same for
@@ -178,18 +186,19 @@ it reports none.
   (read whole, or a range first), the origins overwrite them, keeping,
   growing, and shrinking their sizes. Every response must be entirely one
   version, with that version's size and digest, if any. Under
-  `-p origin-max-age`, native origins must send `Cache-Control: max-age=30`,
-  and every cache serve the new version within about 75 seconds.
+  [`-p origin-max-age`](../../framework/presets/origin-max-age.sh), native
+  origins must send `Cache-Control: max-age=30`, and every cache serve the
+  new version within about 75 seconds.
 - `write-through`: A V2 cache must relay a PUT or DELETE to the origins and
   drop its copy. A PUT with a read-only token must be refused; once one with
   the `server` token reaches the origins, the cache must serve the new bytes
   at once. After a DELETE, where the storage can delete, it must answer 404.
   Where `/protected-a` takes no writes, and at an XRootD cache, a PUT must
   be refused, changing nothing.
-- `cache-evicted`: Needs `-p cache-small`
-  ([presets](../../README.md#presets)). Each cache reads 8 MiB objects to
-  half again its high mark. Within 60 seconds (V2) or 180 (XRootD), its
-  store must fall under the high mark, and not below the low one by more
-  than an object. A V2 cache must still hold the three objects read last,
-  and have dropped at least two of the oldest; an XRootD cache need only
-  have dropped two. Every object must still come back.
+- `cache-evicted`: Needs
+  [`-p cache-small`](../../framework/presets/cache-small.sh). Each cache
+  reads 8 MiB objects to half again its high mark. Within 60 seconds (V2) or
+  180 (XRootD), its store must fall under the high mark, and not below the
+  low one by more than an object. A V2 cache must still hold the three
+  objects read last, and have dropped at least two of the oldest; an XRootD
+  cache need only have dropped two. Every object must still come back.

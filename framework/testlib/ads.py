@@ -9,23 +9,20 @@ copy of the key (verifyAdvertiseToken in director/origin_api.go).
 
 Servers finds each server as the first director describes it, and the
 key in framework/var/issuer-keys/<host>/ that the registry holds for
-it. ad() builds an ad like the server's own from that description; it
-lasts AD_LIFETIME seconds, unless the server's next ad, within
-Server.AdvertisementInterval, replaces it. post_ad() posts an ad as a
-server does.
+it. An ad built from that description (ad()) lasts AD_LIFETIME seconds,
+unless the server's next ad, within Server.AdvertisementInterval,
+replaces it.
 """
 
 import glob
 import json
-import time
-import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from . import common, credentials, director, jwt, web
+from . import accounts, common, credentials, director, jwt, web
 
 # The scope of an advertise token.
 ADVERTISE = "pelican.advertise"
@@ -105,8 +102,7 @@ class Servers:
         if (kind, host) in self._servers:
             return self._servers[(kind, host)]
         listed = web.request("GET", f"{self.director}{SERVERS}")
-        rows = common.as_array(listed.json()) or []
-        for row in (common.as_object(r) or {} for r in rows):
+        for row in common.objects(common.as_array(listed.json()) or []):
             if row.get("type") == kind and director.host(str(row.get("webUrl", ""))) == host:
                 name = str(row.get("name", ""))
                 answer = web.request("GET", f"{self.director}{SERVERS}/{quote(name, safe='')}")
@@ -132,10 +128,10 @@ class Servers:
         if server.prefix not in self._keys:
             url = f"{self.fed.registry_url}/api/v1.0/registry{server.prefix}/.well-known/issuer.jwks"
             answer = web.request("GET", url)
-            listed = common.as_array((common.as_object(answer.json()) or {}).get("keys")) or []
+            listed = common.as_array(answer.object().get("keys")) or []
             for key in sorted(glob.glob(f"issuer-keys/{server.host}/*.pem")):
                 jwk = jwt.public_jwk(key)
-                for entry in (common.as_object(e) or {} for e in listed):
+                for entry in common.objects(listed):
                     if all(entry.get(k) == v for k, v in jwk.items()):
                         self._keys[server.prefix] = (key, str(entry.get("kid") or ""))
             if server.prefix not in self._keys:
@@ -160,9 +156,8 @@ def claims(scope: str, issuer: str, audience: str, subject: str = "") -> dict[st
     """Return the claims of a token of scope, from issuer, for audience.
 
     They are those of a server's own advertise token (GetAdvertisementTok
-    in Pelican's server_utils/server_utils.go), issued now, lasting
-    TOKEN_LIFETIME seconds, for a test to change before sign_claims()
-    signs them.
+    in Pelican's server_utils/server_utils.go), lasting TOKEN_LIFETIME
+    seconds, for a test to change before sign_claims() signs them.
 
     Args:
         scope: Its scope.
@@ -170,18 +165,7 @@ def claims(scope: str, issuer: str, audience: str, subject: str = "") -> dict[st
         audience: Its audience.
         subject: Its subject, if not credentials.SUBJECT.
     """
-    now = int(time.time())
-    return {
-        "aud": [audience],
-        "exp": now + TOKEN_LIFETIME,
-        "iat": now,
-        "iss": issuer,
-        "jti": str(uuid.uuid4()),
-        "nbf": now,
-        "scope": scope,
-        "sub": subject or credentials.SUBJECT,
-        "wlcg.ver": "1.0",
-    }
+    return jwt.wlcg_claims(scope, issuer, [audience], subject or credentials.SUBJECT, TOKEN_LIFETIME)
 
 
 def sign_claims(key: str, kid: str, body: Mapping[str, Any]) -> str:
@@ -192,7 +176,7 @@ def sign_claims(key: str, kid: str, body: Mapping[str, Any]) -> str:
         kid: The key ID to sign it under.
         body: Its claims, as claims() returns them.
     """
-    return jwt.encode(jwt.header(jwt.algorithm(key), kid), body, key=key)
+    return jwt.sign(body, key, kid)
 
 
 def sign(key: str, kid: str, scope: str, issuer: str, audience: str, subject: str = "") -> str:
@@ -308,9 +292,13 @@ def ad(server: Server, **changes: Any) -> dict[str, Any]:
 def user_agent(kind: str, version: str) -> dict[str, str]:
     """Return the User-Agent with which a server of kind posts its ads.
 
+    Args:
+        kind: "Origin" or "Cache".
+        version: The server's version, as its ad gives it.
+
     Returns:
-        The header for a server at version, as the director reads it, or
-        no header if version is not one.
+        The header, as the director reads it; none if version is not a
+        version.
     """
     bare = version.lstrip("v")
     if not bare[:1].isdigit():
@@ -321,10 +309,13 @@ def user_agent(kind: str, version: str) -> dict[str, str]:
 def post_ad(url: str, kind: str, body: Mapping[str, Any], token: str | None) -> web.Response:
     """POST ad body to the director at url, as a server of kind does.
 
-    It presents token, or no token if token is None.
+    Args:
+        url: The director's URL.
+        kind: "Origin" or "Cache".
+        body: The ad.
+        token: The token to present, if any.
     """
-    headers = {"Content-Type": "application/json"}
-    headers.update(user_agent(kind, str(body.get("version", ""))))
+    headers = {**accounts.JSON, **user_agent(kind, str(body.get("version", "")))}
     return web.request(
         "POST",
         f"{url}/api/v1.0/director/register{kind}",

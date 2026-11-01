@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import common, web
+from . import common, control, web
 
 # How a director's web API (/api/v1.0/director_ui/servers) names why it
 # filters a server, in `filteredType`: by the filter type's text
@@ -56,8 +56,13 @@ def host(url: str) -> str:
 def served_elsewhere(hosts: Sequence[str], cache: common.Cache) -> str | None:
     """Return why hosts are not all cache's, or None if they are.
 
-    hosts served a read that named cache, which alone may serve it. A
-    client that fell back to the director's choice would otherwise pass.
+    A client that fell back to the director's choice would otherwise
+    pass.
+
+    Args:
+        hosts: The hosts that served a read that named cache, which alone
+            may serve it.
+        cache: The cache.
     """
     if not hosts:
         return "no server recorded"
@@ -178,6 +183,32 @@ def naming(directors: Sequence[str], route: str, path: str, name: str) -> list[s
         name: The host to look for.
     """
     return [host(url) for url in directors if ask(url, route, path).names(name)]
+
+
+def unnamed(directors: Sequence[str], route: str, path: str, name: str) -> str | None:
+    """Return why not every director names host name for path, or None.
+
+    Args:
+        directors: The directors' URLs.
+        route: As for ask().
+        path: The path to GET.
+        name: The host to look for.
+    """
+    named = naming(directors, route, path, name)
+    if len(named) == len(directors):
+        return None
+    return f"{len(named)} of {len(directors)} director(s) named {name}"
+
+
+def wait_named(directors: Sequence[str], route: str, path: str, name: str, seconds: float) -> str | None:
+    """Wait until every director names host name for path (see unnamed()).
+
+    A server that exits on its own ends the wait (control.settle()).
+
+    Returns:
+        Why they don't within seconds, or None.
+    """
+    return control.settle(lambda: unnamed(directors, route, path, name), seconds)
 
 
 def expected_targets(fed: common.Federation) -> dict[tuple[str, str], str]:

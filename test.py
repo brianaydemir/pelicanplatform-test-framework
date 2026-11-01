@@ -21,16 +21,11 @@ a storage token of the tests' own minting present SciTokens instead. A
 suite's ONE_PROFILE scenarios, which present no such token, run in the
 WLCG pass alone.
 
-The suites are in framework/suites/, and run in this order: federation,
-selftest, commands, client, transfer-api, listings, names, blocks,
-freshness, cache-api, throttling, exports, pstore, routing,
-director-api, registry, tiering, posc, metadata, users, owners,
-sitelocal, collections, issuer, accounts, oidc, advertise, webapi,
-observability, webdav, auth, transfers, restart, and keys.
-`federation/ready` and `federation/caches` run first whatever is asked
-for; if the federation never serves, nothing else runs. A suite that
-doesn't apply to the shape, such as pstore without a pstore origin, is
-skipped.
+The suites are in framework/suites/, and run in the order that its
+__init__.py gives (`-l` lists them). `federation/ready` and
+`federation/caches` run first whatever is asked for; if the federation
+never serves, nothing else runs. A suite that doesn't apply to the
+shape, such as pstore without a pstore origin, is skipped.
 
 Each pass of a suite writes a row per case to
 framework/var/results/<suite>.tsv (or <suite>-scitokens.tsv). A run of
@@ -54,7 +49,7 @@ import tempfile
 import threading
 import time
 import traceback
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from typing import Any, TextIO
 
 # No __pycache__ in the checkout, where the dev container would leave it
@@ -86,7 +81,7 @@ GRACE_SECONDS = 5 * 60
 
 
 class Stalled(BaseException):
-    """A suite's pass that the watchdog gave up on (see watched()).
+    """A suite's pass that the watchdog gave up on.
 
     Not an Exception: a suite catches those around each scenario, so
     that the next still runs, and must not catch this.
@@ -118,6 +113,7 @@ class Activity:
         self._stream.writelines(redact(line) for line in lines)
 
     def __getattr__(self, name: str) -> Any:
+        """Return the stream's attribute name."""
         return getattr(self._stream, name)
 
 
@@ -207,6 +203,16 @@ def current_shape() -> common.Federation | None:
     return common.Federation()
 
 
+def required(name: str) -> Sequence[str]:
+    """Return suite name's REQUIRED scenarios."""
+    return getattr(SUITES[name], "REQUIRED", ())
+
+
+def one_profile(name: str) -> Sequence[str]:
+    """Return suite name's ONE_PROFILE scenarios."""
+    return getattr(SUITES[name], "ONE_PROFILE", ())
+
+
 def skip_reason(name: str, fed: common.Federation) -> str | None:
     """Return why suite name skips in fed's shape, or None if it doesn't.
 
@@ -234,8 +240,7 @@ def in_pass(name: str, selected: list[str], profile: str) -> list[str]:
     """
     if profile == WLCG:
         return selected
-    once = getattr(SUITES[name], "ONE_PROFILE", ())
-    return [s for s in selected if s not in once]
+    return [s for s in selected if s not in one_profile(name)]
 
 
 def list_suites(chosen: dict[str, list[str]]) -> None:
@@ -246,10 +251,9 @@ def list_suites(chosen: dict[str, list[str]]) -> None:
         why = skip_reason(name, fed) if fed else None
         print(name + (f" (skipped in this shape: {why})" if why else ""))
         width = max(len(n) for n in module.SCENARIOS)
-        required = getattr(module, "REQUIRED", ())
-        once = getattr(module, "ONE_PROFILE", ())
+        labels = (("always runs", required(name)), ("WLCG only", one_profile(name)))
         for scenario in scenarios:
-            notes = [n for n, of in (("always runs", required), ("WLCG only", once)) if scenario in of]
+            notes = [label for label, of in labels if scenario in of]
             noted = f" ({'; '.join(notes)})" if notes else ""
             print(f"  {scenario:<{width}} {module.SCENARIOS[scenario]}{noted}")
         print()
@@ -267,9 +271,9 @@ def with_required(chosen: dict[str, list[str]]) -> dict[str, list[str]]:
     """
     found: dict[str, list[str]] = {}
     for name, module in SUITES.items():
-        required = getattr(module, "REQUIRED", ())
-        if name in chosen or required:
-            wanted = set(chosen.get(name, ())) | set(required)
+        always = required(name)
+        if name in chosen or always:
+            wanted = set(chosen.get(name, ())) | set(always)
             found[name] = [n for n in module.SCENARIOS if n in wanted]
     return found
 
@@ -342,9 +346,8 @@ def run_passes(chosen: dict[str, list[str]], sessions: list[Session]) -> list[Re
                 continue
             report, finished = run_suite(name, scenarios, session)
             reports.append(report)
-            required = getattr(SUITES[name], "REQUIRED", ())
             # The first pass shows whether the federation serves at all.
-            if not finished and required and session is sessions[0]:
+            if not finished and required(name) and session is sessions[0]:
                 print(
                     f"\n{common.PROG}: stopping: {name} did not finish, so nothing else can pass",
                     file=sys.stderr,

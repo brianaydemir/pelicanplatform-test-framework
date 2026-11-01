@@ -9,13 +9,13 @@
 # file. Origin.EnableOIDC is generated (see 20-server.yaml). Setting any
 # of them here has no effect.
 #
-# Origin.Exports is written by fed.sh (fed_generate), in
-# framework/var/generated/conf/60-origin-exports.yaml, from the knobs
-# ORIGIN_NAMESPACES and ORIGIN_DISABLE_DIRECT_CLIENTS. By default,
-# /public, /protected-a, and /protected-b export the same objects, so
-# that the authenticated and unauthenticated paths are comparable. Only
-# the protected namespaces take writes, so only they have issuers of
-# their own, unless ORIGIN_PUBLIC_WRITES (presets/origin-public-writes.sh)
+# fed.sh generates Origin.Exports
+# (framework/var/generated/conf/60-origin-exports.yaml) from
+# ORIGIN_NAMESPACES and the other knobs. By default, /public,
+# /protected-a, and /protected-b export the same objects, so that the
+# authenticated and unauthenticated paths are comparable. Only the
+# protected namespaces take writes, so only they have issuers of their
+# own, unless ORIGIN_PUBLIC_WRITES (presets/origin-public-writes.sh)
 # gives /public writes, and so an issuer, too.
 
 Origin:
@@ -69,7 +69,7 @@ Issuer:
   # under /data/issuer that docs/tests/issuer.md lists. The collections
   # suite's users get nothing, so that their tokens carry only what
   # collections grant.
-  # Under -p origin-export-templates, /protected-b's export has
+  # Under `-p origin-export-templates`, /protected-b's export has
   # templates of its own, which replace these there (fed.sh).
   AuthorizationTemplates:
     - prefix: /

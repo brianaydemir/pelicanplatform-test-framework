@@ -55,10 +55,10 @@ usage() {
 # topology). Each owns framework/var/issuer-keys/<svc> and
 # framework/var/state/<svc>.
 #
-# The members of a group must share a key. The `origins` both export the
-# same prefixes, and the registry binds one keyset per prefix. origin-2
-# (`topo-multi-owner`) is another owner, with prefixes and a key of its
-# own. The `directors` both sign as the federation, whose one JWKS is
+# The members of a group share a key. The `origins` export the same
+# prefixes, and the registry binds one keyset per prefix; origin-2
+# (`topo-multi-owner`), another owner, has prefixes and a key of its own.
+# The `directors` both sign as the federation, whose one JWKS is
 # director-0's.
 
 fed_services="director-0 director-1 registry origin-0 origin-1 origin-2 cache-0 cache-1 cache-2"
@@ -72,6 +72,9 @@ fed_group_directors="director-0 director-1"
 fed_key_others="issuer"
 
 fed_certs="framework/var/certs/ca.crt framework/var/certs/tls.crt framework/var/certs/tls.key"
+
+# The Pelican servers' stores, under framework/var/data/.
+fed_stores="origin/0 origin/1 origin/2 cache/0 cache/1 cache/2 cache/fed"
 
 #---------------------------------------------------------------------------
 # Compose profiles. Presets call fed_enable_profile with one of these,
@@ -101,6 +104,7 @@ fed_certs="framework/var/certs/ca.crt framework/var/certs/tls.crt framework/var/
 fed_profiles="multi-origin multi-cache multi-owner multi-director site-local-cache transfer"
 fed_profiles="${fed_profiles} director-ha lab idp metadata monitoring webdav s3"
 
+# True if Compose profile $1 is enabled.
 fed_has_profile() {
   case ",${COMPOSE_PROFILES}," in
     *",$1,"*) return 0 ;;
@@ -108,15 +112,21 @@ fed_has_profile() {
   return 1
 }
 
-# A profile that no Compose file defines would start nothing, silently.
+# Enable Compose profile $1, unless it is enabled.
+fed_add_profile() {
+  if ! fed_has_profile "$1"; then
+    COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}$1"
+  fi
+}
+
+# Enable profile $1 for a preset. It must be in fed_profiles: a profile
+# that no Compose file defines would start nothing, silently.
 fed_enable_profile() {
   case " ${fed_profiles} " in
     *" $1 "*) ;;
     *) die "no such Compose profile: $1 (try: ${fed_profiles})" ;;
   esac
-  if ! fed_has_profile "$1"; then
-    COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}$1"
-  fi
+  fed_add_profile "$1"
 }
 
 #---------------------------------------------------------------------------
@@ -179,16 +189,15 @@ fed_knobs="IMAGE_HUB PELICAN_TAG PELICAN_DEV_TAG PELICAN_SRC_DIR
            IMAGE_ORIGIN IMAGE_CACHE IMAGE_DIRECTOR IMAGE_REGISTRY IMAGE_DEV"
 
 # Knobs that choose one of several things, which no two presets may both
-# choose: `-p origin-pstore -p origin-ssh` would otherwise quietly be
-# `origin-ssh`, `-p origin-metadata -p origin-metadata-tx` quietly
-# transactional, and `-p auth-no-issuer -p auth-external-issuer` quietly
-# the external issuer. So that choosing the default (`-p origin-posixv2`)
-# counts too, each of these knobs is `fed-unchosen` while a preset is
-# sourced, which is what a preset that reads one sees.
+# set: otherwise `-p origin-pstore -p origin-ssh` would quietly be
+# `origin-ssh`. While a preset is sourced, each is `fed-unchosen`, so
+# that setting one to its default (`-p origin-posixv2`) counts too; a
+# preset that reads one sees that.
 fed_exclusive_knobs="TOPOLOGY ORIGIN_VARIANT CACHE_VARIANT ORIGIN_METADATA_MODE"
 fed_exclusive_knobs="${fed_exclusive_knobs} ORIGIN_ENABLE_ISSUER"
 
-# One variable per knob, so that a path with spaces survives.
+# Save the caller's knobs, one variable each, so that a path with spaces
+# survives.
 for fed_knob in ${fed_knobs}; do
   eval "fed_caller_${fed_knob}=\${${fed_knob}:-}"
 done
@@ -270,13 +279,12 @@ if [ "${fed_topology}" = standalone ]; then
 fi
 export ORIGIN_STANDALONE
 
-# The Docker network that origin-0 is on (docker-compose.yaml): the one
-# every service shares, or, behind a firewall (`origin-firewalled`), one
-# of its own, which the caches are not on.
-# The caches resolve the host that CACHES_BLACKHOLE names to their own
-# loopback (docker-compose.yaml): origin-0, behind a firewall, so that
-# their connections to it are refused, as a firewall refuses them,
-# rather than its name unknown; otherwise a name that nothing asks for.
+# For docker-compose.yaml. ORIGIN_0_NETWORK is origin-0's network: the
+# shared one, or, behind a firewall (`origin-firewalled`), one the caches
+# are not on. The caches resolve CACHES_BLACKHOLE to their own loopback:
+# origin-0 behind a firewall, so that connections to it are refused, as
+# by a firewall, rather than its name unknown; otherwise a name that
+# nothing asks for.
 ORIGIN_0_NETWORK=default
 CACHES_BLACKHOLE=firewalled.invalid
 if [ "${ORIGIN_FIREWALLED}" = true ]; then
@@ -285,6 +293,7 @@ if [ "${ORIGIN_FIREWALLED}" = true ]; then
 fi
 export ORIGIN_0_NETWORK CACHES_BLACKHOLE
 
+# Each image not named otherwise is the published one for its tag.
 : "${IMAGE_DEV:=${IMAGE_HUB}/pelican-dev:${PELICAN_DEV_TAG}}"
 : "${IMAGE_ORIGIN:=${IMAGE_HUB}/origin:${PELICAN_TAG}}"
 : "${IMAGE_CACHE:=${IMAGE_HUB}/cache:${PELICAN_TAG}}"
@@ -326,10 +335,12 @@ esac
 [ -d "framework/config.d/cache/${CACHE_1_VARIANT}" ] \
     || die "no such cache variant: ${CACHE_1_VARIANT} (CACHE_1_VARIANT)"
 
-# Whether every cache is a V2 cache, which the settings that only it
-# reads, or that it alone reads rightly, need.
-fed_all_caches_v2() {
-  [ "${CACHE_VARIANT}" = v2 ] && [ "${CACHE_1_VARIANT}" = v2 ]
+# Die unless every cache is V2, as knob $1 needs: only a V2 cache reads
+# it, or reads it rightly.
+fed_require_v2_caches() {
+  [ "${CACHE_VARIANT}" = v2 ] && [ "${CACHE_1_VARIANT}" = v2 ] \
+      || die "$1 needs every cache V2, but CACHE_VARIANT ('cache-xrootd') is" \
+             "'${CACHE_VARIANT}', and CACHE_1_VARIANT ('cache-mixed') '${CACHE_1_VARIANT}'"
 }
 
 # fed_generate writes Origin.Exports for every variant. A role layer's
@@ -339,7 +350,9 @@ if grep -qs '^  Exports:' "framework/config.d/origin/${ORIGIN_VARIANT}"/*.yaml; 
       "fed.sh generates; teach fed_generate about the variant instead"
 fi
 
-# The namespaces the origins export, each once: fed_namespaces.
+# The namespaces the origins export, each once: fed_namespaces. The tests
+# probe the federation through the first protected one, or else /public
+# (probe_namespace() in framework/testlib/credentials.py).
 fed_namespaces=""
 for fed_ns in ${ORIGIN_NAMESPACES}; do
   case "${fed_ns}" in
@@ -354,12 +367,15 @@ for fed_ns in ${ORIGIN_NAMESPACES}; do
 done
 [ -n "${fed_namespaces}" ] \
     || die "ORIGIN_NAMESPACES is empty; list 'public', 'protected-a', or 'protected-b'"
+
+# How many namespaces the origins export.
 fed_count_namespaces() {
   # shellcheck disable=SC2086  # one namespace per word
   set -- ${fed_namespaces}
   printf '%s\n' "$#"
 }
 
+# True if the origins export namespace $1.
 fed_exports_namespace() {
   case " ${fed_namespaces} " in
     *" $1 "*) return 0 ;;
@@ -367,16 +383,10 @@ fed_exports_namespace() {
   return 1
 }
 
-# The tests probe the federation through the first protected namespace
-# exported, or, where there is none (`origin-public`), through /public
-# (probe_namespace() in framework/testlib/credentials.py); the suites
-# that need /protected-a skip.
-
-# Set fed_caps to the capabilities the origins give namespace $1 (one of
-# those above). /public takes no writes, and so has no issuer, unless
+# Set fed_caps to the capabilities the origins give namespace $1. /public
+# takes no token to read, and no writes, and so has no issuer, unless
 # ORIGIN_PUBLIC_WRITES (`origin-public-writes`) gives it writes, and so
-# an issuer, while its reads still take no token. Without direct
-# clients, Pelican allows only reads.
+# an issuer. Without direct clients, Pelican allows only reads.
 fed_namespace_caps() {
   case "$1" in
     public)
@@ -427,6 +437,19 @@ fed_profile_presets() {
   esac
 }
 
+# Die if any of profiles $2... is enabled; $1 says why, as in "$1, so it
+# cannot add profile ...".
+fed_refuse_profiles() {
+  fed_why=$1
+  shift
+  for fed_refused in "$@"; do
+    if fed_has_profile "${fed_refused}"; then
+      die "${fed_why}, so it cannot add profile '${fed_refused}'" \
+          "($(fed_profile_presets "${fed_refused}"))"
+    fi
+  done
+}
+
 # Whether the origins run XRootD in front of their storage.
 fed_xrootd_origin() {
   case "${ORIGIN_VARIANT}" in
@@ -441,12 +464,9 @@ fed_xrootd_origin() {
 if [ "${fed_topology}" = tiny ]; then
   for fed_profile in ${fed_profiles}; do
     case "${fed_profile}" in
-      metadata|idp) continue ;;
+      metadata|idp) ;;
+      *) fed_refuse_profiles "the 'tiny' topology is one container" "${fed_profile}" ;;
     esac
-    if fed_has_profile "${fed_profile}"; then
-      die "the 'tiny' topology is one container, so it cannot add profile" \
-          "'${fed_profile}' ($(fed_profile_presets "${fed_profile}"))"
-    fi
   done
   [ "${CACHE_VARIANT}" = v2 ] \
       || die "the 'tiny' topology's cache is always V2, so CACHE_VARIANT" \
@@ -464,13 +484,8 @@ fi
 # Origin.DisableDirectClients, and with no registry, the metadata
 # verifier has no keys to check events against.
 if [ "${fed_topology}" = standalone ]; then
-  for fed_profile in multi-origin multi-cache multi-owner multi-director \
-      site-local-cache transfer metadata; do
-    if fed_has_profile "${fed_profile}"; then
-      die "the 'standalone' topology is one origin and no federation, so it" \
-          "cannot add profile '${fed_profile}' ($(fed_profile_presets "${fed_profile}"))"
-    fi
-  done
+  fed_refuse_profiles "the 'standalone' topology is one origin and no federation" \
+      multi-origin multi-cache multi-owner multi-director site-local-cache transfer metadata
   ! fed_xrootd_origin \
       || die "Pelican runs a standalone origin ('topo-standalone') only on a native" \
              "backend, not '${ORIGIN_VARIANT}'"
@@ -525,21 +540,17 @@ if [ "${ORIGIN_BROKER}" = true ]; then
              "'${fed_namespaces}'"
   [ "${fed_topology}" = full ] \
       || die "ORIGIN_BROKER ('origin-broker') needs the 'full' topology, not '${fed_topology}'"
-  for fed_profile in multi-origin multi-owner; do
-    if fed_has_profile "${fed_profile}"; then
-      die "ORIGIN_BROKER ('origin-broker') brokers origin-0 alone, so it cannot add" \
-          "profile '${fed_profile}' ($(fed_profile_presets "${fed_profile}"))"
-    fi
-  done
+  fed_refuse_profiles "ORIGIN_BROKER ('origin-broker') brokers origin-0 alone" \
+      multi-origin multi-owner
 fi
 
-# Behind a firewall (`origin-firewalled`), origin-0 is on a network of
-# its own, which the caches are not on, so they reach it only through
-# the broker; and only an XRootD cache has a broker client
-# (cache/broker_client.go in Pelican), so every cache must be one, and
-# there must be one. The caches verify a token with the keys they fetch
-# from its issuer, and the origins' own issuer is out of their reach, so
-# the exports must trust an issuer they can reach, or take no token.
+# Behind a firewall (`origin-firewalled`), origin-0 is on a network the
+# caches are not on, so they reach it only through the broker, for which
+# only an XRootD cache has a client (cache/broker_client.go in Pelican):
+# there must be a cache, and every cache must be XRootD's. The caches
+# verify a token with keys from its issuer, and the origins' own issuer
+# is out of their reach, so the exports must trust an issuer they can
+# reach, or take no token.
 if [ "${ORIGIN_FIREWALLED}" = true ]; then
   [ "${ORIGIN_BROKER}" = true ] \
       || die "ORIGIN_FIREWALLED ('origin-firewalled') cuts origin-0 off from the caches, which" \
@@ -558,12 +569,10 @@ if [ "${ORIGIN_FIREWALLED}" = true ]; then
 fi
 
 # The identity provider (`auth-oidc-local`) and CILogon
-# (`auth-oidc-cilogon`) each serve the servers' OIDC login, so either is
-# pointless with that off; with it on, fed.sh points the servers at the
-# one (framework/var/generated/conf/60-oidc.yaml). A preset of its own may
-# turn OIDC on without either, for another provider. CILogon knows only
-# the clients registered with it, so its client must be the user's own,
-# not one made at random.
+# (`auth-oidc-cilogon`) each serve the servers' OIDC login, so each needs
+# ENABLE_OIDC; a preset of your own may set it with neither, for another
+# provider. CILogon knows only the clients registered with it, so its
+# client must be yours, not one made at random.
 if fed_has_profile idp && [ "${ENABLE_OIDC}" = false ]; then
   die "the identity provider ('auth-oidc-local') serves an OIDC login, which ENABLE_OIDC turns off"
 fi
@@ -782,12 +791,8 @@ if [ "${FEDERATED_CACHE}" = false ]; then
   [ "${fed_topology}" = full ] \
       || die "FEDERATED_CACHE ('topo-no-cache') is the 'full' topology's cache-0, which" \
              "the '${fed_topology}' topology does not run"
-  for fed_profile in multi-cache site-local-cache; do
-    if fed_has_profile "${fed_profile}"; then
-      die "FEDERATED_CACHE ('topo-no-cache') runs no cache, so it cannot add profile" \
-          "'${fed_profile}' ($(fed_profile_presets "${fed_profile}"))"
-    fi
-  done
+  fed_refuse_profiles "FEDERATED_CACHE ('topo-no-cache') runs no cache" \
+      multi-cache site-local-cache
   [ "${CACHE_VARIANT}" = v2 ] \
       || die "FEDERATED_CACHE ('topo-no-cache') runs no cache, so CACHE_VARIANT" \
              "('cache-xrootd') must be 'v2', not '${CACHE_VARIANT}'"
@@ -807,10 +812,7 @@ fi
 # Cache tiering is the V2 cache's, here only in the full topology, where
 # the `s3` service holds the tiered objects.
 if [ "${CACHE_TIERING}" = true ]; then
-  fed_all_caches_v2 \
-      || die "CACHE_TIERING ('cache-tiered') needs every cache V2, but CACHE_VARIANT" \
-             "('cache-xrootd') is '${CACHE_VARIANT}', and CACHE_1_VARIANT ('cache-mixed')" \
-             "'${CACHE_1_VARIANT}'"
+  fed_require_v2_caches "CACHE_TIERING ('cache-tiered')"
   [ "${fed_topology}" = full ] \
       || die "CACHE_TIERING ('cache-tiered') needs the 'full' topology, not '${fed_topology}'"
   fed_has_profile s3 \
@@ -821,10 +823,7 @@ fi
 # bounded, each its own way (see fed_generate). A standalone origin has
 # no cache.
 if [ -n "${CACHE_MEMORY_SIZE}" ]; then
-  fed_all_caches_v2 \
-      || die "CACHE_MEMORY_SIZE ('cache-memory') needs every cache V2, but CACHE_VARIANT" \
-             "('cache-xrootd') is '${CACHE_VARIANT}', and CACHE_1_VARIANT ('cache-mixed')" \
-             "'${CACHE_1_VARIANT}'"
+  fed_require_v2_caches "CACHE_MEMORY_SIZE ('cache-memory')"
 fi
 if [ -n "${CACHE_MEMORY_SIZE}${CACHE_HIGH_WATER_MIB}${CACHE_LOW_WATER_MIB}" ]; then
   [ "${fed_topology}" != standalone ] \
@@ -850,30 +849,27 @@ if [ -n "${CACHE_HIGH_WATER_MIB}${CACHE_LOW_WATER_MIB}" ]; then
              "CACHE_HIGH_WATER_MIB (${CACHE_HIGH_WATER_MIB})"
 fi
 
-# The profiles that fed.sh enables itself (see fed_profiles), which the
-# checks above leave out: the federation's servers, which a standalone
-# origin does without; cache-0, unless the shape runs no cache; the
-# discovery host, unless director-0 serves the federation's metadata; and
-# the discovery host again, which serves the external issuer.
+# The profiles that fed.sh enables itself (see fed_profiles), after the
+# checks above, which consider only the presets'.
 if [ "${fed_topology}" = full ]; then
-  COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}federation"
+  fed_add_profile federation
   if [ "${FEDERATED_CACHE}" = true ]; then
-    COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}cache"
+    fed_add_profile cache
   fi
   if [ "${DIRECTOR_DISCOVERY}" = false ]; then
-    COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}discovery"
+    fed_add_profile discovery
   fi
 fi
 if [ "${fed_topology}" != tiny ] && [ "${EXTERNAL_ISSUER}" = true ]; then
-  COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}external-issuer"
+  fed_add_profile external-issuer
 fi
 
-# The federation's discovery URL, which fed_generate builds everything
-# else from, and the metadata verifier takes from the environment
-# (docker-compose.yaml): the `discovery` service's, or director-0's
-# (`director-discovery`), or the directors' shared name
-# (`director-ha` too); in `tiny`, the one host's; for a standalone
-# origin, its own.
+# The federation's discovery URL, from which fed_generate builds the
+# rest, and which the metadata verifier takes from the environment
+# (docker-compose.yaml): the `discovery` service's; director-0's
+# (`director-discovery`), or the directors' shared name (with
+# `director-ha` too); in `tiny`, the one host's; for a standalone origin,
+# its own.
 case "${fed_topology}" in
   tiny)       FED_DISCOVERY_URL=https://fed:8444 ;;
   standalone) FED_DISCOVERY_URL=https://origin-0:8444 ;;
@@ -917,6 +913,18 @@ fed_write() {
     cat "${fed_write_tmp}" >"$1"
   fi
   rm -f "${fed_write_tmp}"
+}
+
+# Write value $2 as the one line of framework/var/generated/$1.
+fed_write_value() {
+  printf '%s\n' "$2" | fed_write "framework/var/generated/$1"
+}
+
+# The head of a generated configuration layer, which the caller follows
+# with a blank line and the settings.
+fed_layer_head() {
+  printf -- '---\n'
+  printf '# Generated by %s. Do not edit.\n' "${progname}"
 }
 
 # The arguments as a YAML flow sequence of strings, e.g.
@@ -967,13 +975,13 @@ fed_own_issuer_url() {
 
 # origin-2's exports (`topo-multi-owner`), one per line: its federation
 # prefix, and the origins' namespace that it mirrors, whose capabilities
-# it has. /public/other is like /public, nested in it, and /other like
-# /protected-a. It has nothing like /protected-b. Where /public is
-# exported, /public/secret, nested in it too, has /protected-a's
-# capabilities but mirrors no namespace (`-`): a protected prefix inside a
-# public one, for the auth suite's nested-protected check. It is not
-# inside /public/other, since one native origin cannot serve one export
-# inside another (their routes conflict).
+# it has. /public/other mirrors /public, nested in it, and /other
+# /protected-a; nothing mirrors /protected-b. Where /public is exported,
+# /public/secret, also nested in it, mirrors nothing (`-`) but has
+# /protected-a's capabilities: a protected prefix inside a public one,
+# for the auth suite's nested-protected check. It is not inside
+# /public/other, since one native origin cannot serve one export inside
+# another (their routes conflict).
 fed_owner_exports() {
   for ns in ${fed_namespaces}; do
     case "${ns}" in
@@ -1048,13 +1056,14 @@ fed_cache_line() {
 }
 
 # Write stdin to file $2 in service $1's generated layer,
-# framework/var/generated/instance/<svc>/ (its /fed/generated.instance),
-# or remove the file: fed_instance_rm. fed_prepare_dirs makes the
-# directories, which are never replaced, since each is bind-mounted.
+# framework/var/generated/instance/<svc>/ (its /fed/generated.instance).
+# fed_generate makes the directories, which are never replaced, since
+# each is bind-mounted.
 fed_instance_write() {
   fed_write "framework/var/generated/instance/$1/$2"
 }
 
+# Remove file $2 from service $1's generated layer.
 fed_instance_rm() {
   rm -f "framework/var/generated/instance/$1/$2"
 }
@@ -1098,11 +1107,9 @@ fed_s3_bucket() {
 # gives it an issuer, which it does only for an export that takes writes
 # or needs a token to read, $4 is the issuer URL to pin and $5 the JWKS
 # file whose keys that issuer adds; either may be empty. $6, if given, is
-# its S3 bucket. Under `origin-export-templates`, /protected-b gets
-# authorization templates of its own, which its issuer applies in place
-# of the global Issuer.AuthorizationTemplates
-# (framework/config.d/base/40-origin.yaml); the issuer suite expects
-# these.
+# its S3 bucket. Under `origin-export-templates`, /protected-b gets the
+# issuer suite's authorization templates, in place of the global
+# Issuer.AuthorizationTemplates (framework/config.d/base/40-origin.yaml).
 fed_export_entry() {
   fed_namespace_caps "$2"
   printf -- '    - FederationPrefix: %s\n' "$1"
@@ -1123,10 +1130,10 @@ fed_export_entry() {
   fi
 }
 
+# The head of an Origin.Exports layer.
 fed_exports_header() {
-  printf -- '---\n'
-  printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-  printf 'Origin:\n  Exports:\n'
+  fed_layer_head
+  printf '\nOrigin:\n  Exports:\n'
 }
 
 # The origins' exports, of the namespaces in ORIGIN_NAMESPACES, as a
@@ -1160,6 +1167,18 @@ fed_origin_exports() {
   done
 }
 
+# Set fed_python to the Python that pyproject.toml requires, in the
+# project's environment, which uv makes, fetching Python if need be.
+# fed.sh runs it straight, not under `uv run`, so that
+# framework/control.py's parent is fed.sh.
+fed_require_python() {
+  [ -z "${fed_python:-}" ] || return 0
+  command -v uv >/dev/null 2>&1 \
+      || die "uv is missing; see https://docs.astral.sh/uv/"
+  fed_python=$(uv run --quiet --frozen --no-dev python -c 'import sys; print(sys.executable)') \
+      || die "uv cannot provide the Python that pyproject.toml requires"
+}
+
 # The external issuer's JWKS: the public keys of
 # framework/var/issuer-keys/issuer/, each a .jwks beside its .pem (see
 # fed_key_make).
@@ -1179,12 +1198,13 @@ print()
 EOF
 }
 
+# Write framework/var/generated/: the configuration layers that the
+# presets imply, and what the tests read about the shape.
 fed_generate() {
   # Every service, dev included, gets its federation URLs from here. In
   # `tiny`, one host is everything. A standalone origin is its own
   # discovery host, and has no director or registry. The federation's
-  # JWKS is its directors', or the standalone origin's. The discovery
-  # URL is FED_DISCOVERY_URL's (see above).
+  # JWKS is its directors', or the standalone origin's.
   fed_discovery_url=${FED_DISCOVERY_URL}
   case "${fed_topology}" in
     tiny)
@@ -1222,8 +1242,8 @@ fed_generate() {
   fed_jwks_uri="${fed_director_url:-${fed_origin_url}}/.well-known/issuer.jwks"
   # The connection broker (`origin-broker`) is director-0's. A director
   # that serves the federation's metadata (`director-discovery`) names
-  # its own broker, which Pelican turns on by default
-  # (Director.EnableBroker), whether or not an origin uses it.
+  # its own broker, which is on by default (Director.EnableBroker),
+  # whether or not an origin uses it.
   fed_broker_url=""
   if [ "${ORIGIN_BROKER}" = true ] || [ "${DIRECTOR_DISCOVERY}" = true ]; then
     fed_broker_url=${fed_director_url}
@@ -1231,8 +1251,7 @@ fed_generate() {
 
   # Pelican refuses a standalone origin that is told where a federation is.
   {
-    printf -- '---\n'
-    printf '# Generated by %s. Do not edit.\n' "${progname}"
+    fed_layer_head
     if [ "${fed_topology}" != standalone ]; then
       printf '\nFederation:\n'
       printf '  DiscoveryUrl: %s\n' "${fed_discovery_url}"
@@ -1247,39 +1266,35 @@ fed_generate() {
   # them, e.g. for one service. Every server acts on the EnableOIDC flags
   # of the modules it runs.
   {
-    printf -- '---\n'
-    printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-    printf 'Logging:\n  Level: %s\n' "${PELICAN_LOG_LEVEL}"
+    fed_layer_head
+    printf '\nLogging:\n  Level: %s\n' "${PELICAN_LOG_LEVEL}"
     for module in Origin Cache Director Registry; do
       printf '\n%s:\n  EnableOIDC: %s\n' "${module}" "${ENABLE_OIDC}"
     done
   } | fed_write framework/var/generated/conf/50-knobs.yaml
 
-  # The identity provider (`auth-oidc-local`): every server finds its
-  # endpoints by discovery at OIDC.Issuer, and takes its users' groups
-  # from the `groups` claim where Issuer.GroupSource is `oidc`, which only
-  # the oidc suite sets, for a while. CILogon (`auth-oidc-cilogon`): the
-  # same discovery, at https://cilogon.org. generated/oidc names the
-  # framework's own provider, which alone the tests can log in through,
-  # or says `off`.
+  # The servers' OIDC provider, found by discovery at OIDC.Issuer: the
+  # identity provider (`auth-oidc-local`), from whose `groups` claim a
+  # server takes its users' groups where Issuer.GroupSource is `oidc`
+  # (which only the oidc suite sets, for a while); or CILogon
+  # (`auth-oidc-cilogon`). generated/oidc names the framework's own
+  # provider, the only one the tests can log in through, or says `off`.
   if fed_has_profile idp; then
     {
-      printf -- '---\n'
-      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-      printf 'OIDC:\n  Issuer: https://idp:9007\n'
+      fed_layer_head
+      printf '\nOIDC:\n  Issuer: https://idp:9007\n'
       printf 'Issuer:\n  OIDCGroupClaim: groups\n'
     } | fed_write framework/var/generated/conf/60-oidc.yaml
-    printf 'https://idp:9007\n' | fed_write framework/var/generated/oidc
+    fed_write_value oidc https://idp:9007
   elif [ "${OIDC_CILOGON}" = true ]; then
     {
-      printf -- '---\n'
-      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-      printf 'OIDC:\n  Issuer: https://cilogon.org\n'
+      fed_layer_head
+      printf '\nOIDC:\n  Issuer: https://cilogon.org\n'
     } | fed_write framework/var/generated/conf/60-oidc.yaml
-    printf 'off\n' | fed_write framework/var/generated/oidc
+    fed_write_value oidc off
   else
     rm -f framework/var/generated/conf/60-oidc.yaml
-    printf 'off\n' | fed_write framework/var/generated/oidc
+    fed_write_value oidc off
   fi
 
   # The `discovery` service's documents. `tiny` and `standalone` run no
@@ -1290,10 +1305,10 @@ fed_generate() {
     printf '  "discovery_endpoint": "%s",\n' "${fed_discovery_url}"
     printf '  "director_endpoint": "%s",\n' "${fed_director_url}"
     printf '  "director_advertise_endpoints": [\n'
-    first=1
+    first=yes
     for d in ${directors}; do
-      [ "${first}" -eq 1 ] || printf ',\n'
-      first=0
+      [ -n "${first}" ] || printf ',\n'
+      first=""
       printf '    "%s"' "${d}"
     done
     printf '\n  ],\n'
@@ -1312,35 +1327,33 @@ fed_generate() {
     printf '}\n'
   } | fed_write framework/var/generated/openid-configuration.json
 
-  # Read by test.py and init-data.py, which run in framework/var
-  # (hence the relative paths). issuer-urls has the issuer URL the origins
-  # give each namespace, or would give it: /public, which has none unless
-  # it takes writes (`origin-public-writes`), and any namespace the shape
-  # does not export.
+  # What test.py and init-data.py read about the shape. They run in
+  # framework/var, hence the relative paths. issuer-urls has the issuer
+  # URL the origins give each namespace, or would give it: /public, which
+  # has none unless it takes writes (`origin-public-writes`), and any
+  # namespace the shape does not export.
   for ns in public protected-a protected-b; do
     printf '%s %s\n' "${ns}" "$(fed_issuer_url "/${ns}")"
   done | fed_write framework/var/generated/issuer-urls
-  printf '%s\n' "${fed_origin_url}" | fed_write framework/var/generated/origin-web-url
-  printf '%s\n' "${fed_origin_key_dir}" | fed_write framework/var/generated/origin-key-dir
-  printf '%s\n' "${EXTERNAL_ISSUER}" | fed_write framework/var/generated/external-issuer
-  printf '%s\n' "${fed_federation_url}" | fed_write framework/var/generated/federation-url
-  printf '%s\n' "${fed_topology}" | fed_write framework/var/generated/topology
-  printf '%s\n' "${ORIGIN_VARIANT}" | fed_write framework/var/generated/origin-variant
-  printf '%s\n' "${ORIGIN_BROKER}" | fed_write framework/var/generated/origin-broker
-  printf '%s\n' "${ORIGIN_FIREWALLED}" | fed_write framework/var/generated/origin-firewalled
-  printf '%s\n' "${DIRECTOR_DEFAULT_RESPONSE}" \
-      | fed_write framework/var/generated/director-default-response
-  printf '%s\n' "${REGISTRY_REQUIRE_APPROVAL}" \
-      | fed_write framework/var/generated/registry-approval
+  fed_write_value origin-web-url "${fed_origin_url}"
+  fed_write_value origin-key-dir "${fed_origin_key_dir}"
+  fed_write_value external-issuer "${EXTERNAL_ISSUER}"
+  fed_write_value federation-url "${fed_federation_url}"
+  fed_write_value topology "${fed_topology}"
+  fed_write_value origin-variant "${ORIGIN_VARIANT}"
+  fed_write_value origin-broker "${ORIGIN_BROKER}"
+  fed_write_value origin-firewalled "${ORIGIN_FIREWALLED}"
+  fed_write_value director-default-response "${DIRECTOR_DEFAULT_RESPONSE}"
+  fed_write_value registry-approval "${REGISTRY_REQUIRE_APPROVAL}"
 
   # The transfer API, origin-0's (`origin-transfer-api`) or a transfer
-  # server's own (`topo-transfer-server`): its URL; the issuer of its
-  # tokens, and the directory of the key that signs them, origin-0's own
-  # even when the exports trust an external issuer, or the transfer
-  # server's local issuer, which is its web URL; the service that serves
-  # it; and `exports` where it confines jobs to the origin's exports, or
-  # `none` for a transfer server, which confines them to nothing
-  # (transfer/transfer.go in Pelican).
+  # server's (`topo-transfer-server`): its URL; the issuer of its tokens
+  # (origin-0's own even when the exports trust an external issuer, or
+  # the transfer server's local issuer, its web URL); the directory of
+  # the key that signs them; the service that serves it; and `exports`
+  # where it confines jobs to the origin's exports, or `none` for a
+  # transfer server, which confines them to nothing (transfer/transfer.go
+  # in Pelican).
   if [ "${TRANSFER_SERVER}" = true ]; then
     printf '%s %s %s %s %s\n' https://transfer:8444 https://transfer:8444 \
         issuer-keys/transfer transfer none
@@ -1353,16 +1366,12 @@ fed_generate() {
   else
     printf 'off\n'
   fi | fed_write framework/var/generated/transfer-api
-  printf '%s\n' "${ORIGIN_POSC}" | fed_write framework/var/generated/origin-posc
-  printf '%s\n' "${ORIGIN_ENABLE_ISSUER}" \
-      | fed_write framework/var/generated/origin-enable-issuer
-  printf '%s\n' "${ORIGIN_ATOMIC_UPLOADS}" \
-      | fed_write framework/var/generated/origin-atomic-uploads
-  printf '%s\n' "${ORIGIN_CACHE_CONTROL}" \
-      | fed_write framework/var/generated/origin-cache-control
-  printf '%s\n' "${ORIGIN_MULTIUSER}" | fed_write framework/var/generated/origin-multiuser
-  printf '%s\n' "${SERVER_DROP_PRIVILEGES}" \
-      | fed_write framework/var/generated/server-drop-privileges
+  fed_write_value origin-posc "${ORIGIN_POSC}"
+  fed_write_value origin-enable-issuer "${ORIGIN_ENABLE_ISSUER}"
+  fed_write_value origin-atomic-uploads "${ORIGIN_ATOMIC_UPLOADS}"
+  fed_write_value origin-cache-control "${ORIGIN_CACHE_CONTROL}"
+  fed_write_value origin-multiuser "${ORIGIN_MULTIUSER}"
+  fed_write_value server-drop-privileges "${SERVER_DROP_PRIVILEGES}"
   if [ "${ORIGIN_METADATA}" = true ]; then
     printf '%s\n' "${ORIGIN_METADATA_MODE}"
   else
@@ -1383,7 +1392,7 @@ fed_generate() {
       fed_version=custom
     fi
   done
-  printf '%s\n' "${fed_version}" | fed_write framework/var/generated/pelican-version
+  fed_write_value pelican-version "${fed_version}"
 
   # One line per exported namespace: its prefix and capabilities. The
   # tests read it to know what each namespace should allow.
@@ -1417,8 +1426,8 @@ fed_generate() {
   # namespace it mirrors (`-` for none; see fed_owner_exports), its
   # capabilities, and the issuer URL it gives the prefix, or would give it
   # (/public/other has none, unless /public takes writes). origin-2 always
-  # runs its own issuer
-  # (see docker-compose.yaml). Both are empty without another owner.
+  # runs its own issuer (see docker-compose.yaml). Both are empty without
+  # another owner.
   {
     if fed_has_profile multi-owner; then
       printf '%s %s %s\n' "$(fed_origin_line origin-2 2)" issuer-keys/origin-2 \
@@ -1483,17 +1492,15 @@ fed_generate() {
   # its layer, which beats the shared one.
   for svc in origin-0 origin-1; do
     if [ "${ORIGIN_VARIANT}" = s3 ]; then
-      fed_origin_exports "${svc}" "${pin_issuers}" | fed_instance_write "${svc}" 60-origin-exports.yaml
+      fed_origin_exports "${svc}" "${pin_issuers}" \
+          | fed_instance_write "${svc}" 60-origin-exports.yaml
     else
       fed_instance_rm "${svc}" 60-origin-exports.yaml
     fi
   done
 
-  # origin-2, another owner (`topo-multi-owner`), with an issuer and a key
-  # of its own: /other is like /protected-a, and /public/other like
-  # /public, but nested in it; and /public/secret, nested in /public too,
-  # with /protected-a's capabilities (see fed_owner_exports). It has
-  # nothing like /protected-b. Its layer beats the shared one above.
+  # origin-2's exports (`topo-multi-owner`; see fed_owner_exports), in its
+  # own layer, which beats the shared one.
   if fed_has_profile multi-owner; then
     {
       fed_exports_header
@@ -1518,9 +1525,8 @@ fed_generate() {
   # `registry-approval`, nothing serves until an administrator approves its
   # registration, which the federation suite's `ready` scenario does.
   {
-    printf -- '---\n'
-    printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-    printf 'Registry:\n'
+    fed_layer_head
+    printf '\nRegistry:\n'
     if fed_has_profile multi-owner; then
       printf '  RequireKeyChaining: false\n'
     fi
@@ -1531,9 +1537,8 @@ fed_generate() {
   # The directors: where a GET of a bare path goes
   # (`director-default-origin`).
   {
-    printf -- '---\n'
-    printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-    printf 'Director:\n  DefaultResponse: %s\n' "${DIRECTOR_DEFAULT_RESPONSE}"
+    fed_layer_head
+    printf '\nDirector:\n  DefaultResponse: %s\n' "${DIRECTOR_DEFAULT_RESPONSE}"
   } | fed_write framework/var/generated/conf/60-director.yaml
 
   # The directors that serve the federation's metadata
@@ -1545,9 +1550,8 @@ fed_generate() {
     if [ "${DIRECTOR_DISCOVERY}" = true ] \
         && { [ "${svc}" = director-0 ] || [ "${DIRECTOR_HA}" = true ]; }; then
       {
-        printf -- '---\n'
-        printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-        printf 'Director:\n  EnableFederationMetadataHosting: true\n'
+        fed_layer_head
+        printf '\nDirector:\n  EnableFederationMetadataHosting: true\n'
       } | fed_instance_write "${svc}" 60-discovery.yaml
     else
       fed_instance_rm "${svc}" 60-discovery.yaml
@@ -1556,17 +1560,15 @@ fed_generate() {
 
   # The load balancer in front of the directors (`director-ha`): each
   # director's external URL is the shared name, which the tokens its web
-  # API takes name, its advertise URL its own, where the servers reach
-  # it, and its name its own too, which Pelican would otherwise take from
-  # the external URL (GetServerMetadata in server_utils/sitename.go),
-  # and so give both directors one. generated/director-ha tells the
-  # tests.
+  # API takes must name; its advertise URL, where the servers reach it,
+  # is its own; and so is its name, which Pelican would otherwise take
+  # from the external URL (GetServerMetadata in server_utils/sitename.go),
+  # giving both directors one. generated/director-ha tells the tests.
   for svc in ${fed_group_directors}; do
     if [ "${DIRECTOR_HA}" = true ]; then
       {
-        printf -- '---\n'
-        printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-        printf 'Server:\n  ExternalWebUrl: %s\n\n' "${fed_director_url}"
+        fed_layer_head
+        printf '\nServer:\n  ExternalWebUrl: %s\n\n' "${fed_director_url}"
         printf 'Director:\n  AdvertiseUrl: https://%s:8444\n\n' "${svc}"
         printf 'Xrootd:\n  Sitename: %s\n' "${svc}"
       } | fed_instance_write "${svc}" 60-ha.yaml
@@ -1574,7 +1576,7 @@ fed_generate() {
       fed_instance_rm "${svc}" 60-ha.yaml
     fi
   done
-  printf '%s\n' "${DIRECTOR_HA}" | fed_write framework/var/generated/director-ha
+  fed_write_value director-ha "${DIRECTOR_HA}"
 
   # How long the origins' embedded issuer's tokens last
   # (`origin-short-tokens`): Pelican's defaults otherwise. issuer-lifetimes
@@ -1584,9 +1586,8 @@ fed_generate() {
   # (see fed_export_entry).
   if [ "${ISSUER_SHORT_TOKENS}" = true ]; then
     {
-      printf -- '---\n'
-      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-      printf 'Issuer:\n'
+      fed_layer_head
+      printf '\nIssuer:\n'
       printf '  AccessTokenLifetime: 60s\n'
       printf '  RefreshTokenLifetime: 240s\n'
       printf '  RefreshTokenGracePeriod: 20s\n'
@@ -1597,12 +1598,11 @@ fed_generate() {
     rm -f framework/var/generated/conf/60-issuer.yaml
     printf '3600 604800 300 600\n'
   fi | fed_write framework/var/generated/issuer-lifetimes
-  printf '%s\n' "${ORIGIN_EXPORT_TEMPLATES}" \
-      | fed_write framework/var/generated/export-templates
+  fed_write_value export-templates "${ORIGIN_EXPORT_TEMPLATES}"
 
   # Each origin's backend (`origin-https`, `origin-httpsv2`, `origin-s3`,
   # `origin-s3v2`): its store, framework/var/data/origin/<N>, is
-  # /srv/origin-<N> on the backend, which the S3 server serves as bucket
+  # /srv/origin-<N> on the backend, served by the S3 server as bucket
   # origin-<N>, in which each export's StoragePrefix leads to its
   # directory. An s3 origin's exports name buckets of their own instead
   # (fed_s3_bucket).
@@ -1610,15 +1610,13 @@ fed_generate() {
     case "${ORIGIN_VARIANT}" in
       https|httpsv2)
           {
-            printf -- '---\n'
-            printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-            printf 'Origin:\n  HttpServiceUrl: https://webdav:8444/%s\n' "${svc}"
+            fed_layer_head
+            printf '\nOrigin:\n  HttpServiceUrl: https://webdav:8444/%s\n' "${svc}"
           } | fed_instance_write "${svc}" 60-backend.yaml ;;
       s3|s3v2)
           {
-            printf -- '---\n'
-            printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-            printf 'Origin:\n  S3Bucket: %s\n' "${svc}"
+            fed_layer_head
+            printf '\nOrigin:\n  S3Bucket: %s\n' "${svc}"
           } | fed_instance_write "${svc}" 60-backend.yaml ;;
       *)  fed_instance_rm "${svc}" 60-backend.yaml ;;
     esac
@@ -1651,9 +1649,8 @@ fed_generate() {
       printf ']\n'
     } | fed_write framework/var/generated/multiuser-mapfile.json
     {
-      printf -- '---\n'
-      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-      printf 'Origin:\n'
+      fed_layer_head
+      printf '\nOrigin:\n'
       printf '  ScitokensNameMapFile: /fed/generated/multiuser-mapfile.json\n'
       printf '  ScitokensDefaultUser: xrootd\n'
     } | fed_write framework/var/generated/conf/60-multiuser.yaml
@@ -1668,9 +1665,8 @@ fed_generate() {
   # in each origin's store, which the origin creates.
   if [ "${ORIGIN_ATOMIC_UPLOADS}" = true ]; then
     {
-      printf -- '---\n'
-      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-      printf 'Origin:\n  UploadTempLocation: /data/.in-progress\n'
+      fed_layer_head
+      printf '\nOrigin:\n  UploadTempLocation: /data/.in-progress\n'
     } | fed_write framework/var/generated/conf/60-atomic-uploads.yaml
   else
     rm -f framework/var/generated/conf/60-atomic-uploads.yaml
@@ -1681,9 +1677,8 @@ fed_generate() {
   # back to the origin's web URL.
   if [ "${ORIGIN_SSH_TUNNEL}" = true ]; then
     {
-      printf -- '---\n'
-      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-      printf 'Origin:\n  SSH:\n    TunnelCallback: true\n'
+      fed_layer_head
+      printf '\nOrigin:\n  SSH:\n    TunnelCallback: true\n'
     } | fed_write framework/var/generated/conf/60-ssh-tunnel.yaml
   else
     rm -f framework/var/generated/conf/60-ssh-tunnel.yaml
@@ -1696,9 +1691,8 @@ fed_generate() {
   # so it gets a copy of the CA's key, once `init` has made one.
   if [ "${ORIGIN_BROKER}" = true ]; then
     {
-      printf -- '---\n'
-      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-      printf 'Origin:\n  EnableBroker: true\n\n'
+      fed_layer_head
+      printf '\nOrigin:\n  EnableBroker: true\n\n'
       printf 'Cache:\n  EnableBroker: false\n'
     } | fed_write framework/var/generated/conf/60-broker.yaml
     for svc in ${fed_group_directors}; do
@@ -1706,9 +1700,8 @@ fed_generate() {
         fed_instance_write "${svc}" ca.key <framework/var/certs/ca.key
       fi
       {
-        printf -- '---\n'
-        printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-        printf 'Server:\n  TLSCAKey: /fed/generated.instance/ca.key\n'
+        fed_layer_head
+        printf '\nServer:\n  TLSCAKey: /fed/generated.instance/ca.key\n'
       } | fed_instance_write "${svc}" 60-broker.yaml
     done
   else
@@ -1736,13 +1729,39 @@ fed_generate() {
       done <framework/var/generated/caches
     fi
   } | fed_write framework/var/generated/tiering
+  for svc in cache-0 cache-1 cache-2; do
+    if [ "${CACHE_TIERING}" = true ]; then
+      disable_redirect=false
+      if [ "${svc}" = cache-1 ]; then
+        disable_redirect=true
+      fi
+      {
+        fed_layer_head
+        printf '\nCache:\n'
+        printf '  TieringThreshold: 16MB\n'
+        printf '  TieringRedirectExpiry: 30s\n'
+        printf '  TieringDisableRedirect: %s\n' "${disable_redirect}"
+        printf '  TieringTargets:\n'
+        printf '    - ServiceUrl: https://s3:8444\n'
+        printf '      Region: us-east-1\n'
+        printf '      UrlStyle: path\n'
+        printf '      Bucket: tier\n'
+        printf '      Prefix: %s\n' "${svc}"
+        printf '      MaxSize: 2GB\n'
+        printf '      AccessKeyfile: /fed/generated/s3-access-key\n'
+        printf '      SecretKeyfile: /fed/generated/s3-secret-key\n'
+      } | fed_instance_write "${svc}" 60-tiering.yaml
+    else
+      fed_instance_rm "${svc}" 60-tiering.yaml
+    fi
+  done
+
   # The V2 caches' memory cache (`cache-memory`), which only the cache
   # module reads.
   if [ -n "${CACHE_MEMORY_SIZE}" ]; then
     {
-      printf -- '---\n'
-      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-      printf 'Cache:\n'
+      fed_layer_head
+      printf '\nCache:\n'
       printf '  MemoryCacheSize: %s\n' "${CACHE_MEMORY_SIZE}"
     } | fed_write framework/var/generated/conf/60-cache-store.yaml
   else
@@ -1750,17 +1769,17 @@ fed_generate() {
   fi
 
   # The bounded store (`cache-small`), in each cache's own layer, since
-  # every server checks the water marks it is given, and the kinds of
-  # cache take different settings. A V2 cache takes the water marks. An
+  # the kinds of cache take different settings, and every server checks
+  # the water marks it is given. A V2 cache takes the water marks. An
   # XRootD cache's water marks are of the whole filesystem under its
-  # store, so it takes the size of its own files instead
+  # store, so it bounds its own files instead
   # (Cache.Files{Base,Nominal,Max}Size, XRootD's `pfc.diskusage ...
   # files`), from the low mark to the high one, beside the water marks
-  # that Pelican then requires, restated at Pelican's defaults. Sizes end
-  # in `m`, MiB, which Pelican's check, the V2 cache, and XRootD all
-  # take; the check refuses `MB`, and XRootD reads a bare number as a
-  # share of the disk. generated/eviction has a line per cache whose
-  # store is bounded: service, and its high and low marks in bytes.
+  # that Pelican then requires, at Pelican's defaults. Sizes end in `m`
+  # (MiB), which Pelican's check, the V2 cache, and XRootD all take; the
+  # check refuses `MB`, and XRootD reads a bare number as a share of the
+  # disk. generated/eviction has a line per bounded cache: service, and
+  # its high and low marks in bytes.
   for svc in fed cache-0 cache-1 cache-2; do
     kind=$(awk -v svc="${svc}" '$1 == svc { print $3 }' framework/var/generated/caches)
     if [ -z "${CACHE_HIGH_WATER_MIB}" ] || [ -z "${kind}" ]; then
@@ -1768,9 +1787,8 @@ fed_generate() {
       continue
     fi
     {
-      printf -- '---\n'
-      printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-      printf 'Cache:\n'
+      fed_layer_head
+      printf '\nCache:\n'
       if [ "${kind}" = xrootd ]; then
         printf '  HighWaterMark: 89\n'
         printf '  LowWaterMark: 85\n'
@@ -1792,34 +1810,6 @@ fed_generate() {
       done <framework/var/generated/caches
     fi
   } | fed_write framework/var/generated/eviction
-
-  for svc in cache-0 cache-1 cache-2; do
-    if [ "${CACHE_TIERING}" = true ]; then
-      disable_redirect=false
-      if [ "${svc}" = cache-1 ]; then
-        disable_redirect=true
-      fi
-      {
-        printf -- '---\n'
-        printf '# Generated by %s. Do not edit.\n\n' "${progname}"
-        printf 'Cache:\n'
-        printf '  TieringThreshold: 16MB\n'
-        printf '  TieringRedirectExpiry: 30s\n'
-        printf '  TieringDisableRedirect: %s\n' "${disable_redirect}"
-        printf '  TieringTargets:\n'
-        printf '    - ServiceUrl: https://s3:8444\n'
-        printf '      Region: us-east-1\n'
-        printf '      UrlStyle: path\n'
-        printf '      Bucket: tier\n'
-        printf '      Prefix: %s\n' "${svc}"
-        printf '      MaxSize: 2GB\n'
-        printf '      AccessKeyfile: /fed/generated/s3-access-key\n'
-        printf '      SecretKeyfile: /fed/generated/s3-secret-key\n'
-      } | fed_instance_write "${svc}" 60-tiering.yaml
-    else
-      fed_instance_rm "${svc}" 60-tiering.yaml
-    fi
-  done
 
   # The external issuer (`auth-external-issuer`), which the discovery host
   # serves from here; see framework/etc/nginx-discovery.conf. Without it,
@@ -1862,11 +1852,10 @@ fed_generate() {
       fed_write "framework/var/generated/${f}" <"framework/etc/${f}"
     fi
   done
-  # The OIDC client that every server is (see framework/presets/
-  # auth-oidc-local.sh and auth-oidc-cilogon.sh): yours, from local/etc/,
-  # for CILogon or a provider of your own; or else one made at random,
-  # once, which the identity provider reads too, and takes as its one
-  # client.
+  # The OIDC client that every server is (`auth-oidc-local`,
+  # `auth-oidc-cilogon`): yours, from local/etc/, for CILogon or a
+  # provider of your own; or else one made at random, once, which the
+  # identity provider takes as its one client.
   for f in oidc-client-id oidc-client-secret; do
     if [ -f "local/etc/${f}" ]; then
       fed_write "framework/var/generated/${f}" <"local/etc/${f}"
@@ -1904,8 +1893,7 @@ EOF
   # origin reach its backend (Origin.HttpAuthTokenFile, at
   # /fed/generated/http-auth-token in the origin), through the
   # `webdav-gate` service, which records what the origin sends. Made
-  # once, at random: the backend checks nothing, so nothing else needs
-  # it.
+  # once, at random: the backend checks nothing.
   if [ ! -s framework/var/generated/http-auth-token ]; then
     openssl rand -hex 24 | fed_write framework/var/generated/http-auth-token
   fi
@@ -1926,15 +1914,10 @@ fed_prepare_dirs() {
     mkdir -p "framework/var/control/config/${svc}"
   done
   mkdir -p framework/var/control/requests
-  mkdir -p \
-      framework/var/data/origin/0 framework/var/data/origin/1 \
-      framework/var/data/origin/2 \
-      framework/var/data/cache/0 framework/var/data/cache/1 \
-      framework/var/data/cache/2 framework/var/data/cache/fed \
-      framework/var/data/lab-server \
-      framework/var/data/metadata framework/var/data/tier \
-      framework/var/data/webdav-gate framework/var/data/idp framework/var/grafana \
-      framework/var/issuer-jwks framework/var/test-keys
+  for store in ${fed_stores} lab-server metadata tier webdav-gate idp; do
+    mkdir -p "framework/var/data/${store}"
+  done
+  mkdir -p framework/var/grafana framework/var/issuer-jwks framework/var/test-keys
   # Written over SSH by `alice`, whose uid is unrelated to yours.
   chmod 0777 framework/var/data/lab-server
   # Each export's storage (fed_storage_dir), which the s3 service mounts
@@ -2019,6 +2002,7 @@ fed_have_binaries() {
   return 0
 }
 
+# Download PELICAN_TAG's binaries (see above).
 fed_fetch_binaries() {
   version=${PELICAN_TAG#v}
   printf 'Downloading the %s binaries ...\n' "${version}"
@@ -2049,6 +2033,7 @@ fed_fetch_binaries() {
 # Pelican ignores the .jwks beside each key. `keys list` reads it, and
 # the external issuer (`auth-external-issuer`) publishes its own.
 
+# Die unless $1 is a target of `keys add` or `keys rotate`.
 fed_key_check_target() {
   for target in ${fed_services} ${fed_key_others} ${fed_groups} all; do
     if [ "${target}" = "$1" ]; then
@@ -2093,6 +2078,7 @@ fed_key_sets() {
   esac
 }
 
+# The NN of each key in issuer-key directories $@, one per line.
 fed_key_prefixes() {
   for dir in "$@"; do
     for key in "framework/var/issuer-keys/${dir}"/[0-9][0-9]-*.pem; do
@@ -2103,15 +2089,21 @@ fed_key_prefixes() {
   done
 }
 
-# Create key $1 in the first directory named and copy it to the rest.
-# `key create` exists only in pelican-server.
+# Die unless the host's pelican-server, which alone has `key create`, is
+# there.
+fed_require_pelican_server() {
+  [ -x "${fed_host_bin}/pelican-server" ] \
+      || die "${fed_host_bin}/pelican-server is missing;" \
+             "run './${progname} init' first"
+}
+
+# Create key $1 in the first issuer-key directory of $2... and copy it to
+# the rest.
 fed_key_make() {
   name=$1; shift
   first=$1
 
-  [ -x "${fed_host_bin}/pelican-server" ] \
-      || die "${fed_host_bin}/pelican-server is missing;" \
-             "run './${progname} init' first"
+  fed_require_pelican_server
   for dir in "$@"; do
     [ -w "framework/var/issuer-keys/${dir}" ] \
         || die "framework/var/issuer-keys/${dir}/ is not yours to write: under" \
@@ -2229,8 +2221,10 @@ fed_key_publish() {
   fi
 }
 
-# Test keys, for the credentials in framework/testlib/credentials.py. Like
-# the issuer keys, they are created once and never replaced:
+# Create test key $1 and its public key (JWKS) $2, unless both exist.
+# The test keys are for the credentials in
+# framework/testlib/credentials.py, and like the issuer keys, are created
+# once and never replaced:
 #
 #   test-keys/jwks.pem        its public key is issuer-jwks/test.jwks,
 #                             which the origins name in Server.IssuerJwks
@@ -2242,13 +2236,11 @@ fed_key_publish() {
 #
 # The origins mount issuer-jwks/ but not test-keys/, so no server holds
 # any of the private keys.
-fed_test_key_make() {  # $1 = private key, $2 = its public key (JWKS)
+fed_test_key_make() {
   if [ -f "$1" ] && [ -f "$2" ]; then
     return 0
   fi
-  [ -x "${fed_host_bin}/pelican-server" ] \
-      || die "${fed_host_bin}/pelican-server is missing;" \
-             "run './${progname} init' first"
+  fed_require_pelican_server
 
   # `key create` refuses to overwrite a public key, and derives a missing
   # one from an existing private key.
@@ -2296,6 +2288,8 @@ fed_key_new_set() {
   fed_key_make "$(printf '%02d-%s' "${next}" "${stamp}")" "$@"
 }
 
+# Add a key to each keyset that target $2 names, for verb $1 (add or
+# rotate).
 fed_key_new() {
   verb=$1
   target=${2:-}
@@ -2325,6 +2319,12 @@ fed_key_new() {
   esac
 }
 
+# The key ID of the first key in JWKS file $1.
+fed_jwks_kid() {
+  sed -n 's/.*"kid"[^"]*"\([^"]*\)".*/\1/p' "$1" | head -1
+}
+
+# Describe every issuer key and test key.
 fed_key_list() {
   for svc in ${fed_services} ${fed_key_others}; do
     printf '%s\n' "${svc}"
@@ -2335,8 +2335,7 @@ fed_key_list() {
       found=yes
       kid="no .jwks"
       if [ -f "${key%.pem}.jwks" ]; then
-        kid=$(sed -n 's/.*"kid"[^"]*"\([^"]*\)".*/\1/p' "${key%.pem}.jwks" \
-            | head -1)
+        kid=$(fed_jwks_kid "${key%.pem}.jwks")
       fi
       printf '  %-28s %s%s\n' "$(basename -- "${key}")" "${kid}" "${active}"
       active=""
@@ -2353,7 +2352,7 @@ fed_key_list() {
     jwks="framework/var/${key#*:}"
     kid="(missing)"
     if [ -f "framework/var/test-keys/${key%%:*}.pem" ] && [ -f "${jwks}" ]; then
-      kid=$(sed -n 's/.*"kid"[^"]*"\([^"]*\)".*/\1/p' "${jwks}" | head -1)
+      kid=$(fed_jwks_kid "${jwks}")
     fi
     printf '  %-28s %s\n' "${key%%:*}.pem" "${kid}"
   done
@@ -2362,6 +2361,7 @@ fed_key_list() {
   printf 'no server knows unknown.pem.\n'
 }
 
+# The `keys` command.
 fed_keys() {
   case "${1:-list}" in
     list)    fed_key_list ;;
@@ -2376,6 +2376,7 @@ fed_keys() {
 #---------------------------------------------------------------------------
 # Preflight checks for `up` and `restart`.
 
+# The Pelican services that the shape runs, one per line.
 fed_running_services() {
   case "${fed_topology}" in
     tiny)       printf '%s\n' fed; return 0 ;;
@@ -2423,6 +2424,7 @@ fed_certs_current() {
   cmp -s framework/etc/tls.req framework/var/certs/tls.req
 }
 
+# Die if a certificate is missing; warn if one is stale.
 fed_require_certs() {
   for cert in ${fed_certs}; do
     [ -f "${cert}" ] || die "${cert} is missing; run './${progname} init'"
@@ -2436,6 +2438,8 @@ fed_require_certs() {
   fi
 }
 
+# Die unless every running service, and the external issuer if used, has
+# an issuer key, and every test key's JWKS exists.
 fed_require_keys() {
   missing=""
   for svc in $(fed_running_services); do
@@ -2458,23 +2462,12 @@ fed_require_keys() {
   done
 }
 
+# Die if the lab server would start without the SSH key that `init` makes.
 fed_require_lab_key() {
   fed_has_profile lab || return 0
   [ -s framework/var/generated/ssh/authorized_keys ] \
       || die "framework/var/generated/ssh/authorized_keys is empty;" \
              "run './${progname} init' to create the lab server's key pair"
-}
-
-# Set fed_python to the Python that pyproject.toml requires, in the
-# project's environment, which uv makes, fetching Python if need be.
-# fed.sh runs it straight, not under `uv run`, so that
-# framework/control.py's parent is fed.sh.
-fed_require_python() {
-  [ -z "${fed_python:-}" ] || return 0
-  command -v uv >/dev/null 2>&1 \
-      || die "uv is missing; see https://docs.astral.sh/uv/"
-  fed_python=$(uv run --quiet --frozen --no-dev python -c 'import sys; print(sys.executable)') \
-      || die "uv cannot provide the Python that pyproject.toml requires"
 }
 
 # The dev container mounts ~/.gitconfig. This is the only file the
@@ -2506,6 +2499,7 @@ fed_control_start() {
   fed_control_pid=$!
 }
 
+# Stop the control helper, if it runs.
 fed_control_stop() {
   [ -n "${fed_control_pid:-}" ] || return 0
   kill "${fed_control_pid}" 2>/dev/null || true
@@ -2538,7 +2532,7 @@ fed_redact_tokens() {
 #                   with all it printed
 #
 # test.log and control.log, what the tests and the control helper
-# printed, are written there as the tests run (see `test` below). The
+# print, are written there as the tests run (see the `test` command). The
 # tests restart services but never recreate them, so a log covers the
 # whole run, and the startup before it.
 fed_save_logs() {
@@ -2613,12 +2607,9 @@ fed_check_data_shape() {
 # a failure only warns.
 fed_prepare_unprivileged() {
   [ "${SERVER_DROP_PRIVILEGES}" = true ] || return 0
-  for path in framework/var/data/origin/0 framework/var/data/origin/1 \
-      framework/var/data/origin/2 framework/var/data/cache/0 \
-      framework/var/data/cache/1 framework/var/data/cache/2 \
-      framework/var/data/cache/fed; do
-    chmod 0777 "${path}" 2>/dev/null \
-        || warn "could not let the pelican user write ${path}"
+  for store in ${fed_stores}; do
+    chmod 0777 "framework/var/data/${store}" 2>/dev/null \
+        || warn "could not let the pelican user write framework/var/data/${store}"
   done
   if [ -f framework/var/certs/tls.key ]; then
     chmod 0444 framework/var/certs/tls.key 2>/dev/null \
@@ -2626,6 +2617,7 @@ fed_prepare_unprivileged() {
   fi
 }
 
+# Check and prepare what the services need, for `up` and `restart`.
 fed_preflight() {
   fed_require_python
   fed_require_certs
@@ -2641,6 +2633,7 @@ fed_preflight() {
 # Keys are never replaced (a cache's store is sealed to them). To start
 # over, ./reset.sh discards everything.
 
+# The `init` command.
 fed_init() {
   [ $# -eq 0 ] || die_usage "init takes no arguments"
 
@@ -2699,8 +2692,14 @@ fed_init() {
 # services whose profile was turned off, so `down` enables every profile,
 # and `up` removes unselected containers itself.
 
+# Stop and remove every container, whatever its profile.
 fed_down() {
   COMPOSE_PROFILES='*' docker compose down --remove-orphans "$@"
+}
+
+# Each of containers $@ as <ID>/<Compose service>, one per line.
+fed_container_services() {
+  docker inspect --format '{{.Id}}/{{index .Config.Labels "com.docker.compose.service"}}' "$@"
 }
 
 # Stop and remove this project's containers that the selection does not
@@ -2713,9 +2712,7 @@ fed_remove_unselected() {
   gone=""
   gone_services=""
   # shellcheck disable=SC2086  # one container ID per word
-  for ctr in $(docker inspect --format \
-      '{{.Id}}/{{index .Config.Labels "com.docker.compose.service"}}' \
-      ${ids}); do
+  for ctr in $(fed_container_services ${ids}); do
     svc=${ctr#*/}
     case "${keep}" in
       *" ${svc} "*) continue ;;
@@ -2761,9 +2758,7 @@ fed_up() {
   stale_ids=""
   if [ -n "${before}" ]; then
     # shellcheck disable=SC2086  # one container ID per word
-    for ctr in $(docker inspect --format \
-        '{{.Id}}/{{index .Config.Labels "com.docker.compose.service"}}' \
-        ${before} 2>/dev/null); do
+    for ctr in $(fed_container_services ${before} 2>/dev/null); do
       case " ${fed_services} " in
         *" ${ctr#*/} "*)
             stale="${stale} ${ctr#*/}"
@@ -2783,7 +2778,7 @@ fed_up() {
 }
 
 #---------------------------------------------------------------------------
-# Sub-commands. Anything else goes to docker compose.
+# Commands. Anything else goes to docker compose.
 
 cmd="$1"; shift
 
@@ -2837,9 +2832,9 @@ case "${cmd}" in
       exec docker compose -f framework/docker-compose.yaml \
           exec ${no_tty:+"${no_tty}"} dev "$@"
     fi
-    # The logs are saved after the helper puts back what the tests left.
-    # What the helper does for the tests is kept beside them, as
-    # control.log, where their output is kept.
+    # The control helper's output is kept beside the tests', as
+    # control.log. The logs are saved after the helper puts back what the
+    # tests left.
     log_dir=""
     if [ -n "${logs}" ]; then
       log_dir="framework/var/logs/${logs}"

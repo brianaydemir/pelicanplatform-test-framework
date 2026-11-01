@@ -1,18 +1,17 @@
-"""Two owners' namespaces, and which credentials each should accept.
+"""Two owners' namespaces, side by side, and what each should accept.
 
-The namespaces are side by side (`topo-multi-owner`), for the owners
-suite.
+This is for the owners suite (`topo-multi-owner`). Another owner's
+origin (origin-2; common.Owner) exports prefixes that mirror the
+origins' namespaces: /other is like /protected-a, and /public/other like
+/public, nested in it. Each such pair has two sides: `owner`, the other
+owner's prefix, and `origins`, the origins' namespace.
 
-Another owner's origin (origin-2; see common.Owner) exports prefixes
-that mirror the origins' namespaces: /other is like /protected-a, and
-/public/other like /public, nested in it. Each such pair has two sides:
-`owner`, the other owner's prefix, and `origins`, the origins' namespace.
-Each credential below is presented on both sides of each pair. Only a
-token that one side's own key signs and that names that side's own
-issuer should be allowed anything a token decides, and only on that
-side: the owners' keys and issuers are theirs alone. What the side's
-capabilities then allow comes from credentials.decide(), as for the
-origins' own credentials.
+Each credential is presented on both sides of each pair. Only a token
+that one side's own key signs and that names that side's own issuer
+should be allowed anything a token decides, and only on that side: the
+owners' keys and issuers are theirs alone. What the side's capabilities
+then allow comes from credentials.decide(), as for the origins' own
+credentials.
 """
 
 import glob
@@ -160,7 +159,7 @@ def mint(
     out: str,
     profile: str,
 ) -> str | None:
-    """Write cred's token of profile for side of pair to file out; return it.
+    """Write cred's token of profile for side of pair to out, and return it.
 
     Its scopes are for reading and writing the whole namespace, so only
     its key and issuer decide.
@@ -181,14 +180,13 @@ def mint(
         credentials.RWM,
         profile=profile,
     )
-    with open(out, encoding="utf-8") as f:
-        return f.read().strip()
+    return common.read_text(out)
 
 
 def key_ids(key_dir: str) -> tuple[str, ...]:
     """Return the kids of the keys in key_dir, under framework/var.
 
-    They are in the .jwks beside each .pem (see fed_key_make in fed.sh).
+    They are in the .jwks beside each .pem (fed_key_make in fed.sh).
     """
     found: list[str] = []
     for pem in sorted(glob.glob(f"{key_dir}/*.pem")):

@@ -16,10 +16,8 @@ Users come from a JSON file (IDP_USERS), by username:
 
 Every field but the password is optional: preferred_username is the
 username, sub is <issuer>/users/<username>, groups are none, and claims
-are added to what userinfo and the ID token say. The groups come
-whatever the scope, as CILogon's isMemberOf does, since Pelican asks
-for `openid email profile` alone by default (OIDC.Scopes). One client
-is registered, whose ID and secret are in IDP_CLIENT_ID_FILE and
+are added to what userinfo and the ID token say. One client is
+registered, whose ID and secret are in IDP_CLIENT_ID_FILE and
 IDP_CLIENT_SECRET_FILE (the files that Pelican's servers read), and
 whose redirect URIs are any server's OAuth callback (REDIRECT_URI).
 
@@ -262,11 +260,14 @@ class Users:
     def claims(self, username: str, scope: list[str]) -> dict[str, Any]:
         """Return what userinfo and the ID token say of username.
 
-        Which claims depends on scope, the scopes granted: profile claims
-        with `profile`, and email with `email`; sub, iss, and groups
-        always, since Pelican asks for `openid email profile` alone by
-        default (OIDC.Scopes), and reads the groups from whatever claim
-        Issuer.OIDCGroupClaim names, as CILogon sends isMemberOf unasked.
+        Profile claims come with the `profile` scope, and email with
+        `email`. sub, iss, and groups come whatever the scope, as
+        CILogon's isMemberOf does: Pelican asks for `openid email profile`
+        alone by default (OIDC.Scopes), and reads the groups from the
+        claim that Issuer.OIDCGroupClaim names.
+
+        Args:
+            scope: The scopes granted.
         """
         user = self.load().get(username, {})
         sub = str(user.get("sub") or f"{ISSUER}/users/{username}")
@@ -504,17 +505,14 @@ def login_form(action: str, fields: dict[str, str], error: str = "") -> str:
     Any user_code among fields is shown instead, for the user to edit.
     """
     hidden = "".join(
-        f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">' for k, v in fields.items()
+        f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">'
+        for k, v in fields.items()
+        if k != "user_code"
     )
-    message = f'<p class="error">{html.escape(error)}</p>' if error else ""
     shown = ""
     if "user_code" in fields:
         shown = f'<label>Code<input name="user_code" value="{html.escape(fields["user_code"])}"></label>'
-        hidden = "".join(
-            f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">'
-            for k, v in fields.items()
-            if k != "user_code"
-        )
+    message = f'<p class="error">{html.escape(error)}</p>' if error else ""
     body = (
         f'{message}<form method="post" action="{html.escape(action)}">{hidden}{shown}'
         '<label>Username<input name="username" autofocus></label>'
@@ -543,12 +541,11 @@ class Handler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
     server_version = "pelican-testing-idp/1"
+    noted: dict[str, Any]
 
     @override
     def log_message(self, format: str, *args: Any) -> None:
         """Log nothing: record() logs."""
-
-    noted: dict[str, Any]
 
     def record(self, status: int) -> None:
         """Log the request and its status."""

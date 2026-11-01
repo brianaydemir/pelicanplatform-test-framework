@@ -12,13 +12,11 @@
 #   ./smoke.sh --names      list only the shapes' names, one per line
 #   ./smoke.sh --table      list them for framework/matrix.py
 #
-# Named no shapes, it runs those in framework/smoke-shapes.tsv, which
-# framework/matrix.py generates: two baselines, default, which makes only
-# the framework's own choices, and pelican-defaults, only those that
-# Pelican makes when told nothing; and as many other shapes as are
-# useful, each as simple as it can be. Together, they make every pair of
-# choices that the presets offer, but those that would test nothing, or
-# nothing that other shapes don't (see "The smoke matrix" in
+# Given no shapes, it runs those in framework/smoke-shapes.tsv, which
+# framework/matrix.py generates: two baselines, default (the framework's
+# own choices) and pelican-defaults (Pelican's), and as many other
+# shapes, each as simple as it can be, as it takes to make every useful
+# pair of choices that the presets offer (see "The smoke matrix" in
 # docs/development.md). Some shapes also rotate every key, restart, and
 # run every suite again.
 #
@@ -47,9 +45,9 @@ usage() {
   sed -e '1d' -e '/^$/,$d' -e 's/^# \{0,1\}//' "./${progname}"
 }
 
-# The shapes, one per line of framework/smoke-shapes.tsv, but for its
-# comments: each one's name, whether it rotates every key (yes or no),
-# and its presets, separated by tabs. framework/matrix.py writes it.
+# The shapes: each line of framework/smoke-shapes.tsv but its comments,
+# with a shape's name, whether it rotates every key (yes or no), and its
+# presets, separated by tabs.
 shapes_file=framework/smoke-shapes.tsv
 [ -r "${shapes_file}" ] || die "cannot read ${shapes_file}"
 shape_rows() { grep -v -e '^#' -e '^[[:space:]]*$' "${shapes_file}"; }
@@ -68,6 +66,7 @@ shape_rotates() {
       '$1 == shape && $2 == "yes" { found = 1 } END { exit !found }'
 }
 
+# What the shape does after the tests, if anything, for --list.
 shape_notes() {
   if shape_rotates "$1"; then
     printf 'then rotates every key, restarts, and reruns every suite\n'
@@ -127,8 +126,8 @@ mkdir -p "${log_dir}/results" || exit 1
 #---------------------------------------------------------------------------
 # Helpers
 
-# Record a row of the shape's own results (see framework/testlib/report.py).
-# $1 is the step, $2 its status, $3 its seconds.
+# Record a row of the shape's own results (see framework/testlib/report.py):
+# step $1, status $2, and seconds $3.
 record() {
   if [ ! -f "${steps}" ]; then
     printf 'suite\tcase\tstatus\tseconds\tnote\n' >"${steps}"
@@ -136,7 +135,7 @@ record() {
   printf 'smoke\t%s\t%s\t%s\t\n' "$1" "$2" "$3" >>"${steps}"
 }
 
-# Run a step, appending its output to ${log}. $1 is the label.
+# Run step $1, the command $2..., appending its output to ${log}.
 step() {
   label=$1; shift
   printf '  %-24s ' "${label}"
@@ -152,8 +151,9 @@ step() {
   return 1
 }
 
-# ./reset.sh, parking framework/var/bin/ in ${log_dir} meanwhile.
+# Run ./reset.sh, parking framework/var/bin/ in ${log_dir} meanwhile.
 parked="${log_dir}/.bin"
+# Put framework/var/bin/ back, if it is parked.
 unpark() {
   if [ -d "${parked}" ]; then
     mkdir -p framework/var && mv "${parked}" framework/var/bin
@@ -275,8 +275,8 @@ for shape in ${shapes}; do
     result=FAIL
     failed=$(( failed + 1 ))
     ./fed.sh ps --all >"${log_dir}/${shape}.compose.log" 2>&1
-    # Each token's signature cut out, as fed.sh cuts it out of the logs
-    # it keeps (fed_redact_tokens).
+    # With each token's signature cut out, as fed_redact_tokens in fed.sh
+    # does.
     ./fed.sh logs --no-color --timestamps 2>&1 \
         | sed -E 's/(eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,})\.[A-Za-z0-9_-]{8,}/\1.<signature>/g' \
         >>"${log_dir}/${shape}.compose.log"
@@ -292,9 +292,8 @@ for shape in ${shapes}; do
 "
 done
 
-# One table over every shape, and its conversions for CI. Each shape run
-# here replaced its own results; another's, from an earlier run into the
-# same ${log_dir}, are merged too.
+# One table over every shape, and its conversions for CI. Results that an
+# earlier run left in ${log_dir} for other shapes are merged too.
 report_ok=yes
 framework/report.py merge "${log_dir}/results"/*/ >"${log_dir}/results.tsv" \
     && framework/report.py junit "${log_dir}/results.tsv" >"${log_dir}/junit.xml" \
@@ -303,9 +302,6 @@ framework/report.py merge "${log_dir}/results"/*/ >"${log_dir}/results.tsv" \
 
 printf '\n%s' "${summary}"
 printf 'Logs and results: %s/\n' "${log_dir}"
-if [ -z "${report_ok}" ]; then
-  printf '%s: could not write %s/results.tsv, junit.xml, or summary.md\n' \
-      "${progname}" "${log_dir}" >&2
-  exit 1
-fi
+[ -n "${report_ok}" ] \
+    || die "could not write ${log_dir}/results.tsv, junit.xml, or summary.md"
 [ "${failed}" -eq 0 ]

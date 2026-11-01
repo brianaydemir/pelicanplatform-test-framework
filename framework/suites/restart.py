@@ -3,45 +3,15 @@
 That is a cache's store; every server's identity and database; the
 issuer's refresh tokens and clients; the directors' view of a server
 that has gone; and an origin's answers while its storage is
-unreachable. The suite controls the services through the control helper
+unreachable. See docs/tests/restarts.md.
+
+The suite controls the services through the control helper
 (testlib/control.py), so it needs one, and skips the tiny topology,
 whose servers are one process. It comes after every other suite but
 `keys`, since it takes servers away for a while. Its objects go under
 /protected-a/data/restart/<run>/, at every origin, and are removed
 afterward. A case's row is named `<scenario> <case>`, or
 `<scenario> <service>`.
-
-  cache-restart    each cache, restarted, serves the objects it held
-                   from its store, with Age for a V2 cache, and the
-                   origins send nothing for them
-  state-survives   each server's ID and registration, and at the issuer
-                   origin a user, a group, an API token, a downtime, a
-                   refresh token, and a client's secret, outlive
-                   restarts of origin-0, director-0, and the registry
-  ad-expiry        a cache, and with several origins an origin, killed
-                   without a word: every director drops it once its ad
-                   expires (Server.AdLifetime), and names it again once
-                   it advertises again
-  backend-outage   an origin whose storage service (`s3`, `webdav`, or
-                   `lab-server`) is stopped answers with a server error,
-                   never as for a missing object, and serves again once
-                   the service is back; an `ssh` origin's health says so
-  xrootd-wedged    the first XRootD origin, and the first federated
-                   XRootD cache, whose XRootD is stopped (SIGSTOP), say
-                   so in their health, and shut down once it has
-                   answered nothing for Xrootd.LivenessMaxUnresponsiveTime,
-                   which the suite shortens; started again, every
-                   director names them
-  cache-failover   with several caches, the clients get an object while
-                   the first cache is paused, and killed, before the
-                   directors drop it and after
-  origin-failover  with several origins, the clients get an object,
-                   direct and through a cache, while the last origin is
-                   paused, and killed, before the directors drop it and
-                   after
-  peer-director    with several directors, a director killed drops from
-                   its peer's list of directors once its ad expires, and
-                   returns
 
 The reads that the scenarios check present tokens of the session's
 profile; the objects are put in place, and the caches filled, with WLCG
@@ -69,7 +39,7 @@ from testlib import (
     director,
     issuer,
     metrics,
-    stores,
+    suite,
     transfers,
     web,
     webapi,
@@ -116,12 +86,10 @@ Row = tuple[str, str, str]
 OBJECT_SIZE = 1 << 20
 # How many objects each cache holds across its restart.
 HELD_OBJECTS = 3
-# How long a V2 cache may take to say, with Age, that it holds an object
-# read whole; how long the directors may take to name a server again
-# once it serves, or to drop one declared down; and how long a server's
-# ad lives (Server.AdLifetime in config.d/base/20-server.yaml), past
-# which every director must have dropped a server that said nothing.
-HELD_WAIT = 30
+# How long the directors may take to name a server again once it serves;
+# and how long a server's ad lives (Server.AdLifetime in
+# config.d/base/20-server.yaml), and a margin, past which every director
+# must have dropped a server that said nothing.
 NAMED_WAIT = 150
 AD_LIFETIME = 90
 EXPIRY_SLACK = 30
@@ -178,112 +146,41 @@ def skip(fed: common.Federation) -> str | None:
     """
     if fed.tiny:
         return "the tiny topology's servers are one process"
-    if NAMESPACE not in fed.exports:
-        return "this shape does not export /protected-a"
-    return None
+    return suite.unexported(fed)
 
 
-class Test:
-    """The federation, the run's objects, and the tokens scenarios share.
-
-    Attributes:
-        base: The run's collection, within /protected-a.
-        tmp: A directory of the run's own, for the clients' files.
-        token: The `server` token for /protected-a, of the session's
-            profile.
-        setup: The `server` token for /protected-a, of the WLCG profile,
-            for putting objects in place and filling the caches.
-        caps: /protected-a's capabilities.
-        objects: The run's objects' bytes, by rel within the namespace.
-    """
+class Test(suite.Test):
+    """The run's objects in /protected-a, and the servers' admin tokens."""
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.run = session.run
-        self.base = f"data/restart/{self.run}"
-        self.tmp = session.path("restart")
-        os.makedirs(self.tmp)
-        self.token = session.token(NAMESPACE)
-        self.token_file = session.token_file(NAMESPACE)
-        self.setup = session.setup_token(NAMESPACE)
-        self.caps = self.fed.exports[NAMESPACE]
-        self.objects: dict[str, bytes] = {}
+        super().__init__(session, "restart", NAMESPACE)
         self._admins: dict[str, str] = {}
-        self._runs = 0
 
-    def rel(self, name: str) -> str:
-        """Return where object name of the run is in the namespace."""
-        return f"{self.base}/{name}"
-
-    def path(self, name: str) -> str:
-        """Return object name's path in the federation."""
-        return f"/{NAMESPACE}/{self.rel(name)}"
-
-    def url(self, name: str) -> str:
-        """Return object name's federation URL."""
-        return f"{self.fed.url}{self.path(name)}"
-
-    def put(self, name: str, data: bytes) -> None:
-        """Put object name, holding data, at every origin."""
-        rel = self.rel(name)
-        errors = stores.make_dirs(self.fed.origins, NAMESPACE, rel.rsplit("/", 1)[0], self.setup)
-        errors += stores.seed_everywhere(self.fed.origins, NAMESPACE, rel, data, self.setup, self.caps)
-        if errors:
-            die(f"could not put {rel} in place: {first(errors)}")
-        self.objects[rel] = data
+    def place(self, name: str, data: bytes) -> None:
+        """Put object name, holding data, at every origin (put())."""
+        why = self.put({self.rel(name): data})
+        if why:
+            die(f"could not put {self.rel(name)} in place: {why}")
 
     def admin_token(self, web_url: str, key_dir: str) -> str:
         """Return a token that the server at web_url takes as its admin's.
 
         It is signed with the server's key in key_dir (see
-        credentials.mint_admin()).
+        credentials.mint_web_user()).
         """
         if web_url not in self._admins:
-            self._admins[web_url] = credentials.mint_admin(
+            self._admins[web_url] = credentials.mint_web_user(
                 self.fed,
                 self.session.path(f"tokens/restart.admin.{director.host(web_url)}"),
-                credentials.local_issuer(self.fed, web_url),
-                common.signing_key(key_dir),
+                web_url,
+                "admin",
+                key=common.signing_key(key_dir),
             )
         return self._admins[web_url]
 
     def admin(self, web_url: str, key_dir: str) -> Api:
         """Return the web API of the server at web_url, as its admin."""
         return Api(web_url, self.admin_token(web_url, key_dir))
-
-    def held(self, cache: common.Cache, name: str) -> bool:
-        """Return whether a V2 cache holds all of object name.
-
-        The cache says so with Age, to the setup token.
-        """
-        answer = web.request("HEAD", f"{cache.url}{self.path(name)}", token=self.setup)
-        return answer.status == 200 and answer.header("Age").strip().isdigit()
-
-    def fill(self, cache: common.Cache, name: str) -> str | None:
-        """Read object name whole through cache, which must serve it.
-
-        For a V2 cache, wait until it says it holds it all. The read is
-        setup, with the setup token.
-
-        Returns:
-            What went wrong, or None.
-        """
-        answer = web.request("GET", f"{cache.url}{self.path(name)}", token=self.setup, timeout=120)
-        if answer.status != 200 or answer.body != self.objects[self.rel(name)]:
-            return f"{cache.svc}: a GET of {name} got {answer.describe()}"
-        if cache.kind == "v2" and not common.wait_for(
-            lambda: self.held(cache, name), HELD_WAIT, interval=1
-        ):
-            return f"{cache.svc} does not hold {name} {HELD_WAIT}s after reading it whole"
-        return None
-
-    def directory(self, name: str) -> str:
-        """Return a new directory of the run's for a client run."""
-        self._runs += 1
-        path = os.path.join(self.tmp, f"{self._runs:03d}-{name}")
-        os.makedirs(path)
-        return path
 
     def named_by(self, route: str, path: str, host: str) -> list[str]:
         """Return the directors that would send a GET of path to host.
@@ -337,11 +234,12 @@ def cache_restart(test: Test) -> list[Row]:
     rows: list[Row] = []
     for cache in test.fed.caches:
         names = [f"held-{cache.svc}-{n}" for n in range(HELD_OBJECTS)]
-        for name in names:
-            test.put(name, os.urandom(OBJECT_SIZE))
+        objects = {name: os.urandom(OBJECT_SIZE) for name in names}
+        for name, data in objects.items():
+            test.place(name, data)
         problems: list[str] = []
-        for name in names:
-            why = test.fill(cache, name)
+        for name, data in objects.items():
+            why = test.fill(cache, test.rel(name), data)
             if why:
                 problems.append(why)
         if problems:
@@ -349,7 +247,7 @@ def cache_restart(test: Test) -> list[Row]:
             continue
         host = director.host(cache.url)
         federated = not cache.site_local
-        path = test.path(names[0])
+        path = test.path(test.rel(names[0]))
         # A director restarted just before (by state_survives(), in the
         # pass before) learns of the cache again only from its next ad.
         if federated and test.wait_named("object", path, host, NAMED_WAIT) is None:
@@ -378,16 +276,17 @@ def cache_restart(test: Test) -> list[Row]:
             )
             continue
         ages: list[int] = []
-        for name in names:
-            answer = web.request("GET", f"{cache.url}{test.path(name)}", token=test.token, timeout=120)
-            if answer.status != 200 or answer.body != test.objects[test.rel(name)]:
-                problems.append(f"after the restart, a GET of {name} got {answer.describe()}")
+        for name, data in objects.items():
+            answer = test.ask("GET", cache.url, test.rel(name))
+            why = web.served(answer, data)
+            if why:
+                problems.append(f"after the restart, a GET of {name} got {why}")
             elif cache.kind == "v2":
-                age = answer.header("Age").strip()
-                if not age.isdigit():
+                age = web.age(answer)
+                if age is None:
                     problems.append(f"after the restart, {name} came with no Age, so not from its store")
                 else:
-                    ages.append(int(age))
+                    ages.append(age)
         after = metrics.origins_sent_bytes(test.fed)
         if before is not None and after is not None and after - before >= OBJECT_SIZE:
             problems.append(
@@ -580,7 +479,7 @@ def restart_and_settle(test: Test, svc: str, route: str, host: str) -> str | Non
         control.restart(svc)
     except control.ControlError as e:
         return str(e)
-    if route and test.wait_named(route, test.path("probe"), host, NAMED_WAIT) is None:
+    if route and test.wait_named(route, test.path(test.rel("probe")), host, NAMED_WAIT) is None:
         return f"{NAMED_WAIT}s after {svc} restarted, not every director named {host}"
     return None
 
@@ -598,7 +497,7 @@ def state_survives(test: Test) -> list[Row]:
     master key in its database (oauth2/issuer/provider.go).
     """
     fed = test.fed
-    test.put("probe", os.urandom(4096))
+    test.place("probe", os.urandom(4096))
     found = Recorded()
     problems = record_state(test, found)
     rows: list[Row] = []
@@ -735,8 +634,8 @@ def ad_expiry(test: Test) -> list[Row]:
     fed = test.fed
     if not fed.directors:
         return [("", SKIP, "a standalone origin has no director")]
-    test.put("probe", os.urandom(4096))
-    path = test.path("probe")
+    test.place("probe", os.urandom(4096))
+    path = test.path(test.rel("probe"))
     targets: list[tuple[str, str, str]] = []
     if fed.federated_caches:
         cache = fed.federated_caches[0]
@@ -870,10 +769,10 @@ def backend_outage(test: Test) -> list[Row]:
     if backend is None:
         return [("", SKIP, f"a {fed.origin_variant} origin stores on its own disk")]
     origin = fed.origins[0]
-    direct = "DirectReads" in test.caps
-    test.put("outage", os.urandom(OBJECT_SIZE))
-    test.put("outage-cold", os.urandom(OBJECT_SIZE))
-    data = test.objects[test.rel("outage")]
+    data, cold_data = os.urandom(OBJECT_SIZE), os.urandom(OBJECT_SIZE)
+    test.place("outage", data)
+    test.place("outage-cold", cold_data)
+    rel, cold = test.rel("outage"), test.rel("outage-cold")
     cache = fed.federated_caches[0] if fed.federated_caches else None
     component = BACKEND_COMPONENTS.get(fed.origin_variant)
     rows: list[Row] = []
@@ -883,15 +782,15 @@ def backend_outage(test: Test) -> list[Row]:
         return [("", FAIL, str(e))]
     try:
         problems: list[str] = []
-        if direct:
-            for method, name, upload in (
-                ("GET", "outage", None),
-                ("HEAD", "outage", None),
-                ("PUT", "outage-put", os.urandom(4096)),
+        if test.direct:
+            for method, target, upload in (
+                ("GET", rel, None),
+                ("HEAD", rel, None),
+                ("PUT", test.rel("outage-put"), os.urandom(4096)),
             ):
                 answer = web.request(
                     method,
-                    f"{origin.url}{test.path(name)}",
+                    test.url(origin.url, target),
                     token=test.token,
                     upload=upload,
                     timeout=120,
@@ -906,9 +805,7 @@ def backend_outage(test: Test) -> list[Row]:
         else:
             rows.append(("direct", SKIP, "/protected-a takes no direct clients"))
         if cache is not None:
-            answer = web.request(
-                "GET", f"{cache.url}{test.path('outage-cold')}", token=test.token, timeout=120
-            )
+            answer = test.ask("GET", cache.url, cold)
             if answer.status is None:
                 rows.append(("cache", FAIL, f"through {cache.svc}: no answer"))
             elif not 500 <= answer.status < 600:
@@ -951,14 +848,12 @@ def backend_outage(test: Test) -> list[Row]:
         rows.append(("recovered", FAIL, f"with {backend} stopped, {exited}"))
         return rows
 
+    reader = origin.url if test.direct else (cache.url if cache is not None else None)
+
     def serves() -> bool:
-        if direct:
-            answer = web.request("GET", f"{origin.url}{test.path('outage')}", token=test.token, timeout=60)
-            return answer.status == 200 and answer.body == data
-        if cache is not None:
-            answer = web.request("GET", f"{cache.url}{test.path('outage')}", token=test.token, timeout=60)
-            return answer.status == 200 and answer.body == data
-        return True
+        if reader is None:
+            return True
+        return web.served(test.ask("GET", reader, rel, timeout=60), data) is None
 
     started = time.monotonic()
     if not common.wait_for(serves, BACKEND_WAIT, interval=5):
@@ -972,23 +867,23 @@ def backend_outage(test: Test) -> list[Row]:
         return rows
     took = time.monotonic() - started
     problems = []
-    if direct:
-        answer = web.request("HEAD", f"{origin.url}{test.path('outage')}", token=test.token)
+    if test.direct:
+        answer = test.ask("HEAD", origin.url, rel, timeout=60)
         if answer.status != 200:
             problems.append(f"HEAD once {backend} was back: {answer.describe()}")
-        if "Writes" in test.caps:
+        if test.writes:
             answer = web.request(
                 "PUT",
-                f"{origin.url}{test.path('outage-after')}",
+                test.url(origin.url, test.rel("outage-after")),
                 token=test.token,
                 upload=os.urandom(4096),
             )
             if not answer.ok:
                 problems.append(f"PUT once {backend} was back: {answer.describe()}")
     if cache is not None:
-        answer = web.request("GET", f"{cache.url}{test.path('outage-cold')}", token=test.token, timeout=120)
-        if answer.status != 200 or answer.body != test.objects[test.rel("outage-cold")]:
-            problems.append(f"through {cache.svc} once {backend} was back: {answer.describe()}")
+        why = web.served(test.ask("GET", cache.url, cold), cold_data)
+        if why:
+            problems.append(f"through {cache.svc} once {backend} was back: {why}")
     if component and not common.wait_for(
         lambda: health_component(test, origin, component) == "ok", HEALTH_WAIT, 5
     ):
@@ -1056,7 +951,7 @@ def wedge(test: Test, svc: str, web_url: str, route: str) -> tuple[str, str]:
         problems.append(str(e))
     # restart_with() has started it again as it was, and waited until it
     # answers; the directors must route to it again, as before.
-    if test.wait_named(route, test.path("wedged"), svc, NAMED_WAIT) is None:
+    if test.wait_named(route, test.path(test.rel("wedged")), svc, NAMED_WAIT) is None:
         problems.append(f"{NAMED_WAIT}s after it started again, not every director named it")
     return outcome(problems, "; ".join(notes))
 
@@ -1078,7 +973,7 @@ def xrootd_wedged(test: Test) -> list[Row]:
     targets = xrootd_targets(test.fed)
     if not targets:
         return [("", SKIP, "XRootD serves neither the origins nor a federated cache")]
-    test.put("wedged", os.urandom(OBJECT_SIZE))
+    test.place("wedged", os.urandom(OBJECT_SIZE))
     return [(svc, *wedge(test, svc, web_url, route)) for svc, web_url, route in targets]
 
 
@@ -1139,7 +1034,7 @@ def get_plugin(test: Test, name: str, url: str, direct: bool = False) -> Fetched
     if direct:
         url += transfers.DIRECT_QUERY
     status, out, err, ads = test.session.plugin_run(
-        f"restart/{name}", [(url, "object")], creds={"scitokens.use": test.token_file}, cwd=directory
+        f"{test.area}/{name}", [(url, "object")], creds={"scitokens.use": test.token_file}, cwd=directory
     )
     output = err or out
     hosts: list[str] = []
@@ -1182,7 +1077,7 @@ def unfetched(test: Test, name: str, data: bytes, routes: Sequence[str] = ("",))
     for route in routes:
         for client, runner in (("pelican", get_pelican), ("plugin", get_plugin)):
             label = f"{name}-{client}-{route}" if route else f"{name}-{client}"
-            fetch = runner(test, label, test.url(name), route == "direct")
+            fetch = runner(test, label, test.pelican_url(test.rel(name)), route == "direct")
             problems = failover_problems(fetch, data, "", client)
             if problems:
                 how = f"{client} ({route})" if route else client
@@ -1213,7 +1108,7 @@ def failover_rows(
             an object of the run's: `object` or `origin`.
     """
     host = director.host(dead.url)
-    path = test.path(probe)
+    path = test.path(test.rel(probe))
     rows: list[Row] = []
     for mode, away, back in (
         ("paused", control.pause, control.unpause),
@@ -1227,7 +1122,7 @@ def failover_rows(
         }
         objects = {name: os.urandom(OBJECT_SIZE) for name in names.values()}
         for name, data in objects.items():
-            test.put(name, data)
+            test.place(name, data)
         if len(test.named_by(naming, path, host)) != len(test.fed.directors):
             rows.append((mode, FAIL, f"before {dead.svc} was {mode}, not every director named it"))
             continue
@@ -1263,7 +1158,7 @@ def failover_rows(
                     tried: list[str] = []
                     for client, runner in (("pelican", get_pelican), ("plugin", get_plugin)):
                         name = names[when, client, route]
-                        fetch = runner(test, name, test.url(name), route == "direct")
+                        fetch = runner(test, name, test.pelican_url(test.rel(name)), route == "direct")
                         problems += [
                             f"{client}: {p}"
                             for p in failover_problems(fetch, objects[name], dead.svc, client)
@@ -1307,7 +1202,7 @@ def cache_failover(test: Test) -> list[Row]:
     if len(caches) < 2:
         return [("", SKIP, "fewer than two federated caches ('-p topo-multi-cache')")]
     probe = os.urandom(4096)
-    test.put("probe", probe)
+    test.place("probe", probe)
     why = unfetched(test, "probe", probe)
     if why:
         return [("", FAIL, why)]
@@ -1343,10 +1238,10 @@ def origin_failover(test: Test) -> list[Row]:
     if len(fed.origins) < 2:
         return [("", SKIP, "fewer than two origins ('-p topo-multi-origin')")]
     routes = ["cache"]
-    if "DirectReads" in test.caps:
+    if test.direct:
         routes.insert(0, "direct")
     probe = os.urandom(4096)
-    test.put("origin-probe", probe)
+    test.place("origin-probe", probe)
     why = unfetched(test, "origin-probe", probe, routes)
     if why:
         return [("", FAIL, why)]
@@ -1447,11 +1342,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         for name in selected:
             results.add(name, SKIP, why)
         return
-    tokens = session.setup_tokens()
-    errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/restart", tokens)
-    if errors:
-        die(f"could not remove earlier runs' objects: {first(errors)}")
     test = Test(session)
+    test.clean("before the run", fatal=True)
     print(f"Restarts against {fed.url}, objects under /{NAMESPACE}/{test.base}/\n")
     try:
         for name in selected:
@@ -1459,7 +1351,5 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             for case, status, note in rows:
                 results.add(f"{name} {case}".strip(), status, note)
     finally:
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/restart", tokens)
-        if errors:
-            common.warn(f"could not remove the run's objects: {first(errors)}")
+        test.clean("after the run")
         shutil.rmtree(test.tmp, ignore_errors=True)

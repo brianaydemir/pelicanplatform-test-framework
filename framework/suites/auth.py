@@ -6,64 +6,21 @@ checks present tokens that `pelican token create` cannot make
 (testlib/jwt.py), each wrong in one way. Each namespace has a test
 object of its own bytes (but on a pstore origin, /public reads
 /protected-a's), so a server that answers from another namespace's
-storage is caught. Beyond the credentials, the checks but `keys`,
-`traversal`, `hints`, `web-token-strict`, and `nested-protected` work in
-/protected-a, and skip where it isn't exported.
-
-  <credential>      GET, HEAD, PUT, and DELETE at every origin, and GET
-                    and HEAD at every cache, in every namespace: an
-                    allowed request returns, stores, or removes the
-                    object; a refused one gets 401 or 403, and changes
-                    nothing
-  keys              each issuer's discovery document and JWKS, and the
-                    server-wide JWKS, publish the right test keys
-  narrow            a token for the test object alone may GET it, but not
-                    its sibling
-  create-only       storage.create may create an object, but not replace
-                    or delete one
-  modify-only       storage.modify may create, replace, and delete
-  traversal         `..` in a path, however spelled, and a symbolic link
-                    in a store reach neither another namespace's test
-                    object nor beyond an export's storage
-  hints             a V2 cache's refusal of a request with no token names
-                    the namespace and its issuer
-  audience          every origin refuses a token for another audience
-  query-token       a token in the authz query parameter, bare or after
-                    `Bearer `, counts as one in the header
-  token-lists       a native origin tries each token of a request, in its
-                    header and query, up to 10
-  audience-specific a token for the first origin's audience is taken
-                    there alone; one that also lists `any`, everywhere
-  time-claims       nbf or iat more than 60s ahead is refused, less is
-                    not; an exp past is refused
-  malformed-claims  no exp, kid, or aud, an unknown kid, or a signature by
-                    none or HS256 is refused
-  standalone-refusals
-                    a native origin refuses with 401, or 403 and token
-                    hints standalone, and with 401 and no hints federated
-  web-token-strict  a server's web API takes its own tokens with no clock
-                    skew
-  expired-in-use    a token in use as it expires is taken before, and
-                    refused from 70s after
-  narrow-climb      a token for one collection reaches nothing beside it
-                    with `..`, however spelled
-  nested-protected  a protected prefix inside a public one
-                    (/public/secret, `-p topo-multi-owner`) is served to
-                    no one without a token
+storage is caught. Most checks beyond the credentials work in
+/protected-a, and skip where it isn't exported (PROTECTED_A_CHECKS).
+The run's objects lie flat in data/auth/, as data/auth/<run>-<name>.
 
 `expired-in-use` takes three minutes, so it runs in a thread of its own
 beside the rest, and records its rows last. Responses go to
-framework/var/data/auth-test/, and a row per request to the results (per
+framework/var/data/auth-test/ (in the SciTokens pass,
+data/auth-test-scitokens/), and a row per request to the results (per
 server and kind, for `expired-in-use`, `traversal`, and `narrow-climb`).
 
 Every token presented is of the session's profile, and must fare as its
 twin of the other profile does: SciTokens' read: and write: stand for
-storage.read and storage.modify. `create-only`, which SciTokens cannot
-express, runs in the WLCG pass alone, as do the checks that present no
-storage token: `keys`, `none`, `hints`, and `web-token-strict`. The test
-objects are put in place, and the stores read, with WLCG tokens either
-way. The SciTokens pass keeps its responses in
-data/auth-test-scitokens/.
+storage.read and storage.modify. The test objects are put in place, and
+the stores read, with WLCG tokens either way. See
+docs/tests/authorization.md and docs/tests/token-validation.md.
 """
 
 import json
@@ -72,12 +29,11 @@ import shutil
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from collections.abc import Set as AbstractSet
 from functools import cached_property, partial
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
-from testlib import accounts, common, credentials, director, jwt, stores, web
+from testlib import accounts, common, credentials, director, jwt, stores, suite, web
 from testlib.common import die, warn
 from testlib.credentials import ALLOW, CREDENTIALS, DENY, PROTECTED, RWM, Credential, R
 from testlib.report import FAIL, PASS, SKIP, Report, label, record, record_skip
@@ -190,27 +146,28 @@ PROTECTED_A_CHECKS = (
 )
 
 
-class Test:
-    """The test object, the setup tokens, and the rows recorded.
+class Test(suite.Test):
+    """The test objects, the setup tokens, and the rows recorded.
+
+    Its namespace is /protected-a, where most checks work.
 
     Attributes:
+        report: Where the rows go.
         out: Where the responses go, under framework/var.
-        setup_tokens: A `server` token for each exported namespace, by
-            namespace, of the WLCG profile, for putting objects in place
-            and reading the stores.
-        object: The test object's path in each namespace.
+        setup_tokens: A setup token for each exported namespace, by
+            namespace (Session.setup_tokens()).
+        object: The test object's rel in each namespace.
         object_bytes: The test object's bytes in each namespace.
-        sibling: For `narrow`: a name that the object's is a prefix of.
+        sibling: For `narrow`: a rel that the object's is a prefix of.
+        sibling_bytes: The sibling's bytes.
     """
 
     def __init__(self, session: Session, report: Report, out: str):
-        self.session = session
+        super().__init__(session, "auth", "protected-a")
         self.report = report
         self.out = out
-        self.exports = session.fed.exports
         self.setup_tokens = session.setup_tokens()
-        self.run = session.run
-        self.object = f"data/auth/{self.run}-object"
+        self.object = self.flat("object")
         # On a pstore origin, /public's bytes are /protected-a's, whose
         # storage it reads.
         own = {ns: os.urandom(65536) for ns in session.namespaces}
@@ -218,7 +175,14 @@ class Test:
         self.sibling = f"{self.object}-sibling"
         self.sibling_bytes = os.urandom(65536)
 
-    def token(self, cred: Credential, namespace: str, op: str) -> str | None:
+    def flat(self, name: str) -> str:
+        """Return the rel of name, one of the run's objects.
+
+        It is data/auth/<run>-<name>.
+        """
+        return f"data/{self.area}/{self.run}-{name}"
+
+    def credential_token(self, cred: Credential, namespace: str, op: str) -> str | None:
         """Return cred's token for op (`get` or `put`) in namespace.
 
         The token is of the session's profile.
@@ -241,11 +205,7 @@ class Test:
         the origins' key in their issuer's JWKS. raw_token() signs under
         it.
         """
-        return jwt.decode(self.session.token("protected-a"))[0]
-
-    def caps(self, namespace: str) -> AbstractSet[str]:
-        """Return namespace's capabilities."""
-        return self.exports[namespace]
+        return jwt.decode(self.token)[0]
 
     def whose(self, body: bytes) -> str | None:
         """Return the namespace whose test object body is, if any."""
@@ -278,7 +238,7 @@ class Test:
         record(self.report, *self.labels(target, namespace, op, name), answer, why, note)
 
     def skip_row(self, target: str, namespace: str, op: str, name: str, why: str) -> None:
-        """Print and record the row of one request, skipped because of why."""
+        """Print and record the row of a request skipped because of why."""
         record_skip(self.report, *self.labels(target, namespace, op, name), why)
 
     def outcome_row(
@@ -292,128 +252,135 @@ class Test:
         print(f"{heading}       {FAIL if problems else PASS}  {problems[0] if problems else note}")
         self.report.add(case, *common.outcome(problems, note))
 
-    def check_read(
-        self, target: str, url: str, namespace: str, cred: Credential, op: str, direct: bool
-    ) -> None:
-        """GET or HEAD (op) the test object at url.
 
-        url is an origin's if direct.
-        """
-        answer = web.request(
-            op.upper(),
-            f"{url}/{namespace}/{self.object}",
-            token=self.token(cred, namespace, "get"),
-        )
-        save(f"{self.out}/responses/{target}-{namespace}-{op}-{cred.name}", answer)
-        data = self.object_bytes[namespace]
-        whose = self.whose(answer.body) if op == "get" else None
-        length = answer.header("Content-Length")
-        why = ""
-        if credentials.expected(cred, self.caps(namespace), op, direct) == ALLOW:
-            if answer.status != 200:
-                why = "expected 200"
-            elif op == "get" and answer.body != data:
-                why = f"the body is /{whose}'s object" if whose else "the body is not the object"
-            elif op == "head" and length != str(len(data)):
-                why = f"Content-Length '{length}', not the object's {len(data)}"
-        elif answer.status not in (401, 403):
-            why = "expected 401 or 403"
-        elif whose:
-            why = f"refused, but the body is /{whose}'s object"
-        self.row(target, namespace, op, cred.name, answer, why)
+def write(
+    test: Test,
+    origin: common.Origin,
+    namespace: str,
+    rel: str,
+    token: str | None,
+    allowed: bool,
+    old: bytes | None,
+    new: bytes | None,
+) -> tuple[web.Response, str]:
+    """Write rel in namespace straight to origin, with token.
 
-    def check_put(self, target: str, origin: common.Origin, namespace: str, cred: Credential) -> None:
-        """PUT new bytes to origin."""
-        name = f"data/auth/{self.run}-{target}-{namespace}-{cred.name}"
-        source = os.urandom(4096 + len(name))
-        with open(f"{self.out}/sources/{target}-{namespace}-{cred.name}", "wb") as f:
-            f.write(source)
-        answer = web.request(
-            "PUT",
-            f"{origin.url}/{namespace}/{name}",
-            token=self.token(cred, namespace, "put"),
-            upload=source,
-        )
-        save(f"{self.out}/responses/{target}-{namespace}-put-{cred.name}", answer)
-        problems: list[str] = []
-        try:
-            have = self.stored(origin, namespace, name)
-        except stores.Unreadable:
-            have, unreadable = None, True
-        else:
-            unreadable = False
-        if credentials.expected(cred, self.caps(namespace), "put", direct=True) == ALLOW:
-            if not answer.ok:
-                problems.append("expected 2xx")
-            elif unreadable:
-                problems.append("could not read the object back")
-            elif have is None:
-                problems.append("the store has no such object")
-            elif have != common.digest(source):
-                problems.append("the store holds different bytes")
-        else:
-            if answer.status not in (401, 403):
-                problems.append("expected 401 or 403")
-            if unreadable:
-                problems.append("could not check the store")
-            elif have is not None:
-                problems.append("the store holds the object")
-        self.row(target, namespace, "put", cred.name, answer, "; ".join(problems))
+    old, if given, is put in place first, in the namespace's storage at
+    origin. The write is a PUT of new, or a DELETE if new is None. It
+    must succeed if allowed, and leave new in the store; otherwise it
+    must be refused, and leave old (None: nothing).
 
-    def check_delete(self, target: str, origin: common.Origin, namespace: str, cred: Credential) -> None:
-        """DELETE an object put at origin for the purpose.
-
-        Skip the row if the DELETE should succeed but the origin's storage
-        cannot delete.
-        """
-        cannot_delete = stores.cannot(self.session.fed, "delete")
-        if cannot_delete and credentials.expected(cred, self.caps(namespace), "delete", True) == ALLOW:
-            self.skip_row(target, namespace, "delete", cred.name, cannot_delete)
-            return
-        name = f"data/auth/{self.run}-{target}-{namespace}-{cred.name}-delete"
-        data = os.urandom(4096 + len(name))
-        upload_ns = origin.storage_namespace(namespace)
-        error = stores.seed(
-            origin, upload_ns, name, data, self.setup_tokens[upload_ns], self.caps(upload_ns)
-        )
+    Returns:
+        The answer, and what is wrong with it.
+    """
+    if old is not None:
+        storage = origin.storage_namespace(namespace)
+        caps = test.fed.exports[storage]
+        error = stores.seed(origin, storage, rel, old, test.setup_tokens[storage], caps)
         if error:
-            self.row(
-                target,
-                namespace,
-                "delete",
-                cred.name,
-                web.Response(None),
-                f"could not put the object to delete in place ({error})",
-            )
-            return
-        answer = web.request(
-            "DELETE",
-            f"{origin.url}/{namespace}/{name}",
-            token=self.token(cred, namespace, "put"),
-        )
-        save(f"{self.out}/responses/{target}-{namespace}-delete-{cred.name}", answer)
-        problems: list[str] = []
-        try:
-            have = self.stored(origin, namespace, name)
-        except stores.Unreadable:
-            have, unreadable = None, True
-        else:
-            unreadable = False
-        if credentials.expected(cred, self.caps(namespace), "delete", direct=True) == ALLOW:
-            if not answer.ok:
-                problems.append("expected 2xx")
-            elif unreadable:
-                problems.append("could not check the store")
-            elif have is not None:
-                problems.append("the store still holds the object")
-        else:
-            if answer.status not in (401, 403):
-                problems.append("expected 401 or 403")
-            if unreadable:
-                problems.append("could not check the store")
-            elif have != common.digest(data):
-                problems.append("the store no longer holds the object")
-        self.row(target, namespace, "delete", cred.name, answer, "; ".join(problems))
+            return web.Response(None), f"could not put the object in place ({error})"
+    method = "DELETE" if new is None else "PUT"
+    answer = web.request(method, stores.url(origin, namespace, rel), token=token, upload=new)
+    want = new if allowed else old
+    problems: list[str] = []
+    if allowed and not answer.ok:
+        problems.append("expected 2xx")
+    elif not allowed and answer.status not in (401, 403):
+        problems.append("expected 401 or 403")
+    try:
+        have = test.stored(origin, namespace, rel)
+    except stores.Unreadable:
+        problems.append("could not check the store")
+    else:
+        if want is None and have is not None:
+            problems.append("the store holds the object")
+        elif want is not None and have is None:
+            problems.append("the store has no such object")
+        elif want is not None and have != common.digest(want):
+            problems.append("the store holds other bytes")
+    return answer, "; ".join(problems)
+
+
+# --------------------------------------------------------------------------
+# The credentials, straight to each server.
+
+
+def check_credential(test: Test, cred: Credential) -> None:
+    """Present cred in every namespace it applies to, at every server."""
+    if cred.expired:
+        test.session.wait_until_stale()
+    for namespace in test.session.namespaces:
+        if not credentials.applies(cred, namespace):
+            continue
+        for origin in test.fed.origins:
+            target = label(origin.svc, "origin")
+            check_read(test, cred, namespace, target, origin.url, "get", direct=True)
+            check_read(test, cred, namespace, target, origin.url, "head", direct=True)
+            check_put(test, cred, namespace, target, origin)
+            check_delete(test, cred, namespace, target, origin)
+        for cache in test.fed.caches:
+            target = label(cache.svc, "cache")
+            check_read(test, cred, namespace, target, cache.url, "get", direct=False)
+            check_read(test, cred, namespace, target, cache.url, "head", direct=False)
+
+
+def check_read(
+    test: Test, cred: Credential, namespace: str, target: str, url: str, op: str, direct: bool
+) -> None:
+    """GET or HEAD (op) the test object at the server at url.
+
+    url is an origin's if direct.
+    """
+    token = test.credential_token(cred, namespace, "get")
+    answer = web.request(op.upper(), f"{url}/{namespace}/{test.object}", token=token)
+    save(f"{test.out}/responses/{target}-{namespace}-{op}-{cred.name}", answer)
+    data = test.object_bytes[namespace]
+    whose = test.whose(answer.body) if op == "get" else None
+    length = answer.header("Content-Length")
+    why = ""
+    if credentials.expected(cred, test.fed.exports[namespace], op, direct) == ALLOW:
+        if answer.status != 200:
+            why = "expected 200"
+        elif op == "get" and answer.body != data:
+            why = f"the body is /{whose}'s object" if whose else "the body is not the object"
+        elif op == "head" and length != str(len(data)):
+            why = f"Content-Length '{length}', not the object's {len(data)}"
+    elif answer.status not in (401, 403):
+        why = "expected 401 or 403"
+    elif whose:
+        why = f"refused, but the body is /{whose}'s object"
+    test.row(target, namespace, op, cred.name, answer, why)
+
+
+def check_put(test: Test, cred: Credential, namespace: str, target: str, origin: common.Origin) -> None:
+    """PUT new bytes to origin."""
+    rel = test.flat(f"{target}-{namespace}-{cred.name}")
+    data = os.urandom(4096 + len(rel))
+    with open(f"{test.out}/sources/{target}-{namespace}-{cred.name}", "wb") as f:
+        f.write(data)
+    allowed = credentials.expected(cred, test.fed.exports[namespace], "put", direct=True) == ALLOW
+    token = test.credential_token(cred, namespace, "put")
+    answer, why = write(test, origin, namespace, rel, token, allowed, None, data)
+    save(f"{test.out}/responses/{target}-{namespace}-put-{cred.name}", answer)
+    test.row(target, namespace, "put", cred.name, answer, why)
+
+
+def check_delete(test: Test, cred: Credential, namespace: str, target: str, origin: common.Origin) -> None:
+    """DELETE an object put at origin for the purpose.
+
+    Skip the row if the DELETE should succeed but the origin's storage
+    cannot delete.
+    """
+    allowed = credentials.expected(cred, test.fed.exports[namespace], "delete", direct=True) == ALLOW
+    cannot_delete = stores.cannot(test.fed, "delete")
+    if cannot_delete and allowed:
+        test.skip_row(target, namespace, "delete", cred.name, cannot_delete)
+        return
+    rel = test.flat(f"{target}-{namespace}-{cred.name}-delete")
+    token = test.credential_token(cred, namespace, "put")
+    answer, why = write(test, origin, namespace, rel, token, allowed, os.urandom(4096 + len(rel)), None)
+    save(f"{test.out}/responses/{target}-{namespace}-delete-{cred.name}", answer)
+    test.row(target, namespace, "delete", cred.name, answer, why)
 
 
 # --------------------------------------------------------------------------
@@ -540,21 +507,20 @@ def targets(fed: common.Federation) -> list[tuple[str, str, bool]]:
     ]
 
 
-def check_narrow(test: Test, fed: common.Federation, token: str) -> None:
+def check_narrow(test: Test, token: str) -> None:
     """GET the test object with token, scoped to it alone, then its sibling.
 
     The sibling's name begins with the object's: the token's scope is a
     path, not a prefix of names. An origin in a namespace without
     DirectReads refuses both.
     """
-    caps = fed.exports["protected-a"]
-    for target, url, direct in targets(fed):
-        allowed = credentials.decide(ALLOW, caps, "get", direct) == ALLOW
+    for target, url, direct in targets(test.fed):
+        allowed = credentials.decide(ALLOW, test.caps, "get", direct) == ALLOW
         for name, rel, data in (
             ("narrow-in", test.object, test.object_bytes["protected-a"]),
             ("narrow-out", test.sibling, test.sibling_bytes),
         ):
-            answer = web.request("GET", f"{url}/protected-a/{rel}", token=token)
+            answer = web.request("GET", test.url(url, rel), token=token)
             save(f"{test.out}/responses/{target}-protected-a-get-{name}", answer)
             why = ""
             if name == "narrow-in":
@@ -571,14 +537,15 @@ def check_narrow(test: Test, fed: common.Federation, token: str) -> None:
 # /protected-a, straight to each origin.
 
 
-def check_scope(test: Test, fed: common.Federation, name: str) -> None:
+def check_scope(test: Test, name: str) -> None:
     """Present a token of the storage scope of check name at every origin.
 
     name is one of SCOPES. With the token, PUT a new object, PUT over an
     object, and DELETE one, each object new for the purpose (see
-    scope_write()). In SciTokens, `modify-only`'s token is of write
-    alone, which grants as much.
+    write()). In SciTokens, `modify-only`'s token is of write alone,
+    which grants as much.
     """
+    fed = test.fed
     flag, replaces = SCOPES[name]
     token = credentials.mint_server(
         fed,
@@ -588,7 +555,7 @@ def check_scope(test: Test, fed: common.Federation, name: str) -> None:
         profile=test.profile,
     )
     # The namespace must take writes from direct clients for any to pass.
-    writes = credentials.decide(ALLOW, fed.exports["protected-a"], "put", direct=True) == ALLOW
+    writes = credentials.decide(ALLOW, test.caps, "put", direct=True) == ALLOW
     cannot_delete = stores.cannot(fed, "delete")
     # Each write: its row's name, its method, whether the object is there
     # first, and whether the scope allows it.
@@ -603,79 +570,11 @@ def check_scope(test: Test, fed: common.Federation, name: str) -> None:
             if method == "DELETE" and allowed and cannot_delete:
                 test.skip_row(target, "protected-a", op, name, cannot_delete)
                 continue
-            rel = f"data/auth/{test.run}-{target}-{name}-{op}"
-            answer, why = scope_write(test, origin, rel, method, token, existing, allowed)
+            rel = test.flat(f"{target}-{name}-{op}")
+            old = os.urandom(4096) if existing else None
+            new = os.urandom(4096) if method == "PUT" else None
+            answer, why = write(test, origin, "protected-a", rel, token, allowed, old, new)
             test.row(target, "protected-a", op, name, answer, why)
-
-
-def scope_write(
-    test: Test,
-    origin: common.Origin,
-    rel: str,
-    method: str,
-    token: str,
-    existing: bool,
-    allowed: bool,
-) -> tuple[web.Response, str]:
-    """Send method for rel in /protected-a straight to origin with token.
-
-    method is a PUT, of new bytes, or a DELETE. If existing, put an
-    object there first. The request must succeed if allowed, and leave
-    the new bytes, or for a DELETE nothing; otherwise it must be refused,
-    and leave what was there.
-
-    Returns:
-        The answer, and what is wrong with it.
-    """
-    old = os.urandom(4096) if existing else None
-    if old is not None:
-        error = stores.seed(
-            origin,
-            "protected-a",
-            rel,
-            old,
-            test.setup_tokens["protected-a"],
-            test.caps("protected-a"),
-        )
-        if error:
-            return web.Response(None), f"could not put the object in place ({error})"
-    new = os.urandom(4096) if method == "PUT" else None
-    answer = web.request(method, stores.url(origin, "protected-a", rel), token=token, upload=new)
-    want = new if allowed else old
-    return answer, scope_problem(test, origin, rel, answer, allowed, want)
-
-
-def scope_problem(
-    test: Test,
-    origin: common.Origin,
-    rel: str,
-    answer: web.Response,
-    allowed: bool,
-    want: bytes | None,
-) -> str:
-    """Return what is wrong with how origin answered a write of rel.
-
-    The write, in /protected-a, must have succeeded if allowed, and
-    otherwise been refused; either way, the store must then hold want
-    (None: nothing).
-    """
-    problems: list[str] = []
-    if allowed and not answer.ok:
-        problems.append("expected 2xx")
-    elif not allowed and answer.status not in (401, 403):
-        problems.append("expected 401 or 403")
-    try:
-        have = test.stored(origin, "protected-a", rel)
-    except stores.Unreadable:
-        problems.append("could not check the store")
-    else:
-        if want is None and have is not None:
-            problems.append("the store holds the object")
-        elif want is not None and have is None:
-            problems.append("the store has no such object")
-        elif want is not None and have != common.digest(want):
-            problems.append("the store holds other bytes")
-    return "; ".join(problems)
 
 
 # --------------------------------------------------------------------------
@@ -707,9 +606,7 @@ def signing_keys(fed: common.Federation) -> dict[str, bytes]:
     return keys
 
 
-def traversal_climbs(
-    test: Test, fed: common.Federation, sentinel_file: str, sentinels: frozenset[bytes]
-) -> dict[str, list[Climb]]:
+def traversal_climbs(test: Test, sentinel_file: str, sentinels: frozenset[bytes]) -> dict[str, list[Climb]]:
     """Return the traversal check's climbs, by what they climb toward.
 
     They climb from each exported namespace, with its `server` token of
@@ -726,6 +623,7 @@ def traversal_climbs(
 
     The symlink climbs are symlink_climbs()'s.
     """
+    fed = test.fed
     tokens = {ns: None if ns == "public" else test.session.token(ns) for ns in test.session.namespaces}
     keys = signing_keys(fed)
     climbs: dict[str, list[Climb]] = {"namespace": [], "store": [], "filesystem": []}
@@ -746,7 +644,7 @@ def traversal_climbs(
 
 
 def symlink_climbs(
-    test: Test, fed: common.Federation, sentinel_file: str, sentinels: frozenset[bytes]
+    test: Test, sentinel_file: str, sentinels: frozenset[bytes]
 ) -> tuple[list[Climb], list[str]]:
     """Make the traversal check's climbs that are symbolic links.
 
@@ -762,35 +660,36 @@ def symlink_climbs(
         session's profile, and the links made.
     """
     start = next((ns for ns in PROTECTED if ns in test.session.namespaces), None)
-    disk = [o for o in stores.unique(fed.origins) if not o.pstore]
+    disk = [o for o in stores.unique(test.fed.origins) if not o.pstore]
     if start is None or not disk:
         return [], []
     # Each link: its name, its target, and what it must not reach.
     links = [("store", f"../../../{sentinel_file}", sentinels)]
     links += [
         (f"key-{name}", f"/fed/issuer-keys/{name}", frozenset({key}))
-        for name, key in signing_keys(fed).items()
+        for name, key in signing_keys(test.fed).items()
     ]
     made: list[str] = []
     for origin in disk:
         for name, target, _ in links:
-            path = f"{origin.store_of(start)}/data/auth/{test.run}-symlink-{name}"
+            path = f"{origin.store_of(start)}/{test.flat(f'symlink-{name}')}"
             os.symlink(target, path)
             made.append(path)
     token = test.session.token(start)
     climbs: list[Climb] = [
-        (f"/{start}/data/auth/{test.run}-symlink-{name}", token, forbidden) for name, _, forbidden in links
+        (f"/{start}/{test.flat(f'symlink-{name}')}", token, forbidden) for name, _, forbidden in links
     ]
     return climbs, made
 
 
-def check_traversal(test: Test, fed: common.Federation) -> None:
+def check_traversal(test: Test) -> None:
     """Send each climb of the traversal check to every origin and cache.
 
     The climbs are traversal_climbs()'s and symlink_climbs()'s, each sent
     as is (http.client normalizes nothing). None may come back with the
     bytes it climbs toward. A row per server and kind of climb.
     """
+    fed = test.fed
     sentinel_file = f"traversal-{test.run}"
     written: dict[str, bytes] = {}
     links: list[str] = []
@@ -802,8 +701,8 @@ def check_traversal(test: Test, fed: common.Federation) -> None:
                 die(f"could not write the traversal check's file: {error}")
             written[f"{origin.store}/{sentinel_file}"] = data
         sentinels = frozenset(written.values())
-        climbs = traversal_climbs(test, fed, sentinel_file, sentinels)
-        climbs["symlink"], links = symlink_climbs(test, fed, sentinel_file, sentinels)
+        climbs = traversal_climbs(test, sentinel_file, sentinels)
+        climbs["symlink"], links = symlink_climbs(test, sentinel_file, sentinels)
         for target, url, _ in targets(fed):
             for kind, kind_climbs in climbs.items():
                 leaks: list[str] = []
@@ -830,7 +729,7 @@ def check_traversal(test: Test, fed: common.Federation) -> None:
 # The hints check.
 
 
-def check_hints(test: Test, fed: common.Federation) -> None:
+def check_hints(test: Test) -> None:
     """GET the test object at each V2 cache in each protected namespace.
 
     Send no token. The refusal must carry what the director's redirect
@@ -841,6 +740,7 @@ def check_hints(test: Test, fed: common.Federation) -> None:
     director, and has nowhere else to learn where to get a token. XRootD
     caches are skipped.
     """
+    fed = test.fed
     namespaces = [ns for ns in PROTECTED if ns in fed.exports]
     why = ""
     if not fed.caches:
@@ -882,7 +782,7 @@ def check_hints(test: Test, fed: common.Federation) -> None:
 # origin, so what it should make of an audience is not settled.
 
 
-def check_audience(test: Test, fed: common.Federation) -> None:
+def check_audience(test: Test) -> None:
     """GET the test object, and PUT a new one, at every origin.
 
     Each request is in /protected-a, with a token like `server`'s but for
@@ -890,7 +790,7 @@ def check_audience(test: Test, fed: common.Federation) -> None:
     Skip where the origins take no direct clients, since they refuse
     everything direct anyway.
     """
-    caps = fed.exports["protected-a"]
+    fed = test.fed
     data = test.object_bytes["protected-a"]
     token = credentials.mint_server(
         fed,
@@ -902,15 +802,15 @@ def check_audience(test: Test, fed: common.Federation) -> None:
     for origin in fed.origins:
         target = label(origin.svc, "origin")
         for op in ("get", "put"):
-            if "DirectReads" not in caps:
+            if not test.direct:
                 test.skip_row(target, "protected-a", op, "wrong-aud", "the origin takes no direct clients")
                 continue
             if op == "get":
-                answer = web.request("GET", stores.url(origin, "protected-a", test.object), token=token)
+                answer = web.request("GET", test.url(origin.url, test.object), token=token)
                 why = read_problem(answer, False, data, "the token is for another audience")
             else:
-                rel = f"data/auth/{test.run}-{target}-wrong-aud"
-                answer, why = scope_write(test, origin, rel, "PUT", token, False, False)
+                rel = test.flat(f"{target}-wrong-aud")
+                answer, why = write(test, origin, "protected-a", rel, token, False, None, os.urandom(4096))
             test.row(target, "protected-a", op, "wrong-aud", answer, why)
 
 
@@ -925,7 +825,7 @@ def check_audience(test: Test, fed: common.Federation) -> None:
 QUERY_FORMS = {"bare": "{}", "bearer": "Bearer {}"}
 
 
-def check_query_token(test: Test, fed: common.Federation) -> None:
+def check_query_token(test: Test) -> None:
     """GET the test object at every server, with a token in the authz query.
 
     The tokens are the `server` one, then the `unknown` one, in
@@ -933,17 +833,16 @@ def check_query_token(test: Test, fed: common.Federation) -> None:
     and the second be refused. An origin that takes no direct clients
     must refuse both.
     """
-    caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
     creds = {name: credentials.BY_NAME[name] for name in ("server", "unknown")}
-    for target, url, direct in targets(fed):
+    for target, url, direct in targets(test.fed):
         for form, pattern in QUERY_FORMS.items():
             for name, cred in creds.items():
-                token = test.token(cred, "protected-a", "get") or ""
+                token = test.credential_token(cred, "protected-a", "get") or ""
                 query = f"authz={quote(pattern.format(token), safe='')}"
-                answer = web.request("GET", f"{url}/protected-a/{test.object}?{query}")
+                answer = web.request("GET", f"{test.url(url, test.object)}?{query}")
                 save(f"{test.out}/responses/{target}-protected-a-get-authz-{form}-{name}", answer)
-                allowed = credentials.expected(cred, caps, "get", direct) == ALLOW
+                allowed = credentials.expected(cred, test.caps, "get", direct) == ALLOW
                 why = read_problem(answer, allowed, data)
                 test.row(target, "protected-a", "get", f"authz-{form}-{name}", answer, why)
 
@@ -977,7 +876,7 @@ def raw_token(
         head: The header to sign under instead.
         secret: The key for HS256.
     """
-    fed = test.session.fed
+    fed = test.fed
     claims = credentials.server_claims(fed, "protected-a", profile=test.profile)
     now = int(time.time())
     for name, offset in (times or {}).items():
@@ -1049,13 +948,13 @@ class InUse:
             when, in seconds past the token's expiry.
     """
 
-    def __init__(self, test: Test, fed: common.Federation):
+    def __init__(self, test: Test):
         self.test = test
-        caps = fed.exports["protected-a"]
+        fed = test.fed
         # An origin that takes no direct clients refuses everything
         # direct.
         self.targets = [
-            (target, url, credentials.decide(ALLOW, caps, "get", direct) == ALLOW)
+            (target, url, credentials.decide(ALLOW, test.caps, "get", direct) == ALLOW)
             for target, url, direct in targets(fed)
         ]
         claims = credentials.server_claims(
@@ -1085,7 +984,7 @@ class InUse:
                 time.sleep(delay)
             for target, url in list(asked):
                 past = int(time.time()) - self.expiry
-                answer = web.request("GET", f"{url}/protected-a/{self.test.object}", token=self.token)
+                answer = web.request("GET", self.test.url(url, self.test.object), token=self.token)
                 self.answers[target].append((past, answer))
                 if past < 0 and answer.status in (401, 403):
                     asked.remove((target, url))
@@ -1142,21 +1041,18 @@ TIME_CASES: tuple[tuple[str, dict[str, int], bool], ...] = (
 )
 
 
-def check_time_claims(test: Test, fed: common.Federation) -> None:
+def check_time_claims(test: Test) -> None:
     """GET the test object with each of TIME_CASES's tokens at every server.
 
     The requests are in /protected-a, each with a token minted afresh,
     since a V2 cache remembers a token it refused for 30 seconds.
     """
-    caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
-    for target, url, direct in targets(fed):
+    for target, url, direct in targets(test.fed):
         for name, times, takes in TIME_CASES:
-            answer = web.request(
-                "GET", f"{url}/protected-a/{test.object}", token=raw_token(test, times=times)
-            )
+            answer = web.request("GET", test.url(url, test.object), token=raw_token(test, times=times))
             save(f"{test.out}/responses/{target}-protected-a-get-{name}", answer)
-            allowed = credentials.decide(ALLOW if takes else DENY, caps, "get", direct) == ALLOW
+            allowed = credentials.decide(ALLOW if takes else DENY, test.caps, "get", direct) == ALLOW
             test.row(target, "protected-a", "get", name, answer, read_problem(answer, allowed, data))
 
 
@@ -1175,7 +1071,7 @@ UNDEFINED_VERSIONS = {
 }
 
 
-def malformed_tokens(test: Test, fed: common.Federation) -> list[tuple[str, str, bool | None]]:
+def malformed_tokens(test: Test) -> list[tuple[str, str, bool | None]]:
     """Return the malformed-claims check's tokens.
 
     Each is like `server`'s for /protected-a but for one thing.
@@ -1191,7 +1087,7 @@ def malformed_tokens(test: Test, fed: common.Federation) -> list[tuple[str, str,
     # with, hoping that a server verifies with the key's bytes whatever
     # the token's alg.
     secret = json.dumps(
-        {**jwt.public_jwk(fed.origin_key), "kid": head.get("kid")}, separators=(",", ":")
+        {**jwt.public_jwk(test.fed.origin_key), "kid": head.get("kid")}, separators=(",", ":")
     ).encode()
     version, _ = credentials.VERSIONS[test.profile]
     undefined, value = UNDEFINED_VERSIONS[test.profile]
@@ -1206,24 +1102,23 @@ def malformed_tokens(test: Test, fed: common.Federation) -> list[tuple[str, str,
     ]
 
 
-def check_malformed(test: Test, fed: common.Federation) -> None:
+def check_malformed(test: Test) -> None:
     """GET the test object at every server with each of malformed_tokens().
 
     The requests are in /protected-a. The note of a token that may be
     taken or refused says which.
     """
-    caps = fed.exports["protected-a"]
     data = test.object_bytes["protected-a"]
-    tokens = malformed_tokens(test, fed)
-    for target, url, direct in targets(fed):
+    tokens = malformed_tokens(test)
+    for target, url, direct in targets(test.fed):
         for name, token, takes in tokens:
-            answer = web.request("GET", f"{url}/protected-a/{test.object}", token=token)
+            answer = web.request("GET", test.url(url, test.object), token=token)
             save(f"{test.out}/responses/{target}-protected-a-get-{name}", answer)
             note = ""
-            if takes is None and credentials.decide(ALLOW, caps, "get", direct) == ALLOW:
+            if takes is None and credentials.decide(ALLOW, test.caps, "get", direct) == ALLOW:
                 note, why = read_either(answer, data)
             else:
-                allowed = credentials.decide(ALLOW if takes else DENY, caps, "get", direct)
+                allowed = credentials.decide(ALLOW if takes else DENY, test.caps, "get", direct)
                 why = read_problem(answer, allowed == ALLOW, data)
             test.row(target, "protected-a", "get", name, answer, why, note)
 
@@ -1244,7 +1139,7 @@ def audience_of(origin: common.Origin) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
-def check_audience_specific(test: Test, fed: common.Federation) -> None:
+def check_audience_specific(test: Test) -> None:
     """GET the test object at every origin with tokens that list audiences.
 
     In /protected-a, the tokens are like `server`'s but for the first
@@ -1252,7 +1147,7 @@ def check_audience_specific(test: Test, fed: common.Federation) -> None:
     profile's "any" audience and OTHER_AUDIENCE, which every origin must
     take. Only the origins are asked, and skipped as in check_audience().
     """
-    caps = fed.exports["protected-a"]
+    fed = test.fed
     data = test.object_bytes["protected-a"]
     first = fed.origins[0]
     own = audience_of(first)
@@ -1269,10 +1164,10 @@ def check_audience_specific(test: Test, fed: common.Federation) -> None:
     for origin in fed.origins:
         target = label(origin.svc, "origin")
         for name, token, only in tokens:
-            if "DirectReads" not in caps:
+            if not test.direct:
                 test.skip_row(target, "protected-a", "get", name, "the origin takes no direct clients")
                 continue
-            answer = web.request("GET", stores.url(origin, "protected-a", test.object), token=token)
+            answer = web.request("GET", test.url(origin.url, test.object), token=token)
             save(f"{test.out}/responses/{target}-protected-a-get-{name}", answer)
             allowed = only is None or origin == only
             why = read_problem(answer, allowed, data, f"the token is for {own} alone")
@@ -1318,16 +1213,16 @@ def token_forms(server: str, unknown: str) -> list[TokenForm]:
     ]
 
 
-def check_token_lists(test: Test, fed: common.Federation) -> None:
+def check_token_lists(test: Test) -> None:
     """Present tokens in each of token_forms() at every native origin.
 
     Each GETs the test object in /protected-a. XRootD origins are
     skipped.
     """
-    caps = fed.exports["protected-a"]
+    fed = test.fed
     data = test.object_bytes["protected-a"]
-    server = test.token(credentials.BY_NAME["server"], "protected-a", "get") or ""
-    unknown = test.token(credentials.BY_NAME["unknown"], "protected-a", "get") or ""
+    server = test.credential_token(credentials.BY_NAME["server"], "protected-a", "get") or ""
+    unknown = test.credential_token(credentials.BY_NAME["unknown"], "protected-a", "get") or ""
     for origin in fed.origins:
         target = label(origin.svc, "origin")
         for name, headers, query, verdict in token_forms(server, unknown):
@@ -1335,14 +1230,14 @@ def check_token_lists(test: Test, fed: common.Federation) -> None:
                 why = f"XRootD serves the origins ({fed.origin_variant}), not Pelican"
                 test.skip_row(target, "protected-a", "get", name, why)
                 continue
-            url = stores.url(origin, "protected-a", test.object)
+            url = test.url(origin.url, test.object)
             if query:
                 url += f"?{urlencode(query)}"
             answer = web.request("GET", url, headers=headers)
             save(f"{test.out}/responses/{target}-protected-a-get-{name}", answer)
-            decided = credentials.decide(ALLOW if verdict == ALLOW else DENY, caps, "get", True)
+            decided = credentials.decide(ALLOW if verdict == ALLOW else DENY, test.caps, "get", True)
             why = read_problem(answer, decided == ALLOW, data)
-            if not why and verdict == NO_TOKEN and decided == DENY and "DirectReads" in caps:
+            if not why and verdict == NO_TOKEN and decided == DENY and test.direct:
                 if answer.status != 401:
                     why = f"expected 401: more than {MAX_TOKENS} tokens count as none"
             test.row(target, "protected-a", "get", name, answer, why)
@@ -1390,7 +1285,7 @@ def hint_problems(answer: web.Response, standalone: bool, issuer: str) -> list[s
     return problems
 
 
-def check_standalone(test: Test, fed: common.Federation) -> None:
+def check_standalone(test: Test) -> None:
     """GET the test object, and a missing one, at every native origin.
 
     Ask for the test object, in /protected-a, with no token, `unknown`'s,
@@ -1401,18 +1296,18 @@ def check_standalone(test: Test, fed: common.Federation) -> None:
     and so are origins that take no direct clients, which refuse every
     request alike.
     """
-    caps = fed.exports["protected-a"]
+    fed = test.fed
     data = test.object_bytes["protected-a"]
     issuer = fed.issuer_of("protected-a")
-    server = test.token(credentials.BY_NAME["server"], "protected-a", "get")
-    unknown = test.token(credentials.BY_NAME["unknown"], "protected-a", "get")
+    server = test.credential_token(credentials.BY_NAME["server"], "protected-a", "get")
+    unknown = test.credential_token(credentials.BY_NAME["unknown"], "protected-a", "get")
     # Each request: its row's name, what it asks for, its token, and the
     # status it must get.
     cases = (
         ("hdr-none", test.object, None, 401),
         ("hdr-unknown", test.object, unknown, 403 if fed.standalone else 401),
         ("hdr-server", test.object, server, 200),
-        ("hdr-missing", f"data/auth/{test.run}-missing", server, 404),
+        ("hdr-missing", test.flat("missing"), server, 404),
     )
     for origin in fed.origins:
         target = label(origin.svc, "origin")
@@ -1421,10 +1316,10 @@ def check_standalone(test: Test, fed: common.Federation) -> None:
                 why = f"XRootD serves the origins ({fed.origin_variant}), not Pelican"
                 test.skip_row(target, "protected-a", "get", name, why)
                 continue
-            if "DirectReads" not in caps:
+            if not test.direct:
                 test.skip_row(target, "protected-a", "get", name, "the origin takes no direct clients")
                 continue
-            answer = web.request("GET", stores.url(origin, "protected-a", rel), token=token)
+            answer = web.request("GET", test.url(origin.url, rel), token=token)
             save(f"{test.out}/responses/{target}-protected-a-get-{name}", answer)
             problems: list[str] = []
             if answer.status != status:
@@ -1460,18 +1355,19 @@ def web_servers(fed: common.Federation) -> list[tuple[str, str, str]]:
     return [(name, url, keys) for url, (name, keys) in found.items()]
 
 
-def check_web_token_strict(test: Test, fed: common.Federation) -> None:
+def check_web_token_strict(test: Test) -> None:
     """Ask each server's web API who is logged in (/whoami).
 
     Ask first with a token that it takes as its admin's
-    (credentials.mint_admin()), which it must take; then with the same
+    (credentials.mint_web_user()), which it must take; then with the same
     token, but not valid for another 20 seconds, and expired 5 seconds
     ago, each of which it must refuse (401) or take for no one.
     """
+    fed = test.fed
     for target, web_url, key_dir in web_servers(fed):
         key = common.signing_key(key_dir)
-        issuer = credentials.local_issuer(fed, web_url)
-        fresh = credentials.mint_admin(fed, test.session.path(f"tokens/web.{target}"), issuer, key)
+        out = test.session.path(f"tokens/web.{target}")
+        fresh = credentials.mint_web_user(fed, out, web_url, "admin", key=key)
         head, claims = jwt.decode(fresh)
         now = int(time.time())
         early = {**claims, "iat": now, "nbf": now + 20}
@@ -1484,7 +1380,7 @@ def check_web_token_strict(test: Test, fed: common.Federation) -> None:
         for name, token, takes in cases:
             answer = web.request("GET", web_url + accounts.WHOAMI, token=token)
             save(f"{test.out}/responses/{target}-whoami-{name}", answer)
-            authenticated = (common.as_object(answer.json()) or {}).get("authenticated")
+            authenticated = answer.object().get("authenticated")
             why = ""
             if takes and (answer.status != 200 or authenticated is not True):
                 why = "expected 200, authenticated: the token is the server's own, and fresh"
@@ -1509,7 +1405,7 @@ def climbs_from(scope: str, rest: str) -> list[str]:
     return [p for p in climbing(f"protected-a/{scope}", 1, rest) if "%252e" not in p]
 
 
-def check_narrow_climb(test: Test, fed: common.Federation) -> None:
+def check_narrow_climb(test: Test) -> None:
     """With a narrow token, climb out of its collection to its sibling.
 
     The token is for collection data/auth/<run>-narrow in /protected-a
@@ -1520,9 +1416,9 @@ def check_narrow_climb(test: Test, fed: common.Federation) -> None:
     nothing. Each cache must first serve the test object with the
     server's token, so that it refuses an object it holds.
     """
-    caps = fed.exports["protected-a"]
+    fed = test.fed
     data = test.object_bytes["protected-a"]
-    scope = f"data/auth/{test.run}-narrow"
+    scope = test.flat("narrow")
     token = credentials.mint_server(
         fed,
         test.session.path("tokens/narrow-climb"),
@@ -1532,17 +1428,13 @@ def check_narrow_climb(test: Test, fed: common.Federation) -> None:
     )
     for cache in fed.caches:
         target = label(cache.svc, "cache")
-        held = web.request(
-            "GET",
-            f"{cache.url}/protected-a/{test.object}",
-            token=test.setup_tokens["protected-a"],
-        )
-        if held.status != 200 or held.body != data:
+        held = web.request("GET", test.url(cache.url, test.object), token=test.setup)
+        if web.served(held, data):
             why = "could not first read the test object through it with the server's token"
             test.row(target, "protected-a", "get", NARROW_CLIMB, held, why)
             continue
         climb(test, target, cache.url, None, "get", scope, token)
-    writes = credentials.decide(ALLOW, caps, "put", direct=True) == ALLOW
+    writes = credentials.decide(ALLOW, test.caps, "put", direct=True) == ALLOW
     cannot_delete = stores.cannot(fed, "delete")
     for origin in fed.origins:
         target = label(origin.svc, "origin")
@@ -1572,19 +1464,15 @@ def climb(
     object; a PUT, to a new object; and a DELETE, to one put there first.
     """
     data = test.object_bytes["protected-a"]
-    setup = test.setup_tokens["protected-a"]
-    name = {"get": f"{test.run}-object", "put": f"{test.run}-climbed-{target}"}.get(
-        op, f"{test.run}-climbed-delete-{target}"
-    )
-    rel = f"data/auth/{name}"
+    rel = test.flat({"get": "object", "put": f"climbed-{target}"}.get(op, f"climbed-delete-{target}"))
     old = os.urandom(4096)
     if op == "delete" and origin is not None:
-        error = stores.seed(origin, "protected-a", rel, old, setup, test.caps("protected-a"))
+        error = stores.seed(origin, "protected-a", rel, old, test.setup, test.caps)
         if error:
             why = f"could not put the object to delete in place ({error})"
             test.outcome_row(target, "protected-a", op, NARROW_CLIMB, [why], "")
             return
-    paths = climbs_from(scope, name)
+    paths = climbs_from(scope, os.path.basename(rel))
     problems: list[str] = []
     for path in paths:
         upload = os.urandom(4096) if op == "put" else None
@@ -1651,7 +1539,7 @@ def owner_read(url: str, token: str, data: bytes) -> web.Response:
     return answer
 
 
-def check_nested(test: Test, fed: common.Federation) -> None:
+def check_nested(test: Test) -> None:
     """Put an object in the nested export (nested_export()), then GET it.
 
     Put it at its owner's origin, and have the owner read it through each
@@ -1661,6 +1549,7 @@ def check_nested(test: Test, fed: common.Federation) -> None:
     path, following its redirect. Each must be refused (401 or 403),
     without the object.
     """
+    fed = test.fed
     found = nested_export(fed)
     if found is None:
         why = "there is no protected prefix inside a public one (-p topo-multi-owner)"
@@ -1669,7 +1558,7 @@ def check_nested(test: Test, fed: common.Federation) -> None:
         return
     owner, export = found
     storage = f"{owner.origin.store_of(export.path)}/data/auth"
-    rel = f"data/auth/{test.run}-nested"
+    rel = test.flat("nested")
     path = f"{export.prefix}/{rel}"
     data = os.urandom(65536)
     # The owner's token puts the object in place, and has each cache hold
@@ -1747,7 +1636,7 @@ def nested_token(
     """
     out = test.session.path(f"tokens/nested.{name}")
     credentials.mint(
-        test.session.fed,
+        test.fed,
         out,
         f"{export.prefix}/",
         key,
@@ -1757,16 +1646,14 @@ def nested_token(
         scopes,
         profile=profile,
     )
-    with open(out, encoding="utf-8") as f:
-        return f.read().strip()
+    return common.read_text(out)
 
 
 def skip(_fed: common.Federation) -> str | None:
-    """Return why there is nothing to test, or None if there is something.
+    """Return None: there is always something to test.
 
-    There is always something: every shape exports a namespace, where
-    the credentials are presented, even where no token decides there
-    (`-p origin-public`).
+    Every shape exports a namespace, where the credentials are presented,
+    even where no token decides there (`-p origin-public`).
     """
     return None
 
@@ -1791,7 +1678,7 @@ def runnable(fed: common.Federation, selected: list[str], report: Report) -> lis
     return found
 
 
-def put_test_objects(test: Test, fed: common.Federation, narrow: bool) -> None:
+def put_test_objects(test: Test, narrow: bool) -> None:
     """Put each namespace's test object at every origin.
 
     Put it in each namespace with storage of its own (see
@@ -1800,6 +1687,7 @@ def put_test_objects(test: Test, fed: common.Federation, narrow: bool) -> None:
     come out first. The federation suite has already waited for each
     cache to accept the server's token.
     """
+    fed = test.fed
     for origin in fed.origins:
         if not origin.pstore:
             for namespace in fed.exports:
@@ -1824,23 +1712,20 @@ def put_test_objects(test: Test, fed: common.Federation, narrow: bool) -> None:
             if not intact:
                 die(f"{origin.svc} did not store the test object intact in /{namespace}")
         if narrow:
-            token, caps = test.setup_tokens["protected-a"], fed.exports["protected-a"]
-            error = stores.seed(origin, "protected-a", test.sibling, test.sibling_bytes, token, caps)
+            error = stores.seed(
+                origin, "protected-a", test.sibling, test.sibling_bytes, test.setup, test.caps
+            )
             if error:
                 die(f"could not put the test object's sibling at {origin.svc} ({error})")
 
 
-def cache_sibling(test: Test, fed: common.Federation) -> None:
+def cache_sibling(test: Test) -> None:
     """GET the object's sibling through each cache, with the server's token.
 
     Then `narrow-out` asks each cache for an object it holds.
     """
-    for cache in fed.caches:
-        answer = web.request(
-            "GET",
-            f"{cache.url}/protected-a/{test.sibling}",
-            token=test.setup_tokens["protected-a"],
-        )
+    for cache in test.fed.caches:
+        answer = web.request("GET", test.url(cache.url, test.sibling), token=test.setup)
         why = ""
         if answer.status != 200:
             why = "expected 200: the server's token is good for the sibling"
@@ -1849,30 +1734,11 @@ def cache_sibling(test: Test, fed: common.Federation) -> None:
         test.row(label(cache.svc, "cache"), "protected-a", "get", "narrow-sibling", answer, why)
 
 
-def check_credential(test: Test, fed: common.Federation, cred: Credential) -> None:
-    """Present cred in every namespace it applies to, at every server."""
-    if cred.expired:
-        test.session.wait_until_stale()
-    for namespace in test.session.namespaces:
-        if not credentials.applies(cred, namespace):
-            continue
-        for origin in fed.origins:
-            target = label(origin.svc, "origin")
-            test.check_read(target, origin.url, namespace, cred, "get", direct=True)
-            test.check_read(target, origin.url, namespace, cred, "head", direct=True)
-            test.check_put(target, origin, namespace, cred)
-            test.check_delete(target, origin, namespace, cred)
-        for cache in fed.caches:
-            target = label(cache.svc, "cache")
-            test.check_read(target, cache.url, namespace, cred, "get", direct=False)
-            test.check_read(target, cache.url, namespace, cred, "head", direct=False)
-
-
-def narrow_token(test: Test, fed: common.Federation) -> str:
+def narrow_token(test: Test) -> str:
     """Return a token like `server`'s, but for the test object alone."""
     path = test.session.path("tokens/narrow")
     return credentials.mint_server(
-        fed, path, "protected-a", scope_path=f"/{test.object}", profile=test.profile
+        test.fed, path, "protected-a", scope_path=f"/{test.object}", profile=test.profile
     )
 
 
@@ -1888,8 +1754,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     creds = runnable(fed, selected, report)
     # The selected checks that are neither `keys` nor a credential.
     wanted = {n for n in selected if n != KEYS and n not in credentials.BY_NAME}
-    if "protected-a" not in fed.exports:
-        reason = "this shape does not export /protected-a"
+    reason = suite.unexported(fed)
+    if reason:
         for name in (n for n in PROTECTED_A_CHECKS if n in wanted):
             warn(f"skipping {name}: {reason}")
             report.add(name, SKIP, reason, seconds=None)
@@ -1915,18 +1781,18 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     for namespace, data in test.object_bytes.items():
         with open(f"{out}/object-{namespace}", "wb") as f:
             f.write(data)
-    put_test_objects(test, fed, narrow)
+    put_test_objects(test, narrow)
     # It takes three minutes, which the other checks fill.
-    in_use = InUse(test, fed) if EXPIRED_IN_USE in wanted else None
+    in_use = InUse(test) if EXPIRED_IN_USE in wanted else None
 
     print(f"\n{'target':<10} {'ns':<11} {'op':<8} {'credential':<11} {'code':>4}  result")
     if narrow:
-        cache_sibling(test, fed)
+        cache_sibling(test)
     for cred in creds:
-        check_credential(test, fed, cred)
+        check_credential(test, cred)
     # The other checks, in this order: those of one storage scope after
     # `narrow`, and `traversal` last.
-    others: dict[str, Callable[[Test, common.Federation], None]] = {
+    others: dict[str, Callable[[Test], None]] = {
         HINTS: check_hints,
         QUERY_TOKEN: check_query_token,
         AUDIENCE: check_audience,
@@ -1936,7 +1802,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         MALFORMED: check_malformed,
         STANDALONE: check_standalone,
         WEB_TOKEN_STRICT: check_web_token_strict,
-        NARROW: lambda t, f: check_narrow(t, f, narrow_token(t, f)),
+        NARROW: lambda t: check_narrow(t, narrow_token(t)),
         **{name: partial(check_scope, name=name) for name in SCOPES},
         NARROW_CLIMB: check_narrow_climb,
         NESTED: check_nested,
@@ -1944,7 +1810,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     }
     for name, check in others.items():
         if name in wanted:
-            check(test, fed)
+            check(test)
     if in_use is not None:
         print(
             f"\nWaiting for {EXPIRED_IN_USE}, which asks each server until"

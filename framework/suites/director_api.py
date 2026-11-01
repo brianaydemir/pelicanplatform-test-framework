@@ -1,34 +1,6 @@
 """What the directors publish, and whether it is true of the shape.
 
-The directors publish their lists of servers and of namespaces, the
-namespace a path falls in, their health tests of each server and the
-file they serve the caches for them, their stat of an object at the
-origins, their metrics, and their comparison of the federation's
-metadata; and they forward ads to one another.
-
-  servers           director_ui's list of servers, whole, by type, and
-                    one at a time, with each one's namespaces; its list
-                    of namespaces; the support contact; and the list of
-                    directors
-  namespaces        listNamespaces, and its deprecated first version;
-                    the namespace a path falls in
-  health            each director's health test of each origin and
-                    cache: the status it lists, its count of test runs,
-                    and each server's own view of it; and a test file
-                    read through each cache
-  health-test-file  the test file a director serves the caches, by GET,
-                    HEAD, and PROPFIND; with a timestamp that is none,
-                    and in a directory whose name XML must escape
-  origin-stat       which origins hold an object, as a director's admin
-                    asks: refused without credentials, with bounds that
-                    conflict, and for a namespace no origin exports
-  metrics           the redirects and client requests a director counts,
-                    the ads it receives, and its count of servers
-  metadata-hosting  the discovery document a director does not serve,
-                    and its comparison of the federation's metadata
-  forwarding        under -p topo-multi-director, an ad posted to one
-                    director reaches the other, and so must one that
-                    lifts a cache's shutdown there
+See docs/tests/director-apis.md.
 
 A server advertises to every director it hears of, from its
 configuration, the discovery document, and each director's list of
@@ -38,10 +10,9 @@ instead posts the first cache's own ad, signed as the cache would sign
 it, to one director alone, and looks for it at the other. It then waits
 until the cache's own ads have restored both.
 
-`origin-stat` puts an object in /public at one origin, under
-data/director-api/<run>/, which the suite removes afterward. Only
-`metrics`'s client requests present a storage token, of the session's
-profile; the rest present an admin's tokens, or the servers' own.
+`origin-stat` puts an object in /public at one origin. Only `metrics`'s
+client requests present a storage token, of the session's profile; the
+rest present an admin's tokens, or the servers' own.
 """
 
 import functools
@@ -53,8 +24,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from testlib import ads, common, credentials, director, metrics, stores, web, webdav
-from testlib.common import first, outcome, warn
+from testlib import ads, common, credentials, director, metrics, stores, suite, web, webapi, webdav
+from testlib.common import outcome
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
 
@@ -166,8 +137,6 @@ STARTUP_SLACK = 10
 FRESH_WAIT = 40
 FORWARD_WAIT = 10
 RESTORE_WAIT = 150
-# How long the director's admin tokens last.
-TOKEN_LIFETIME = 3600
 
 
 @dataclass(frozen=True)
@@ -239,27 +208,24 @@ def shape_servers(fed: common.Federation) -> list[Server]:
     return found
 
 
-class Test:
-    """The federation, its servers, and what the scenarios share.
+class Test(suite.Test):
+    """The federation's servers, and what the scenarios share.
+
+    The namespace, which the scenarios ask about, is the first exported.
 
     Attributes:
-        base: Where the suite puts its objects, below a namespace.
-        namespace: The first exported namespace, which the scenarios ask
-            about.
         servers: The shape's servers (see shape_servers()).
+        access: The servers' web APIs' users, of whom the suite is the
+            directors' admin.
         started: When the suite began (time.monotonic()).
         ads_before: Each director's metrics, by URL, as the suite began:
             its ads received so far, which `metrics` compares with later.
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.run = session.run
-        self.base = f"data/director-api/{self.run}"
-        self.namespace = credentials.exported(self.fed)[0]
+        super().__init__(session, "director-api", credentials.exported(session.fed)[0])
         self.servers = shape_servers(self.fed)
-        self._admin: dict[str, str] = {}
+        self.access = webapi.Access(session)
         self._names: dict[str, dict[tuple[str, str], str]] = {}
         self.started = time.monotonic()
         self.ads_before = {url: metrics.fetch(url) for url in self.fed.directors}
@@ -274,21 +240,8 @@ class Test:
         return list(found.values())
 
     def admin(self, url: str) -> str:
-        """Return a token that the director at url takes as its admin's.
-
-        It is minted once per director, by credentials.mint_user().
-        """
-        if url not in self._admin:
-            host = director.host(url)
-            self._admin[url] = credentials.mint_user(
-                self.fed,
-                self.session.path(f"tokens/director-api.admin.{host}"),
-                credentials.local_issuer(self.fed, url),
-                common.signing_key(f"issuer-keys/{host}"),
-                "admin",
-                TOKEN_LIFETIME,
-            )
-        return self._admin[url]
+        """Return a token that the director at url takes as its admin's."""
+        return self.access.admin(self.access.server_at(url))
 
     def names(self, url: str) -> dict[tuple[str, str], str]:
         """Return the name by which the director at url lists each server.
@@ -297,9 +250,13 @@ class Test:
         director's list of servers says; it is asked once.
         """
         if url not in self._names:
-            rows = listed_servers(web.request("GET", f"{url}{SERVERS}")) or []
+            rows = objects_of(web.request("GET", f"{url}{SERVERS}")) or []
             self._names[url] = {row_key(row): str(row.get("name", "")) for row in rows if row.get("name")}
         return self._names[url]
+
+    def labels(self, url: str, server: Server) -> dict[str, str]:
+        """Return the labels of server in the director at url's metrics."""
+        return {"server_name": self.names(url).get(server.key, server.svc), "server_type": server.kind}
 
 
 # --------------------------------------------------------------------------
@@ -311,8 +268,8 @@ def objects(value: Any) -> list[dict[str, Any]]:
     return [common.as_object(v) or {} for v in common.as_array(value) or []]
 
 
-def listed_servers(answer: web.Response) -> list[dict[str, Any]] | None:
-    """Return answer's list of servers, or None if it is not one."""
+def objects_of(answer: web.Response) -> list[dict[str, Any]] | None:
+    """Return the objects in answer, a 200's JSON array, or None if not."""
     found = common.as_array(answer.json()) if answer.status == 200 else None
     return None if found is None else objects(found)
 
@@ -355,17 +312,6 @@ def utc_stamp() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def started_ago(url: str) -> float | None:
-    """Return how long ago the director at url started, in seconds.
-
-    Return None if it won't say (process_start_time_seconds).
-    """
-    found = metrics.fetch(url)
-    if found is None or not found.has("process_start_time_seconds"):
-        return None
-    return time.time() - found.value("process_start_time_seconds")
-
-
 def unknown_statuses(url: str) -> tuple[int, ...]:
     """Return what the director at url may answer for an unknown namespace.
 
@@ -373,7 +319,7 @@ def unknown_statuses(url: str) -> tuple[int, ...]:
     may not have heard from every origin (inStartupSequence), and either
     near the boundary or if it won't say when it started.
     """
-    ago = started_ago(url)
+    ago = metrics.started_ago(url)
     if ago is None or abs(ago - STARTUP_WINDOW) <= STARTUP_SLACK:
         return (404, 429)
     return (429,) if ago < STARTUP_WINDOW else (404,)
@@ -430,7 +376,7 @@ def listing_rows(test: Test, url: str) -> list[str]:
     nothing else, a site-local cache included.
     """
     answer = web.request("GET", f"{url}{SERVERS}")
-    rows = listed_servers(answer)
+    rows = objects_of(answer)
     name = director.host(url)
     if rows is None:
         return [f"{name}: {answer.describe()}, not a list of servers"]
@@ -447,27 +393,39 @@ def listing_rows(test: Test, url: str) -> list[str]:
     return problems
 
 
+def typed_problems(test: Test, url: str, lower: bool) -> list[str]:
+    """Return what is wrong with the director at url's servers by type.
+
+    Asked for origins, it must list the origins alone, and for caches,
+    the caches. Each type is spelled in lower case if lower, and
+    otherwise as Pelican spells it (`Origin`, `Cache`).
+    """
+    name = director.host(url)
+    problems: list[str] = []
+    for kind in ("Origin", "Cache"):
+        spelled = kind.lower() if lower else kind
+        answer = web.request("GET", f"{url}{SERVERS}?server_type={spelled}")
+        rows = objects_of(answer)
+        if rows is None:
+            problems.append(f"{name} ({spelled}): {answer.describe()}, not a list")
+            continue
+        got = sorted(f"{k[0]} {k[1]}" for k in {row_key(r) for r in rows})
+        want = sorted(f"{s.kind} {s.host}" for s in test.servers if s.kind == kind)
+        if got != want:
+            problems.append(f"{name} ({spelled}) lists {got}, not {want}")
+    return problems
+
+
 def by_type_problems(test: Test, url: str) -> list[str]:
     """Return what is wrong with the director at url's servers of one type.
 
     `origin` must list the origins alone, and `cache` the caches; a type
     that is neither must get 400.
     """
-    name = director.host(url)
-    problems: list[str] = []
-    for kind in ("Origin", "Cache"):
-        answer = web.request("GET", f"{url}{SERVERS}?server_type={kind.lower()}")
-        rows = listed_servers(answer)
-        if rows is None:
-            problems.append(f"{name} ({kind.lower()}): {answer.describe()}, not a list")
-            continue
-        got = sorted(f"{k[0]} {k[1]}" for k in {row_key(r) for r in rows})
-        want = sorted(f"{s.kind} {s.host}" for s in test.servers if s.kind == kind)
-        if got != want:
-            problems.append(f"{name} ({kind.lower()}) lists {got}, not {want}")
+    problems = typed_problems(test, url, lower=True)
     answer = web.request("GET", f"{url}{SERVERS}?server_type=director")
     if answer.status != 400:
-        problems.append(f"{name} (director): {answer.describe()}, not 400")
+        problems.append(f"{director.host(url)} (director): {answer.describe()}, not 400")
     return problems
 
 
@@ -479,19 +437,7 @@ def by_type_case_problems(test: Test, url: str) -> list[str]:
     director/director_ui.go), so each must list what its lower-case
     spelling does.
     """
-    name = director.host(url)
-    problems: list[str] = []
-    for kind in ("Origin", "Cache"):
-        answer = web.request("GET", f"{url}{SERVERS}?server_type={kind}")
-        rows = listed_servers(answer)
-        if rows is None:
-            problems.append(f"{name} ({kind}): {answer.describe()}, not a list")
-            continue
-        got = sorted(f"{k[0]} {k[1]}" for k in {row_key(r) for r in rows})
-        want = sorted(f"{s.kind} {s.host}" for s in test.servers if s.kind == kind)
-        if got != want:
-            problems.append(f"{name} ({kind}) lists {got}, not {want}")
-    return problems
+    return typed_problems(test, url, lower=False)
 
 
 def namespace_paths(value: Any) -> set[str] | None:
@@ -563,10 +509,10 @@ def ui_namespaces_problems(test: Test, url: str) -> list[str]:
     """
     name = director.host(url)
     answer = web.request("GET", f"{url}{UI_NAMESPACES}")
-    found = common.as_array(answer.json()) if answer.status == 200 else None
+    found = objects_of(answer)
     if found is None:
         return [f"{name}: {answer.describe()}, not a list of namespaces"]
-    by_path = {str(n.get("path", "")): n for n in objects(found)}
+    by_path = {str(n.get("path", "")): n for n in found}
     names = test.names(url)
     problems: list[str] = []
     for export in test.exports:
@@ -591,7 +537,7 @@ def contact_problems(url: str) -> list[str]:
     It must be the email and URL its configuration gives.
     """
     answer = web.request("GET", f"{url}{CONTACT}")
-    found = common.as_object(answer.json()) or {}
+    found = answer.object()
     want = {"email": CONTACT_EMAIL, "url": CONTACT_URL}
     got = {k: found.get(k) for k in want}
     if answer.status != 200 or got != want:
@@ -606,10 +552,10 @@ def directors_problems(test: Test, url: str) -> list[str]:
     at, and no other.
     """
     answer = web.request("GET", f"{url}{DIRECTORS}")
-    found = common.as_array(answer.json()) if answer.status == 200 else None
+    found = objects_of(answer)
     if found is None:
         return [f"{director.host(url)}: {answer.describe()}, not a list of directors"]
-    got = sorted({director.host(str(d.get("advertise_url", ""))) for d in objects(found)})
+    got = sorted({director.host(str(d.get("advertise_url", ""))) for d in found})
     want = sorted(director.host(u) for u in test.fed.directors)
     return [] if got == want else [f"{director.host(url)} lists {got}, not {want}"]
 
@@ -650,10 +596,9 @@ def v2_problems(test: Test, url: str) -> list[str]:
     """
     name = director.host(url)
     answer = web.request("GET", f"{url}{LIST_NAMESPACES}")
-    found = common.as_array(answer.json()) if answer.status == 200 else None
-    if found is None:
+    entries = objects_of(answer)
+    if entries is None:
         return [f"{name}: {answer.describe()}, not a list of namespaces"]
-    entries = objects(found)
     exports = {e.prefix: e for e in test.exports}
     problems: list[str] = []
     paths = {str(e.get("path", "")) for e in entries}
@@ -687,7 +632,7 @@ def v2_problems(test: Test, url: str) -> list[str]:
 def v1_problems(url: str) -> list[str]:
     """Return what is wrong with the director at url's listNamespaces v1.
 
-    It serves the first version no longer: it must answer status 299, a
+    The first version is deprecated: it must answer status 299, a
     Warning, and no namespaces (listNamespacesV1Deprecated).
     """
     name = director.host(url)
@@ -730,7 +675,7 @@ def prefix_problems(test: Test, url: str) -> list[str]:
     problems: list[str] = []
     for path, want in prefix_cases(test):
         answer = web.request("GET", f"{url}{PREFIX}{path}")
-        got = (common.as_object(answer.json()) or {}).get("prefix")
+        got = answer.object().get("prefix")
         if want is None and answer.status != 404:
             problems.append(f"{name}: {path}: {answer.describe()}, not 404")
         elif want is not None and (answer.status != 200 or got != want):
@@ -772,7 +717,7 @@ def status_problems(test: Test) -> tuple[list[str], bool]:
     problems: list[str] = []
     pending = False
     for url in test.fed.directors:
-        rows = listed_servers(web.request("GET", f"{url}{SERVERS}")) or []
+        rows = objects_of(web.request("GET", f"{url}{SERVERS}")) or []
         by_key = {row_key(r): r for r in rows}
         for server in test.servers:
             row = by_key.get(server.key)
@@ -823,10 +768,14 @@ def run_problems(
 ) -> list[str]:
     """Return what is wrong with how each director's test runs rose.
 
-    Between two counts, before and after (each director's metrics, by
-    URL), they must rise by at least one run that passed and was
-    reported, for each server it tests; by none at all, for each it
-    doesn't.
+    Between two counts, they must rise by at least one run that passed
+    and was reported, for each server it tests; by none at all, for each
+    it doesn't.
+
+    Args:
+        test: The Test.
+        before: Each director's metrics, by URL, at the first count.
+        after: The same, at the second.
     """
     problems: list[str] = []
     for url in test.fed.directors:
@@ -835,12 +784,8 @@ def run_problems(
         if then is None or now is None:
             problems.append(f"{name}: its /metrics did not answer")
             continue
-        names = test.names(url)
         for server in test.servers:
-            labels = {
-                "server_name": names.get(server.key, server.svc),
-                "server_type": server.kind,
-            }
+            labels = test.labels(url, server)
             if server.tested:
                 rose = metrics.delta(
                     then,
@@ -1002,17 +947,10 @@ def put_held(test: Test) -> tuple[Held | None, str]:
     if "public" not in test.fed.exports:
         return None, "the shape exports no /public, whose objects the admin may stat"
     holder = stores.unique(test.fed.origins)[-1]
-    store_ns = holder.storage_namespace("public")
-    token = test.session.setup_token(store_ns)
-    rel = f"{test.base}/held"
-    errors = stores.make_dirs([holder], store_ns, test.base, token)
-    error = (
-        errors[0]
-        if errors
-        else stores.seed(holder, store_ns, rel, b"director-api\n", token, test.fed.exports[store_ns])
-    )
-    if error:
-        return None, f"putting the object at {holder.svc}: {error}"
+    rel = test.rel("held")
+    errors = stores.put_in_place(test.session, [holder], "public", rel, b"director-api\n")
+    if errors:
+        return None, f"putting the object at {holder.svc}: {errors[0]}"
     return Held(holder, rel), ""
 
 
@@ -1038,7 +976,7 @@ def stat_admin_problems(test: Test, url: str, held: Held) -> list[str]:
     (Director.MaxStatResponse).
     """
     answer = web.request("GET", f"{url}{STAT}/public/{held.rel}", token=test.admin(url))
-    found = common.as_object(answer.json()) or {}
+    found = answer.object()
     hosts = {director.host(str(o.get("url", ""))) for o in objects(found.get("objects"))}
     want = holders(test, held)
     if answer.status != 200 or not hosts or not hosts <= want:
@@ -1061,7 +999,7 @@ def origin_stat(test: Test) -> list[Row]:
     # An object in an exported namespace. With ?skipstat, the director
     # finds its origins without asking them, so that only the bounds
     # decide.
-    target = f"{STAT}/public/{held.rel}" if held else f"{STAT}/{test.namespace}/{test.base}/x"
+    target = f"{STAT}/public/{held.rel}" if held else f"{STAT}{test.path(test.rel('x'))}"
     for url in test.fed.directors:
         what = director.host(url)
         token = test.admin(url)
@@ -1100,7 +1038,8 @@ def origin_stat(test: Test) -> list[Row]:
 def client_agent(test: Test) -> tuple[str, str, str]:
     """Return a Pelican client's User-Agent of a version of the run's own.
 
-    No other client sends that version, nor another pass of the run.
+    No other client sends that version, nor another pass of the run. It
+    is newer than any director, so none refuses it as too old.
 
     Returns:
         The User-Agent; its version, as a director's redirects count it;
@@ -1110,8 +1049,8 @@ def client_agent(test: Test) -> tuple[str, str, str]:
     # The run's time of day, plus a million for each pass after WLCG's.
     patch = int(re.sub(r"\D", "", test.run)[-6:])
     patch += 1_000_000 * credentials.PROFILES.index(test.session.profile)
-    version = f"7.99.{patch}"
-    return f"pelican-client/{version}", version, "7.99"
+    version = f"999.99.{patch}"
+    return f"pelican-client/{version}", version, "999.99"
 
 
 def redirect_problems(test: Test, url: str) -> list[str]:
@@ -1122,9 +1061,8 @@ def redirect_problems(test: Test, url: str) -> list[str]:
     status 307, and its client requests of that version, by one.
     """
     agent, version, short = client_agent(test)
-    ns = test.namespace
-    token = None if ns == "public" else test.session.token(ns)
-    target = f"{url}{OBJECT}/{ns}/{test.base}/metrics-probe?skipstat"
+    token = None if test.namespace == "public" else test.token
+    target = f"{url}{OBJECT}{test.path(test.rel('metrics-probe'))}?skipstat"
     name = director.host(url)
     before = metrics.fetch(url)
     if before is None:
@@ -1158,10 +1096,9 @@ def ads_problems(test: Test, url: str) -> list[str]:
     before, after = test.ads_before.get(url), metrics.fetch(url)
     if before is None or after is None:
         return [f"{name}: its /metrics did not answer"]
-    names = test.names(url)
     problems: list[str] = []
     for server in test.servers:
-        labels = {"server_name": names.get(server.key, server.svc), "server_type": server.kind}
+        labels = test.labels(url, server)
         if metrics.delta(before, after, ADS_RECEIVED, status_code="200", **labels) < 1:
             problems.append(f"{name}: counted no ad of {server.svc}")
     return problems
@@ -1178,15 +1115,9 @@ def count_problems(test: Test, url: str) -> list[str]:
     found = metrics.fetch(url)
     if found is None:
         return [f"{name}: its /metrics did not answer"]
-    names = test.names(url)
     problems: list[str] = []
     for server in test.servers:
-        got = found.value(
-            SERVER_COUNT,
-            server_name=names.get(server.key, server.svc),
-            server_type=server.kind,
-            from_topology="false",
-        )
+        got = found.value(SERVER_COUNT, from_topology="false", **test.labels(url, server))
         if got != 1:
             problems.append(f"{name} counts {server.svc} {got:g} times")
     for kind in ("Origin", "Cache"):
@@ -1272,7 +1203,7 @@ def metadata_hosting(test: Test) -> list[Row]:
         if answer.status != 401:
             cases["no-auth"].append(f"{what}: {answer.describe()}, not 401")
         answer = web.request("GET", f"{url}{DISCREPANCY}", token=test.admin(url))
-        found = common.as_object(answer.json()) or {}
+        found = answer.object()
         expected: dict[str, Any] = {"enabled": not own, "hasDiscrepancy": False}
         if not own:
             expected["jwksHasOverlap"] = True
@@ -1311,7 +1242,7 @@ class Forwarding:
     def listed(self, url: str) -> dict[str, Any]:
         """Return what the director at url says of the cache."""
         answer = web.request("GET", f"{url}{SERVERS}/{quote(self.cache.name, safe='')}")
-        return common.as_object(answer.json()) or {}
+        return answer.object()
 
     def ads_seen(self, url: str) -> float | None:
         """Return how many of the cache's ads the director at url has taken.
@@ -1519,10 +1450,4 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             for case, status, note in rows:
                 results.add(f"{name} {case}".strip(), status, note)
     finally:
-        fed = session.fed
-        exports = {ns: fed.exports[ns] for ns in credentials.exported(fed)}
-        errors = stores.empty_tree_everywhere(
-            fed.origins, exports, "data/director-api", session.setup_tokens()
-        )
-        if errors:
-            warn(f"could not remove the suite's objects: {first(errors)}")
+        test.clean("after the run")

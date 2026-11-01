@@ -5,8 +5,8 @@
 # so that a cache fetches an object again once it has held it for 30
 # seconds, and serves whatever the origin holds by then. The blocks
 # suite's overwrite scenarios check that every origin sends it, and that
-# every cache does so. Only the native origins send Origin.CacheControl,
-# so fed.sh refuses XRootD's (`origin-xrootd`, `origin-s3`, and
-# `origin-https`).
+# every cache honors it. Only the native origins send
+# Origin.CacheControl, so fed.sh refuses XRootD's (`origin-xrootd`,
+# `origin-s3`, and `origin-https`).
 
 ORIGIN_CACHE_CONTROL=max-age=30

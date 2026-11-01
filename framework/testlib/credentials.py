@@ -5,7 +5,7 @@ suite presents them through the clients, and the auth suite straight to
 each server, so both mean the same thing by each name. Each credential
 is for one namespace (see NAMESPACES). Only `server`, `jwks`, and
 `ns-jwks` should be allowed anything a token decides. Each of the others
-differs from `server` in one column of the table below (`ns-cross` from
+differs from `server` in one column of CREDENTIALS (`ns-cross` from
 `wrong-iss`), so that each tests one thing.
 
 A token doesn't always decide (see expected()):
@@ -46,7 +46,6 @@ import shutil
 import subprocess
 import sys
 import time
-import uuid
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
@@ -313,8 +312,10 @@ def keys(fed: common.Federation) -> dict[str, str]:
 def key_name(key: str, namespace: str) -> str:
     """Return which of keys() signs a credential's token for namespace.
 
-    key is the credential's key column: `ns-own` is the namespace's own
-    key, and `ns-other` the other namespace's.
+    Args:
+        key: The credential's key column: `ns-own` is the namespace's own
+            key, and `ns-other` the other namespace's.
+        namespace: The namespace the token is for.
     """
     if key == "ns-own":
         return f"ns-{namespace}"
@@ -349,6 +350,43 @@ def key_ids(document: bytes) -> frozenset[str]:
     return frozenset(str(k.get("kid", "")) for k in found if k is not None)
 
 
+def _holding(
+    have: AbstractSet[str], own: Mapping[str, AbstractSet[str]], namespaces: tuple[str, ...]
+) -> list[str]:
+    """Return a problem for each of namespaces whose own kids a JWKS holds.
+
+    Args:
+        have: The JWKS's kids.
+        own: Each protected namespace's own kids, by namespace.
+        namespaces: The namespaces whose kids it must not hold.
+    """
+    return [f"holds /{namespace}'s own key" for namespace in namespaces if own[namespace] & have]
+
+
+def _beside_server(
+    have: AbstractSet[str], server: AbstractSet[str] | None, known: AbstractSet[str]
+) -> list[str]:
+    """Return what is wrong with a namespace's JWKS beside the server-wide.
+
+    It should hold every server-wide kid, and none but those and known.
+
+    Args:
+        have: The JWKS's kids.
+        server: The server-wide JWKS's kids; None if that was unreadable.
+        known: The other kids it may hold.
+    """
+    if server is None:
+        return ["could not compare it with the server-wide JWKS"]
+    problems: list[str] = []
+    missing = server - have
+    if missing:
+        problems.append(f"lacks the server-wide keys {', '.join(sorted(missing))}")
+    extra = have - server - known
+    if extra:
+        problems.append(f"holds other keys {', '.join(sorted(extra))}")
+    return problems
+
+
 def server_jwks_problems(
     have: AbstractSet[str], jwks: AbstractSet[str], own: Mapping[str, AbstractSet[str]]
 ) -> list[str]:
@@ -361,13 +399,8 @@ def server_jwks_problems(
         jwks: Server.IssuerJwks's kids.
         own: Each protected namespace's own kids, by namespace.
     """
-    problems: list[str] = []
-    if not jwks <= have:
-        problems.append("lacks Server.IssuerJwks's key")
-    for namespace in PROTECTED:
-        if own[namespace] & have:
-            problems.append(f"holds /{namespace}'s own key")
-    return problems
+    problems: list[str] = [] if jwks <= have else ["lacks Server.IssuerJwks's key"]
+    return problems + _holding(have, own, PROTECTED)
 
 
 def public_jwks_problems(
@@ -386,20 +419,7 @@ def public_jwks_problems(
         server: The server-wide JWKS's kids; None if that was unreadable.
         own: Each protected namespace's own kids, by namespace.
     """
-    problems: list[str] = []
-    for namespace in PROTECTED:
-        if own[namespace] & have:
-            problems.append(f"holds /{namespace}'s own key")
-    if server is None:
-        problems.append("could not compare it with the server-wide JWKS")
-        return problems
-    missing = server - have
-    if missing:
-        problems.append(f"lacks the server-wide keys {', '.join(sorted(missing))}")
-    extra = have - server - set().union(*own.values())
-    if extra:
-        problems.append(f"holds other keys {', '.join(sorted(extra))}")
-    return problems
+    return _holding(have, own, PROTECTED) + _beside_server(have, server, set[str]().union(*own.values()))
 
 
 def namespace_jwks_problems(
@@ -418,21 +438,10 @@ def namespace_jwks_problems(
         server: The server-wide JWKS's kids; None if that was unreadable.
         own: Each protected namespace's own kids, by namespace.
     """
-    problems: list[str] = []
-    if not own[namespace] <= have:
-        problems.append(f"lacks /{namespace}'s own key")
-    if own[OTHER[namespace]] & have:
-        problems.append(f"holds /{OTHER[namespace]}'s own key")
-    if server is None:
-        problems.append("could not compare it with the server-wide JWKS")
-        return problems
-    missing = server - have
-    if missing:
-        problems.append(f"lacks the server-wide keys {', '.join(sorted(missing))}")
-    extra = have - server - own[namespace] - own[OTHER[namespace]]
-    if extra:
-        problems.append(f"holds other keys {', '.join(sorted(extra))}")
-    return problems
+    other = OTHER[namespace]
+    problems: list[str] = [] if own[namespace] <= have else [f"lacks /{namespace}'s own key"]
+    problems += _holding(have, own, (other,))
+    return problems + _beside_server(have, server, own[namespace] | own[other])
 
 
 # The subject of the tests' tokens, which fed.sh maps to the `pelican`
@@ -535,8 +544,30 @@ def mint_server(
         audience=audience,
         profile=profile,
     )
-    with open(out, encoding="utf-8") as f:
-        return f.read().strip()
+    return common.read_text(out)
+
+
+def _claims(
+    issuer: str, audience: str, scope: str, subject: str, lifetime: int, profile: str
+) -> dict[str, Any]:
+    """Return a token's claims, issued now, sorted by name.
+
+    They are jwt.wlcg_claims()'s, with profile's version claim.
+
+    Args:
+        issuer: Its issuer.
+        audience: Its one audience.
+        scope: Its scope claim.
+        subject: Its subject.
+        lifetime: How long it lasts, in seconds.
+        profile: Its profile, one of PROFILES, which decides its version
+            claim.
+    """
+    claims = jwt.wlcg_claims(scope, issuer, [audience], subject, lifetime)
+    del claims[VERSIONS[WLCG][0]]
+    version, value = VERSIONS[profile]
+    claims[version] = value
+    return dict(sorted(claims.items()))
 
 
 def server_claims(
@@ -553,25 +584,19 @@ def server_claims(
     """Return the claims of a `server` token for namespace.
 
     They are as `pelican token create` writes them in profile (see
-    mint_server()), for jwt.encode() to sign with the origins' key
+    mint_server()), for jwt.sign() to sign with the origins' key
     (fed.origin_key), after changing them as a test needs: issued now,
     lasting lifetime seconds, and for the profile's "any" audience
     unless audience names another.
     """
-    now = int(time.time())
-    version, value = VERSIONS[profile]
-    claims = {
-        "aud": [ANY_AUDIENCE[profile] if audience is None else audience],
-        "exp": now + lifetime,
-        "iat": now,
-        "iss": fed.issuer_of(namespace),
-        "jti": str(uuid.uuid4()),
-        "nbf": now,
-        "scope": " ".join(f"{SCOPES[profile][s]}:{scope_path}" for s in scopes),
-        "sub": subject,
-        version: value,
-    }
-    return dict(sorted(claims.items()))
+    return _claims(
+        fed.issuer_of(namespace),
+        ANY_AUDIENCE[profile] if audience is None else audience,
+        " ".join(f"{SCOPES[profile][s]}:{scope_path}" for s in scopes),
+        subject,
+        lifetime,
+        profile,
+    )
 
 
 def mint_credential(
@@ -636,18 +661,24 @@ def mint_user(
 ) -> str:
     """Write and return a token that a server's web API takes as username's.
 
-    It has scope WEB_SCOPE, and extra_scopes, and lasts lifetime seconds.
-    It is from the server's local issuer (see local_issuer()) and signed
-    with its own key, as `pelican cache introspect` mints the admin's
+    It is minted as `pelican cache introspect` mints the admin's
     (fetchOrGenerateWebAPIAdminToken in Pelican's cmd/cmd_utils.go). The
     server resolves the subject to its record of that user
     (extractUserFromBearerToken in web_ui/authentication.go); the
     built-in `admin` always has one.
+
+    Args:
+        fed: The federation.
+        out: The file to write it to.
+        issuer: The server's local issuer (see local_issuer()).
+        key: The file of the server's own private key, which signs it.
+        username: Its subject.
+        lifetime: How long it lasts, in seconds.
+        extra_scopes: Its scopes beside WEB_SCOPE.
     """
     raw_scopes = (WEB_SCOPE, *extra_scopes)
     mint(fed, out, "/", key, issuer, "/", lifetime, (), username, raw_scopes, profile=WLCG)
-    with open(out, encoding="utf-8") as f:
-        return f.read().strip()
+    return common.read_text(out)
 
 
 def mint_admin(fed: common.Federation, out: str, issuer: str, key: str) -> str:
@@ -679,6 +710,33 @@ def key_dir_of(fed: common.Federation, web_url: str) -> str:
     return f"issuer-keys/{host}"
 
 
+def mint_web_user(
+    fed: common.Federation,
+    out: str,
+    web_url: str,
+    username: str,
+    lifetime: int = 300,
+    extra_scopes: tuple[str, ...] = (),
+    key: str | None = None,
+) -> str:
+    """Write and return a token of username's for the web API at web_url.
+
+    It is mint_user()'s, from the server's local issuer (local_issuer()).
+
+    Args:
+        fed: The federation.
+        out: The file to write it to.
+        web_url: The server's web URL.
+        username: Its subject.
+        lifetime: How long it lasts, in seconds.
+        extra_scopes: Its scopes beside WEB_SCOPE.
+        key: The file of the private key that signs it; the server's own
+            (key_dir_of()) if None.
+    """
+    key = key or common.signing_key(key_dir_of(fed, web_url))
+    return mint_user(fed, out, local_issuer(fed, web_url), key, username, lifetime, extra_scopes)
+
+
 def web_token(
     fed: common.Federation,
     web_url: str,
@@ -689,27 +747,22 @@ def web_token(
 ) -> str:
     """Return a token from the local issuer of the server at web_url.
 
-    local_issuer() names the issuer. The token is for subject, with
-    scopes (as such, e.g. SCRAPE_SCOPE), lasting lifetime seconds, and
-    jwt.encode() signs it with the server's own key, or with key: like
-    the token a server mints to scrape its own /metrics
+    It is like the token a server mints to scrape its own /metrics
     (createPromMetricToken in Pelican's web_ui/authorization.go).
+
+    Args:
+        fed: The federation.
+        web_url: The server's web URL.
+        subject: Its subject.
+        scopes: Its scopes, as such (e.g. SCRAPE_SCOPE).
+        lifetime: How long it lasts, in seconds.
+        key: The file of the private key that signs it; the server's own
+            if None.
     """
     key = key or common.signing_key(key_dir_of(fed, web_url))
     issuer = local_issuer(fed, web_url)
-    now = int(time.time())
-    claims = {
-        "aud": [issuer],
-        "exp": now + lifetime,
-        "iat": now,
-        "iss": issuer,
-        "jti": str(uuid.uuid4()),
-        "nbf": now,
-        "scope": " ".join(scopes),
-        "sub": subject,
-        "wlcg.ver": "1.0",
-    }
-    return jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), claims, key=key)
+    claims = _claims(issuer, issuer, " ".join(scopes), subject, lifetime, WLCG)
+    return jwt.sign(claims, key)
 
 
 def wait_until_stale(expiry: float | None) -> None:

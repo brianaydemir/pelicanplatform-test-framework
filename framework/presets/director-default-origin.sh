@@ -6,7 +6,7 @@
 # cache (Director.DefaultResponse), as a federation without caches would.
 # Only clients that name no route ask so: curl and browsers, not the
 # Pelican client, which asks for a cache or an origin explicitly. The
-# federation suite's `redirects` scenario follows such redirects, and
+# federation suite's `redirects` scenario follows such redirects and
 # checks where they lead. fed.sh refuses `topo-standalone`, which has no
 # director.
 

@@ -7,9 +7,8 @@ user, `test-webapi`, whom the admin creates at each server once, for
 later runs to reuse. Access holds those credentials for every server of
 a shape. The admin, and then the user, first agree to each server's AUP
 (accounts.agree_to_aup()), without which it refuses them its user
-routes. Access spaces its logins at each server a second apart, since a
-server allows an address a login a second (Server.UILoginRateLimit),
-counted by whole seconds of the clock.
+routes. Access spaces its logins at each server, which allows an
+address a login a second, counted by whole seconds of the clock.
 """
 
 import json
@@ -36,9 +35,6 @@ USER = "test-webapi"
 # How long the bearer tokens last, in seconds: a whole suite, logins
 # spaced out included.
 TOKEN_LIFETIME = 3600
-# How far apart logins to one server are sent, in seconds: a server
-# allows an address a login a second (Server.UILoginRateLimit).
-LOGIN_SPACING = 1.1
 # How far into a second of the clock the first of two logins that must
 # fall in one second may be sent, in seconds.
 EARLY = 0.3
@@ -99,6 +95,9 @@ class Access:
     """The admin's and user's tokens, cookies, and logins at each server.
 
     Attributes:
+        session: The pass.
+        fed: The federation.
+        run: The pass's ID (Session.run).
         servers: The federation's servers.
     """
 
@@ -118,16 +117,17 @@ class Access:
     def token(self, server: Server, username: str) -> str:
         """Return a bearer token that server's web API takes as username's.
 
-        It lasts TOKEN_LIFETIME seconds (see credentials.mint_user()).
+        It is minted once (credentials.mint_web_user()), and lasts
+        TOKEN_LIFETIME seconds.
         """
         if (server.name, username) not in self._tokens:
-            self._tokens[(server.name, username)] = credentials.mint_user(
+            self._tokens[(server.name, username)] = credentials.mint_web_user(
                 self.fed,
                 self.session.path(f"tokens/webapi.{server.name}.{username}"),
-                credentials.local_issuer(self.fed, server.web_url),
-                server.key,
+                server.web_url,
                 username,
                 TOKEN_LIFETIME,
+                key=server.key,
             )
         return self._tokens[(server.name, username)]
 
@@ -166,14 +166,14 @@ class Access:
             server: Where to log in.
             fields: The form's fields.
             headers: Headers to send besides the form's content type.
-            spaced: Whether to send it no sooner than LOGIN_SPACING
-                seconds after the last login there.
+            spaced: Whether to send it no sooner than
+                accounts.LOGIN_SPACING seconds after the last login there.
             early: Whether to send it in the first EARLY of a second of
                 the clock, which the server and the tests share, since the
                 server counts logins by the whole second (gin-rate-limit's
                 InMemoryStore).
         """
-        wait = self._last_login.get(server.web_url, 0) + LOGIN_SPACING - time.time()
+        wait = self._last_login.get(server.web_url, 0) + accounts.LOGIN_SPACING - time.time()
         if spaced and wait > 0:
             time.sleep(wait)
         if early and time.time() % 1 > EARLY:
@@ -208,8 +208,8 @@ class Access:
     def cookie(self, server: Server) -> str:
         """Return the admin's login cookie at server, made once.
 
-        It is for routes that take only a cookie. A cookie that a check may
-        log out is a fresh one of login()'s.
+        It is for routes that take only a cookie. A check that may log a
+        cookie out takes a fresh one from login().
         """
         if server.name not in self._cookies:
             self._cookies[server.name] = self.login(server)
@@ -218,7 +218,7 @@ class Access:
     def wait_for_logins(self) -> None:
         """Wait until the next suite may log in at once anywhere."""
         last = max(self._last_login.values(), default=0)
-        wait = last + LOGIN_SPACING - time.time()
+        wait = last + accounts.LOGIN_SPACING - time.time()
         if wait > 0:
             time.sleep(wait)
 
@@ -263,8 +263,7 @@ def server_settings(access: Access, server: Server) -> dict[str, Any]:
         if that fails.
     """
     answer = web.request("GET", server.web_url + CONFIG, token=access.admin(server))
-    found = common.as_object(answer.json()) or {}
-    return common.as_object(found.get("Server")) or {}
+    return common.as_object(answer.object().get("Server")) or {}
 
 
 def other_key(access: Access, server: Server) -> tuple[str, str]:
@@ -292,8 +291,15 @@ def create_token(
 ) -> web.Response:
     """POST a request for an API token of scopes to the server at web_url.
 
-    The token is named name, and expires at expires. The request carries
-    the login cookie, or the bearer token. made_token() reads the answer.
+    made_token() reads the answer.
+
+    Args:
+        web_url: The server's web URL.
+        name: The token's name.
+        scopes: Its scopes.
+        expires: When it expires.
+        cookie: A login cookie to present, if any.
+        token: A bearer token to present, if any.
     """
     body = {"name": name, "scopes": list(scopes), "expiration": common.timestamp(expires)}
     headers = dict(accounts.JSON)
@@ -322,5 +328,5 @@ def made_token(answer: web.Response) -> tuple[str, str, str] | None:
     Returns:
         The token, its ID, and its secret; None if there is none.
     """
-    found = API_TOKEN.match(str((common.as_object(answer.json()) or {}).get("token", "")))
+    found = API_TOKEN.match(str(answer.object().get("token", "")))
     return (found.group(0), found.group(1), found.group(2)) if found else None

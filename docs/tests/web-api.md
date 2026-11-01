@@ -2,11 +2,14 @@
 
 Part of [What the tests check](README.md).
 
-Every Pelican server serves a web API under `/api/v1.0/` on its web port.
-The `webapi` suite checks who may use it, at every server of the shape, once
-per web URL (so just `fed` in the tiny topology). It runs in the WLCG pass
-only ([token profiles](README.md#token-profiles)). A case's row is named
-`<scenario> <case>`.
+Every [Pelican server](../glossary.md#pelican-server) serves a web API under
+`/api/v1.0/` on its web port. The
+[`webapi`](../../framework/suites/webapi.py) suite checks who may use it, at
+every server of the [shape](../glossary.md#shape), once per web URL (so just
+`fed` under [`-p topo-tiny`](../../framework/presets/topo-tiny.sh)). It runs
+in the [WLCG pass](../glossary.md#pass) only
+([token profiles](README.md#token-profiles)). Each
+[case](../glossary.md#case)'s row is named `<scenario> <case>`.
 
 The suite acts as each server's admin, by a bearer token of the server's own
 making or a login's cookie, and as `test-webapi`, an ordinary user.
@@ -45,9 +48,10 @@ making or a login's cookie, and as `test-webapi`, an ordinary user.
   - `bearer-create`: Making a token with the admin's bearer token instead of
     the cookie is 403.
   - `admin-grantable`: The admin may make a token of `monitoring.query`,
-    which no role derives (Pelican's `docs/user-group-design.md`), and query
-    the director's Prometheus with it. A refused creation must not be
-    answered 200.
+    which no role derives ([Pelican](https://pelicanplatform.org/)'s
+    [`docs/user-group-design.md`](https://github.com/PelicanPlatform/pelican/blob/main/docs/user-group-design.md)),
+    and query the director's [Prometheus](https://prometheus.io/) with it. A
+    refused creation must not be answered 200.
 
 - `login`: At every server:
 
@@ -59,8 +63,9 @@ making or a login's cookie, and as `test-webapi`, an ordinary user.
     is logged in, with no `X-CSRF-Token`; the role `admin` with the admin's
     cookie; and `user` with `test-webapi`'s token.
   - `logout`: 200, and the cookie cleared.
-  - `logout-replay`: The cookie, presented again, counts as none (401)
-    (OWASP ASVS 3.3.1).
+  - `logout-replay`: The cookie, presented again, counts as none (401;
+    [OWASP ASVS](https://owasp.org/www-project-application-security-verification-standard/)
+    3.3.1).
   - `rate-limit`: Of two logins at once, the second, with an
     `X-Forwarded-For` the server must not trust (`Server.TrustedProxies`),
     is 429 (`Server.UILoginRateLimit`).
@@ -81,8 +86,9 @@ making or a login's cookie, and as `test-webapi`, an ordinary user.
   server.
 
 - `version`: Every server's `/api/v1.0/version` reports `PELICAN_TAG`'s
-  version, without the `v` ([knobs](../configuration.md#knobs)) (`servers`);
-  with images of the user's own (`IMAGE_*`), the row only reports them.
+  version ([knobs](../configuration.md#knobs)), without the `v` (`servers`);
+  with images of the user's own
+  ([`IMAGE_*`](../../README.md#server-images)), the row only reports them.
   Directors' and the registry's responses carry `Server: pelican/<version>`
   (`header <server> <role>`). Each director lists each server with the
   version it reports (`listed <server>`).

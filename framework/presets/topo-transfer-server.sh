@@ -7,13 +7,12 @@
 # embedded in one (`origin-transfer-api`). It keeps each user's storage
 # credentials and runs their jobs, as the embedded API does, but confines
 # a job to no export: whatever it can reach, it moves. Its users
-# authenticate through a local issuer of its own, which mints
-# pelican.transfer tokens at
-# https://transfer:8444/api/v1.0/issuer/ns/pelican/local-issuer, naming
-# https://transfer:8444 as their issuer, and signs them with the server's
-# key (framework/var/issuer-keys/transfer/). The transfer-api suite tests
-# it in place of origin-0's, with that key, so fed.sh refuses
-# `origin-transfer-api` beside it; and the full topology alone has room
+# authenticate through its own local issuer, which mints pelican.transfer
+# tokens at https://transfer:8444/api/v1.0/issuer/ns/pelican/local-issuer,
+# naming https://transfer:8444 as their issuer, and signs them with the
+# server's key (framework/var/issuer-keys/transfer/). The transfer-api
+# suite tests it in place of origin-0's, so fed.sh refuses
+# `origin-transfer-api` beside it; and only the full topology has room
 # for the service.
 
 TRANSFER_SERVER=true

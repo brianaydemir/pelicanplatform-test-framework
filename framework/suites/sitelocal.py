@@ -6,31 +6,18 @@ through a federated cache, presenting the client's token, as a client
 would, and asks an origin for listings.
 
 Objects go under /<namespace>/data/sitelocal/<run>/ in every origin's
-store, in the storage of the namespace they are read in (see
-stores.seed()), each read once, so that it is cold wherever it is read:
+store, in the storage of the namespace they are read in
+(stores.put_in_place()), each read once, so that it is cold wherever it
+is read. The tokens that the clients and requests present are of the
+session's profile; the objects are put in place, and the federated
+caches asked what they hold, with WLCG tokens either way.
 
-  get-<ns>         `pelican object get --cache <cache-2>`, with the
-                   server's token where the namespace takes one: the
-                   bytes, served by cache-2 alone
-  plugin-get-<ns>  stash_plugin, with cache-2 as its preferred cache
-  get-plus         `--cache <cache-2>,+`: cache-2 still serves it
-  refused          a token signed by a key no server knows: refused,
-                   and nothing written
-  upstream         a cold read through cache-2 leaves the object in a
-                   federated V2 cache, which held none of it before
-                   (Cache-Control: only-if-cached)
-  list             Depth 1 of a collection through cache-2, where
-                   /protected-a may be listed straight from an origin,
-                   and otherwise a refusal
-
-The tokens that the clients and requests present are of the session's
-profile; the objects are put in place, and the federated caches asked
-what they hold, with WLCG tokens either way.
+See docs/tests/site-local-cache.md.
 """
 
 import os
 
-from testlib import common, credentials, stores, transfers, web, webdav
+from testlib import common, credentials, stores, suite, transfers, web, webdav
 from testlib.common import die, first
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -64,59 +51,42 @@ def skip(fed: common.Federation) -> str | None:
     """
     if not any(c.site_local for c in fed.caches):
         return "there is no site-local cache ('-p topo-site-local-cache')"
-    if "protected-a" not in fed.exports:
-        return "this shape does not export /protected-a"
-    return None
+    return suite.unexported(fed)
 
 
-class Test:
-    """The site-local cache, the run's objects, and the tokens.
+class Test(suite.Test):
+    """The site-local cache, and the run's collection in each namespace.
 
     Attributes:
+        cache: The site-local cache.
         origins: The origins, each store once.
-        base: The run's collection, in each namespace.
-        tmp: The scratch directory for the client's files.
-        token_files: The `server` token's file of each exported protected
-            namespace, by namespace.
-        objects: Each object put, by name: its bytes.
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
+        super().__init__(session, "sitelocal")
         self.cache = next(c for c in self.fed.caches if c.site_local)
         self.origins = stores.unique(self.fed.origins)
-        self.base = f"data/sitelocal/{session.run}"
-        self.tmp = session.path("sitelocal")
-        os.makedirs(self.tmp)
-        self.token_files = {
-            ns: session.token_file(ns) for ns in credentials.PROTECTED if ns in self.fed.exports
-        }
-        self.objects: dict[str, bytes] = {}
 
-    def put(self, namespace: str, name: str, data: bytes) -> None:
-        """Put data as object name in namespace's storage at every origin.
+    def seed(self, namespace: str, rel: str, data: bytes) -> None:
+        """Put data at rel in namespace's storage at every origin.
 
         On a pstore origin, /public's storage is /protected-a's.
         """
-        rel = f"{self.base}/{name}"
         errors = stores.put_in_place(self.session, self.origins, namespace, rel, data)
         if errors:
             die(f"could not put {rel} in place: {first(errors)}")
-        self.objects[name] = data
 
-    def url(self, namespace: str, name: str) -> str:
-        """Return the federation URL of object name in namespace."""
-        return f"{self.fed.url}/{namespace}/{self.base}/{name}"
+    def federation_url(self, namespace: str, rel: str) -> str:
+        """Return the federation URL of rel in namespace."""
+        return f"{self.fed.url}/{namespace}/{rel}"
 
-    def token_args(self, namespace: str) -> list[str]:
-        """Return the client's arguments for the server's token.
+    def token_file_of(self, namespace: str) -> str | None:
+        """Return the file of namespace's `server` token.
 
-        There are none where the namespace takes no token.
+        Returns:
+            The file, or None where the namespace takes no token.
         """
-        if namespace not in self.token_files:
-            return []
-        return ["--token", self.token_files[namespace]]
+        return self.session.token_file(namespace) if namespace in credentials.PROTECTED else None
 
 
 def client_get(test: Test, namespace: str, name: str, caches: str) -> tuple[str, str]:
@@ -126,9 +96,11 @@ def client_get(test: Test, namespace: str, name: str, caches: str) -> tuple[str,
     server before it transfers. The site-local cache alone must serve it.
     """
     data = os.urandom(SIZE)
-    test.put(namespace, name, data)
+    rel = test.rel(name)
+    test.seed(namespace, rel, data)
     target = os.path.join(test.tmp, name)
     stats = f"{target}.json"
+    token_file = test.token_file_of(namespace)
     code, out, err = test.session.pelican_cmd(
         "object",
         "get",
@@ -136,8 +108,8 @@ def client_get(test: Test, namespace: str, name: str, caches: str) -> tuple[str,
         caches,
         "--transfer-stats",
         stats,
-        *test.token_args(namespace),
-        test.url(namespace, name),
+        *(["--token", token_file] if token_file else []),
+        test.federation_url(namespace, rel),
         target,
     )
     if code != 0:
@@ -163,12 +135,13 @@ def plugin_get(test: Test, namespace: str) -> tuple[str, str]:
     """
     name = f"plugin-get-{namespace}"
     data = os.urandom(SIZE)
-    test.put(namespace, name, data)
-    creds = {"server.use": test.token_files[namespace]} if namespace in test.token_files else {}
+    rel = test.rel(name)
+    test.seed(namespace, rel, data)
+    token_file = test.token_file_of(namespace)
     status, out, err, ad = test.session.plugin_run(
         f"sitelocal/{name}",
-        [(test.url(namespace, name), name)],
-        creds=creds,
+        [(test.federation_url(namespace, rel), name)],
+        creds={"server.use": token_file} if token_file else {},
         cache=test.cache.url,
         cwd=test.tmp,
     )
@@ -197,7 +170,8 @@ def refused(test: Test) -> tuple[str, str]:
     The cache must pass the refusal on, and the client write nothing.
     """
     name = "refused"
-    test.put("protected-a", name, os.urandom(SIZE))
+    rel = test.rel(name)
+    test.seed("protected-a", rel, os.urandom(SIZE))
     token = test.session.path("tokens/sitelocal-unknown")
     issuer = test.fed.issuer_of("protected-a")
     credentials.mint(
@@ -219,7 +193,7 @@ def refused(test: Test) -> tuple[str, str]:
         test.cache.url,
         "--token",
         token,
-        test.url("protected-a", name),
+        test.federation_url("protected-a", rel),
         target,
     )
     if code == 0:
@@ -236,11 +210,12 @@ def cached_upstream(cache: common.Cache, path: str, token: str) -> bool | None:
     """Return whether cache, a federated V2 cache, holds path.
 
     A HEAD with Cache-Control: only-if-cached answers 200 if it does, or
-    504 if not. Return None if it answers otherwise.
+    504 if not.
+
+    Returns:
+        Whether it does, or None if the cache answers otherwise.
     """
-    answer = web.request(
-        "HEAD", f"{cache.url}{path}", token=token, headers={"Cache-Control": "only-if-cached"}
-    )
+    answer = web.request("HEAD", f"{cache.url}{path}", token=token, headers=web.ONLY_IF_CACHED)
     return {200: True, 504: False}.get(answer.status or 0)
 
 
@@ -254,18 +229,17 @@ def upstream(test: Test) -> tuple[str, str]:
     feds = [c for c in test.fed.federated_caches if c.kind == "v2"]
     if not feds:
         return INCONCLUSIVE, "no federated V2 cache to ask what it holds"
-    name = "upstream"
-    test.put("protected-a", name, os.urandom(SIZE))
-    path = f"/protected-a/{test.base}/{name}"
-    token = test.session.token("protected-a")
-    setup = test.session.setup_token("protected-a")
-    before = {c.svc: cached_upstream(c, path, setup) for c in feds}
+    rel = test.rel("upstream")
+    data = os.urandom(SIZE)
+    test.seed("protected-a", rel, data)
+    path = test.path(rel)
+    before = {c.svc: cached_upstream(c, path, test.setup) for c in feds}
     if any(held is not False for held in before.values()):
         return FAIL, f"before the read, only-if-cached got {before}, not 504 everywhere"
-    answer = web.request("GET", f"{test.cache.url}{path}", token=token)
-    if answer.status != 200 or answer.body != test.objects[name]:
-        return FAIL, f"GET through {test.cache.svc}: {answer.describe()}"
-    after = {c.svc: cached_upstream(c, path, setup) for c in feds}
+    why = web.served(web.request("GET", f"{test.cache.url}{path}", token=test.token), data)
+    if why:
+        return FAIL, f"GET through {test.cache.svc}: {why}"
+    after = {c.svc: cached_upstream(c, path, test.setup) for c in feds}
     holders = [svc for svc, held in after.items() if held]
     if not holders:
         return FAIL, f"after the read, only-if-cached got {after}: no federated cache holds it"
@@ -280,11 +254,10 @@ def listing(test: Test) -> tuple[str, str]:
     DirectReads), and the listing refused (401, 403, or 405) otherwise.
     """
     for name, size in LISTED.items():
-        test.put("protected-a", f"listed/{name}", os.urandom(size))
-    path = f"/protected-a/{test.base}/listed"
-    token = test.session.token("protected-a")
-    answer = webdav.propfind(f"{test.cache.url}{path}/", "1", token)
-    lacking = sorted({"Listings", "DirectReads"} - test.fed.exports["protected-a"])
+        test.seed("protected-a", test.rel("listed", name), os.urandom(size))
+    path = test.path(test.rel("listed"))
+    answer = webdav.propfind(f"{test.cache.url}{path}/", "1", test.token)
+    lacking = sorted({"Listings", "DirectReads"} - test.caps)
     if lacking:
         if answer.status in (401, 403, 405):
             return PASS, f"refused ({answer.describe()}): no {' or '.join(lacking)}"
@@ -305,7 +278,6 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, and remove the run's objects."""
     fed = session.fed
     stores.require_dirs(fed.origins, fed.exports, "data/sitelocal")
-    tokens = session.setup_tokens()
     test = Test(session)
     print(
         f"Site-local cache {test.cache.svc} ({test.cache.url}),"
@@ -323,13 +295,12 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     }
     try:
         for name in selected:
-            if name.endswith("-public") and "public" not in fed.exports:
-                results.add(name, SKIP, "this shape does not export /public")
+            why = suite.unexported(fed, "public") if name.endswith("-public") else None
+            if why:
+                results.add(name, SKIP, why)
                 continue
-            results.add(name, *common.guarded(scenarios[name], lambda note: (FAIL, note)))
+            results.add(name, *suite.attempt(scenarios[name]))
     finally:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach.
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/sitelocal", tokens)
-        if errors:
-            common.warn(f"could not remove the run's objects: {first(errors)}")
+        test.clean("after the run")

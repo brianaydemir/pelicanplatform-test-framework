@@ -50,7 +50,11 @@ class Entry:
 def propfind(url: str, depth: str, token: str | None = None, body: bytes | None = None) -> web.Response:
     """PROPFIND url with Depth depth, and body if given.
 
-    depth is `0`, `1`, or `infinity`.
+    Args:
+        url: The resource.
+        depth: `0`, `1`, or `infinity`.
+        token: A bearer token to present, if any.
+        body: The request's XML, if any.
     """
     headers = {"Depth": depth}
     if body is not None:
@@ -185,8 +189,12 @@ def copy_or_move(
 ) -> web.Response:
     """Send COPY or MOVE (method) of url to destination.
 
-    There is no Destination header if destination is None, and an
-    Overwrite header only if overwrite is given.
+    Args:
+        method: `COPY` or `MOVE`.
+        url: The resource.
+        token: A bearer token to present.
+        destination: The Destination header, if any.
+        overwrite: The Overwrite header, if any.
     """
     headers: dict[str, str] = {}
     if destination is not None:

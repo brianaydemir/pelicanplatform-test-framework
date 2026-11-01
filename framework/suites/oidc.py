@@ -1,51 +1,20 @@
 """Logging in through an identity provider (`-p auth-oidc-local`).
 
-What every server does with a user that the provider vouches for,
-through the OAuth2 authorization code flow that a browser follows
-(testlib/oidc.py); what the servers make of the provider's claims, a
-username and groups; and the registry's use of the provider's device
-flow to learn who registers a prefix
-(`pelican namespace register --with-identity`). The provider is the
-`idp` service (framework/idp/idp.py), whose users are
+See docs/tests/oidc-login.md.
+
+The servers log users in through the OAuth2 authorization code flow
+that a browser follows (testlib/oidc.py), and the registry learns who
+registers a prefix through the provider's device flow. The provider is
+the `idp` service (framework/idp/idp.py), whose users are
 framework/etc/idp-users.json's and local/etc/idp-users.json's.
 
-  enabled            each server lists the modules it logs in through
-                     the provider, and begins a login: a redirect to
-                     the provider naming the server's client, its
-                     callback on OIDC.ClientRedirectHostname, and a
-                     state, kept in a session cookie too
-  login              at each server, the provider's user logs in: a
-                     user of the claims' username, no admin, found again
-                     at the next login, whom the server's record links
-                     to the provider's subject; the server traded the
-                     code and asked the provider who the user is
-  callback           a callback without the login's session, with a
-                     forged state, or with a code already used is
-                     refused, and logs no one in
-  collision          a user whose preferred_username is `admin` becomes
-                     a user named for their email, and no admin
-  registry-identity  `pelican namespace register --with-identity`: the
-                     registry has the provider's device flow prove who
-                     registers, and records their identity
-  admin              with origin-0 restarted to name a user in
-                     Server.UIAdminUsers and take groups from the
-                     provider: that user is its admin, as is one whose
-                     claimed group is in Server.AdminGroups, and no
-                     other; and once restored, the named user is not
-  groups             with origin-0 so restarted: its issuer grants a
-                     user what the templates give the groups the
-                     provider claims, and the data they allow
-  client             with origin-0 so restarted: `pelican object get`
-                     acquires a token through the issuer, approved by
-                     the provider's user, and reads what their group
-                     allows
-
-The restart gives origin-0 Issuer.GroupSource `oidc`, under which a
-password login carries no groups, so the issuer, collections, and
-accounts suites have the shape keep `internal`; it is restored
-afterward. The objects go under /<namespace>/data/issuer/projects/<group>/,
-where the templates grant the groups, and are removed afterward, as
-are the run's prefix at the registry and its client of the issuer.
+`admin`, `groups`, and `client` restart origin-0 with Issuer.GroupSource
+`oidc`, under which a password login carries no groups, so the issuer,
+collections, and accounts suites have the shape keep `internal`; it is
+restored afterward. Their objects go under
+/<namespace>/data/issuer/projects/<group>/, where the templates grant
+the groups, and are removed afterward, as are the run's prefix at the
+registry and its client of the issuer.
 """
 
 import contextlib
@@ -54,7 +23,7 @@ import secrets
 import subprocess
 import threading
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -64,15 +33,15 @@ from testlib import (
     common,
     control,
     credentials,
-    director,
     issuer,
     oidc,
     registry,
     stores,
+    suite,
     web,
 )
 from testlib.accounts import Api, ApiError
-from testlib.common import first, outcome, warn
+from testlib.common import outcome, warn
 from testlib.credentials import PROTECTED
 from testlib.issuer import ARCHIVE, DATA_SCOPES, IssuerError, User, data_scopes, project, scope
 from testlib.oidc import IdpUser, LoginError
@@ -134,12 +103,9 @@ CALLBACK_HOST = "localhost"
 # The restart's configuration layer.
 RESTART_FILE = "90-oidc.yaml"
 RESTART_CONFIG = f"Server:\n  UIAdminUsers:\n    - {OWNER}\nIssuer:\n  GroupSource: oidc\n"
-# How long the federation may take to serve origin-0 again after a
-# restart, and how long `pelican namespace register` may take.
-SETTLE_WAIT = 150
+# How long `pelican namespace register` may take, in seconds.
 REGISTER_TIMEOUT = 120.0
 OBJECT_SIZE = 4096
-TOKEN_LIFETIME = 3600
 
 
 def skip(fed: common.Federation) -> str | None:
@@ -149,36 +115,30 @@ def skip(fed: common.Federation) -> str | None:
     return None
 
 
-@dataclass
-class Test:
+class Test(suite.Test):
     """The provider, its users, the servers, and what the scenarios share.
+
+    The namespace is the first protected one exported, or where none is,
+    the first protected one (see no_issuer()).
 
     Attributes:
         issuer: The provider's issuer URL.
         users: The provider's users, by name.
+        servers: The servers.
         client_id: The servers' client at the provider.
-        namespace: The first protected namespace exported, if any.
         registry_ids: The provider's users' IDs at the registry, by name.
     """
 
-    session: Session
-    issuer: str
-    users: dict[str, IdpUser]
-    servers: list[Server]
-    client_id: str
-    namespace: str | None
-    registry_ids: dict[str, str] = field(default_factory=dict[str, str])
-    _admins: dict[str, Api] = field(default_factory=dict[str, Api])
-
-    @property
-    def fed(self) -> common.Federation:
-        """The federation."""
-        return self.session.fed
-
-    @property
-    def run(self) -> str:
-        """The run's ID."""
-        return self.session.run
+    def __init__(self, session: Session):
+        fed = session.fed
+        namespace = next((ns for ns in PROTECTED if ns in fed.exports), PROTECTED[0])
+        super().__init__(session, "oidc", namespace)
+        self.issuer = fed.oidc_issuer or ""
+        self.users = oidc.users(self.issuer)
+        self.servers = servers(fed)
+        self.client_id = oidc.client_id()
+        self.registry_ids: dict[str, str] = {}
+        self._admins: dict[str, Api] = {}
 
     @property
     def origin(self) -> common.Origin:
@@ -200,11 +160,12 @@ class Test:
         The admin has agreed to its AUP.
         """
         if server.web_url not in self._admins:
-            token = credentials.mint_admin(
+            token = credentials.mint_web_user(
                 self.fed,
                 self.session.path(f"tokens/oidc.admin.{server.name}"),
-                credentials.local_issuer(self.fed, server.web_url),
-                server.key,
+                server.web_url,
+                "admin",
+                key=server.key,
             )
             found = Api(server.web_url, token)
             accounts.agree_to_aup(found)
@@ -252,7 +213,7 @@ def enabled(test: Test) -> list[Row]:
     for server in test.servers:
         problems: list[str] = []
         answer = web.request("GET", server.web_url + oidc.ENABLED)
-        found = common.as_object(answer.json()) or {}
+        found = answer.object()
         listed = [str(x) for x in common.as_array(found.get("oidc_enabled_servers")) or []]
         if answer.status != 200:
             problems.append(f"GET {oidc.ENABLED}: {answer.describe()}")
@@ -528,7 +489,7 @@ def registry_identity(test: Test) -> list[Row]:
     fed = test.fed
     if not fed.registry_url:
         return [("", SKIP, "a standalone origin has no registry")]
-    key_dir = test.session.path("oidc-registry-keys")
+    key_dir = os.path.join(test.tmp, "registry-keys")
     os.makedirs(key_dir, mode=0o700, exist_ok=True)
     key = registry.new_key(os.path.join(key_dir, "key.pem"))
     env = registry_env(test, key_dir)
@@ -540,7 +501,7 @@ def registry_identity(test: Test) -> list[Row]:
     if approvals != 1:
         problems.append(f"the client announced {approvals} verification URLs, not one")
     stored = web.request("GET", f"{fed.registry_url}{registry.REGISTRY}{prefix}")
-    found = common.as_object(stored.json()) or {}
+    found = stored.object()
     if stored.status != 200 or not found:
         problems.append(f"GET {registry.REGISTRY}{prefix}: {stored.describe()}, not registered")
     else:
@@ -570,13 +531,6 @@ def registry_identity(test: Test) -> list[Row]:
 # The restart: admin, groups, and client.
 
 
-def unrestartable(test: Test) -> str | None:
-    """Return why origin-0 cannot be restarted here, or None if it can."""
-    if test.fed.tiny:
-        return "the tiny topology's origin is the whole federation's process"
-    return control.unavailable()
-
-
 def no_issuer(test: Test) -> str | None:
     """Return why the issuer origin's embedded issuer cannot grant anything.
 
@@ -587,43 +541,11 @@ def no_issuer(test: Test) -> str | None:
         return "the exports trust the external issuer ('-p auth-external-issuer')"
     if not fed.embedded_issuer:
         return "the origins' embedded issuer is off (ORIGIN_ENABLE_ISSUER=false)"
-    if test.namespace is None:
+    if test.namespace not in fed.exports:
         return "no protected namespace is exported"
-    if "Writes" not in fed.exports[test.namespace] or "DirectReads" not in fed.exports[test.namespace]:
+    if not (test.writes and test.direct):
         return f"/{test.namespace} takes no writes from direct clients"
     return None
-
-
-def settle(test: Test, rel: str) -> str | None:
-    """Wait until the federation serves the issuer origin again.
-
-    Wait up to SETTLE_WAIT seconds, until it answers a HEAD of rel in
-    the namespace, every director names it for the path, and every
-    federated cache answers a HEAD of it. A server that exited on its
-    own ends the wait at once (control.settle()).
-
-    Returns:
-        Why it does not, or None if it does.
-    """
-    namespace = test.namespace or ""
-    token = test.session.setup_token(namespace)
-    path = f"/{namespace}/{rel}"
-
-    def unserved() -> str | None:
-        answer = web.request("HEAD", stores.url(test.origin, namespace, rel), token=token)
-        if answer.status != 200:
-            return f"{test.origin.svc}: HEAD of the object got {answer.describe()}"
-        for url in test.fed.directors:
-            where = director.ask(url, "origin", path, token=token)
-            if not where.names(director.host(test.origin.url)):
-                return f"{director.host(url)} does not name {test.origin.svc}: {where.describe()}"
-        for cache in test.fed.federated_caches:
-            answer = web.request("HEAD", f"{cache.url}{path}", token=token)
-            if answer.status != 200:
-                return f"{cache.svc}: HEAD of the object got {answer.describe()}"
-        return None
-
-    return control.settle(unserved, SETTLE_WAIT)
 
 
 @dataclass
@@ -651,28 +573,22 @@ def seed(test: Test) -> Restarted:
     Raises:
         ApiError: An object could not be put in place.
     """
-    namespace = test.namespace or ""
-    token = test.session.setup_token(namespace)
-    caps = test.fed.exports[namespace]
     found: dict[str, tuple[str, bytes]] = {}
     for group in (PROJECT_A, PROJECT_B):
         rel = f"{project(group)}/oidc-{test.run}"
         data = os.urandom(OBJECT_SIZE)
-        errors = stores.make_dirs(test.fed.origins, namespace, project(group), token)
-        errors += stores.seed_everywhere(test.fed.origins, namespace, rel, data, token, caps)
-        if errors:
-            raise ApiError(f"could not put {rel} in place: {first(errors)}")
+        why = test.put({rel: data})
+        if why:
+            raise ApiError(f"could not put {rel} in place: {why}")
         found[group] = (rel, data)
     return Restarted(found)
 
 
 def unseed(test: Test, made: Restarted) -> None:
     """Remove what seed() put in place."""
-    namespace = test.namespace or ""
-    token = test.session.setup_token(namespace)
     for rel, _ in made.objects.values():
         for origin in stores.unique(test.fed.origins):
-            error = stores.delete(origin, namespace, rel, token)
+            error = stores.delete(origin, test.namespace, rel, test.setup)
             if error:
                 warn(error)
 
@@ -737,12 +653,11 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
     this makes.
     """
     rows: list[Row] = []
-    namespace = test.namespace or ""
     admin_token = test.admin(test.server_at(test.web)).token or ""
     try:
         made.client = issuer.create_client(
             test.web,
-            f"/{namespace}",
+            f"/{test.namespace}",
             admin_token,
             name=f"pelican-test-framework oidc {test.run}",
         )
@@ -787,10 +702,10 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
         return rows + [("data", FAIL, f"{MEMBER} got no token")]
     rel_a, data_a = made.objects[PROJECT_A]
     rel_b, _ = made.objects[PROJECT_B]
-    answer = web.request("GET", stores.url(test.origin, namespace, rel_a), token=tok)
+    answer = web.request("GET", test.url(test.origin.url, rel_a), token=tok)
     if answer.status != 200 or answer.body != data_a:
         problems.append(f"GET of {PROJECT_A}'s object at {test.origin.svc}: {answer.describe()}")
-    answer = web.request("GET", stores.url(test.origin, namespace, rel_b), token=tok)
+    answer = web.request("GET", test.url(test.origin.url, rel_b), token=tok)
     if answer.status not in (401, 403):
         problems.append(
             f"GET of {PROJECT_B}'s object at {test.origin.svc}: {answer.describe()}, not refused"
@@ -798,9 +713,9 @@ def group_rows(test: Test, made: Restarted) -> list[Row]:
     token_file = test.session.path(f"tokens/oidc.{MEMBER}")
     with open(token_file, "w", encoding="utf-8") as f:
         f.write(tok)
-    target = test.session.path(f"oidc-{MEMBER}-get")
+    target = os.path.join(test.tmp, f"{MEMBER}-get")
     code, out, err = test.session.pelican_cmd(
-        "object", "get", "--token", token_file, f"{test.fed.url}/{namespace}/{rel_a}", target
+        "object", "get", "--token", token_file, test.pelican_url(rel_a), target
     )
     if code != 0:
         problems.append(f"`pelican object get` with the token: exit {code}: {last_line(err or out)}")
@@ -818,21 +733,20 @@ def client_rows(test: Test, made: Restarted) -> list[Row]:
     provider; the client must then get the object, and the file be the
     object.
     """
-    namespace = test.namespace or ""
     rel, data = made.objects[PROJECT_A]
     try:
         cookie = test.login(test.web, MEMBER)
     except LoginError as e:
         return [("", FAIL, str(e))]
     user = User(cookie=cookie)
-    store = test.session.path("oidc-client-credentials")
+    store = os.path.join(test.tmp, "client-credentials")
     env = issuer.client_env(test.session.env, store)
-    target = test.session.path("oidc-client-get")
+    target = os.path.join(test.tmp, "client-get")
     with contextlib.suppress(FileNotFoundError):
         os.remove(target)
     done = issuer.run_approving(
         test.session.pelican,
-        ["object", "get", f"{test.fed.url}/{namespace}/{rel}", target],
+        ["object", "get", test.pelican_url(rel), target],
         env,
         test.session.tmp,
         lambda issuer_url, code: issuer.approve(issuer_url, code, user),
@@ -858,12 +772,16 @@ def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Ro
     """Run the selected restart scenarios, with origin-0 restarted.
 
     origin-0 is restarted with RESTART_CONFIG, and afterward restored.
-    Each row goes to record, with its scenario's name.
+
+    Args:
+        test: The run.
+        selected: The scenarios selected.
+        record: Record a row, with its scenario's name.
     """
     wanted = [s for s in ("admin", "groups", "client") if s in selected]
     if not wanted:
         return
-    why = unrestartable(test)
+    why = control.unrestartable(test.fed)
     if why:
         for scenario in wanted:
             record(scenario, ("", SKIP, f"needs origin-0 restarted, but {why}"))
@@ -890,7 +808,7 @@ def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Ro
     done: set[str] = set()
     try:
         with control.restart_with(test.origin.svc, {RESTART_FILE: RESTART_CONFIG}):
-            why = settle(test, made.objects[PROJECT_A][0]) if made else None
+            why = test.settle(made.objects[PROJECT_A][0]) if made else None
             for scenario in wanted:
                 if why:
                     record(scenario, ("", FAIL, f"with {test.origin.svc} restarted, {why}"))
@@ -905,7 +823,7 @@ def run_restarted(test: Test, selected: Sequence[str], record: Callable[[str, Ro
                 record(scenario, ("", FAIL, f"restarting {test.origin.svc}: {e}"))
         warn(f"restarting {test.origin.svc}: {e}")
     if made:
-        why = settle(test, made.objects[PROJECT_A][0])
+        why = test.settle(made.objects[PROJECT_A][0])
         if why:
             warn(f"with {test.origin.svc} restored, {why}")
         if made.client is not None:
@@ -935,22 +853,13 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, those that restart origin-0 last."""
-    fed = session.fed
-    issuer_url = fed.oidc_issuer or ""
-    test = Test(
-        session,
-        issuer_url,
-        oidc.users(issuer_url),
-        servers(fed),
-        oidc.client_id(),
-        next((ns for ns in PROTECTED if ns in fed.exports), None),
-    )
+    test = Test(session)
 
     def record(scenario: str, found: Row) -> None:
         case, status, note = found
         results.add(f"{scenario} {case}".strip(), status, note)
 
-    print(f"Logging in through {issuer_url} at {len(test.servers)} server(s)\n")
+    print(f"Logging in through {test.issuer} at {len(test.servers)} server(s)\n")
     for name in selected:
         if name in RUN:
             print(f"  {name} ...")

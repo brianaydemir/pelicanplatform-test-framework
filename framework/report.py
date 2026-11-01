@@ -18,7 +18,6 @@ import os
 import re
 import sys
 import xml.etree.ElementTree as ET
-from collections import OrderedDict
 from collections.abc import Sequence
 
 # No __pycache__ in the checkout, where the dev container would leave it
@@ -27,17 +26,11 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # pylint: disable=wrong-import-position
-from testlib import report
+from testlib import common, report
 
 # pylint: enable=wrong-import-position
 
 MERGED = ("shape",) + report.COLUMNS
-
-
-def die_usage(message: str) -> None:
-    """Print message, and exit as for a usage error."""
-    print(f"report.py: {message}", file=sys.stderr)
-    sys.exit(2)
 
 
 def merge(args: Sequence[str]) -> str:
@@ -53,7 +46,7 @@ def merge(args: Sequence[str]) -> str:
         if not sep:
             name, directory = os.path.basename(os.path.normpath(arg)), arg
         if not os.path.isdir(directory):
-            die_usage(f"no such directory: {directory}")
+            common.die_usage(f"no such directory: {directory}")
         for entry in sorted(os.listdir(directory)):
             if not entry.endswith(".tsv"):
                 continue
@@ -72,11 +65,9 @@ def load(path: str) -> list[dict[str, str]]:
     return rows
 
 
-def groups(
-    rows: Sequence[dict[str, str]],
-) -> "OrderedDict[tuple[str, str], list[dict[str, str]]]":
+def groups(rows: Sequence[dict[str, str]]) -> dict[tuple[str, str], list[dict[str, str]]]:
     """Return rows by (shape, suite), in the order they first appear."""
-    found: "OrderedDict[tuple[str, str], list[dict[str, str]]]" = OrderedDict()
+    found: dict[tuple[str, str], list[dict[str, str]]] = {}
     for row in rows:
         found.setdefault((row.get("shape", ""), row.get("suite", "")), []).append(row)
     return found
@@ -188,21 +179,21 @@ def markdown(rows: Sequence[dict[str, str]]) -> str:
 def main() -> None:
     """Run the command that the arguments name."""
     args = sys.argv[1:]
-    if not args or args[0] in ("-h", "--help"):
+    if args[:1] in ([], ["-h"], ["--help"]):
         print((__doc__ or "").strip("\n"))
         sys.exit(0 if args else 2)
     command, rest = args[0], args[1:]
     if command == "merge":
         if not rest:
-            die_usage("merge needs at least one directory")
+            common.die_usage("merge needs at least one directory")
         sys.stdout.write(merge(rest))
     elif command in ("junit", "markdown"):
         if len(rest) != 1:
-            die_usage(f"{command} takes one table")
+            common.die_usage(f"{command} takes one table")
         rows = load(rest[0])
         sys.stdout.write(junit(rows) if command == "junit" else markdown(rows))
     else:
-        die_usage(f"unknown command: {command} (try: merge, junit, markdown)")
+        common.die_usage(f"unknown command: {command} (try: merge, junit, markdown)")
 
 
 if __name__ == "__main__":

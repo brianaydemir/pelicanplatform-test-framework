@@ -2,21 +2,24 @@
 
 Part of [What the tests check](README.md).
 
-The `restart` suite takes servers away mid-run and checks what survives and
-what the rest of the federation does meanwhile. It puts each server back,
-even after a failure, and runs after every other suite but
-[`keys`](keys.md). It needs a control helper
+The [`restart`](../../framework/suites/restart.py) suite takes servers away
+mid-run and checks what survives and what the rest of the federation does
+meanwhile. It puts each server back, even after a failure, and runs after
+every other suite but [`keys`](keys.md). It needs a
+[control helper](../glossary.md#service-control-helper)
 ([service control](../../README.md#service-control)), and skips under
-`-p topo-tiny`. A case's row is named `<scenario> <case>`, or
+[`-p topo-tiny`](../../framework/presets/topo-tiny.sh). A
+[case](../glossary.md#case)'s row is named `<scenario> <case>`, or
 `<scenario> <service>`. `state-survives`, `ad-expiry`, `xrootd-wedged`, and
-`peer-director` run in the WLCG pass only
+`peer-director` run in the [WLCG pass](../glossary.md#pass) only
 ([token profiles](README.md#token-profiles)).
 
-- `cache-restart`: Each cache, site-local included, restarted, must serve
-  the objects it held from its store, intact: native origins send under an
-  object's worth of bytes (`pelican_http_bytes_total`), and a V2 cache sends
-  `Age`. Every director must name a federated cache again within 150
-  seconds. A row per cache.
+- `cache-restart`: Each cache, [site-local](site-local-cache.md) included,
+  restarted, must serve the objects it held from its store, intact:
+  [native](../glossary.md#native-and-xrootd) origins send under an object's
+  worth of bytes (`pelican_http_bytes_total`), and a V2 cache sends `Age`.
+  Every director must name a federated cache again within 150 seconds. A row
+  per cache.
 
 - `state-survives`: Origin-0, director-0, and the registry restart; after
   each but the registry, every director must name origin-0 within 150
@@ -30,18 +33,21 @@ even after a failure, and runs after every other suite but
 - `ad-expiry`: The first federated cache, and with several origins the last
   origin, is killed (SIGKILL). No director may name it after
   `Server.AdLifetime` (90 seconds here) and 30 more, even under
-  `-p topo-multi-director`, whose peers forward ads. Restarted, it must be
-  named again within 150 seconds. A row per server.
+  [`-p topo-multi-director`](../../framework/presets/topo-multi-director.sh),
+  whose peers forward ads. Restarted, it must be named again within 150
+  seconds. A row per server.
 
 - `backend-outage`: The origins' storage service (`s3`, `webdav`, or
-  `lab-server`, by the `-p origin-*` preset) is stopped. Meanwhile, a GET,
-  HEAD, or PUT at origin-0 (`direct`, where it takes direct clients), and a
-  cache miss through the first federated cache (`cache`), must get a server
-  error, never 404, 405, or the object; an `ssh` origin's health must report
-  `ssh-backend` not ok within 60 seconds (`health`). With the service back,
-  the origin must serve again within 120 seconds, without a restart, and its
-  health say ok (`recovered`); if the origin exited, the suite restarts it,
-  and `recovered` fails. Skips where the origin stores on its own disk.
+  `lab-server`, by the [`-p origin-*`](../../README.md#presets) preset), a
+  [helper service](../glossary.md#helper-service), is stopped. Meanwhile, a
+  GET, HEAD, or PUT at origin-0 (`direct`, where it takes direct clients),
+  and a cache miss through the first federated cache (`cache`), must get a
+  server error, never 404, 405, or the object; an `ssh` origin's health must
+  report `ssh-backend` not ok within 60 seconds (`health`). With the service
+  back, the origin must serve again within 120 seconds, without a restart,
+  and its health say ok (`recovered`); if the origin exited, the suite
+  restarts it, and `recovered` fails. Skips where the origin stores on its
+  own disk.
 
 - `xrootd-wedged`: A server whose XRootD answers no liveness probe for
   `Xrootd.LivenessMaxUnresponsiveTime` must shut XRootD down and exit.
@@ -52,18 +58,20 @@ even after a failure, and runs after every other suite but
   director within 150 seconds. A row per server.
 
 - `cache-failover`: With several federated caches, the first is paused, then
-  killed. Each time, `pelican object get` and stash_plugin must get an
-  object through another cache, while the directors still name the first
-  (`early`), and once they have dropped it, within `Server.AdLifetime` and
-  30 more (`late`). Restored, it must be named again within 150 seconds
-  (`back`). Cases are named like `paused early`.
+  killed. Each time, the [Pelican client](../glossary.md#pelican-client)'s
+  `pelican object get` and [`stash_plugin`](../glossary.md#stash_plugin)
+  must get an object through another cache, while the directors still name
+  the first (`early`), and once they have dropped it, within
+  `Server.AdLifetime` and 30 more (`late`). Restored, it must be named again
+  within 150 seconds (`back`). Cases are named like `paused early`.
 
 - `origin-failover`: The same with the last of several origins
-  (`-p topo-multi-origin`), by two routes: direct (`direct`; not under
-  `-p origin-no-direct`), and through a cache (`cache`). A director with the
-  namespace's token must stat origins before redirecting
-  (`Director.CheckOriginPresence`). Cases are named like
-  `killed late direct`, besides `paused back` and `killed back`.
+  ([`-p topo-multi-origin`](../../framework/presets/topo-multi-origin.sh)),
+  by two [routes](../glossary.md#route): direct (`direct`; not under
+  [`-p origin-no-direct`](../../framework/presets/origin-no-direct.sh)), and
+  through a cache (`cache`). A director with the namespace's token must stat
+  origins before redirecting (`Director.CheckOriginPresence`). Cases are
+  named like `killed late direct`, besides `paused back` and `killed back`.
 
 - `peer-director`: With several directors, the second is killed. The first
   must list only itself at `/api/v1.0/director/directors` within

@@ -1,40 +1,30 @@
 """The transfer API, which runs transfer jobs on the server.
 
-The suite covers the API's authentication, the storage credentials it
-keeps for each user, third-party copies through it, the jobs it
-reports, and what it confines jobs to. The API is origin-0's
-(`-p origin-transfer-api`), or a transfer server's own
-(`-p topo-transfer-server`); generated/transfer-api says which
-(common.Federation.transfer_api).
+See docs/tests/transfer-api.md.
 
-The API's own tokens carry the pelican.transfer scope, from its host's
-issuer, which the suite mints with that host's key. Its storage
-credentials are the server's tokens for /protected-a, of the session's
-profile, so the scenarios that store none run in the WLCG pass alone.
-Objects go under /protected-a/data/xfer/<run>/; the suite removes them,
-and the credentials it added, afterward.
+The API is origin-0's (`-p origin-transfer-api`), or a transfer server's
+own (`-p topo-transfer-server`); generated/transfer-api says which
+(common.Federation.transfer_api). Its own tokens carry the
+pelican.transfer scope, from its host's issuer, which the suite mints
+with that host's key. Its storage credentials are the server's tokens
+for /protected-a, of the session's profile, so the scenarios that store
+none run in the WLCG pass alone. Objects go under
+/protected-a/data/transfer-api/<run>/; the suite removes them, and the
+credentials it added, afterward.
 
 Origin-0's API confines a job to its exports: a job may read or write
-the origin's own filesystem only through an export, so `local-get` and
-`local-put` check that a job that leaves the exports is refused. A
-transfer server confines a job to nothing (Pelican's
-docs/transfer-server-design.md), so there they check that such a job
-runs, and moves the bytes it names, and `path-not-allowed` checks that a
-job no export holds is taken and then fails.
+the origin's own filesystem only through an export. A transfer server
+confines a job to nothing (Pelican's docs/transfer-server-design.md), so
+there the confinement scenarios check that such a job runs.
 
-The API's edges come after its main paths: tokens whose subjects are
-not usernames (`subjects`), a failed job cancelled (`cancel-finished`),
-a job's event stream (`events`), sources on the origin's own network
-and a prefix that merely begins like an export (`ssrf-and-prefixes`),
-and `pelican transfer credential` (`credential-cli`). Two need
-configuration that no shape has: `enabled-groups`
-(Transfer.EnabledGroups, a group of the run's own) and `oauth-clients`
-(Transfer.EnableOAuth2Clients). For those, the suite restarts the API's
-host once with both, as the last of its configuration layers
-(control.restart_with()), and restores it afterward. `restart` restarts
-the host while a job runs. Each restart needs a control helper and a
-topology other than `tiny`, whose origin is the whole federation's
-process; elsewhere those rows skip, and say why.
+`enabled-groups` and `oauth-clients` need configuration that no shape
+has (Transfer.EnabledGroups, Transfer.EnableOAuth2Clients), so the suite
+restarts the API's host once with both, as the last of its
+configuration layers (control.restart_with()), and restores it
+afterward. `restart` restarts the host while a job runs. Each restart
+needs a control helper and a topology other than `tiny`, whose origin
+is the whole federation's process; elsewhere those rows skip, and say
+why.
 """
 
 import contextlib
@@ -47,6 +37,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from functools import cached_property
 from typing import Any
 
 from testlib import (
@@ -58,10 +49,11 @@ from testlib import (
     director,
     issuer,
     stores,
+    suite,
     web,
 )
 from testlib.accounts import Api
-from testlib.common import die, first, outcome, warn
+from testlib.common import die, outcome, warn
 from testlib.issuer import User
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -128,6 +120,9 @@ ONE_PROFILE = (
 CONFIGURED = ("enabled-groups", "oauth-clients")
 RESTARTS = "restart"
 
+# The namespace of the run's objects and the storage credentials.
+NAMESPACE = "protected-a"
+
 # The transfer API's scope, and its routes.
 SCOPE = "pelican.transfer"
 API = "/api/v1.0/transfer"
@@ -142,10 +137,8 @@ OAUTH_CLIENTS = "/oauth-clients"
 BOOTSTRAP = "/credentials/bootstrap/token-exchange"
 EVENT_STREAM = {"Accept": "text/event-stream"}
 # The run's configuration of a server, as the last of its layers
-# (control.restart_with()), and how long the suite waits afterward until
-# every director names origin-0 again and the API answers.
+# (control.restart_with()).
 CONFIG_FILE = "90-transfer-api.yaml"
-SETTLE_WAIT = 150
 # `subjects`: each case's subject. A URL, one character, and 65 characters
 # are not valid usernames (ValidateIdentifier in database/identifiers.go);
 # `admin` is the built-in user's.
@@ -180,7 +173,7 @@ def skip(fed: common.Federation) -> str | None:
     """Return why there is no API, or nowhere to copy to, or None."""
     if fed.transfer_api is None:
         return "no transfer API runs ('-p origin-transfer-api' or '-p topo-transfer-server')"
-    if "Writes" not in fed.exports.get("protected-a", ()):
+    if "Writes" not in fed.exports.get(NAMESPACE, ()):
         return "/protected-a takes no writes, so no copy can land"
     return None
 
@@ -195,27 +188,25 @@ Row = tuple[str, str, str]
 Rows = tuple[str, str] | list[Row]
 
 
-class Test:
+class Test(suite.Test):
     """The API, its tokens and credentials, and the run's objects.
 
+    The storage credentials hold token, or read_only. The source object
+    is put in place, and the stores read, with setup.
+
     Attributes:
-        url: The web URL of the API's host: origin-0 (`fed` in the tiny
-            topology), or the transfer server.
+        web_url: The web URL of the API's host: origin-0 (`fed` in the
+            tiny topology), or the transfer server.
         issuer: The issuer of the API's own tokens.
-        key_dir: The key directory of the API's host.
-        storage: A storage token for /protected-a, for credentials, of
-            the session's profile.
-        read_only: A read-only one.
-        setup: A storage token for /protected-a of the WLCG profile, for
-            putting the source object in place and reading the stores.
-        token: The user's token for the API.
+        svc: The host's service, which `restart` restarts.
+        key: The host's key.
+        confined: Whether the API confines jobs to the origin's exports:
+            origin-0's does, a transfer server's does not.
+        api_token: The user's token for the API.
+        read_only: A read-only storage token, of the session's profile.
         data: The object that the jobs copy.
         credential_ids: The credentials added, each with the token that
             owns it.
-        confined: Whether the API confines jobs to the origin's exports:
-            origin-0's does, a transfer server's does not.
-        svc: The host's service, which `restart` restarts.
-        key: The host's key.
         origin_web: The web URL of origin-0, whose namespace issuer the
             OAuth2 clients are of, and which `restart` slows: the API's
             host, or another server.
@@ -234,24 +225,19 @@ class Test:
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
+        super().__init__(session, "transfer-api", NAMESPACE)
         api = self.fed.transfer_api
         if api is None:
             die("framework/var/generated/transfer-api says the transfer API is off")
-        self.url, self.issuer, self.key_dir = api.url, api.issuer, api.key_dir
-        self.base = f"data/xfer/{session.run}"
-        self.storage = session.token("protected-a")
-        self.read_only = session.token("protected-a", credentials.R)
-        self.setup = session.setup_token("protected-a")
-        self.key = common.signing_key(self.key_dir)
-        self.token = self.mint("user", self.key, credentials.SUBJECT)
+        self.web_url, self.issuer, self.svc = api.url, api.issuer, api.svc
+        self.key = common.signing_key(api.key_dir)
+        self.confined = api.confined
+        self.api_token = self.mint("user", self.key, credentials.SUBJECT)
+        self.read_only = session.token(NAMESPACE, credentials.R)
         # Past pstore's chunk, so that a copy takes many reads and writes.
         self.data = os.urandom(blocks.CHUNK_UNDECLARED + 4321)
         self.credential_ids: list[tuple[str, str]] = []
         self._finished_job: dict[str, Any] | None = None
-        self.confined = api.confined
-        self.svc = api.svc
         self.origin_web = self.fed.origin_web_url
         self.origin_svc = self.fed.origins[0].svc
         self.origin_key = common.signing_key(f"issuer-keys/{self.origin_svc}")
@@ -264,15 +250,18 @@ class Test:
         self.secrets: list[str] = []
 
     def mint(self, name: str, key: str, subject: str) -> str:
-        """Return a token for the API, signed with key, for subject.
+        """Return a token for the API.
 
-        name names the file it is kept in.
+        Args:
+            name: The name of the file it is kept in.
+            key: The file of the key that signs it.
+            subject: Its subject.
         """
         path = self.session.path(f"tokens/transfer-api.{name}")
         credentials.mint(
             self.fed,
             path,
-            "/protected-a/",
+            f"/{self.namespace}/",
             key,
             self.issuer,
             "/",
@@ -282,20 +271,20 @@ class Test:
             raw_scopes=(SCOPE,),
             profile=credentials.WLCG,
         )
-        with open(path, encoding="utf-8") as f:
-            return f.read().strip()
+        return common.read_text(path)
 
     def admin_token(self) -> str:
         """Return a token the API's host's web API takes as its admin's.
 
-        See credentials.mint_admin().
+        See credentials.mint_web_user().
         """
         if self._admin is None:
-            self._admin = credentials.mint_admin(
+            self._admin = credentials.mint_web_user(
                 self.fed,
                 self.session.path("tokens/transfer-api.admin"),
-                credentials.local_issuer(self.fed, self.url),
-                self.key,
+                self.web_url,
+                "admin",
+                key=self.key,
             )
         return self._admin
 
@@ -304,30 +293,28 @@ class Test:
 
         It is admin_token() where origin-0 is the API's host.
         """
-        if self.origin_web == self.url:
+        if self.origin_web == self.web_url:
             return self.admin_token()
         if self._origin_admin is None:
-            self._origin_admin = credentials.mint_admin(
+            self._origin_admin = credentials.mint_web_user(
                 self.fed,
                 self.session.path("tokens/transfer-api.origin-admin"),
-                credentials.local_issuer(self.fed, self.origin_web),
-                self.origin_key,
+                self.origin_web,
+                "admin",
+                key=self.origin_key,
             )
         return self._origin_admin
 
     def admin(self) -> Api:
         """Return the API's host's web API, as its admin."""
-        return Api(self.url, self.admin_token())
+        return Api(self.web_url, self.admin_token())
 
-    def token_file(self, name: str, token: str) -> str:
-        """Write token to a file, for the client's --token.
-
-        Returns:
-            The file's path.
-        """
-        path = self.session.path(f"tokens/transfer-api.{name}.file")
+    @cached_property
+    def api_token_file(self) -> str:
+        """The file of api_token, for the client's --token."""
+        path = self.session.path("tokens/transfer-api.user.file")
         with open(path, "w", encoding="utf-8") as f:
-            f.write(token)
+            f.write(self.api_token)
         return path
 
     def issuer_client(
@@ -338,12 +325,16 @@ class Test:
     ) -> issuer.Client:
         """Create and return a client of an issuer, as the server's admin.
 
-        The issuer is namespace's, origin-0's, or the API's host's local
-        issuer (issuer.LOCAL_NAMESPACE). The client is allowed grants and
-        allowed_scopes, and removed when the suite ends.
+        The client is removed when the suite ends.
+
+        Args:
+            namespace: The issuer's namespace, at origin-0; or
+                issuer.LOCAL_NAMESPACE, the API's host's local issuer.
+            grants: The grants it is allowed.
+            allowed_scopes: The scopes it is allowed.
         """
         if namespace == issuer.LOCAL_NAMESPACE:
-            site, token = self.url, self.admin_token()
+            site, token = self.web_url, self.admin_token()
         else:
             site, token = self.origin_web, self.origin_admin_token()
         made = issuer.create_client(
@@ -352,7 +343,7 @@ class Test:
             token,
             grants,
             allowed_scopes,
-            name=f"pelican-test-framework transfer-api {self.session.run}",
+            name=f"pelican-test-framework transfer-api {self.run}",
         )
         self.issuer_clients.append((site, namespace, token, made))
         return made
@@ -371,41 +362,39 @@ class Test:
             and the raw answer.
         """
         upload = json.dumps(body).encode() if body is not None else None
-        headers = {"Content-Type": "application/json"} if body is not None else {}
-        answer = web.request(method, f"{self.url}{API}{path}", token=token, upload=upload, headers=headers)
-        return answer.status, common.as_object(answer.json()) or {}, answer.body
+        headers = accounts.JSON if body is not None else {}
+        answer = web.request(
+            method, f"{self.web_url}{API}{path}", token=token, upload=upload, headers=headers
+        )
+        return answer.status, answer.object(), answer.body
 
-    def rel(self, name: str) -> str:
-        """Return where object name of the run is in /protected-a."""
-        return f"{self.base}/{name}"
-
-    def url_of(self, name: str) -> str:
-        """Return the federation URL of object name of the run."""
-        return f"{self.fed.url}/protected-a/{self.rel(name)}"
-
-    def held(self, name: str) -> list[str | None]:
-        """Return what each store holds at object name.
+    def stored(self, name: str) -> list[str | None]:
+        """Return what each store holds at the run's object name.
 
         See stores.held_anywhere().
         """
         return stores.held_anywhere(
-            self.fed.origins, "protected-a", self.rel(name), {"protected-a": self.setup}
+            self.fed.origins, self.namespace, self.rel(name), {self.namespace: self.setup}
         )
 
     def add_credential(self, name: str, token: str, owner: str | None = None) -> str:
         """Add a storage credential holding token, and return its ID.
 
-        It is the user's, or owner's, a token of another subject.
+        Args:
+            name: Its name.
+            token: The storage token it holds.
+            owner: The API token of the subject whose it is, if not the
+                user's.
 
         Raises:
             ApiError: The API refused it.
         """
         status, found, raw = self.call(
-            "POST", "/credentials", owner or self.token, {"name": name, "access_token": token}
+            "POST", "/credentials", owner or self.api_token, {"name": name, "access_token": token}
         )
         if status != 201 or not found.get("id"):
             raise ApiError(f"could not add credential {name}: HTTP {status}: {raw[:200]!r}")
-        self.credential_ids.append((str(found["id"]), owner or self.token))
+        self.credential_ids.append((str(found["id"]), owner or self.api_token))
         return str(found["id"])
 
     def submit(self, body: dict[str, Any], token: str | None = None) -> tuple[int | None, dict[str, Any]]:
@@ -414,7 +403,7 @@ class Test:
         Returns:
             The status, and the answer as a JSON object.
         """
-        status, found, _ = self.call("POST", "/jobs", token or self.token, body)
+        status, found, _ = self.call("POST", "/jobs", token or self.api_token, body)
         return status, found
 
     def wait(self, job_id: str, token: str | None = None) -> dict[str, Any]:
@@ -425,7 +414,7 @@ class Test:
         """
         deadline = time.monotonic() + JOB_WAIT
         while True:
-            _, found, _ = self.call("GET", f"/jobs/{job_id}", token or self.token)
+            _, found, _ = self.call("GET", f"/jobs/{job_id}", token or self.api_token)
             if found.get("status") in FINISHED or time.monotonic() >= deadline:
                 return found
             time.sleep(2)
@@ -446,7 +435,7 @@ class Test:
         job = self.wait(str(found["job_id"]), token)
         if job.get("status") != "completed":
             return f"the copy to {name}: {job.get('status')} ({str(job.get('error'))[:120]})"
-        if common.digest(self.data) not in self.held(name):
+        if common.digest(self.data) not in self.stored(name):
             return f"the copy to {name} completed, but no origin holds it"
         return None
 
@@ -456,8 +445,8 @@ class Test:
             "transfers": [
                 {
                     "operation": "copy",
-                    "source": self.url_of(source),
-                    "destination": self.url_of(dest),
+                    "source": self.pelican_url(self.rel(source)),
+                    "destination": self.pelican_url(self.rel(dest)),
                 }
             ],
             "source_credential_id": source_id,
@@ -473,7 +462,7 @@ class Test:
             ApiError: The API refused the copy.
         """
         if self._finished_job is None:
-            writer = self.add_credential(f"{self.session.run}-job", self.storage)
+            writer = self.add_credential(f"{self.run}-job", self.token)
             status, found = self.submit(self.copy_job("src", "job-copy", writer, writer))
             if status != 201 or not found.get("job_id"):
                 raise ApiError(f"could not submit a copy: HTTP {status}: {found}")
@@ -517,26 +506,26 @@ def credentials_scenario(test: Test) -> tuple[str, str]:
     It is listed by its ID, no answer may show its token, and a second
     one by the same name must be a conflict.
     """
-    name = f"{test.session.run}-listed"
+    name = f"{test.run}-listed"
     status, found, raw = test.call(
-        "POST", "/credentials", test.token, {"name": name, "access_token": test.storage}
+        "POST", "/credentials", test.api_token, {"name": name, "access_token": test.token}
     )
     if status != 201 or not found.get("id"):
         return FAIL, f"adding it: HTTP {status}: {raw[:200]!r}"
-    test.credential_ids.append((str(found["id"]), test.token))
+    test.credential_ids.append((str(found["id"]), test.api_token))
     shown = [raw]
-    status, _, raw = test.call("GET", "/credentials", test.token)
+    status, _, raw = test.call("GET", "/credentials", test.api_token)
     shown.append(raw)
     if status != 200 or str(found["id"]).encode() not in raw:
         return FAIL, f"listing them: HTTP {status}, without {found['id']}"
-    status, _, raw = test.call("GET", f"/credentials/{found['id']}", test.token)
+    status, _, raw = test.call("GET", f"/credentials/{found['id']}", test.api_token)
     shown.append(raw)
     if status != 200:
         return FAIL, f"getting it: HTTP {status}"
-    if any(test.storage.encode() in answer for answer in shown):
+    if any(test.token.encode() in answer for answer in shown):
         return FAIL, "an answer shows the credential's token"
     status, _, _ = test.call(
-        "POST", "/credentials", test.token, {"name": name, "access_token": test.storage}
+        "POST", "/credentials", test.api_token, {"name": name, "access_token": test.token}
     )
     if status != 409:
         return FAIL, f"adding it again: HTTP {status}, not 409"
@@ -554,28 +543,26 @@ def copy(test: Test) -> list[Row]:
     is, the command must fail, saying that the service is not available
     there, and land nothing.
     """
-    writer = test.add_credential(f"{test.session.run}-cli-copy", test.storage)
-    token_file = test.session.path("tokens/transfer-api.user.file")
-    with open(token_file, "w", encoding="utf-8") as f:
-        f.write(test.token)
+    writer = test.add_credential(f"{test.run}-cli-copy", test.token)
     common_args = [
         "--transfer-server-token",
-        token_file,
+        test.api_token_file,
         "--source-credential-id",
         writer,
         "--dest-credential-id",
         writer,
         "--wait",
         "--json",
-        test.url_of("src"),
+        test.pelican_url(test.rel("src")),
     ]
     rows: list[Row] = []
+    target = test.pelican_url(test.rel("cli-copy"))
     code, out, err = test.session.pelican_cmd(
-        "object", "copy", "--transfer-server", test.url, *common_args, test.url_of("cli-copy")
+        "object", "copy", "--transfer-server", test.web_url, *common_args, target
     )
     if code != 0:
         rows.append(("server", FAIL, f"exit {code}: {last_line(err or out)}"))
-    elif common.digest(test.data) not in test.held("cli-copy"):
+    elif common.digest(test.data) not in test.stored("cli-copy"):
         rows.append(("server", FAIL, "no origin holds the copy"))
     else:
         rows.append(("server", PASS, "the copy landed"))
@@ -585,10 +572,10 @@ def copy(test: Test) -> list[Row]:
         "--dest-origin",
         test.origin_web,
         *common_args,
-        test.url_of("dest-origin-copy"),
+        test.pelican_url(test.rel("dest-origin-copy")),
     )
-    landed = common.digest(test.data) in test.held("dest-origin-copy")
-    if test.origin_web == test.url:
+    landed = common.digest(test.data) in test.stored("dest-origin-copy")
+    if test.origin_web == test.web_url:
         if code != 0:
             rows.append(("dest-origin", FAIL, f"exit {code}: {last_line(err or out)}"))
         elif not landed:
@@ -617,9 +604,9 @@ def job_status(test: Test) -> tuple[str, str]:
     job = test.finished_job()
     if job.get("status") != "completed" or not job.get("completed_at"):
         return FAIL, f"the job: {job}"
-    if common.digest(test.data) not in test.held("job-copy"):
+    if common.digest(test.data) not in test.stored("job-copy"):
         return FAIL, "the job completed, but no origin holds the copy"
-    status, found, _ = test.call("GET", "/jobs?status=completed", test.token)
+    status, found, _ = test.call("GET", "/jobs?status=completed", test.api_token)
     listed = [common.as_object(j) or {} for j in common.as_array(found.get("jobs")) or []]
     if status != 200 or job["job_id"] not in [j.get("job_id") for j in listed]:
         return FAIL, f"listing completed jobs: HTTP {status}, without {job['job_id']}"
@@ -631,15 +618,15 @@ def bad_dest_credential(test: Test) -> tuple[str, str]:
 
     It is accepted, and fails, writing nothing.
     """
-    writer = test.add_credential(f"{test.session.run}-src", test.storage)
-    reader = test.add_credential(f"{test.session.run}-read-only", test.read_only)
+    writer = test.add_credential(f"{test.run}-src", test.token)
+    reader = test.add_credential(f"{test.run}-read-only", test.read_only)
     status, found = test.submit(test.copy_job("src", "bad-dest", writer, reader))
     if status != 201 or not found.get("job_id"):
         return FAIL, f"submitting it: HTTP {status}: {found}"
     job = test.wait(str(found["job_id"]))
     if job.get("status") != "failed" or not job.get("error"):
         return FAIL, f"the job: {job}, not failed with an error"
-    if any(test.held("bad-dest")):
+    if any(test.stored("bad-dest")):
         return FAIL, "the job failed, but an origin holds the copy"
     return PASS, f"failed: {str(job['error'])[:120]}"
 
@@ -681,7 +668,12 @@ def unconfined(test: Test, body: dict[str, Any], what: str) -> tuple[str, str]:
 
     A transfer server confines jobs to nothing, so it must take the job
     (201); the job must then fail, since nothing serves what it names,
-    and never complete. what labels the job in the verdict's note.
+    and never complete.
+
+    Args:
+        test: The run.
+        body: The job.
+        what: What labels the job in the note.
     """
     status, found = test.submit(body)
     if status != 201 or not found.get("job_id"):
@@ -716,7 +708,7 @@ def cancel(test: Test) -> tuple[str, str]:
 
     The finished one must stay as it finished (see cancel_kept()).
     """
-    status, _, _ = test.call("DELETE", f"/jobs/{uuid.uuid4()}", test.token)
+    status, _, _ = test.call("DELETE", f"/jobs/{uuid.uuid4()}", test.api_token)
     if status != 404:
         return FAIL, f"cancelling an unknown job: HTTP {status}, not 404"
     job = test.finished_job()
@@ -726,13 +718,18 @@ def cancel(test: Test) -> tuple[str, str]:
 def cancel_kept(test: Test, job_id: str, finished: object) -> tuple[str, str]:
     """Check that cancelling a finished job leaves it as it finished.
 
-    The job is job_id, whose status was finished. The cancel must be
-    taken (2xx) or refused as too late (409), and the status stay so.
+    The cancel must be taken (2xx) or refused as too late (409), and the
+    status stay as it was.
+
+    Args:
+        test: The run.
+        job_id: The job.
+        finished: Its status.
     """
-    status, _, raw = test.call("DELETE", f"/jobs/{job_id}", test.token)
+    status, _, raw = test.call("DELETE", f"/jobs/{job_id}", test.api_token)
     if status is None or not (200 <= status < 300 or status == 409):
         return FAIL, f"cancelling a {finished} job: HTTP {status}, not 2xx or 409: {raw[:120]!r}"
-    _, after, _ = test.call("GET", f"/jobs/{job_id}", test.token)
+    _, after, _ = test.call("GET", f"/jobs/{job_id}", test.api_token)
     if after.get("status") != finished:
         return FAIL, f"cancelling a {finished} job (HTTP {status}) made it {after.get('status')}"
     return PASS, f"HTTP {status}, still {finished}"
@@ -743,15 +740,19 @@ def confined(
 ) -> tuple[str, str]:
     """Check a job of one transfer that leaves the exports.
 
-    The transfer is on the API's host's own filesystem. landed() is the
-    SHA-256 of what it moved, if anything, and expected what that would
-    be. Origin-0's API confines jobs to its exports, so it must refuse
-    the job, or fail it, and landed() find nothing. A transfer server
+    Origin-0's API confines jobs to its exports, so it must refuse the
+    job, or fail it, and landed() find nothing. A transfer server
     confines jobs to nothing: there the job must complete, and landed()
     find the bytes it named. The job's credential is the setup token,
     since what is checked is the confinement, not the token.
+
+    Args:
+        test: The run.
+        transfer: The transfer, on the API's host's own filesystem.
+        landed: Return the SHA-256 of what it moved, or None.
+        expected: The SHA-256 of what it should move.
     """
-    writer = test.add_credential(f"{test.session.run}-{transfer['operation']}", test.setup)
+    writer = test.add_credential(f"{test.run}-{transfer['operation']}", test.setup)
     body = {
         "transfers": [transfer],
         "source_credential_id": writer,
@@ -794,7 +795,7 @@ def local_get(test: Test) -> tuple[str, str]:
     state. Origin-0's API must not write the file there; a transfer
     server's must, and the file must be the source object.
     """
-    name = f"local-get-{test.session.run}"
+    name = f"local-get-{test.run}"
     if test.confined:
         # Every origin-0 mounts framework/var/data/origin/0 at /data.
         destination, landed = f"/data/{name}", f"data/origin/0/{name}"
@@ -804,7 +805,7 @@ def local_get(test: Test) -> tuple[str, str]:
         destination, landed = f"/var/lib/pelican/{name}", f"state/{test.svc}/{name}"
     transfer = {
         "operation": "get",
-        "source": test.url_of("src"),
+        "source": test.pelican_url(test.rel("src")),
         "destination": destination,
     }
     try:
@@ -826,12 +827,12 @@ def local_put(test: Test) -> tuple[str, str]:
     transfer = {
         "operation": "put",
         "source": "/etc/hostname",
-        "destination": test.url_of("local-put"),
+        "destination": test.pelican_url(test.rel("local-put")),
     }
     return confined(
         test,
         transfer,
-        lambda: next((d for d in test.held("local-put") if d), None),
+        lambda: next((d for d in test.stored("local-put") if d), None),
         common.digest(f"{test.svc}\n".encode()),
     )
 
@@ -859,7 +860,7 @@ def subjects(test: Test) -> list[Row]:
             rows.append((case, FAIL, f"GET /jobs as {subject!r}: HTTP {status}, {what}"))
             continue
         problems: list[str] = []
-        writer = test.add_credential(f"{test.session.run}-{case}", test.storage, owner=token)
+        writer = test.add_credential(f"{test.run}-{case}", test.token, owner=token)
         why = test.copied(f"subject-{case}", writer, writer, token)
         if why:
             problems.append(why)
@@ -872,7 +873,7 @@ def subjects(test: Test) -> list[Row]:
             # The user's token is another subject's, so it must not see the
             # job. `admin` is left out: its record is whichever user the
             # API takes the built-in admin to be.
-            status, _, _ = test.call("GET", f"/jobs/{mine[0]}", test.token)
+            status, _, _ = test.call("GET", f"/jobs/{mine[0]}", test.api_token)
             if status != 404:
                 problems.append(f"another subject's GET of the job: HTTP {status}, not 404")
         rows.append((case, *outcome(problems, f"{subject[:40]!r}: lists, copies, and owns")))
@@ -886,9 +887,8 @@ def cancel_finished(test: Test) -> tuple[str, str]:
     cancel is taken (2xx) or refused as too late (409), and the job must
     stay `failed`.
     """
-    stamp = test.session.run
-    writer = test.add_credential(f"{stamp}-cancel-src", test.storage)
-    reader = test.add_credential(f"{stamp}-cancel-ro", test.read_only)
+    writer = test.add_credential(f"{test.run}-cancel-src", test.token)
+    reader = test.add_credential(f"{test.run}-cancel-ro", test.read_only)
     status, found = test.submit(test.copy_job("src", "cancel-failed", writer, reader))
     if status != 201 or not found.get("job_id"):
         return FAIL, f"submitting the copy: HTTP {status}: {found}"
@@ -937,15 +937,15 @@ def events(test: Test) -> tuple[str, str]:
     stream ends (StreamJobEvents in client_agent/job_events.go). For
     another user, the stream must not be found (404).
     """
-    writer = test.add_credential(f"{test.session.run}-events", test.storage)
+    writer = test.add_credential(f"{test.run}-events", test.token)
     status, found = test.submit(test.copy_job("src", "events", writer, writer))
     if status != 201 or not found.get("job_id"):
         return FAIL, f"submitting the copy: HTTP {status}: {found}"
     job_id = str(found["job_id"])
     answer = web.request(
         "GET",
-        f"{test.url}{API}/jobs/{job_id}/events",
-        token=test.token,
+        f"{test.web_url}{API}/jobs/{job_id}/events",
+        token=test.api_token,
         headers=EVENT_STREAM,
         timeout=JOB_WAIT,
     )
@@ -967,12 +967,12 @@ def events(test: Test) -> tuple[str, str]:
         return FAIL, f"the stream ended with status {last!r}, not a terminal one"
     if last != "completed":
         return FAIL, f"the job ended {last}: {str(seen[-1][1].get('error'))[:120]}"
-    _, job, _ = test.call("GET", f"/jobs/{job_id}", test.token)
+    _, job, _ = test.call("GET", f"/jobs/{job_id}", test.api_token)
     if job.get("status") != last:
         return FAIL, f"the stream ended {last}, but the job is {job.get('status')}"
     other = test.mint("events-other", test.key, "pelican-test-other")
     refused_answer = web.request(
-        "GET", f"{test.url}{API}/jobs/{job_id}/events", token=other, headers=EVENT_STREAM
+        "GET", f"{test.web_url}{API}/jobs/{job_id}/events", token=other, headers=EVENT_STREAM
     )
     if refused_answer.status != 404:
         return FAIL, f"another user's stream of the job: {refused_answer.describe()}, not 404"
@@ -997,8 +997,9 @@ def ssrf_and_prefixes(test: Test) -> list[Row]:
     """
     rows: list[Row] = []
     problems: list[str] = []
+    destination = test.pelican_url(test.rel("ssrf"))
     for case, source in SSRF_SOURCES:
-        body = {"transfers": [{"operation": "copy", "source": source, "destination": test.url_of("ssrf")}]}
+        body = {"transfers": [{"operation": "copy", "source": source, "destination": destination}]}
         status, found = test.submit(body)
         if status != 403 or found.get("code") != "ENDPOINT_NOT_ALLOWED":
             problems.append(
@@ -1035,7 +1036,7 @@ def plain_secrets(test: Test) -> list[Row]:
     """
     # The tokens that the suite stored, and any client secret it
     # registered, as bytes, since the database holds strings as is.
-    secrets_held = [test.storage, test.read_only, *test.secrets]
+    secrets_held = [test.token, test.read_only, *test.secrets]
     files = database_files(test)
     if not files:
         return [("secrets", INCONCLUSIVE, f"no database under framework/var/state/{test.svc}")]
@@ -1069,9 +1070,8 @@ def credential_cli(test: Test) -> tuple[str, str]:
     (cmd/transfer_credential.go): each must agree with the API, and
     neither `add` nor `list` may print the token.
     """
-    token_file = test.token_file("cli-user", test.token)
-    name = f"{test.session.run}-cli"
-    common_args = ["--server", test.url, "--token", token_file, "--json"]
+    name = f"{test.run}-cli"
+    common_args = ["--server", test.web_url, "--token", test.api_token_file, "--json"]
     code, out, err = test.session.pelican_cmd(
         "transfer",
         "credential",
@@ -1079,9 +1079,9 @@ def credential_cli(test: Test) -> tuple[str, str]:
         "--name",
         name,
         "--access-token-file",
-        test.session.token_file("protected-a"),
+        test.token_file,
         "--issuer",
-        test.fed.issuer_of("protected-a"),
+        test.fed.issuer_of(test.namespace),
         *common_args,
     )
     if code != 0:
@@ -1090,10 +1090,10 @@ def credential_cli(test: Test) -> tuple[str, str]:
     cred_id = str(made.get("id") or "")
     if not cred_id or made.get("name") != name:
         return FAIL, f"add printed no credential named {name}: {last_line(out)}"
-    test.credential_ids.append((cred_id, test.token))
-    if test.storage in out + err:
+    test.credential_ids.append((cred_id, test.api_token))
+    if test.token in out + err:
         return FAIL, "add printed the token"
-    status, found, _ = test.call("GET", f"/credentials/{cred_id}", test.token)
+    status, found, _ = test.call("GET", f"/credentials/{cred_id}", test.api_token)
     if status != 200 or found.get("name") != name:
         return FAIL, f"the API's GET of what add made: HTTP {status}, {found.get('name')!r}"
     code, out, err = test.session.pelican_cmd("transfer", "credential", "list", *common_args)
@@ -1102,15 +1102,15 @@ def credential_cli(test: Test) -> tuple[str, str]:
     listed = [common.as_object(c) or {} for c in common.as_array(cli_json(out)) or []]
     if not any(c.get("id") == cred_id and c.get("name") == name for c in listed):
         return FAIL, f"list does not show {name} ({cred_id}): {last_line(out)}"
-    if test.storage in out + err:
+    if test.token in out + err:
         return FAIL, "list printed the token"
     code, out, err = test.session.pelican_cmd("transfer", "credential", "delete", cred_id, *common_args)
     if code != 0:
         return FAIL, f"delete: exit {code}: {last_line(err or out)}"
-    status, _, _ = test.call("GET", f"/credentials/{cred_id}", test.token)
+    status, _, _ = test.call("GET", f"/credentials/{cred_id}", test.api_token)
     if status != 404:
         return FAIL, f"the API's GET of what delete removed: HTTP {status}, not 404"
-    test.credential_ids.remove((cred_id, test.token))
+    test.credential_ids.remove((cred_id, test.api_token))
     return PASS, f"{cred_id}: added, listed without its token, deleted"
 
 
@@ -1119,20 +1119,9 @@ def credential_cli(test: Test) -> tuple[str, str]:
 # the run's own in Transfer.EnabledGroups, and Transfer.EnableOAuth2Clients.
 
 
-def unconfigurable(test: Test) -> str | None:
-    """Return why the API's host cannot be restarted, or None if it can.
-
-    It is restarted with configuration of the run's own, or while a job
-    runs.
-    """
-    if test.fed.tiny:
-        return "the tiny topology's origin is the whole federation's process"
-    return control.unavailable()
-
-
 def transfer_group(test: Test) -> str:
     """Return the group that the run puts in Transfer.EnabledGroups."""
-    return f"xfer-{test.session.run}"
+    return f"transfer-api-{test.run}"
 
 
 def configured_text(test: Test) -> str:
@@ -1149,22 +1138,20 @@ def settle(test: Test) -> str | None:
     (control.settle()).
 
     Returns:
-        Why that did not happen within SETTLE_WAIT seconds, or None.
+        Why that did not happen within suite.SETTLE_WAIT seconds, or
+        None.
     """
     fed = test.fed
-    path = f"/protected-a/{test.rel('src')}"
+    path = test.path(test.rel("src"))
     host = director.host(fed.origins[0].url)
 
     def unready() -> str | None:
         status, _, _ = test.call("GET", "/ping", None)
         if status != 200:
             return f"the API's ping got HTTP {status}"
-        named = director.naming(fed.directors, "origin", path, host)
-        if len(named) != len(fed.directors):
-            return f"only {named} named {host}"
-        return None
+        return director.unnamed(fed.directors, "origin", path, host)
 
-    return control.settle(unready, SETTLE_WAIT)
+    return control.settle(unready, suite.SETTLE_WAIT)
 
 
 def run_configured(test: Test, names: list[str], results: common.Results) -> None:
@@ -1199,8 +1186,8 @@ def log_in(test: Test, username: str, user_id: str) -> str:
     """
     invite = accounts.password_invite(test.admin(), user_id)
     password = secrets.token_urlsafe(12)
-    accounts.set_password(test.url, invite, password)
-    return accounts.login(test.url, username, password)
+    accounts.set_password(test.web_url, invite, password)
+    return accounts.login(test.web_url, username, password)
 
 
 def enabled_groups(test: Test) -> list[Row]:
@@ -1221,8 +1208,8 @@ def enabled_groups(test: Test) -> list[Row]:
     gid = accounts.create_group(admin, group)
     test.group_ids.append(gid)
     users = {
-        "member": f"xfer-member-{test.session.run}",
-        "other": f"xfer-other-{test.session.run}",
+        "member": f"transfer-api-member-{test.run}",
+        "other": f"transfer-api-other-{test.run}",
     }
     cookies: dict[str, str] = {}
     for role, username in users.items():
@@ -1231,14 +1218,14 @@ def enabled_groups(test: Test) -> list[Row]:
         )
         user_id = str(made.object.get("id", ""))
         test.user_ids.append(user_id)
-        token = credentials.mint_user(
+        token = credentials.mint_web_user(
             test.fed,
             test.session.path(f"tokens/transfer-api.web.{role}"),
-            credentials.local_issuer(test.fed, test.url),
-            test.key,
+            test.web_url,
             username,
+            key=test.key,
         )
-        accounts.agree_to_aup(Api(test.url, token))
+        accounts.agree_to_aup(Api(test.web_url, token))
         if role == "member":
             accounts.add_member(admin, gid, user_id)
         cookies[role] = log_in(test, username, user_id)
@@ -1269,7 +1256,9 @@ def enabled_groups(test: Test) -> list[Row]:
     rows.append(("token", *outcome(problems, "the member's taken, the other's refused")))
     problems = []
     for role, want in (("member", (200,)), ("other", (403,))):
-        answer = web.request("GET", f"{test.url}{API}/jobs", headers={"Cookie": f"login={cookies[role]}"})
+        answer = web.request(
+            "GET", f"{test.web_url}{API}/jobs", headers={"Cookie": f"login={cookies[role]}"}
+        )
         if answer.status not in want:
             problems.append(f"GET /jobs with {users[role]}'s login cookie: {answer.describe()}, not {want}")
     rows.append(("cookie", *outcome(problems, "the member's taken, the other's refused")))
@@ -1285,12 +1274,12 @@ def oauth_clients_disabled(test: Test) -> list[Row]:
     problems: list[str] = []
     body = {
         "name": "off",
-        "issuer_url": test.fed.issuer_of("protected-a"),
+        "issuer_url": test.fed.issuer_of(test.namespace),
         "client_id": "off",
         "client_secret": "off",
     }
     for method, sent in (("GET", None), ("POST", body)):
-        status, found, _ = test.call(method, OAUTH_CLIENTS, test.token, sent)
+        status, found, _ = test.call(method, OAUTH_CLIENTS, test.api_token, sent)
         if status != 403 or found.get("code") != "DISABLED":
             problems.append(f"{method}: HTTP {status}, {found.get('code')}, not 403 DISABLED")
     return [("disabled", *outcome(problems, "GET and POST: 403 DISABLED"))]
@@ -1322,42 +1311,42 @@ def oauth_clients(test: Test) -> list[Row]:
     server refreshes it first (`refresh`; getDecryptedAccessToken in
     transfer/credentials.go).
     """
-    issuer_url = test.fed.issuer_of("protected-a")
+    issuer_url = test.fed.issuer_of(test.namespace)
     # Under the external issuer, or with the origins' issuer off, the
     # origin's admin can make no client of it: `crud` registers made-up
     # credentials, and the rest skip.
     external = test.fed.external_issuer or not test.fed.embedded_issuer
     exchange: issuer.Client | None = None
     device: issuer.Client | None = None
-    client_id, client_secret = f"made-up-{test.session.run}", secrets.token_urlsafe(24)
+    client_id, client_secret = f"made-up-{test.run}", secrets.token_urlsafe(24)
     if not external:
-        exchange = test.issuer_client("/protected-a", (issuer.EXCHANGE_GRANT, issuer.REFRESH_GRANT))
-        device = test.issuer_client("/protected-a", (issuer.DEVICE_GRANT,))
+        exchange = test.issuer_client(f"/{test.namespace}", (issuer.EXCHANGE_GRANT, issuer.REFRESH_GRANT))
+        device = test.issuer_client(f"/{test.namespace}", (issuer.DEVICE_GRANT,))
         client_id, client_secret = exchange.client_id, exchange.client_secret
     test.secrets.append(client_secret)
     rows: list[Row] = []
     problems: list[str] = []
     body = {
-        "name": f"{test.session.run}-exchange",
+        "name": f"{test.run}-exchange",
         "issuer_url": issuer_url,
         "client_id": client_id,
         "client_secret": client_secret,
         "grant_types": EXCHANGE_GRANTS,
         "scopes": " ".join(CREDENTIAL_SCOPES),
     }
-    status, found, raw = test.call("POST", OAUTH_CLIENTS, test.token, body)
+    status, found, raw = test.call("POST", OAUTH_CLIENTS, test.api_token, body)
     registered = str(found.get("id") or "")
     if status != 201 or not registered:
         return [("crud", FAIL, f"registering the client: HTTP {status}: {raw[:200]!r}")]
     test.oauth_client_ids.append(registered)
     shown = [raw]
-    status, _, raw = test.call("GET", OAUTH_CLIENTS, test.token)
+    status, _, raw = test.call("GET", OAUTH_CLIENTS, test.api_token)
     shown.append(raw)
     if status != 200 or registered.encode() not in raw:
         problems.append(f"listing the clients: HTTP {status}, without {registered}")
     if any(client_secret.encode() in answer for answer in shown):
         problems.append("an answer shows the client's secret")
-    status, _, _ = test.call("POST", OAUTH_CLIENTS, test.token, body)
+    status, _, _ = test.call("POST", OAUTH_CLIENTS, test.api_token, body)
     if status != 409:
         problems.append(f"registering it again: HTTP {status}, not 409")
     rows.append(("crud", *outcome(problems, f"{registered}: registered, listed, no secret")))
@@ -1375,14 +1364,14 @@ def oauth_clients(test: Test) -> list[Row]:
     body = {
         "subject_token": subject,
         "issuer_url": issuer_url,
-        "name": f"{test.session.run}-bootstrapped",
+        "name": f"{test.run}-bootstrapped",
         "scopes": " ".join(CREDENTIAL_SCOPES),
     }
-    status, found, raw = test.call("POST", BOOTSTRAP, test.token, body)
+    status, found, raw = test.call("POST", BOOTSTRAP, test.api_token, body)
     cred_id = str(found.get("id") or "")
     if status != 201 or not cred_id:
         return rows + [("bootstrap", FAIL, f"HTTP {status}: {raw[:300]!r}")]
-    test.credential_ids.append((cred_id, test.token))
+    test.credential_ids.append((cred_id, test.api_token))
     first_expiry = expiry_of(found)
     why = test.copied("bootstrapped", cred_id, cred_id)
     if why:
@@ -1405,7 +1394,7 @@ def oauth_clients(test: Test) -> list[Row]:
     if why:
         rows.append(("refresh", FAIL, f"once the access token had expired, {why}"))
         return rows
-    _, found, _ = test.call("GET", f"/credentials/{cred_id}", test.token)
+    _, found, _ = test.call("GET", f"/credentials/{cred_id}", test.api_token)
     later = expiry_of(found)
     if later is None or later <= first_expiry:
         rows.append(("refresh", FAIL, f"the copy landed, but token_expiry is {later}"))
@@ -1435,13 +1424,12 @@ def restart(test: Test) -> list[Row]:
     A job that finished before the restart, which the manager no longer
     holds, must keep its status once cancelled (`forgotten`).
     """
-    why = unconfigurable(test)
+    why = control.unrestartable(test.fed)
     if why:
         return [("", SKIP, why)]
-    stamp = test.session.run
-    kept = test.add_credential(f"{stamp}-kept", test.storage)
+    kept = test.add_credential(f"{test.run}-kept", test.token)
     forgotten = test.finished_job()
-    writer = test.add_credential(f"{stamp}-interrupted", test.storage)
+    writer = test.add_credential(f"{test.run}-interrupted", test.token)
     slowed = test.fed.origin_variant == "posixv2"
     text = f"Origin:\n  TransferRateLimit: {RATE_LIMIT}\n"
     rows: list[Row] = []
@@ -1462,7 +1450,7 @@ def restart(test: Test) -> list[Row]:
                 return [("interrupted", FAIL, f"submitting the copy: HTTP {status}: {found}")]
             job_id = str(found["job_id"])
             control.restart(test.svc)
-            _, job, _ = test.call("GET", f"/jobs/{job_id}", test.token)
+            _, job, _ = test.call("GET", f"/jobs/{job_id}", test.api_token)
     except control.ControlError as e:
         return [("interrupted", FAIL, str(e))]
     why = settle(test)
@@ -1490,7 +1478,7 @@ def restart(test: Test) -> list[Row]:
 RUN: dict[str, Callable[[Test], Rows]] = {
     "ping": ping,
     "auth-none": lambda test: auth_with(test, None),
-    "auth-storage-token": lambda test: auth_with(test, test.storage),
+    "auth-storage-token": lambda test: auth_with(test, test.token),
     "auth-unknown-key": auth_unknown_key,
     "credentials": credentials_scenario,
     "copy": copy,
@@ -1515,27 +1503,17 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
 
     The source object is put in place first.
     """
-    fed = session.fed
-    stores.require_dirs(fed.origins, ["protected-a"], "data/xfer")
-    tokens = session.setup_tokens()
+    stores.require_dirs(session.fed.origins, [NAMESPACE], "data/transfer-api")
     test = Test(session)
     confined_to = "the exports" if test.confined else "nothing"
     print(
-        f"Transfer API at {test.url} ({test.svc}, confined to {confined_to}),"
-        + f" objects under /protected-a/{test.base}/\n"
+        f"Transfer API at {test.web_url} ({test.svc}, confined to {confined_to}),"
+        + f" objects under /{test.namespace}/{test.base}/\n"
     )
     try:
-        errors = stores.make_dirs(fed.origins, "protected-a", test.base, test.setup)
-        errors += stores.seed_everywhere(
-            fed.origins,
-            "protected-a",
-            test.rel("src"),
-            test.data,
-            test.setup,
-            fed.exports["protected-a"],
-        )
-        if errors:
-            die(f"could not put the source object in place: {first(errors)}")
+        why = test.put({test.rel("src"): test.data})
+        if why:
+            die(f"could not put the source object in place: {why}")
         plain = [n for n in selected if n not in CONFIGURED and n != RESTARTS]
         for name in plain:
             record(results, name, guarded(RUN[name], test))
@@ -1543,7 +1521,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             record(results, "oauth-clients", guarded(oauth_clients_disabled, test))
         configured_names = [n for n in selected if n in CONFIGURED]
         if configured_names:
-            why = unconfigurable(test)
+            why = control.unrestartable(test.fed)
             if why:
                 for name in configured_names:
                     results.add(f"{name} configured", SKIP, why)
@@ -1555,9 +1533,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             record(results, "ssrf-and-prefixes", guarded(plain_secrets, test))
     finally:
         finish(test)
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/xfer", tokens)
-        if errors:
-            common.warn(f"could not remove the run's objects: {first(errors)}")
+        test.clean("after the run")
 
 
 def guarded(check: Callable[[Test], Rows], test: Test) -> Rows:
@@ -1581,7 +1557,7 @@ def finish(test: Test) -> None:
     for credential, owner in test.credential_ids:
         test.call("DELETE", f"/credentials/{credential}", owner)
     for client_id in test.oauth_client_ids:
-        test.call("DELETE", f"{OAUTH_CLIENTS}/{client_id}", test.token)
+        test.call("DELETE", f"{OAUTH_CLIENTS}/{client_id}", test.api_token)
     for site, namespace, token, made in test.issuer_clients:
         failed = issuer.delete_client(site, namespace, token, made.client_id)
         if failed:

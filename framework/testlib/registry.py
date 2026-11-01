@@ -1,8 +1,8 @@
 """The registry's own APIs, and looking for private key material in a JWKS.
 
-The APIs are those of registry/registry.go and registry_ui.go in Pelican:
-registering a prefix as a server or `pelican namespace register` does,
-with keys of a run's own, and reading the keys it holds.
+The APIs are those of registry/registry.go and registry_ui.go in
+Pelican: registering a prefix as a server or `pelican namespace
+register` does, with keys of a run's own, and reading the keys it holds.
 
 A registration (POST /api/v1.0/registry) is a key-sign challenge in two
 requests (keySignChallenge). The client sends a nonce and its JWKS; the
@@ -17,20 +17,16 @@ server's ownership of its name forbids it.
 
 import json
 import os
-import subprocess
-import time
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from . import common, jwt, web
+from . import accounts, common, jwt, web
 
 REGISTRY = "/api/v1.0/registry"
 REGISTRATIONS = "/api/v1.0/registry_ui/namespaces"
 SERVERS = "/api/v1.0/registry_ui/servers"
 CHECK_STATUS = "/api/v1.0/registry/namespaces/check/status"
-
-JSON = {"Content-Type": "application/json"}
 
 # The members of a JWK that hold private key material: an EC key's d, and
 # an RSA key's d, p, q, dp, dq, and qi (RFC 7518, section 6).
@@ -44,24 +40,16 @@ DOWNTIME_MODIFY = "pelican.downtime_modify"
 DOWNTIME_DELETE = "pelican.downtime_delete"
 
 
-def _openssl(args: Sequence[str], data: bytes = b"") -> bytes:
-    """Return what `openssl <args>` writes, given data; it must succeed."""
-    done = subprocess.run(["openssl", *args], input=data, capture_output=True, check=False)
-    if done.returncode != 0:
-        common.die(f"openssl {args[0]} failed: {done.stderr.decode(errors='replace').strip()}")
-    return done.stdout
-
-
 def new_key(path: str) -> str:
     """Make an EC P-256 private key at path, unless one is there.
 
-    The key is PKCS #8 PEM, which Pelican reads, as it does its own keys.
+    The key is PKCS #8 PEM, which Pelican reads, as it does its own.
 
     Returns:
         path.
     """
     if not os.path.exists(path):
-        _openssl(["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", path])
+        jwt.openssl(["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", path])
         os.chmod(path, 0o600)
     return path
 
@@ -73,15 +61,16 @@ def write_public_key(key: str, path: str) -> str:
         path.
     """
     with open(path, "wb") as f:
-        f.write(_openssl(["pkey", "-in", key, "-pubout"]))
+        f.write(jwt.openssl(["pkey", "-in", key, "-pubout"]))
     return path
 
 
 def public_jwk(key: str) -> dict[str, str]:
     """Return PEM private key file key's public key, as a JWK.
 
-    The JWK is as Pelican publishes one of its own: with its thumbprint as
-    its kid, its algorithm, and its use (registry_client.NamespaceRegister).
+    The JWK is as Pelican publishes one of its own: with its thumbprint
+    as its kid, its algorithm, and its use
+    (registry_client.NamespaceRegister).
     """
     found = jwt.public_jwk(key)
     return {**found, "kid": jwt.thumbprint(found), "alg": jwt.algorithm(key), "use": "sig"}
@@ -102,7 +91,7 @@ def sign_payload(key: str, payload: bytes) -> str:
 
     The signature is as utils.SignPayload makes it (ASN.1 DER), in hex.
     """
-    return _openssl(["dgst", "-sha256", "-sign", key], payload).hex()
+    return jwt.openssl(["dgst", "-sha256", "-sign", key], payload).hex()
 
 
 def register(
@@ -134,9 +123,9 @@ def register(
         "POST",
         url,
         upload=json.dumps({"client_nonce": client_nonce, "pubkey": keyset}).encode(),
-        headers=JSON,
+        headers=accounts.JSON,
     )
-    challenge = common.as_object(first.json()) or {}
+    challenge = first.object()
     server_nonce = str(challenge.get("server_nonce", ""))
     if first.status != 200 or not server_nonce:
         return first
@@ -155,7 +144,7 @@ def register(
         "identity_required": "false",
         "server_id": server_id,
     }
-    return web.request("POST", url, upload=json.dumps(body).encode(), headers=JSON)
+    return web.request("POST", url, upload=json.dumps(body).encode(), headers=accounts.JSON)
 
 
 def token(
@@ -180,20 +169,8 @@ def token(
             if the document holds key's public key, and otherwise by its
             thumbprint (jwt.key_id()).
     """
-    now = int(time.time())
-    claims = {
-        "aud": audience,
-        "exp": now + lifetime,
-        "iat": now,
-        "iss": issuer,
-        "jti": str(uuid.uuid4()),
-        "nbf": now,
-        "scope": scope,
-        "sub": subject,
-        "wlcg.ver": "1.0",
-    }
-    head = jwt.header(jwt.algorithm(key), jwt.key_id(key, jwks_doc))
-    return jwt.encode(head, claims, key)
+    claims = jwt.wlcg_claims(scope, issuer, audience, subject, lifetime)
+    return jwt.sign(claims, key, jwt.key_id(key, jwks_doc))
 
 
 def parse(body: bytes) -> Any:
@@ -208,7 +185,8 @@ def documents(body: bytes) -> int:
     """Return how many JSON documents body holds, one after another.
 
     That is 0 if body doesn't start with one. A handler that writes an
-    error, and then goes on to write another answer, sends more than one.
+    error, and then goes on to write another answer, sends more than
+    one.
     """
     decoder = json.JSONDecoder()
     text = body.decode(errors="replace").strip()
@@ -263,8 +241,7 @@ _THUMBPRINT_MEMBERS = {"EC": ("crv", "kty", "x", "y"), "RSA": ("e", "kty", "n")}
 def thumbprints(document: Any) -> frozenset[str] | None:
     """Return the RFC 7638 thumbprint of each public key in a JWKS.
 
-    Each is computed from the key's members rather than taken from its
-    kid.
+    Each is computed from the key's members, not taken from its kid.
 
     Args:
         document: The JWKS, as as_jwks() takes it.
@@ -291,7 +268,7 @@ def key_thumbprints(keys: Sequence[str]) -> frozenset[str]:
 def dir_keys(key_dir: str) -> list[str]:
     """Return the .pem files in key_dir (under framework/var).
 
-    They are a server's keys, all of which it publishes.
+    They are a server's keys, every one of which it publishes.
     """
     try:
         names = sorted(n for n in os.listdir(key_dir) if n.endswith(".pem"))

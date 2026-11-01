@@ -1,18 +1,18 @@
 # shellcheck shell=sh
 # shellcheck disable=SC2034  # read by fed.sh and Compose
 #
-# Mix the kinds of cache, as a federation does while its caches move
-# from XRootD to Pelican's own: cache-1 runs XRootD, beside cache-0 (and
-# cache-2, if any), which stay V2. So it chooses the caches' kind, as
-# `cache-v2` and `cache-xrootd` do, and fed.sh refuses it beside either.
-# A client that fails over from one cache to another partway through a
-# download then crosses kinds, whose ETags must agree (the client suite's
-# `failover`), and the directors route to both.
+# Mix the kinds of cache, as a federation does while its caches move from
+# XRootD to Pelican's own: cache-1 runs XRootD, beside cache-0 (and
+# cache-2, if any), which stay V2. A client that fails over from one
+# cache to another partway through a download then crosses kinds, whose
+# ETags must agree (the client suite's `failover`), and the directors
+# route to both. This chooses the caches' kind, as `cache-v2` and
+# `cache-xrootd` do, so fed.sh refuses it beside either.
 #
-# Needs `topo-multi-cache`, for cache-1. Refuses `cache-tiered` and
-# `cache-memory`, whose settings reach every cache, and which the XRootD
-# cache does not read, and `origin-firewalled`, whose origin only an
-# XRootD cache can reach. `cache-small` bounds each cache its own way.
+# Needs `topo-multi-cache`, for cache-1. fed.sh refuses `cache-tiered`
+# and `cache-memory`, whose settings reach every cache but which the
+# XRootD cache does not read, and `origin-firewalled`, whose origin only
+# an XRootD cache can reach. `cache-small` bounds each cache its own way.
 
 CACHE_VARIANT=v2
 CACHE_1_VARIANT=xrootd

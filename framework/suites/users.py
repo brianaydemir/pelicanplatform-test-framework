@@ -1,43 +1,17 @@
 """Which Unix user the origins act as.
 
-Under `-p origin-multiuser` or `-p server-unprivileged`: requests straight
-to each POSIX origin (posixv2, or XRootD's posix), and the owners of the
-files they leave in the store.
+See docs/tests/unix-users.md.
 
-  owner             with the tests' token: the `pelican` user (uid
-                    10941). Under multiuser, fed.sh maps the tests'
-                    subject to it; with privileges dropped, every server
-                    runs as it.
-  default-user      under multiuser, with a token for another subject:
-                    the `xrootd` user (uid 10940),
-                    Origin.ScitokensDefaultUser
-  primary-group     with the tests' token, which names no group: the
-                    pelican group (gid 10941)
-  public-tokenless  under multiuser, a GET and a Depth 1 PROPFIND of
-                    /public with no token are served, as `nobody`
-  bypass            under multiuser, the xrootd user learns nothing of
-                    the pelican user's file in a 0700 directory: no HTML
-                    listing names it, and no 304, ETag, or Digest shows
-                    it is there; nor of POSC's staging files
-  posc-multiuser    under POSC and multiuser, each user's upload is its
-                    own, as is its 0700 staging directory, whichever
-                    user uploads first; and no upload lands in a
-                    directory its user can't write
-  min-id            under multiuser, tokens that the mapfile maps to
-                    `root` and `daemon`, below Origin.MultiuserMinID, are
-                    refused, and write nothing
-  mapfile           under multiuser, the mapfile's `path` and `group`
-                    rules; a mapfile edited while the origins run; and,
-                    with the origins restarted with a username claim and
-                    no default user, a token whose claim names a user,
-                    and one whose subject matches no rule
+The suite runs under `-p origin-multiuser` or `-p server-unprivileged`,
+with requests straight to each POSIX origin (posixv2, or XRootD's
+posix), and judges the owners of the files they leave in the store.
 
 fed.sh's mapfile (framework/var/generated/multiuser-mapfile.json) has
 the rules that min-id and mapfile use, each for a subject or group that
 only this suite's tokens carry. mapfile's `edited` row adds a rule to
 it, for a subject of the run's, and restores it afterward. Its
 `username-claim` and `unmatched` rows restart every origin, as the last
-of its configuration layers (control.restart_with()), with
+of its configuration layers (control.restart_all_with()), with
 Origin.ScitokensUsernameClaim set and Origin.ScitokensDefaultUser
 unset, and restore them afterward. They need a control helper, and a
 topology other than `tiny`, whose origin is the whole federation's
@@ -47,8 +21,8 @@ The stores are bind mounts, and whether one shows a file's owner
 depends on the host. The suite first gives a file of its own to the
 `pelican` user; if the store does not show that, the rows that depend
 on owners are inconclusive. Objects go under
-/protected-a/data/users/<run>/, and mapfile's `path` row's under
-/protected-a/data/users/mapped/; public-tokenless's object under
+/protected-a/data/users/<run>/ (Test.base), and mapfile's `path` row's
+under /protected-a/data/users/mapped/; public-tokenless's object under
 /public/data/users/<run>/.
 
 The tokens that the scenarios present are of the session's profile, but
@@ -63,16 +37,15 @@ import json
 import os
 import stat
 import time
-from collections.abc import Callable, Generator, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
 from functools import partial
 from typing import Any
-from urllib.parse import quote
 
-from testlib import common, control, credentials, director, jwt, stores, web, webdav
+from testlib import common, control, credentials, jwt, stores, suite, web, webdav
 from testlib.common import Findings, die, first, outcome, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
+from testlib.suite import Row
 
 SCENARIOS = {
     "owner": "an upload with the tests' token is the pelican user's (uid 10941)",
@@ -84,8 +57,6 @@ SCENARIOS = {
     "min-id": "under multiuser, tokens mapped to root and daemon are refused",
     "mapfile": "under multiuser, the mapfile's rules, a username claim, and a mapfile edited",
 }
-
-Row = tuple[str, str]
 
 NAMESPACE = "protected-a"
 # The scenarios that present no token (see suites/__init__.py).
@@ -151,10 +122,11 @@ EDIT_WAIT = 150
 EDIT_INTERVAL = 10
 
 # The restart's claim, which names the user; the subjects of its rows'
-# tokens, which match no rule; and its configuration.
+# tokens, which match no rule; and its configuration file and text.
 USERNAME_CLAIM = "users_unix_name"
 CLAIM_SUBJECT = "users-claim"
 UNMATCHED_SUBJECT = "users-unmatched"
+CONFIG_FILE = "90-users.yaml"
 RESTART_CONFIG = (
     "---\n"
     "# The users suite's (framework/suites/users.py), while it runs.\n"
@@ -164,10 +136,8 @@ RESTART_CONFIG = (
     '  ScitokensDefaultUser: ""\n'
 )
 # How long an origin restarted may take to serve its data, after its web
-# port answers; and the federation to serve /protected-a as before,
-# after the origins are restored.
+# port answers.
 DATA_WAIT = 60
-SETTLE_WAIT = 150
 
 # A small object at every origin, to show that the federation serves
 # again after the restart.
@@ -182,12 +152,16 @@ REFUSED = (403, 404)
 UNAUTHORIZED = (401, 403)
 
 
-def skip(fed: common.Federation) -> str | None:
-    """Return why there is nothing to test, or None if there is something.
+class SetupError(Exception):
+    """A scenario could not put in place what it checks."""
 
-    There is nothing if the origins neither switch users nor drop
-    privileges, are not POSIX, or take no writes in /protected-a.
-    """
+
+# The exceptions by which a check reports a problem (suite.attempt()).
+EXPECTED = (SetupError,)
+
+
+def skip(fed: common.Federation) -> str | None:
+    """Return why there is nothing to test, or None."""
     if not fed.multiuser and not fed.drop_privileges:
         return (
             "the origins neither switch users nor drop privileges"
@@ -310,35 +284,32 @@ def loosen(path: str) -> None:
             loosen(inner)
 
 
-@dataclass(frozen=True)
-class Test:
-    """What the scenarios need.
+class Test(suite.Test):
+    """The pass, the run's collection in /protected-a, and the stores.
 
     Attributes:
         origins: The origins, each store once.
-        base: The run's collection, as a path in /protected-a.
-        token: The tests' token for /protected-a, of the session's
-            profile.
         other_token: A token for /protected-a for another subject, of the
             session's profile.
-        setup: The tests' token for /protected-a, of the WLCG profile, for
-            seeing whether the federation serves.
         unshown: Why the stores do not show who owns a file; empty if they
             do.
     """
 
-    session: Session
-    fed: common.Federation
-    origins: list[common.Origin]
-    base: str
-    token: str
-    other_token: str
-    setup: str
-    unshown: list[str]
+    def __init__(self, session: Session):
+        super().__init__(session, "users", NAMESPACE)
+        self.origins = stores.unique(self.fed.origins)
+        self.other_token = credentials.mint_server(
+            self.fed,
+            session.path("tokens/users-other"),
+            NAMESPACE,
+            subject="someone-else",
+            profile=session.profile,
+        )
+        self.unshown: list[str] = []
 
-    def rel(self, origin: common.Origin, name: str) -> str:
-        """Return the path in /protected-a of origin's object named name."""
-        return f"{self.base}/{name}-{origin.svc}"
+    def origin_rel(self, origin: common.Origin, name: str) -> str:
+        """Return the rel of origin's object named name."""
+        return self.rel(f"{name}-{origin.svc}")
 
     def mint(self, subject: str, extra: Mapping[str, Any] | None = None) -> str:
         """Return a token like the tests' for /protected-a, but for subject.
@@ -368,7 +339,7 @@ def uploads_owned(test: Test, name: str, token: str, uid: int) -> Row:
     """
     if test.unshown:
         return INCONCLUSIVE, first(test.unshown)
-    found = [owned(o, test.rel(o, name), token, uid) for o in test.origins]
+    found = [owned(o, test.origin_rel(o, name), token, uid) for o in test.origins]
     failed = [note for status, note in found if status != PASS]
     return outcome(failed, ", ".join(note for _, note in found))
 
@@ -396,7 +367,7 @@ def primary_group(test: Test) -> dict[str, Row]:
         return {"primary-group": (INCONCLUSIVE, first(test.unshown))}
     found = Findings()
     for origin in test.origins:
-        rel = test.rel(origin, "primary-group")
+        rel = test.origin_rel(origin, "primary-group")
         url = stores.url(origin, NAMESPACE, rel)
         answer = web.request("PUT", url, token=test.token, upload=os.urandom(4096))
         if not answer.ok:
@@ -425,17 +396,14 @@ def public_tokenless(test: Test) -> dict[str, Row]:
     An XRootD origin is the control.
     """
     rows = ROWS["public-tokenless"]
-    why = test.multiuser()
-    if not why and "public" not in test.fed.exports:
-        why = "this shape does not export /public"
+    why = test.multiuser() or suite.unexported(test.fed, "public")
     if why:
         return {row: (SKIP, why) for row in rows}
     data = os.urandom(4096)
-    rel = f"{test.base}/public-tokenless"
-    for origin in test.origins:
-        error = stores.write_file(origin.store_of("public"), rel, data)
-        if error:
-            return {row: (FAIL, f"could not put the object in place: {error}") for row in rows}
+    rel = test.rel("public-tokenless")
+    error = stores.write_file_everywhere(test.origins, "public", rel, data)
+    if error:
+        return {row: (FAIL, f"could not put the object in place: {error}") for row in rows}
     got, listed = Findings(), Findings()
     for origin in test.origins:
         url = f"{origin.url}/public/{rel}"
@@ -511,11 +479,11 @@ def bypass(test: Test) -> dict[str, Row]:
         return {row: (INCONCLUSIVE, first(test.unshown)) for row in rows}
     if why:
         return {row: (SKIP, why) for row in rows}
-    name = f"secret-{test.session.run}"
+    name = f"secret-{test.run}"
     data = os.urandom(4096)
     found = {row: Findings() for row in rows}
     for origin in test.origins:
-        directory = test.rel(origin, "bypass")
+        directory = test.origin_rel(origin, "bypass")
         store = origin.store_of(NAMESPACE)
         try:
             os.mkdir(f"{store}/{directory}")
@@ -574,13 +542,13 @@ def staging_hidden(test: Test) -> Row:
     """
     if not test.fed.posc:
         return SKIP, "only under POSC ('-p origin-posc')"
-    name = f"in_progress.users-{test.session.run}"
+    name = f"in_progress.users-{test.run}"
     found = Findings()
     for origin in test.origins:
         store = origin.store_of(NAMESPACE)
         staging = f"{store}/.pelican-posc/pelican"
         if not os.path.isdir(staging):
-            url = stores.url(origin, NAMESPACE, test.rel(origin, "staging-seed"))
+            url = stores.url(origin, NAMESPACE, test.origin_rel(origin, "staging-seed"))
             answer = web.request("PUT", url, token=test.token, upload=os.urandom(4096))
             if not os.path.isdir(staging):
                 parent = described(f"{store}/.pelican-posc")
@@ -649,7 +617,7 @@ def staged(test: Test, name: str, token: str, user: str, uid: int) -> Row:
     found = Findings()
     for origin in test.origins:
         store = origin.store_of(NAMESPACE)
-        status, note = owned(origin, test.rel(origin, name), token, uid)
+        status, note = owned(origin, test.origin_rel(origin, name), token, uid)
         if status != PASS:
             found.problems.append(f"{note}; {described(f'{store}/.pelican-posc')}")
             continue
@@ -675,7 +643,7 @@ def read_only_dir(test: Test) -> Row:
     found = Findings()
     for origin in test.origins:
         store = origin.store_of(NAMESPACE)
-        directory = test.rel(origin, "posc-read-only")
+        directory = test.origin_rel(origin, "posc-read-only")
         try:
             os.mkdir(f"{store}/{directory}")
         except OSError as e:
@@ -712,7 +680,7 @@ def min_id(test: Test) -> dict[str, Row]:
         found = Findings()
         for origin in test.origins:
             store = origin.store_of(NAMESPACE)
-            rel = test.rel(origin, f"min-id-{user}")
+            rel = test.origin_rel(origin, f"min-id-{user}")
             url = stores.url(origin, NAMESPACE, rel)
             answer = web.request("PUT", url, token=token, upload=os.urandom(4096))
             if answer.status != 403:
@@ -761,7 +729,7 @@ def mapfile(test: Test) -> dict[str, Row]:
         "mapfile edited": partial(edited, test),
     }
     result: dict[str, Row] = {
-        row: (INCONCLUSIVE, first(test.unshown)) if test.unshown else attempt(check)
+        row: (INCONCLUSIVE, first(test.unshown)) if test.unshown else suite.attempt(check, EXPECTED)
         for row, check in checks.items()
     }
     result.update(restarted_rows(test))
@@ -773,11 +741,11 @@ def mapped_path(test: Test) -> Row:
     token = test.mint(PATH_SUBJECT)
     found = Findings()
     for origin in test.origins:
-        rel = f"{MAPPED_DIR}/{test.session.run}-{origin.svc}"
+        rel = f"{MAPPED_DIR}/{test.run}-{origin.svc}"
         status, note = owned(origin, rel, token, PELICAN_UID)
         if status != PASS:
             found.problems.append(f"under /protected-a/{MAPPED_DIR}/, {note}")
-        problem = unmapped(origin, test.rel(origin, "path-elsewhere"), token)
+        problem = unmapped(origin, test.origin_rel(origin, "path-elsewhere"), token)
         if problem:
             found.problems.append(f"elsewhere, {problem}")
     return found.row("the pelican user's under the path, and not elsewhere")
@@ -800,7 +768,7 @@ def edited(test: Test) -> Row:
     The mapfile is rewritten in place, and restored afterward, even on
     failure.
     """
-    subject = f"users-edited-{test.session.run}"
+    subject = f"users-edited-{test.run}"
     try:
         with open(MAPFILE, encoding="utf-8") as f:
             original = f.read()
@@ -812,7 +780,7 @@ def edited(test: Test) -> Row:
     token = test.mint(subject)
     failed = [
         problem
-        for problem in (unmapped(o, test.rel(o, "edited-before"), token) for o in test.origins)
+        for problem in (unmapped(o, test.origin_rel(o, "edited-before"), token) for o in test.origins)
         if problem
     ]
     if failed:
@@ -830,7 +798,7 @@ def edited(test: Test) -> Row:
             token = test.mint(subject)
             still: list[common.Origin] = []
             for origin in pending:
-                rel = test.rel(origin, f"edited-{attempt_no}")
+                rel = test.origin_rel(origin, f"edited-{attempt_no}")
                 status, note = owned(origin, rel, token, PELICAN_UID)
                 if status != PASS:
                     still.append(origin)
@@ -847,63 +815,15 @@ def edited(test: Test) -> Row:
     return PASS, f"the pelican user's within {time.time() - start:.0f}s of the edit"
 
 
-def unrestartable(test: Test) -> str | None:
-    """Return why the origins cannot be restarted, or None if they can.
-
-    The restart would be with a username claim and no default user.
-    """
-    if test.fed.tiny:
-        return "the tiny topology's origin is the whole federation's process"
-    return control.unavailable()
-
-
-@contextlib.contextmanager
-def restarted(test: Test) -> Generator[None, None, None]:
-    """Restart every origin with RESTART_CONFIG, and afterward, as it was.
-
-    Raises:
-        control.ControlError: Restarting, or restoring, failed.
-    """
-    with contextlib.ExitStack() as stack:
-        for origin in test.fed.origins:
-            stack.enter_context(control.restart_with(origin.svc, {"90-users.yaml": RESTART_CONFIG}))
-        yield
-
-
 def serving_data(test: Test, token: str) -> str | None:
-    """Return why an origin does not yet answer the probe; None if all do.
+    """Return why an origin does not answer the probe; None if all do.
 
-    A HEAD of the probe may get any answer but a 5xx.
+    A HEAD of the probe, with token, may get any answer but a 5xx.
     """
     for origin in test.fed.origins:
-        answer = web.request("HEAD", stores.url(origin, NAMESPACE, f"{test.base}/{PROBE}"), token)
+        answer = web.request("HEAD", stores.url(origin, NAMESPACE, test.rel(PROBE)), token)
         if answer.status is None or answer.status >= 500:
             return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
-    return None
-
-
-def serving(test: Test) -> str | None:
-    """Return why /protected-a is not served as before, or None if it is.
-
-    Every origin must answer a HEAD of the probe, every director name every
-    origin for it, and every federated cache answer a HEAD of it, with the
-    setup token.
-    """
-    rel = f"{test.base}/{PROBE}"
-    for origin in test.fed.origins:
-        answer = web.request("HEAD", stores.url(origin, NAMESPACE, rel), token=test.setup)
-        if answer.status != 200:
-            return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
-    path = f"/{NAMESPACE}/{rel}"
-    for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.setup)
-        for origin in test.fed.origins:
-            if not where.names(director.host(origin.url)):
-                return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
-    for cache in test.fed.federated_caches:
-        answer = web.request("HEAD", f"{cache.url}/{NAMESPACE}/{quote(rel)}", token=test.setup)
-        if answer.status != 200:
-            return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
     return None
 
 
@@ -913,21 +833,18 @@ def restarted_rows(test: Test) -> dict[str, Row]:
     The origins are restarted for them (see mapfile()), and afterward
     restored.
     """
-    why = unrestartable(test)
+    why = control.unrestartable(test.fed)
     if why:
         why = f"needs the origins restarted with a username claim and no default user, but {why}"
         return {row: (SKIP, why) for row in RESTARTED}
-    for origin in test.origins:
-        error = stores.write_file(
-            origin.store_of(NAMESPACE), f"{test.base}/{PROBE}", os.urandom(PROBE_SIZE)
-        )
-        if error:
-            return {row: (FAIL, f"could not put the probe in place: {error}") for row in RESTARTED}
+    error = stores.write_file_everywhere(test.origins, NAMESPACE, test.rel(PROBE), os.urandom(PROBE_SIZE))
+    if error:
+        return {row: (FAIL, f"could not put the probe in place: {error}") for row in RESTARTED}
     claim_token = test.mint(CLAIM_SUBJECT, {USERNAME_CLAIM: "pelican"})
     result: dict[str, Row] = {}
     print("\nRestarting the origins with a username claim and no default user")
     try:
-        with restarted(test):
+        with control.restart_all_with({o.svc: {CONFIG_FILE: RESTART_CONFIG} for o in test.fed.origins}):
             why = control.settle(partial(serving_data, test, claim_token), DATA_WAIT)
             if why:
                 why = f"with the origins restarted, {why}"
@@ -936,15 +853,15 @@ def restarted_rows(test: Test) -> dict[str, Row]:
                 result["mapfile username-claim"] = (
                     (INCONCLUSIVE, first(test.unshown))
                     if test.unshown
-                    else attempt(partial(claimed, test, claim_token))
+                    else suite.attempt(partial(claimed, test, claim_token), EXPECTED)
                 )
-                result["mapfile unmatched"] = attempt(partial(unmatched, test))
+                result["mapfile unmatched"] = suite.attempt(partial(unmatched, test), EXPECTED)
     except control.ControlError as e:
         # Restarting, or restoring, failed: what is left unrun fails.
         for row in RESTARTED:
             result.setdefault(row, (FAIL, f"restarting the origins: {e}"))
         warn(f"restarting the origins with a username claim: {e}")
-    why = control.settle(partial(serving, test), SETTLE_WAIT)
+    why = test.settle(test.rel(PROBE))
     if why:
         warn(f"with the origins restored, {why}")
     return result
@@ -970,7 +887,7 @@ def unmatched(test: Test) -> Row:
     token = test.mint(UNMATCHED_SUBJECT)
     found = Findings()
     for origin in test.origins:
-        rel = test.rel(origin, "unmatched")
+        rel = test.origin_rel(origin, "unmatched")
         url = stores.url(origin, NAMESPACE, rel)
         answer = web.request("PUT", url, token=token, upload=os.urandom(4096))
         if answer.status not in UNAUTHORIZED:
@@ -979,23 +896,6 @@ def unmatched(test: Test) -> Row:
         if os.path.exists(path):
             found.problems.append(f"{origin.svc}: {described(path)}")
     return found.row("refused, with nothing written")
-
-
-class SetupError(Exception):
-    """A scenario's failure to put in place what it needs."""
-
-
-def attempt(check: Callable[[], Row]) -> Row:
-    """Return check's row, or a FAIL if it could not set up, or raised."""
-    return common.guarded(check, lambda note: (FAIL, note), (SetupError,))
-
-
-def attempt_all(rows: tuple[str, ...], check: Callable[[], dict[str, Row]]) -> dict[str, Row]:
-    """Return check's rows.
-
-    If it could not set up, or raised, each of rows is a FAIL.
-    """
-    return common.guarded(check, lambda note: {row: (FAIL, note) for row in rows}, (SetupError,))
 
 
 # Each scenario takes the Test, and returns its rows (ROWS), by name, each
@@ -1017,44 +917,37 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
 
     Empty it before and after.
     """
-    fed = session.fed
-    origins = stores.unique(fed.origins)
-    base = f"data/users/{session.run}"
-    namespaces = [ns for ns in (NAMESPACE, "public") if ns in fed.exports]
+    test = Test(session)
+    namespaces = [ns for ns in (NAMESPACE, "public") if ns in test.fed.exports]
 
     def clean() -> None:
         # The origins' files are theirs, and on a Linux host beyond
         # init-data.py's reach; so are the private directories the suite
         # made, until it loosens them.
-        for origin in origins:
+        for origin in test.origins:
             for namespace in namespaces:
                 directory = f"{origin.store_of(namespace)}/data/users"
                 loosen(directory)
                 common.empty_dir(directory)
             staging = f"{origin.store_of(NAMESPACE)}/.pelican-posc/pelican"
             with contextlib.suppress(OSError):
-                os.remove(f"{staging}/in_progress.users-{session.run}")
+                os.remove(f"{staging}/in_progress.users-{test.run}")
 
-    stores.require_dirs(origins, namespaces, "data/users")
+    stores.require_dirs(test.origins, namespaces, "data/users")
     clean()
-    token = session.token(NAMESPACE)
-    setup = session.setup_token(NAMESPACE)
-    other = session.path("tokens/users-other")
-    other_token = credentials.mint_server(
-        fed, other, NAMESPACE, subject="someone-else", profile=session.profile
-    )
     try:
-        for directory in (base, MAPPED_DIR):
-            errors = stores.make_dirs(origins, NAMESPACE, directory, setup)
+        for directory in (test.base, MAPPED_DIR):
+            errors = stores.make_dirs(test.origins, NAMESPACE, directory, test.setup)
             if errors:
                 die(f"could not make the test collection: {errors[0]}")
-        unshown = [why for why in (shows_owners(o.store_of(NAMESPACE), base) for o in origins) if why]
-        test = Test(session, fed, origins, base, token, other_token, setup, unshown)
+        test.unshown = [
+            why for why in (shows_owners(o.store_of(NAMESPACE), test.base) for o in test.origins) if why
+        ]
         for name in selected:
             rows = ROWS[name]
             if len(rows) > 1:
                 print(f"  {name} ...")
-            found = attempt_all(rows, partial(RUN[name], test))
+            found = suite.attempt_all(rows, partial(RUN[name], test), EXPECTED)
             for row in rows:
                 results.add(row, *found[row])
     finally:

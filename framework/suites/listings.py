@@ -5,35 +5,6 @@ namespace, over a small tree. It also checks who may list /protected-a,
 a GET of a collection, which is no object, and the links of an origin's
 HTML listing, which a browser follows.
 
-  origin-depth-0        each origin: Depth 0 of an object and of a
-                        collection; the object's getlastmodified is when
-                        its file was written
-  origin-depth-1        each origin lists a collection's members
-  origin-infinity       each origin lists the whole tree, or refuses
-                        (403)
-  director              each director redirects a PROPFIND to an origin,
-                        which lists or refuses
-  cache-depth-0         each cache: Depth 0 of an object it lacks, then
-                        of one it holds
-  cache-depth-1         each cache lists a collection as the origins do
-  cache-infinity        each cache: Depth infinity, refused only if an
-                        origin refuses it
-  cache-body            each cache relays Depth 1 with the propfind body
-                        that the client sends
-  protected-a-no-token  every origin and cache refuses to list
-                        /protected-a with no token
-  protected-a-scope     the same, with a token scoped elsewhere
-  public-no-token       every origin and cache lists /public with no
-                        token
-  new-object            an object is listed at once, and not once
-                        removed
-  collection-get        a GET of a collection brings no object's bytes,
-                        and no cache keeps its answer as an object
-  html-links            each link of an origin's HTML listing leads to
-                        its entry, among names that a URL must encode
-  plain-object-listing  Depth 1 of an object lists it alone, at each
-                        origin and cache, and by `pelican object ls`
-
 Objects go under /<namespace>/data/listings/<run>/, put straight in
 every origin's store (stores.seed(); a pstore origin's /public reads
 /protected-a's storage). Each namespace's tree also holds an object of
@@ -50,6 +21,8 @@ refused, with 401, 403, or 405.
 
 Every PROPFIND and GET presents a token of the session's profile. The
 objects are put in place, and the stores read, with WLCG tokens.
+
+See docs/tests/listings.md.
 """
 
 import json
@@ -62,11 +35,11 @@ from html.parser import HTMLParser
 from typing import override
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
-from testlib import common, credentials, stores, web, webdav
-from testlib.common import die, first, outcome, warn
+from testlib import common, credentials, stores, suite, web, webdav
+from testlib.common import die, first, outcome
 from testlib.names import NAMES
 from testlib.report import FAIL, PASS, SKIP
-from testlib.session import Session
+from testlib.session import Session, last_line
 
 SCENARIOS = {
     "origin-depth-0": "each origin: Depth 0 of an object, and of a collection",
@@ -130,35 +103,28 @@ def may_list(caps: AbstractSet[str], depth: str, role: str) -> bool:
     return "Listings" in caps
 
 
-class Test:
-    """The tree's place, the tokens, and the stores and servers to ask.
+class Test(suite.Test):
+    """The tree in each namespace, and the stores and servers to ask.
+
+    The base's tokens are /protected-a's.
 
     Attributes:
         origins: The origins, each store once.
         caches: The federated caches.
-        base: The run's collection, in each namespace.
-        token_files: Each namespace's `server` token's file, by namespace,
-            of the session's profile.
+        namespaces: The exported namespaces.
         tokens: Each namespace's `server` token, by namespace, of the
             session's profile.
-        setup: Each namespace's `server` token, by namespace, of the WLCG
-            profile, for putting objects in place and reading the stores.
         elsewhere: A token like `server`'s for /protected-a, but to read
             <base>/elsewhere alone.
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.origins = stores.unique(session.fed.origins)
+        super().__init__(session, "listings")
+        self.origins = stores.unique(self.fed.origins)
         # Site-local caches answer listings their own way.
-        self.caches = session.fed.federated_caches
-        self.run = session.run
-        self.base = f"data/listings/{self.run}"
+        self.caches = self.fed.federated_caches
         self.namespaces = session.namespaces
-        self.token_files = {ns: session.token_file(ns) for ns in self.namespaces}
         self.tokens = {ns: session.token(ns) for ns in self.namespaces}
-        self.setup = session.setup_tokens()
         self.elsewhere = credentials.mint_server(
             self.fed,
             session.path("listings-elsewhere.token"),
@@ -168,13 +134,9 @@ class Test:
             profile=session.profile,
         )
 
-    def path(self, namespace: str, rel: str = "tree") -> str:
+    def path_in(self, namespace: str, rel: str = "tree") -> str:
         """Return the path of rel, in the run's collection, in namespace."""
-        return f"/{namespace}/{self.base}/{rel}"
-
-    def caps(self, namespace: str) -> AbstractSet[str]:
-        """Return namespace's capabilities."""
-        return self.fed.exports[namespace]
+        return f"/{namespace}/{self.rel(rel)}"
 
     def own(self, namespace: str) -> str:
         """Return the object that only namespace's tree holds.
@@ -195,7 +157,10 @@ class Test:
     def refusal(self, url: str, depth: str, token: str | None) -> str | None:
         """Return what is wrong with how url answers a PROPFIND at depth.
 
-        url should refuse it. Return None if it does.
+        url should refuse it.
+
+        Returns:
+            What is wrong, or None if it refuses.
         """
         answer = webdav.propfind(url, depth, token)
         if answer.status == 207:
@@ -213,8 +178,9 @@ class Test:
         errors: list[str] = []
         for origin in self.origins:
             for ns in stores.storage_namespaces(origin, self.fed.exports):
+                setup = self.session.setup_token(ns)
                 for rel in ("tree/sub/deeper", "probe"):
-                    errors += stores.make_dirs([origin], ns, f"{self.base}/{rel}", self.setup[ns])
+                    errors += stores.make_dirs([origin], ns, self.rel(rel), setup)
                 if errors:
                     return errors
                 objects = {f"tree/{p}": size for p, size in TREE.items()}
@@ -222,12 +188,7 @@ class Test:
                 objects.update({f"probe/{c.svc}": PROBE for c in self.caches})
                 for rel, size in objects.items():
                     error = stores.seed(
-                        origin,
-                        ns,
-                        f"{self.base}/{rel}",
-                        os.urandom(size),
-                        self.setup[ns],
-                        self.caps(ns),
+                        origin, ns, self.rel(rel), os.urandom(size), setup, self.fed.exports[ns]
                     )
                     if error:
                         return [error]
@@ -279,29 +240,22 @@ class Test:
             it failed.
         """
         code, out, err = self.session.pelican_cmd(
-            "object",
-            "ls",
-            "-l",
-            "--json",
-            "-t",
-            self.token_files["protected-a"],
-            f"{self.fed.url}/protected-a/{self.base}/{rel}",
+            "object", "ls", "-l", "--json", "-t", self.token_file, self.pelican_url(self.rel(rel))
         )
         if code != 0:
-            lines = err.strip().splitlines()
-            return None, f"exit {code}: {lines[-1] if lines else ''}"
+            return None, f"exit {code}: {last_line(err)}"
+        # The listing is the last line that reads as one.
         for line in reversed(out.strip().splitlines()):
             try:
-                entries = json.loads(line)
                 return {
                     e["Name"]
                     .rstrip("/")
                     .rsplit("/", 1)[-1]: (bool(e.get("IsCollection")), e.get("Size") or 0)
-                    for e in entries
+                    for e in json.loads(line)
                 }, ""
             except (ValueError, KeyError, TypeError, AttributeError):
                 continue
-        return None, "no JSON in the output"
+        return None, f"no listing in the output: {last_line(out)}"
 
 
 def origin_url(origin: common.Origin, path: str) -> str:
@@ -318,13 +272,15 @@ def modified_problem(test: Test, origin: common.Origin, ns: str, entry: webdav.E
 
     The file is the object's in origin's store: on disk, its modification
     time; in a pstore origin's catalog, its entry's (stores.written_at()).
-    Return "" if the time is right. The origins and the tests keep
-    different time zones (TZ_STORAGE), so a time rendered in the wrong one
-    shows.
+    The origins and the tests keep different time zones (TZ_STORAGE), so a
+    time rendered in the wrong one shows.
+
+    Returns:
+        Why, or "" if the time is right.
     """
     if entry.modified is None:
         return "no getlastmodified"
-    written, why = stores.written_at(test.session, origin, ns, f"{test.base}/tree/b")
+    written, why = stores.written_at(test.session, origin, ns, test.rel("tree/b"))
     if written is None:
         return why
     off = entry.modified.timestamp() - written
@@ -342,10 +298,10 @@ def origin_depth_0(test: Test) -> tuple[str, str]:
     problems: list[str] = []
     for origin in test.origins:
         for ns in test.namespaces:
-            path = test.path(ns)
+            path = test.path_in(ns)
             for rel, want in (("b", 5000), ("", None)):
                 target = f"{path}/{rel}" if rel else f"{path}/"
-                if not may_list(test.caps(ns), "0", "origin"):
+                if not may_list(test.fed.exports[ns], "0", "origin"):
                     why = test.refusal(origin_url(origin, target), "0", test.tokens[ns])
                     if why:
                         problems.append(f"{origin.svc} {target}: {why}")
@@ -376,9 +332,9 @@ def origin_depth_1(test: Test) -> tuple[str, str]:
     problems: list[str] = []
     for origin in test.origins:
         for ns in test.namespaces:
-            path = test.path(ns)
+            path = test.path_in(ns)
             url = origin_url(origin, f"{path}/")
-            if may_list(test.caps(ns), "1", "origin"):
+            if may_list(test.fed.exports[ns], "1", "origin"):
                 why = test.compare(url, "1", path, test.children(ns), test.tokens[ns])
             else:
                 why = test.refusal(url, "1", test.tokens[ns])
@@ -402,7 +358,7 @@ def infinity(
     Returns:
         What is wrong, or None; and a note.
     """
-    answer, got, why = test.listing(url, "infinity", test.path(namespace), token)
+    answer, got, why = test.listing(url, "infinity", test.path_in(namespace), token)
     if answer.status == 403:
         if refusable:
             return None, "refused (403)"
@@ -424,9 +380,9 @@ def origin_infinity(test: Test) -> tuple[str, str]:
     notes: list[str] = []
     for origin in test.origins:
         for ns in test.namespaces:
-            path = test.path(ns)
+            path = test.path_in(ns)
             url = origin_url(origin, f"{path}/")
-            if may_list(test.caps(ns), "infinity", "origin"):
+            if may_list(test.fed.exports[ns], "infinity", "origin"):
                 why, note = infinity(test, url, ns, test.tokens[ns])
             else:
                 why, note = test.refusal(url, "infinity", test.tokens[ns]), "refused"
@@ -449,14 +405,14 @@ def director(test: Test) -> tuple[str, str]:
     problems: list[str] = []
     for director_url in test.fed.directors:
         for ns in test.namespaces:
-            path = test.path(ns)
+            path = test.path_in(ns)
             for target, depth, base, want in (
                 (f"{path}/b", "0", f"{path}/b", None),
                 (f"{path}/", "1", path, test.children(ns)),
             ):
                 where = f"{urlsplit(director_url).netloc} {target}"
                 url = f"{director_url}{target}"
-                if not may_list(test.caps(ns), depth, "director"):
+                if not may_list(test.fed.exports[ns], depth, "director"):
                     if why := test.refusal(url, depth, test.tokens[ns]):
                         problems.append(f"{where}: {why}")
                     continue
@@ -472,7 +428,7 @@ def director(test: Test) -> tuple[str, str]:
                 if not parts.path.rstrip("/").endswith(target.rstrip("/")):
                     problems.append(f"{where}: redirected to {parts.path}")
                     continue
-                if not may_list(test.caps(ns), depth, "origin"):
+                if not may_list(test.fed.exports[ns], depth, "origin"):
                     if why := test.refusal(location, depth, test.tokens[ns]):
                         problems.append(f"{where} -> {parts.netloc}: {why}")
                     continue
@@ -494,15 +450,15 @@ def cache_depth_0(test: Test) -> tuple[str, str]:
     """
     problems: list[str] = []
     for cache in test.caches:
-        path = test.path("protected-a", f"probe/{cache.svc}")
+        path = test.path_in("protected-a", f"probe/{cache.svc}")
         url = f"{cache.url}{path}"
         for when in ("cold", "cached"):
             if when == "cached":
-                answer = web.request("GET", url, token=test.tokens["protected-a"])
+                answer = web.request("GET", url, token=test.token)
                 if answer.status != 200 or len(answer.body) != PROBE:
                     problems.append(f"{cache.svc}: GET {path}: {answer.describe()}")
                     break
-            _, got, why = test.listing(url, "0", path, test.tokens["protected-a"])
+            _, got, why = test.listing(url, "0", path, test.token)
             if got is None:
                 problems.append(f"{cache.svc} ({when}): {why}")
             elif set(got) != {""} or got[""].collection or got[""].size != PROBE:
@@ -516,11 +472,11 @@ def cache_depth_1(test: Test) -> tuple[str, str]:
     Each must list it as the origins do.
     """
     problems: list[str] = []
-    caps = test.caps("protected-a")
+    caps = test.caps
     for cache in test.caches:
-        path = test.path("protected-a")
+        path = test.path_in("protected-a")
         url = f"{cache.url}{path}/"
-        _, got, why = test.listing(url, "0", path, test.tokens["protected-a"])
+        _, got, why = test.listing(url, "0", path, test.token)
         if got is None:
             problems.append(f"{cache.svc}: {why}")
             continue
@@ -528,10 +484,10 @@ def cache_depth_1(test: Test) -> tuple[str, str]:
             problems.append(f"{cache.svc}: Depth 0 of {path}/ is not one collection")
             continue
         if not may_list(caps, "1", "cache"):
-            if refusal := test.refusal(url, "1", test.tokens["protected-a"]):
+            if refusal := test.refusal(url, "1", test.token):
                 problems.append(f"{cache.svc}: {refusal}")
             continue
-        _, got, why = test.listing(url, "1", path, test.tokens["protected-a"])
+        _, got, why = test.listing(url, "1", path, test.token)
         if got is None:
             problems.append(f"{cache.svc}: {why}")
             continue
@@ -544,12 +500,15 @@ def cache_depth_1(test: Test) -> tuple[str, str]:
 def origins_refuse_infinity(test: Test, ns: str) -> bool | None:
     """Return whether an origin refuses Depth infinity of ns's tree (403).
 
-    If one does, a cache that relays it to one then may. Return None if
-    no origin may be asked, as where ns takes no direct clients.
+    If one does, a cache that relays it to one then may.
+
+    Returns:
+        Whether one does, or None if no origin may be asked, as where ns
+        takes no direct clients.
     """
-    if not may_list(test.caps(ns), "infinity", "origin"):
+    if not may_list(test.fed.exports[ns], "infinity", "origin"):
         return None
-    path = test.path(ns)
+    path = test.path_in(ns)
     return any(
         webdav.propfind(origin_url(o, f"{path}/"), "infinity", test.tokens[ns]).status == 403
         for o in test.origins
@@ -565,19 +524,19 @@ def cache_infinity(test: Test) -> tuple[str, str]:
     """
     problems: list[str] = []
     notes: list[str] = []
-    caps = test.caps("protected-a")
+    caps = test.caps
     refused = None
     if may_list(caps, "infinity", "cache"):
         refused = origins_refuse_infinity(test, "protected-a")
     for cache in test.caches:
-        path = test.path("protected-a")
+        path = test.path_in("protected-a")
         url = f"{cache.url}{path}/"
         if may_list(caps, "infinity", "cache"):
-            why, note = infinity(test, url, "protected-a", test.tokens["protected-a"], refused is not False)
+            why, note = infinity(test, url, "protected-a", test.token, refused is not False)
             if note == "refused (403)":
                 note += ", as an origin does" if refused else ", which no origin could be asked to confirm"
         else:
-            why, note = test.refusal(url, "infinity", test.tokens["protected-a"]), "refused"
+            why, note = test.refusal(url, "infinity", test.token), "refused"
         if why:
             problems.append(f"{cache.svc}: {why}")
         else:
@@ -592,15 +551,15 @@ def cache_body(test: Test) -> tuple[str, str]:
     redirect, with the request's body, to answer it.
     """
     problems: list[str] = []
-    caps = test.caps("protected-a")
+    caps = test.caps
     for cache in test.caches:
-        path = test.path("protected-a")
+        path = test.path_in("protected-a")
         url = f"{cache.url}{path}/"
         if not may_list(caps, "1", "cache"):
-            if why := test.refusal(url, "1", test.tokens["protected-a"]):
+            if why := test.refusal(url, "1", test.token):
                 problems.append(f"{cache.svc}: {why}")
             continue
-        answer, got, why = test.listing(url, "1", path, test.tokens["protected-a"], webdav.PROPFIND_BODY)
+        answer, got, why = test.listing(url, "1", path, test.token, webdav.PROPFIND_BODY)
         if answer.status is not None and 300 <= answer.status < 400:
             problems.append(
                 f"{cache.svc}: answered with the director's {answer.status}, to"
@@ -626,9 +585,9 @@ def refused_everywhere(test: Test, token: str | None) -> tuple[str, str]:
     the server would not list it anyway.
     """
     problems: list[str] = []
-    caps = test.caps("protected-a")
+    caps = test.caps
     for svc, url, role in servers(test):
-        path = test.path("protected-a")
+        path = test.path_in("protected-a")
         for target, depth in ((f"{path}/b", "0"), (f"{path}/", "1")):
             answer = webdav.propfind(f"{url}{target}", depth, token)
             allowed = (401, 403) if may_list(caps, depth, role) else REFUSALS
@@ -658,9 +617,9 @@ def public_no_token(test: Test) -> tuple[str, str]:
     /public has PublicReads (see may_list()).
     """
     problems: list[str] = []
-    path = test.path("public")
+    path = test.path_in("public")
     for svc, url, role in servers(test):
-        if may_list(test.caps("public"), "1", role):
+        if may_list(test.fed.exports["public"], "1", role):
             why = test.compare(f"{url}{path}/", "1", path, test.children("public"), None)
         else:
             why = test.refusal(f"{url}{path}/", "1", None)
@@ -676,16 +635,14 @@ def new_object(test: Test) -> tuple[str, str]:
     listed at once by each origin and cache (which relays Depth 1), and
     by the client; once removed from every origin, by none.
     """
-    caps = test.caps("protected-a")
+    caps = test.caps
     if "Listings" not in caps:
         return SKIP, "/protected-a has no Listings"
-    rel = f"{test.base}/tree/new"
-    errors = stores.seed_everywhere(
-        test.origins, "protected-a", rel, os.urandom(1234), test.setup["protected-a"], caps
-    )
+    rel = test.rel("tree/new")
+    errors = stores.seed_everywhere(test.origins, "protected-a", rel, os.urandom(1234), test.setup, caps)
     if errors:
         return FAIL, errors[0]
-    path = test.path("protected-a")
+    path = test.path_in("protected-a")
     problems: list[str] = []
     for when, want in (
         ("after the upload", {**test.children("protected-a"), "new": 1234}),
@@ -693,12 +650,12 @@ def new_object(test: Test) -> tuple[str, str]:
     ):
         if when == "after the removal":
             for origin in test.origins:
-                if why := stores.delete(origin, "protected-a", rel, test.setup["protected-a"]):
+                if why := stores.delete(origin, "protected-a", rel, test.setup):
                     return FAIL, why
         for svc, url, role in servers(test):
             if not may_list(caps, "1", role):
                 continue
-            if why := test.compare(f"{url}{path}/", "1", path, want, test.tokens["protected-a"]):
+            if why := test.compare(f"{url}{path}/", "1", path, want, test.token):
                 problems.append(f"{svc} {when}: {why}")
         listed, why = test.ls("tree")
         if listed is None:
@@ -722,10 +679,10 @@ def collection_get(test: Test) -> tuple[str, str]:
     collection must then come back intact. The origins are asked only if
     they take direct clients.
     """
-    caps = test.caps("protected-a")
-    token = test.tokens["protected-a"]
-    path = test.path("protected-a", "tree/sub")
-    want = stores.held(test.origins[0], "protected-a", f"{test.base}/tree/sub/c", test.setup["protected-a"])
+    caps = test.caps
+    token = test.token
+    path = test.path_in("protected-a", "tree/sub")
+    want = stores.held(test.origins[0], "protected-a", test.rel("tree/sub/c"), test.setup)
     if want is None:
         return FAIL, f"{test.origins[0].svc}'s store lacks tree/sub/c"
 
@@ -860,7 +817,7 @@ def link_problems(
     entry's name (a collection's with a / after it), as a browser's user
     knows it.
     """
-    token = test.tokens["protected-a"]
+    token = test.token
     host = urlsplit(page).netloc
     problems: list[str] = []
     linked: set[str] = set()
@@ -912,12 +869,12 @@ def html_links(test: Test) -> tuple[str, str]:
     over, and named in the note, since collection-get fails it. The
     origins are asked only if they take direct clients.
     """
-    caps = test.caps("protected-a")
+    caps = test.caps
     if not may_list(caps, "0", "origin"):
         return SKIP, "/protected-a takes no direct clients"
-    token = test.tokens["protected-a"]
-    setup = test.setup["protected-a"]
-    rel = f"{test.base}/html"
+    token = test.token
+    setup = test.setup
+    rel = test.rel("html")
     # Each a size of its own.
     objects = {name: os.urandom(1000 + 37 * n) for n, name in enumerate(NAMES)}
     errors = stores.make_dirs(test.origins, "protected-a", f"{rel}/{HTML_SUB}", setup)
@@ -958,9 +915,9 @@ def plain_object_listing(test: Test) -> tuple[str, str]:
     Where /protected-a has Listings, `pelican object ls -l --json` of it
     must list it alone.
     """
-    caps = test.caps("protected-a")
-    token = test.tokens["protected-a"]
-    path = test.path("protected-a", "tree/b")
+    caps = test.caps
+    token = test.token
+    path = test.path_in("protected-a", "tree/b")
     problems: list[str] = []
     for svc, url, role in servers(test):
         target = f"{url}{path}"
@@ -1010,9 +967,7 @@ def skip(fed: common.Federation) -> str | None:
 
     There is nothing without /protected-a.
     """
-    if "protected-a" not in fed.exports:
-        return "this shape does not export /protected-a"
-    return None
+    return suite.unexported(fed)
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
@@ -1022,24 +977,18 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     """
     fed = session.fed
     stores.require_dirs(fed.origins, fed.exports, "data/listings")
-    tokens = session.setup_tokens()
-
-    def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/listings", tokens)
-        if errors:
-            warn(f"emptying data/listings {when}: {first(errors)}")
-
-    # Earlier runs' objects come out first.
-    clean("before the run")
     test = Test(session)
+    # Earlier runs' objects come out first.
+    test.clean("before the run")
     print(f"Listing test against {fed.url}, objects under /protected-a/{test.base}/\n")
     try:
         errors = test.seed()
         if errors:
             die(f"could not put the tree in place: {errors[0]}")
         for name in selected:
-            if name == "public-no-token" and "public" not in fed.exports:
-                results.add(name, SKIP, "this shape does not export /public")
+            why = suite.unexported(fed, "public") if name == "public-no-token" else None
+            if why:
+                results.add(name, SKIP, why)
                 continue
             if name == "director" and not fed.directors:
                 results.add(name, SKIP, "a standalone origin has no director")
@@ -1047,11 +996,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             if name.startswith("cache-") and not test.caches:
                 results.add(name, SKIP, "this shape has no federated cache")
                 continue
-            status, note = common.guarded(
-                partial(RUN[name], test), lambda note: (FAIL, note), (stores.Unreadable,)
-            )
-            results.add(name, status, note)
+            results.add(name, *suite.attempt(partial(RUN[name], test), (stores.Unreadable,)))
     finally:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach.
-        clean("after the run")
+        test.clean("after the run")

@@ -415,6 +415,12 @@ def freshness(cache_control: str) -> float | None:
     return ages.get("s-maxage", ages.get("max-age"))
 
 
+# How long past an object's freshness() a cache may take to serve its new
+# version, in seconds, asked every 3 seconds: it revalidates by fetching
+# the object again.
+REVALIDATION_MARGIN = 45
+
+
 # An object overwritten at the origins: its size, and by how much the new
 # version grows or shrinks.
 OVERWRITE_SIZE = 3 * XROOTD_BLOCK + 7
@@ -501,15 +507,8 @@ ASSEMBLE: tuple[tuple[int, int], ...] = (
 )
 
 
-def crc32c(data: bytes) -> int:
-    """Return the CRC-32C (Castagnoli) of data."""
-    c = 0xFFFFFFFF
-    for byte in data:
-        c = _CRC32C[(c ^ byte) & 0xFF] ^ (c >> 8)
-    return c ^ 0xFFFFFFFF
-
-
 def _crc32c_table() -> list[int]:
+    """Return the CRC-32C of each byte, for crc32c()."""
     table: list[int] = []
     for n in range(256):
         c = n
@@ -520,6 +519,15 @@ def _crc32c_table() -> list[int]:
 
 
 _CRC32C = _crc32c_table()
+
+
+def crc32c(data: bytes) -> int:
+    """Return the CRC-32C (Castagnoli) of data."""
+    c = 0xFFFFFFFF
+    for byte in data:
+        c = _CRC32C[(c ^ byte) & 0xFF] ^ (c >> 8)
+    return c ^ 0xFFFFFFFF
+
 
 # A .cinfo file (version 4, little-endian; XRootD's XrdPfcInfo.cc,
 # Info::Write, and Pelican's cache/cinfo.go): the version; the store
@@ -551,10 +559,14 @@ class Cinfo:
         """How many blocks the object has."""
         return -(-self.file_size // self.block_size)
 
+    def has(self, block: int) -> bool:
+        """Return whether the cache holds block, by index."""
+        return bool(self.bitmap[block // 8] >> (block % 8) & 1)
+
     @property
     def count(self) -> int:
         """How many of the object's blocks the cache holds."""
-        return sum(1 for i in range(self.blocks) if self.bitmap[i // 8] >> (i % 8) & 1)
+        return sum(1 for i in range(self.blocks) if self.has(i))
 
     @property
     def complete(self) -> bool:
@@ -713,7 +725,7 @@ def xrootd_stored(cache: common.Cache, rel: str, data: bytes) -> tuple[int, list
         problems.append(f"its file holds {len(held)} bytes, more than the object's")
     compared = 0
     for i in range(info.blocks):
-        if not info.bitmap[i // 8] >> (i % 8) & 1:
+        if not info.has(i):
             continue
         start = i * info.block_size
         want = data[start : start + info.block_size]

@@ -1,5 +1,7 @@
 """Metadata publishing (`-p origin-metadata` or `-p origin-metadata-tx`).
 
+See docs/tests/posc-and-metadata.md.
+
 The suite uploads objects with and without metadata, and checks the
 events that reach the recorder (framework/var/data/metadata/); the URLs
 by which an uploader follows or cancels its event; the events that a
@@ -11,14 +13,15 @@ docs/metadata-publish-design.md). With publishing off, only
 `queue-admin off` runs: the queue's admin API must say that publishing
 is off.
 
-Objects go under /protected-a/data/metadata/. `fields` and `blob` use
-`pelican object put` through the director; the rest go straight to the
-first origin in framework/var/generated/origins, since the client
-doesn't show the origin's X-Pelican-Metadata-Status. Each upload, MOVE,
-COPY, and DELETE presents a token of the session's profile, but for
-setup: what a scenario puts in place only for the admin APIs to show,
-or for the reconcile sweep to pass over, presents the setup token, as
-does cleaning up.
+Objects go in /protected-a/data/metadata/ itself, each named for the
+run. `fields` and `blob` use `pelican object put` through the director;
+the rest go straight to the first origin in
+framework/var/generated/origins, since the client doesn't show the
+origin's X-Pelican-Metadata-Status. Each upload, MOVE, COPY, and DELETE
+presents a token of the session's profile, but for setup: what a
+scenario puts in place only for the admin APIs to show, or for the
+reconcile sweep to pass over, presents the setup token, as does
+cleaning up.
 
 `queue-admin` and `backpressure` restart the first origin with its
 retries put off for ten minutes, so that an event the recorder always
@@ -44,7 +47,7 @@ from functools import partial
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
-from testlib import accounts, common, control, credentials, director, metrics, stores, web
+from testlib import accounts, common, control, credentials, metrics, stores, suite, web
 from testlib.common import die, first, outcome, shown, warn
 from testlib.recorder import (
     CAPTURES,
@@ -56,6 +59,7 @@ from testlib.recorder import (
 )
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
+from testlib.suite import Row
 
 SCENARIOS = {
     "fields": "`object put --metadata-file`: the event carries the fields",
@@ -81,11 +85,11 @@ SCENARIOS = {
 # first origin's web API tokens (see suites/__init__.py).
 ONE_PROFILE = ("object-metadata-cli", "queue-admin")
 
-# A row: its status and note.
-Row = tuple[str, str]
-
-NAMESPACE = "/protected-a"
-PREFIX = f"{NAMESPACE}/data/metadata"
+NAMESPACE = "protected-a"
+# The namespace's path, as the first origin's APIs name it, and the
+# path of the suite's area in it.
+NAMESPACE_PATH = f"/{NAMESPACE}"
+PREFIX = f"{NAMESPACE_PATH}/data/metadata"
 
 # The cases of each scenario that has them, each a row named
 # `<scenario> <case>`. With publishing off, `queue-admin` has one, `off`.
@@ -147,8 +151,6 @@ BLOB_CAP = 4096
 RECONCILE_INTERVAL = 15
 RECONCILE_SETTLE = 5
 RECONCILE_WATCH = 45
-# How long the federation may take to serve again after a restart.
-SETTLE_WAIT = 150
 
 BACKPRESSURE = "pelican_origin_metadata_backpressure_refusals_total"
 
@@ -160,66 +162,64 @@ class Problem(Exception):
     """
 
 
-class Test:
-    """What every scenario needs: a token, the first origin, and stores.
+# The exceptions by which a check reports a problem (suite.attempt()).
+EXPECTED = (Problem, accounts.ApiError, stores.Unreadable)
+
+
+class Test(suite.Test):
+    """The pass, the first origin, and the stores.
+
+    Objects go in data/metadata itself, named for the run (not in
+    Test.base).
 
     Attributes:
         mode: Publishing's mode: `eventual` or `transactional`.
         origin: The first origin.
         stores: /protected-a's storage in each store.
-        tmp: The run's directory for files to upload.
-        token: /protected-a's `server` token, of the session's profile.
-        setup: /protected-a's `server` token, of the WLCG profile, for
-            cleaning up, and seeing whether the federation serves.
         fields: The custom fields that `fields` and `blob` send.
+        fields_file: The file of fields.
         web: The first origin's web URL.
-        made: What the scenarios made under data/metadata/, by name, to
-            remove afterward.
-        held: Of those, the objects whose events the recorder always
+        written: What the scenarios wrote under data/metadata/, by name,
+            to remove afterward.
+        failing: Of those, the objects whose events the recorder always
             fails, which are deleted through the first origin, so that it
             records them gone, before the run's queue rows are.
+        admin_file: The file of the first origin's admin's token.
     """
 
     def __init__(self, session: Session):
-        fed = session.fed
-        self.session = session
-        self.fed = fed
+        super().__init__(session, "metadata", NAMESPACE)
+        fed = self.fed
         self.mode = fed.metadata
         self.origin = fed.origins[0]
-        self.stores = sorted({o.store_of("protected-a") for o in fed.origins})
-        self.tmp = session.path("metadata")
-        os.makedirs(self.tmp)
-        self.run = session.run
-        self.token_file = session.token_file("protected-a")
-        self.token = session.token("protected-a")
-        self.setup = session.setup_token("protected-a")
+        self.stores = sorted({o.store_of(NAMESPACE) for o in fed.origins})
         self.fields = {
             "experiment": "pelican-test-framework",
             "run_number": int(self.run.split("-")[0]),
             "is_test": True,
             "ratio": 0.25,
         }
-        self.fields_file = os.path.join(self.tmp, "fields.json")
-        with open(self.fields_file, "w", encoding="utf-8") as f:
-            json.dump(self.fields, f, indent=2)
+        self.fields_file = self.local("fields.json", json.dumps(self.fields, indent=2).encode())
         self.web = self.origin.web_url
-        self.made: set[str] = set(uploaded(self.run))
-        self.held: set[str] = set()
+        self.written: set[str] = set(uploaded(self.run))
+        self.failing: set[str] = set()
         self.admin_file = session.path("tokens/metadata.admin")
         self._admin: str | None = None
         self._user: str | None = None
 
-    def url(self, name: str) -> str:
+    def object_url(self, name: str) -> str:
         """Return object name's URL at the first origin."""
         return f"{self.origin.url}{PREFIX}/{quote(name)}"
 
     def admin(self) -> str:
-        """Return the first origin's admin's bearer token (see web_token()).
+        """Return the first origin's admin's bearer token.
 
         Its file is admin_file.
         """
         if self._admin is None:
-            self._admin = web_token(self.fed, self.origin, self.admin_file, "admin")
+            self._admin = credentials.mint_web_user(
+                self.fed, self.admin_file, self.web, "admin", TOKEN_LIFETIME
+            )
         return self._admin
 
     def user(self) -> str:
@@ -234,7 +234,7 @@ class Test:
             accounts.agree_to_aup(admin)
             accounts.ensure_user(admin, USER)
             out = self.session.path("tokens/metadata.user")
-            token = web_token(self.fed, self.origin, out, USER)
+            token = credentials.mint_web_user(self.fed, out, self.web, USER, TOKEN_LIFETIME)
             accounts.agree_to_aup(accounts.Api(self.web, token))
             self._user = token
         return self._user
@@ -257,7 +257,7 @@ class Test:
         """
         rows: list[dict[str, Any]] = []
         while True:
-            query = urlencode({"namespace": NAMESPACE, "limit": 1000, "offset": len(rows)})
+            query = urlencode({"namespace": NAMESPACE_PATH, "limit": 1000, "offset": len(rows)})
             answer = self.api("GET", f"{QUEUE}?{query}", self.admin())
             if answer.status != 200:
                 raise Problem(f"listing the publish queue: {answer.describe()}")
@@ -282,7 +282,7 @@ class Test:
         if answer.status != 200:
             raise Problem(f"GET {QUEUE}/_health: {answer.describe()}")
         counts = common.as_object(answer.object.get("per_namespace")) or {}
-        return int(counts.get(NAMESPACE) or 0)
+        return int(counts.get(NAMESPACE_PATH) or 0)
 
     def drop(self, event_id: str) -> str | None:
         """Delete event_id's row from the first origin's publish queue.
@@ -320,7 +320,7 @@ class Test:
         with open(path, "rb") as f:
             return f.read() == data
 
-    def check_stored(self, name: str, data: bytes, capture: str) -> tuple[str, str] | None:
+    def check_stored(self, name: str, data: bytes, capture: str) -> Row | None:
         """Return a failure if no store holds object name with exactly data.
 
         Returns:
@@ -382,7 +382,7 @@ class Test:
         common.wait_for(lambda: not missing(), seconds, 1)
         return missing()
 
-    def direct_put(self, data: bytes, name: str, metadata: str, token: str | None = None) -> web.Response:
+    def direct_put(self, name: str, data: bytes, metadata: str, token: str | None = None) -> web.Response:
         """Upload data as object name straight to the first origin.
 
         Its X-Pelican-Object-Metadata is metadata. It presents token, by
@@ -390,7 +390,7 @@ class Test:
         """
         return web.request(
             "PUT",
-            f"{self.origin.url}{PREFIX}/{name}",
+            self.object_url(name),
             token=self.token if token is None else token,
             upload=data,
             headers={"X-Pelican-Object-Metadata": metadata},
@@ -402,9 +402,7 @@ class Test:
         Returns:
             Whether it succeeded, and the last line it logged.
         """
-        source = os.path.join(self.tmp, name)
-        with open(source, "wb") as f:
-            f.write(data)
+        source = self.local(name, data)
         code, out, err = self.session.pelican_cmd(
             "object",
             "put",
@@ -412,25 +410,9 @@ class Test:
             self.token_file,
             *flags,
             source,
-            f"{self.fed.url}{PREFIX}/{name}",
+            self.pelican_url(f"data/metadata/{name}"),
         )
         return code == 0, last_line(err or out)
-
-
-def web_token(fed: common.Federation, origin: common.Origin, out: str, username: str) -> str:
-    """Return a bearer token that origin's web API takes as username's.
-
-    It lasts the whole suite, and is written to out (see
-    credentials.mint_user()).
-    """
-    return credentials.mint_user(
-        fed,
-        out,
-        credentials.local_issuer(fed, origin.web_url),
-        common.signing_key(f"issuer-keys/{origin.svc}"),
-        username,
-        TOKEN_LIFETIME,
-    )
 
 
 def fetch(method: str, url: str, token: str | None = None) -> accounts.Answer:
@@ -455,11 +437,6 @@ def go_time(text: Any) -> float | None:
     return whole + float(f"0.{found.group(2) or 0}")
 
 
-def guarded(check: Callable[[], Row]) -> Row:
-    """Return check's row, or a FAIL if it could not set up, or raised."""
-    return common.guarded(check, lambda note: (FAIL, note), (Problem, accounts.ApiError, stores.Unreadable))
-
-
 def same(got: object, want: object) -> bool:
     """Return whether got, from an event's JSON, is want, type and all.
 
@@ -472,7 +449,7 @@ def same(got: object, want: object) -> bool:
 # The scenarios. Each returns its result and a note.
 
 
-def fields(test: Test) -> tuple[str, str]:
+def fields(test: Test) -> Row:
     """Check that an `object put --metadata-file` event has the fields."""
     name = f"{test.run}-fields"
     data = os.urandom(65536)
@@ -495,7 +472,7 @@ def fields(test: Test) -> tuple[str, str]:
     )
 
 
-def blob(test: Test) -> tuple[str, str]:
+def blob(test: Test) -> Row:
     """Check that the event carries the blob, byte for byte.
 
     The upload has `--metadata-body` too, besides `--metadata-file`.
@@ -507,9 +484,7 @@ def blob(test: Test) -> tuple[str, str]:
         + base64.encodebytes(os.urandom(3000))
         + b"</run>\n"
     )
-    blob_file = os.path.join(test.tmp, "blob.xml")
-    with open(blob_file, "wb") as f:
-        f.write(sent)
+    blob_file = test.local("blob.xml", sent)
     ok, last = test.client_put(
         name, data, "--metadata-file", test.fields_file, "--metadata-body", blob_file
     )
@@ -527,16 +502,16 @@ def blob(test: Test) -> tuple[str, str]:
     return test.check_stored(name, data, capture) or (PASS, f"{shown(CAPTURES)}/{capture}.blob")
 
 
-def update(test: Test) -> tuple[str, str]:
+def update(test: Test) -> Row:
     """Check that overwriting an object sends object.updated."""
     name = f"{test.run}-update"
-    answer = test.direct_put(os.urandom(4096), name, 'step="create"')
+    answer = test.direct_put(name, os.urandom(4096), 'step="create"')
     arrived, capture = test.await_event(f"{PREFIX}/{name}", "object.committed")
     if not arrived:
         return FAIL, f"creating it ({answer.describe()}): {capture}"
     created = event(capture, "object")
     data = os.urandom(8192)
-    answer = test.direct_put(data, name, 'step="update"')
+    answer = test.direct_put(name, data, 'step="update"')
     arrived, capture = test.await_event(f"{PREFIX}/{name}", "object.updated")
     if not arrived:
         return FAIL, f"overwriting it ({answer.describe()}): {capture}"
@@ -556,14 +531,14 @@ def update(test: Test) -> tuple[str, str]:
     return PASS, where
 
 
-def delete(test: Test) -> tuple[str, str]:
+def delete(test: Test) -> Row:
     """Check that deleting an object sends object.deleted."""
     name = f"{test.run}-delete"
-    answer = test.direct_put(os.urandom(4096), name, 'step="create"')
+    answer = test.direct_put(name, os.urandom(4096), 'step="create"')
     arrived, capture = test.await_event(f"{PREFIX}/{name}", "object.committed")
     if not arrived:
         return FAIL, f"creating it ({answer.describe()}): {capture}"
-    answer = web.request("DELETE", f"{test.origin.url}{PREFIX}/{name}", token=test.token)
+    answer = web.request("DELETE", test.object_url(name), token=test.token)
     arrived, capture = test.await_event(f"{PREFIX}/{name}", "object.deleted")
     if not arrived:
         return FAIL, f"deleting it ({answer.describe()}): {capture}"
@@ -573,13 +548,13 @@ def delete(test: Test) -> tuple[str, str]:
     return PASS, f"{shown(CAPTURES)}/{capture}.event.json"
 
 
-def status(test: Test) -> tuple[str, str]:
+def status(test: Test) -> Row:
     """Check that the origin answers X-Pelican-Metadata-Status: published.
 
     The upload's object.committed event must then arrive.
     """
     name = f"{test.run}-status"
-    answer = test.direct_put(os.urandom(4096), name, 'step="status"')
+    answer = test.direct_put(name, os.urandom(4096), 'step="status"')
     got = answer.header("X-Pelican-Metadata-Status")
     if got != "published":
         return FAIL, f"{answer.describe()}, X-Pelican-Metadata-Status '{got}'"
@@ -589,7 +564,7 @@ def status(test: Test) -> tuple[str, str]:
     return PASS, f"{shown(CAPTURES)}/{capture}.event.json"
 
 
-def fault(test: Test, scenario: str, name: str, eventual_status: str) -> tuple[str, str]:
+def fault(test: Test, scenario: str, name: str, eventual_status: str) -> Row:
     """Check that an upload whose delivery fails goes as the mode says.
 
     The recorder fails deliveries for objects named like name (see
@@ -598,13 +573,12 @@ def fault(test: Test, scenario: str, name: str, eventual_status: str) -> tuple[s
     mode it must succeed, with X-Pelican-Metadata-Status eventual_status.
 
     Args:
-        test: The suite's run.
         scenario: `retry`, for a delivery that fails once, or `reject`.
         name: The object's name.
         eventual_status: The X-Pelican-Metadata-Status that eventual
             mode must answer.
     """
-    answer = test.direct_put(os.urandom(4096), name, f'step="{scenario}"')
+    answer = test.direct_put(name, os.urandom(4096), f'step="{scenario}"')
     got = answer.header("X-Pelican-Metadata-Status")
     if test.mode == "transactional":
         refused = "503" if scenario == "retry" else "422"
@@ -634,12 +608,12 @@ def fault(test: Test, scenario: str, name: str, eventual_status: str) -> tuple[s
     return PASS, f"X-Pelican-Metadata-Status: {got}"
 
 
-def retry(test: Test) -> tuple[str, str]:
+def retry(test: Test) -> Row:
     """Check, as fault() does, a delivery that fails once."""
     return fault(test, "retry", f"fail-once-{test.run}", "queued")
 
 
-def reject(test: Test) -> tuple[str, str]:
+def reject(test: Test) -> Row:
     """Check, as fault() does, a delivery rejected with 422."""
     return fault(test, "reject", f"reject-{test.run}", "rejected")
 
@@ -730,8 +704,8 @@ def urls_queued(test: Test) -> Row:
     """
     name = f"fail-once-{test.run}-urls"
     path = f"{PREFIX}/{name}"
-    test.made.add(name)
-    urls = issued(test.direct_put(os.urandom(4096), name, 'step="status-urls"'), name, "queued")
+    test.written.add(name)
+    urls = issued(test.direct_put(name, os.urandom(4096), 'step="status-urls"'), name, "queued")
     problems = [p for p in (read_status(url, path, "pending") for url in urls) if p]
     if problems:
         return FAIL, first(problems)
@@ -751,8 +725,8 @@ def urls_rejected(test: Test) -> Row:
     """
     name = f"reject-{test.run}-urls"
     path = f"{PREFIX}/{name}"
-    test.made.add(name)
-    urls = issued(test.direct_put(os.urandom(4096), name, 'step="status-urls"'), name, "rejected")
+    test.written.add(name)
+    urls = issued(test.direct_put(name, os.urandom(4096), 'step="status-urls"'), name, "rejected")
     problems = [p for p in (read_status(url, path, "rejected") for url in urls) if p]
     if problems:
         return FAIL, first(problems)
@@ -776,9 +750,9 @@ def urls_cancel(test: Test) -> Row:
     """
     name = f"fail-always-{test.run}-urls"
     path = f"{PREFIX}/{name}"
-    test.made.add(name)
-    test.held.add(name)
-    query, manage = issued(test.direct_put(os.urandom(4096), name, 'step="status-urls"'), name, "queued")
+    test.written.add(name)
+    test.failing.add(name)
+    query, manage = issued(test.direct_put(name, os.urandom(4096), 'step="status-urls"'), name, "queued")
     why = read_status(query, path, "pending")
     if why:
         return FAIL, why
@@ -819,9 +793,9 @@ def status_urls(test: Test) -> dict[str, Row]:
         why = "transactional mode hands out no status URLs: an event never outlives its upload"
         return {case: (SKIP, why) for case in CASES["status-urls"]}
     return {
-        "queued": guarded(lambda: urls_queued(test)),
-        "rejected": guarded(lambda: urls_rejected(test)),
-        "cancel": guarded(lambda: urls_cancel(test)),
+        "queued": suite.attempt(lambda: urls_queued(test), EXPECTED),
+        "rejected": suite.attempt(lambda: urls_rejected(test), EXPECTED),
+        "cancel": suite.attempt(lambda: urls_cancel(test), EXPECTED),
     }
 
 
@@ -838,8 +812,8 @@ def committed(test: Test, name: str, metadata: str) -> None:
     Raises:
         Problem: The event does not come.
     """
-    test.made.add(name.split("/", 1)[0])
-    answer = test.direct_put(os.urandom(4096), name, metadata)
+    test.written.add(name.split("/", 1)[0])
+    answer = test.direct_put(name, os.urandom(4096), metadata)
     arrived, why = test.await_event(f"{PREFIX}/{name}", "object.committed", EVENT_WAIT)
     if not arrived:
         raise Problem(f"uploading {name} ({answer.describe()}): {why}")
@@ -853,10 +827,12 @@ def catalog_move(test: Test) -> Row:
     object.deleted.
     """
     src, dst = f"{test.run}-move-from", f"{test.run}-move-to"
-    test.made.add(dst)
+    test.written.add(dst)
     committed(test, src, 'step="move"')
     after = time.time_ns()
-    answer = web.request("MOVE", test.url(src), token=test.token, headers={"Destination": test.url(dst)})
+    answer = web.request(
+        "MOVE", test.object_url(src), token=test.token, headers={"Destination": test.object_url(dst)}
+    )
     if answer.status not in (201, 204):
         return FAIL, f"MOVE got {answer.describe()}, not 201"
     if test.object_file(dst) is None:
@@ -881,11 +857,13 @@ def catalog_copy(test: Test) -> Row:
     does the source. The COPY carries none of its own.
     """
     src, dst = f"{test.run}-copy-from", f"{test.run}-copy-to"
-    test.made.add(dst)
+    test.written.add(dst)
     custom = {"step": "copy", "experiment": "pelican-testing"}
     committed(test, src, 'step="copy", experiment="pelican-testing"')
     after = time.time_ns()
-    answer = web.request("COPY", test.url(src), token=test.token, headers={"Destination": test.url(dst)})
+    answer = web.request(
+        "COPY", test.object_url(src), token=test.token, headers={"Destination": test.object_url(dst)}
+    )
     if answer.status not in (201, 204):
         return FAIL, f"COPY got {answer.describe()}, not 201"
     arrived, capture = test.await_event(f"{PREFIX}/{dst}", "object.committed", EVENT_WAIT, after)
@@ -911,7 +889,7 @@ def catalog_collection_delete(test: Test) -> Row:
     for child in children:
         committed(test, child, 'step="collection"')
     after = time.time_ns()
-    answer = web.request("DELETE", test.url(collection), token=test.token)
+    answer = web.request("DELETE", test.object_url(collection), token=test.token)
     if not answer.ok:
         return FAIL, f"DELETE of the collection got {answer.describe()}"
     missing = test.await_all(
@@ -931,9 +909,9 @@ def catalog(test: Test) -> dict[str, Row]:
     The reconcile rows run later (reconcile_rows()).
     """
     return {
-        "move": guarded(lambda: catalog_move(test)),
-        "copy": guarded(lambda: catalog_copy(test)),
-        "collection-delete": guarded(lambda: catalog_collection_delete(test)),
+        "move": suite.attempt(lambda: catalog_move(test), EXPECTED),
+        "copy": suite.attempt(lambda: catalog_copy(test), EXPECTED),
+        "collection-delete": suite.attempt(lambda: catalog_collection_delete(test), EXPECTED),
     }
 
 
@@ -942,7 +920,7 @@ def tracked(test: Test, path: str) -> bool:
 
     That is, whether it has a live row for it.
     """
-    query = urlencode({"namespace": NAMESPACE, "path": path})
+    query = urlencode({"namespace": NAMESPACE_PATH, "path": path})
     return test.api("GET", f"{OBJECTS}/lookup?{query}", test.admin()).status == 200
 
 
@@ -956,9 +934,9 @@ def cancelled_object(test: Test) -> str:
         Problem: It could not be made.
     """
     name = f"fail-always-{test.run}-reconcile"
-    test.made.add(name)
-    test.held.add(name)
-    answer = test.direct_put(os.urandom(4096), name, 'step="reconcile"', test.setup)
+    test.written.add(name)
+    test.failing.add(name)
+    answer = test.direct_put(name, os.urandom(4096), 'step="reconcile"', test.setup)
     manage = issued(answer, name, "queued")[1]
     cancelled = fetch("DELETE", manage)
     if cancelled.status != 200:
@@ -975,9 +953,9 @@ def rejected_object(test: Test) -> str:
         Problem: It could not be made.
     """
     name = f"reject-{test.run}-reconcile"
-    test.made.add(name)
+    test.written.add(name)
     issued(
-        test.direct_put(os.urandom(4096), name, 'step="reconcile"', test.setup),
+        test.direct_put(name, os.urandom(4096), 'step="reconcile"', test.setup),
         name,
         "rejected",
     )
@@ -994,13 +972,11 @@ def observed_object(test: Test) -> str:
         Problem: It could not be made.
     """
     name = f"{test.run}-observed"
-    test.made.add(name)
-    error = stores.write_file(
-        test.origin.store_of("protected-a"), f"data/metadata/{name}", os.urandom(4096)
-    )
+    test.written.add(name)
+    error = stores.write_file(test.origin.store_of(NAMESPACE), f"data/metadata/{name}", os.urandom(4096))
     if error:
         raise Problem(error)
-    answer = web.request("HEAD", test.url(name), token=test.setup)
+    answer = web.request("HEAD", test.object_url(name), token=test.setup)
     if answer.status != 200:
         raise Problem(f"HEAD of {name}, written to the store, got {answer.describe()}")
     return f"{PREFIX}/{name}"
@@ -1042,7 +1018,7 @@ def reconcile_rows(test: Test) -> dict[str, Row]:
     if test.mode != "eventual":
         only = "eventual mode only: a transactional event is never cancelled or kept rejected"
         return {case: (SKIP, only) for case in RECONCILE_CASES}
-    why = unrestartable(test)
+    why = control.unrestartable(test.fed)
     if why:
         return {case: (SKIP, why) for case in RECONCILE_CASES}
     makers = {
@@ -1100,7 +1076,6 @@ def refusals(test: Test, routes: Sequence[tuple[str, str]]) -> list[str]:
     With no token, each must get 401, and as USER, an ordinary user, 403.
 
     Args:
-        test: The suite's run.
         routes: Each a method, and a route of the origin's web API.
     """
     problems: list[str] = []
@@ -1123,9 +1098,9 @@ def object_routes(path: str) -> list[tuple[str, str]]:
     Returns:
         Each subcommand, with its route.
     """
-    listed = urlencode({"namespace": NAMESPACE, "limit": 5})
-    looked_up = urlencode({"namespace": NAMESPACE, "path": path, "history": 5})
-    history = urlencode({"namespace": NAMESPACE, "path": path, "limit": 100})
+    listed = urlencode({"namespace": NAMESPACE_PATH, "limit": 5})
+    looked_up = urlencode({"namespace": NAMESPACE_PATH, "path": path, "history": 5})
+    history = urlencode({"namespace": NAMESPACE_PATH, "path": path, "limit": 100})
     return [
         ("list", f"{OBJECTS}?{listed}"),
         ("get", f"{OBJECTS}/lookup?{looked_up}"),
@@ -1139,9 +1114,9 @@ def cli_args(subcommand: str, path: str) -> list[str]:
     They ask what object_routes() names for it.
     """
     flags = {
-        "list": ["--namespace", NAMESPACE, "--limit", "5"],
-        "get": ["--namespace", NAMESPACE, "--path", path, "--history", "5"],
-        "history": ["--namespace", NAMESPACE, "--path", path, "--limit", "100"],
+        "list": ["--namespace", NAMESPACE_PATH, "--limit", "5"],
+        "get": ["--namespace", NAMESPACE_PATH, "--path", path, "--history", "5"],
+        "history": ["--namespace", NAMESPACE_PATH, "--path", path, "--limit", "100"],
     }
     return [subcommand, *flags[subcommand]]
 
@@ -1158,9 +1133,9 @@ def tracked_object(test: Test) -> tuple[str, int]:
         Problem: Either fails.
     """
     name = f"{test.run}-tracked"
-    test.made.add(name)
+    test.written.add(name)
     data = os.urandom(3000)
-    answer = test.direct_put(data, name, 'step="tracked"', test.setup)
+    answer = test.direct_put(name, data, 'step="tracked"', test.setup)
     if not answer.ok:
         raise Problem(f"uploading {name} got {answer.describe()}")
     path = f"{PREFIX}/{name}"
@@ -1178,7 +1153,6 @@ def objects_api(test: Test, path: str, size: int) -> Row:
     size, and its history a `commit`.
 
     Args:
-        test: The suite's run.
         path: A tracked object's path (see tracked_object()).
         size: Its size, in bytes.
     """
@@ -1221,7 +1195,6 @@ def objects_cli(test: Test, path: str) -> Row:
     print what the route it asks answers the admin.
 
     Args:
-        test: The suite's run.
         path: A tracked object's path (see tracked_object()).
     """
     server = test.session.pelican_server
@@ -1272,8 +1245,8 @@ def object_metadata_cli(test: Test) -> dict[str, Row]:
     except Problem as e:
         return {case: (FAIL, str(e)) for case in CASES["object-metadata-cli"]}
     return {
-        "api": guarded(lambda: objects_api(test, path, size)),
-        "cli": guarded(lambda: objects_cli(test, path)),
+        "api": suite.attempt(lambda: objects_api(test, path, size), EXPECTED),
+        "cli": suite.attempt(lambda: objects_cli(test, path), EXPECTED),
     }
 
 
@@ -1297,11 +1270,11 @@ def held_event(test: Test) -> tuple[str, str]:
     """
     name = f"fail-always-{test.run}-held"
     path = f"{PREFIX}/{name}"
-    test.made.add(name)
-    error = stores.write_file(test.origin.store_of("protected-a"), f"data/metadata/{name}", b"held\n")
+    test.written.add(name)
+    error = stores.write_file(test.origin.store_of(NAMESPACE), f"data/metadata/{name}", b"held\n")
     if error:
         raise Problem(error)
-    answer = web.request("DELETE", test.url(name), token=test.setup)
+    answer = web.request("DELETE", test.object_url(name), token=test.setup)
     if not answer.ok:
         raise Problem(f"DELETE of {name} got {answer.describe()}")
     found: list[dict[str, Any]] = []
@@ -1356,7 +1329,7 @@ def queue_views(test: Test, event_id: str, path: str) -> Row:
         problems.append(f"the admin's list lacks {event_id}, for {path}")
     health = test.api("GET", f"{QUEUE}/_health", admin)
     state = health.object.get("state")
-    pending = int((common.as_object(health.object.get("per_namespace")) or {}).get(NAMESPACE) or 0)
+    pending = int((common.as_object(health.object.get("per_namespace")) or {}).get(NAMESPACE_PATH) or 0)
     if health.status != 200 or state not in ("healthy", "warning", "error") or pending < 1:
         problems.append(f"the queue's health got {health.describe()}: {health.data}")
     row = test.api("GET", f"{QUEUE}/{quote(event_id)}", admin)
@@ -1419,7 +1392,6 @@ def queue_admin(test: Test, unrestarted: str | None) -> dict[str, Row]:
     event's next delivery is seconds away, and the retry row skips.
 
     Args:
-        test: The suite's run.
         unrestarted: Why the first origin was not restarted so, or None
             if it was.
     """
@@ -1428,10 +1400,14 @@ def queue_admin(test: Test, unrestarted: str | None) -> dict[str, Row]:
     except (Problem, accounts.ApiError) as e:
         return {case: (FAIL, f"holding an event: {e}") for case in CASES["queue-admin"]}
     return {
-        "auth": guarded(lambda: queue_auth(test, event_id)),
-        "admin": guarded(lambda: queue_views(test, event_id, path)),
-        "retry": ((SKIP, unrestarted) if unrestarted else guarded(lambda: queue_retry(test, event_id))),
-        "delete": guarded(lambda: queue_delete(test, event_id, path)),
+        "auth": suite.attempt(lambda: queue_auth(test, event_id), EXPECTED),
+        "admin": suite.attempt(lambda: queue_views(test, event_id, path), EXPECTED),
+        "retry": (
+            (SKIP, unrestarted)
+            if unrestarted
+            else suite.attempt(lambda: queue_retry(test, event_id), EXPECTED)
+        ),
+        "delete": suite.attempt(lambda: queue_delete(test, event_id, path), EXPECTED),
     }
 
 
@@ -1442,7 +1418,8 @@ def queue_off(session: Session) -> Row:
     (401), and tell the admin that publishing is off (503).
     """
     origin = session.fed.origins[0]
-    token = web_token(session.fed, origin, session.path("tokens/metadata.admin"), "admin")
+    out = session.path("tokens/metadata.admin")
+    token = credentials.mint_web_user(session.fed, out, origin.web_url, "admin", TOKEN_LIFETIME)
     problems: list[str] = []
     answer = accounts.Api(origin.web_url, None).call("GET", QUEUE)
     if answer.status != 401:
@@ -1467,14 +1444,13 @@ def past_cap(test: Test, name: str, limit: str, state: str) -> Row:
     limit.
 
     Args:
-        test: The suite's run.
         name: The object's name.
         limit: The cap reached: `rows` or `bytes`.
         state: How the queue is at its cap, for the note.
     """
-    test.made.add(name)
+    test.written.add(name)
     before = metrics.fetch(test.web) or metrics.EMPTY
-    answer = test.direct_put(os.urandom(4096), name, 'step="refused"')
+    answer = test.direct_put(name, os.urandom(4096), 'step="refused"')
     counted = metrics.delta(before, metrics.fetch(test.web) or metrics.EMPTY, BACKPRESSURE, limit=limit)
     problems: list[str] = []
     if answer.status is None or answer.status // 100 != 5:
@@ -1496,7 +1472,6 @@ def cap_rows(test: Test, cap: int, filled: list[str]) -> Row:
     (past_cap()).
 
     Args:
-        test: The suite's run.
         cap: The cap on the namespace's pending rows.
         filled: Gets the objects' names.
     """
@@ -1505,11 +1480,11 @@ def cap_rows(test: Test, cap: int, filled: list[str]) -> Row:
         if pending >= cap:
             break
         name = f"fail-always-{test.run}-fill-{n}"
-        test.made.add(name)
-        test.held.add(name)
+        test.written.add(name)
+        test.failing.add(name)
         filled.append(name)
         try:
-            issued(test.direct_put(os.urandom(1024), name, 'step="fill"'), name, "queued")
+            issued(test.direct_put(name, os.urandom(1024), 'step="fill"'), name, "queued")
         except Problem as e:
             return FAIL, f"with {pending} of {cap} rows pending, {e}"
         pending = test.pending()
@@ -1546,7 +1521,6 @@ def cap_bytes(test: Test, filled: list[str], blobs: list[str]) -> Row:
     must be refused (past_cap()).
 
     Args:
-        test: The suite's run.
         filled: The objects whose rows cap_rows() filled.
         blobs: Gets the name of the upload with the blob.
     """
@@ -1554,13 +1528,13 @@ def cap_bytes(test: Test, filled: list[str], blobs: list[str]) -> Row:
     if errors:
         raise Problem(f"draining the rows: {errors[0]}")
     name = f"fail-always-{test.run}-blob"
-    test.made.add(name)
-    test.held.add(name)
+    test.written.add(name)
+    test.failing.add(name)
     blobs.append(name)
     boundary = f"pelican-testing-{os.urandom(12).hex()}"
     answer = web.request(
         "PUT",
-        test.url(name),
+        test.object_url(name),
         token=test.token,
         upload=with_blob(boundary, os.urandom(BLOB_CAP), b"blob\n"),
         headers={
@@ -1585,9 +1559,9 @@ def drained(test: Test, held: Sequence[str]) -> Row:
     if errors:
         raise Problem(f"draining the queue: {errors[0]}")
     name = f"{test.run}-drained"
-    test.made.add(name)
+    test.written.add(name)
     data = os.urandom(4096)
-    answer = test.direct_put(data, name, 'step="drained"')
+    answer = test.direct_put(name, data, 'step="drained"')
     if not answer.ok:
         return FAIL, f"once the queue drained, an upload got {answer.describe()}"
     if not test.holds(name, data):
@@ -1607,24 +1581,14 @@ def backpressure(test: Test, cap: int) -> dict[str, Row]:
     filled: list[str] = []
     blobs: list[str] = []
     return {
-        "rows": guarded(lambda: cap_rows(test, cap, filled)),
-        "bytes": guarded(lambda: cap_bytes(test, filled, blobs)),
-        "drained": guarded(lambda: drained(test, filled + blobs)),
+        "rows": suite.attempt(lambda: cap_rows(test, cap, filled), EXPECTED),
+        "bytes": suite.attempt(lambda: cap_bytes(test, filled, blobs), EXPECTED),
+        "drained": suite.attempt(lambda: drained(test, filled + blobs), EXPECTED),
     }
 
 
 # --------------------------------------------------------------------------
 # Restarting the first origin.
-
-
-def unrestartable(test: Test) -> str | None:
-    """Return why the first origin cannot be restarted, or None if it can.
-
-    That is, with configuration of the suite's own.
-    """
-    if test.fed.tiny:
-        return "the tiny topology's origin is the whole federation's process"
-    return control.unavailable()
 
 
 def held_config(cap: int | None) -> str:
@@ -1641,42 +1605,6 @@ def held_config(cap: int | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def serving(test: Test) -> str | None:
-    """Return why the namespace is not served as before, or None.
-
-    Every origin must answer a HEAD of the probe, every director name
-    every origin for it, and every federated cache answer a HEAD of it,
-    with the setup token.
-    """
-    path = f"{PREFIX}/{test.run}-probe"
-    for origin in test.fed.origins:
-        answer = web.request("HEAD", f"{origin.url}{path}", token=test.setup)
-        if answer.status != 200:
-            return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
-    for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.setup)
-        for origin in test.fed.origins:
-            if not where.names(director.host(origin.url)):
-                return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
-    for cache in test.fed.federated_caches:
-        answer = web.request("HEAD", f"{cache.url}{path}", token=test.setup)
-        if answer.status != 200:
-            return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
-    return None
-
-
-def settle(test: Test) -> str | None:
-    """Wait until the federation serves the namespace as before.
-
-    See serving(). A server that exited on its own ends the wait at once
-    (control.settle()).
-
-    Returns:
-        Why it doesn't within SETTLE_WAIT seconds, or None.
-    """
-    return control.settle(lambda: serving(test), SETTLE_WAIT)
-
-
 def restart_for(test: Test, text: str, body: Callable[[], None]) -> str | None:
     """Run body with the first origin restarted with text as configuration.
 
@@ -1688,11 +1616,11 @@ def restart_for(test: Test, text: str, body: Callable[[], None]) -> str | None:
         Why putting the probe, the restart, or restoring failed, or None.
     """
     name = f"{test.run}-probe"
-    test.made.add(name)
-    for origin in stores.unique(test.fed.origins):
-        error = stores.write_file(origin.store_of("protected-a"), f"data/metadata/{name}", b"probe\n")
-        if error:
-            return f"putting the probe: {error}"
+    probe = f"data/metadata/{name}"
+    test.written.add(name)
+    error = stores.write_file_everywhere(test.fed.origins, NAMESPACE, probe, b"probe\n")
+    if error:
+        return f"putting the probe: {error}"
     svc = test.origin.svc
     print(f"\nRestarting {svc} with:\n{text}")
     try:
@@ -1701,7 +1629,7 @@ def restart_for(test: Test, text: str, body: Callable[[], None]) -> str | None:
     except control.ControlError as e:
         warn(f"restarting {svc}, or restoring it: {e}")
         return f"restarting {svc}: {e}"
-    why = settle(test)
+    why = test.settle(probe)
     if why:
         warn(f"with {svc} restored, {why}")
     return None
@@ -1722,7 +1650,7 @@ def held_rows(test: Test, wanted: Sequence[str]) -> dict[str, Row]:
     def add(scenario: str, found: dict[str, Row]) -> None:
         rows.update({f"{scenario} {case}": row for case, row in found.items()})
 
-    why = unrestartable(test)
+    why = control.unrestartable(test.fed)
     if why:
         if "queue-admin" in wanted:
             add("queue-admin", queue_admin(test, why))
@@ -1770,13 +1698,12 @@ CHECKS: dict[str, Callable[[Test], dict[str, Row]]] = {
 
 
 def skip(fed: common.Federation) -> str | None:
-    """Return why there is nothing to test, or None if there is something.
+    """Return why there is nothing to test, or None.
 
-    That is so with publishing, but no writes. With publishing off,
-    `queue-admin off` runs.
+    With publishing off, `queue-admin off` runs, writes or not.
     """
     if fed.metadata in ("eventual", "transactional"):
-        if "Writes" not in fed.exports.get("protected-a", ()):
+        if "Writes" not in fed.exports.get(NAMESPACE, ()):
             return "/protected-a takes no writes"
     return None
 
@@ -1791,28 +1718,28 @@ def clean(test: Test) -> None:
     now goes with the rest.
     """
     errors: list[str] = []
-    for name in sorted(test.held):
-        answer = web.request("DELETE", test.url(name), token=test.setup)
+    for name in sorted(test.failing):
+        answer = web.request("DELETE", test.object_url(name), token=test.setup)
         if not answer.ok and answer.status != 404:
             errors.append(f"DELETE of {name}: {answer.describe()}")
-    for name in sorted(test.made):
+    for name in sorted(test.written):
         for origin in stores.unique(test.fed.origins):
             rel = f"data/metadata/{name}"
-            path = f"{origin.store_of('protected-a')}/{rel}"
+            path = f"{origin.store_of(NAMESPACE)}/{rel}"
             if os.path.isdir(path):
                 try:
                     shutil.rmtree(path)
                 except OSError as e:
                     errors.append(f"removing framework/var/{path}: {e.strerror}")
                 continue
-            error = stores.delete(origin, "protected-a", rel, test.setup)
+            error = stores.delete(origin, NAMESPACE, rel, test.setup)
             if error:
                 errors.append(error)
     try:
         # The deletes' events are queued as they are published: give them
         # time, twice, if there were any.
-        for _ in range(2 if test.held else 1):
-            if test.held:
+        for _ in range(2 if test.failing else 1):
+            if test.failing:
                 time.sleep(3)
             doomed = [r for r in test.queue_rows() if test.run in str(r.get("object_path", ""))]
             errors += [e for e in (test.drop(str(r.get("event_id", ""))) for r in doomed) if e]
@@ -1832,7 +1759,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         off = "metadata publishing is off ('-p origin-metadata' or '-p origin-metadata-tx')"
         for name in selected:
             if name == "queue-admin":
-                results.add("queue-admin off", *guarded(lambda: queue_off(session)))
+                results.add("queue-admin off", *suite.attempt(lambda: queue_off(session), EXPECTED))
             else:
                 results.add(name, SKIP, off)
         return
@@ -1853,7 +1780,7 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 for case, row in CHECKS[name](test).items():
                     results.add(f"{name} {case}", *row)
             elif name in RUN:
-                results.add(name, *guarded(partial(RUN[name], test)))
+                results.add(name, *suite.attempt(partial(RUN[name], test), EXPECTED))
         held = [name for name in ("queue-admin", "backpressure") if name in selected]
         if held:
             for row_name, row in held_rows(test, held).items():

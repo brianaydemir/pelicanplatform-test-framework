@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from . import common, web
+from . import accounts, common, web
 
 ROUTE = "/api/v1.0/issuer/ns"
 ADMIN_ROUTE = "/api/v1.0/issuer/admin/ns"
@@ -102,9 +102,6 @@ REDIRECT_URI = "https://localhost/pelican-test-framework"
 
 # How many times to ask for the token after approving, a second apart.
 POLLS = 12
-
-JSON = {"Content-Type": "application/json"}
-FORM = {"Content-Type": "application/x-www-form-urlencoded"}
 
 
 class IssuerError(Exception):
@@ -196,14 +193,9 @@ def url(web_url: str, namespace: str) -> str:
     return f"{web_url}{ROUTE}{namespace}"
 
 
-def decoded(answer: web.Response) -> dict[str, Any]:
-    """Return the JSON object in answer's body, or {}."""
-    return common.as_object(answer.json()) or {}
-
-
 def error_of(answer: web.Response) -> str:
     """Return the OAuth2 error in answer, e.g. invalid_grant, or ""."""
-    return str(decoded(answer).get("error", ""))
+    return str(answer.object().get("error", ""))
 
 
 def refused_with(answer: web.Response, status: int, error: str) -> bool:
@@ -224,7 +216,7 @@ def discovery(issuer_url: str) -> dict[str, Any]:
     """
     target = f"{issuer_url}/.well-known/openid-configuration"
     found = web.request("GET", target)
-    document = decoded(found)
+    document = found.object()
     if found.status != 200 or "token_endpoint" not in document:
         raise failed(f"GET {target}", found)
     return document
@@ -253,6 +245,12 @@ def client_of(
     )
 
 
+def _clients_url(web_url: str, namespace: str, client_id: str = "") -> str:
+    """Return the admin URL of an issuer's clients, or of client_id."""
+    target = f"{web_url}{ADMIN_ROUTE}{namespace}/clients"
+    return f"{target}/{client_id}" if client_id else target
+
+
 def admin_call(
     web_url: str,
     namespace: str,
@@ -271,11 +269,14 @@ def admin_call(
         client_id: The client to ask about; "" for the list of them.
         body: What to send as JSON, if given.
     """
-    target = f"{web_url}{ADMIN_ROUTE}{namespace}/clients"
-    if client_id:
-        target += f"/{client_id}"
     upload = None if body is None else json.dumps(body).encode()
-    return web.request(method, target, token=bearer, upload=upload, headers=JSON)
+    return web.request(
+        method,
+        _clients_url(web_url, namespace, client_id),
+        token=bearer,
+        upload=upload,
+        headers=accounts.JSON,
+    )
 
 
 def create_client(
@@ -308,7 +309,6 @@ def create_client(
         IssuerError: The client was not created, or the issuer serves no
             discovery document.
     """
-    target = f"{web_url}{ADMIN_ROUTE}{namespace}/clients"
     body: dict[str, Any] = {
         "client_name": name,
         "grant_types": list(grants),
@@ -317,10 +317,10 @@ def create_client(
     }
     if redirect_uris:
         body["redirect_uris"] = list(redirect_uris)
-    made = web.request("POST", target, token=admin_token, upload=json.dumps(body).encode(), headers=JSON)
-    client = decoded(made)
+    made = admin_call(web_url, namespace, admin_token, "POST", body=body)
+    client = made.object()
     if made.status != 201 or not client.get("client_id"):
-        raise failed(f"POST {target}", made)
+        raise failed(f"POST {_clients_url(web_url, namespace)}", made)
     return client_of(
         web_url,
         namespace,
@@ -336,7 +336,7 @@ def delete_client(web_url: str, namespace: str, admin_token: str, client_id: str
     Returns:
         Why that failed, or None if it did not.
     """
-    target = f"{web_url}{ADMIN_ROUTE}{namespace}/clients/{client_id}"
+    target = _clients_url(web_url, namespace, client_id)
     gone = web.request("DELETE", target, token=admin_token)
     return None if gone.ok else f"DELETE {target}: {gone.describe()}"
 
@@ -350,7 +350,9 @@ def post(client: Client, target: str, form: dict[str, str]) -> web.Response:
     body = dict(form)
     if client.public:
         body["client_id"] = client.client_id
-    return web.request("POST", target, upload=urlencode(body).encode(), headers={**FORM, **client.auth})
+    return web.request(
+        "POST", target, upload=urlencode(body).encode(), headers={**accounts.FORM, **client.auth}
+    )
 
 
 def tokens_of(answer: web.Response, what: str) -> Tokens:
@@ -363,7 +365,7 @@ def tokens_of(answer: web.Response, what: str) -> Tokens:
     Raises:
         IssuerError: The endpoint issued none.
     """
-    got = decoded(answer)
+    got = answer.object()
     if answer.status != 200 or not got.get("access_token"):
         raise failed(what, answer)
     refresh_token = got.get("refresh_token")
@@ -382,7 +384,9 @@ def register(issuer_url: str, metadata: dict[str, Any]) -> web.Response:
         The issuer's answer: the client's credentials, metadata, and
         registration access token.
     """
-    return web.request("POST", f"{issuer_url}/oidc-cm", upload=json.dumps(metadata).encode(), headers=JSON)
+    return web.request(
+        "POST", f"{issuer_url}/oidc-cm", upload=json.dumps(metadata).encode(), headers=accounts.JSON
+    )
 
 
 def configuration(
@@ -403,7 +407,7 @@ def configuration(
     """
     upload = None if metadata is None else json.dumps(metadata).encode()
     return web.request(
-        method, f"{issuer_url}/oidc-cm/{client_id}", token=access, upload=upload, headers=JSON
+        method, f"{issuer_url}/oidc-cm/{client_id}", token=access, upload=upload, headers=accounts.JSON
     )
 
 
@@ -422,7 +426,7 @@ def started(answer: web.Response, client: Client) -> dict[str, Any]:
     Raises:
         IssuerError: The issuer started none.
     """
-    flow = decoded(answer)
+    flow = answer.object()
     if answer.status != 200 or not flow.get("device_code") or not flow.get("user_code"):
         raise failed(f"POST {client.device_url}", answer)
     return flow
@@ -500,7 +504,7 @@ def decide(issuer_url: str, user_code: str, user: User, action: str, csrf: str =
         cookies.append(f"csrf_token={secrets.token_urlsafe(32)}")
     if user.cookie is not None:
         cookies.append(f"login={user.cookie}")
-    headers = {**JSON, **user.headers}
+    headers = {**accounts.JSON, **user.headers}
     if cookies:
         headers["Cookie"] = "; ".join(cookies)
     return web.request("POST", page, upload=json.dumps(body).encode(), headers=headers)
@@ -513,7 +517,7 @@ def approve(issuer_url: str, user_code: str, user: User) -> None:
         IssuerError: The issuer did not approve it.
     """
     done = decide(issuer_url, user_code, user, "approve")
-    if done.status != 200 or decoded(done).get("status") != "approved":
+    if done.status != 200 or done.object().get("status") != "approved":
         raise failed(f"approving {user_code} at {issuer_url}/device", done)
 
 
@@ -681,7 +685,7 @@ def introspect(client: Client, tok: str, hint: str = "") -> dict[str, Any]:
     form = {"token": tok}
     if hint:
         form["token_type_hint"] = hint
-    said = decoded(post(client, f"{client.url}/introspect", form))
+    said = post(client, f"{client.url}/introspect", form).object()
     return said if "active" in said else {}
 
 
@@ -789,10 +793,10 @@ def client_env(base: dict[str, str], store: str) -> dict[str, str]:
     The client may acquire a token with no terminal, and keeps its
     credentials apart from other users', since the issuer binds a client
     that registers itself to the first user who approves a flow for it.
-    It keeps them unencrypted (PELICAN_CLIENT_NOPASSWORD, config/encrypted.go
-    in Pelican), since it has no terminal to ask for a password with:
-    otherwise it cannot save its client's registration or tokens, and
-    `pelican-server origin collection` fails for it.
+    It keeps them unencrypted (PELICAN_CLIENT_NOPASSWORD,
+    config/encrypted.go in Pelican), since it has no terminal to ask for
+    a password with: otherwise it cannot save its client's registration
+    or tokens, and `pelican-server origin collection` fails for it.
 
     Args:
         base: The environment to start from (session.env).

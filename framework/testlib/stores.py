@@ -1,18 +1,17 @@
 """What the origins' stores hold, and putting objects straight into them.
 
 Paths are relative to a namespace, e.g. data/0.17 for
-/protected-a/data/0.17, and are as the store names them: url() encodes
-them for a request. Each namespace has storage of its own, a directory
-in each origin's store (common.Origin.store_of()). A pstore origin's
-store is encrypted: only the running origin can read or write it, so it
-is asked over HTTPS instead; and there, /public, which takes no writes,
-reads /protected-a's storage. Its admin may also ask its storage API what
-its catalog holds: names, sizes, modification times, and checksums.
+/protected-a/data/0.17, and unencoded (url() encodes them). Each
+namespace has storage of its own, a directory in each origin's store
+(common.Origin.store_of()). A pstore origin's store is encrypted: only
+the running origin can read or write it, so it is asked over HTTPS
+instead, or its admin asks its storage API; and there, /public, which
+takes no writes, reads /protected-a's storage.
 """
 
 import hashlib
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from typing import Any
 from urllib.parse import quote
@@ -57,19 +56,14 @@ S3_PART = 5 << 20
 
 # A pstore origin's storage API, on its web port, which answers its admin
 # alone (RegisterStorageAPI in Pelican's origin_serve/storage_api.go): ls,
-# stat, and digest of a path in the store's catalog (catalog()), and
-# usage. How long the admin's tokens for it last, in seconds: a whole
-# suite.
+# stat, and digest of a path in the store's catalog, and usage.
 STORAGE_API = "/api/v1.0/origin/storage/pstore"
+# How long the admin's tokens for it last, in seconds: a whole suite.
 STORAGE_TOKEN_LIFETIME = 3600
 
 
 def url(origin: common.Origin, namespace: str, rel: str) -> str:
-    """Return the URL of rel in namespace at origin.
-
-    Each character of rel that a URL path may not hold as is gets
-    percent-encoded.
-    """
+    """Return the URL of rel in namespace at origin, percent-encoded."""
     return f"{origin.url}/{namespace}/{quote(rel)}"
 
 
@@ -77,10 +71,17 @@ def cannot(fed: common.Federation, operation: str) -> str | None:
     """Return why the origins' storage cannot do operation, or None.
 
     Args:
-        fed: The federation, whose origins' storage is asked about.
-        operation: Either `delete` or `checksum`.
+        fed: The federation.
+        operation: `delete` or `checksum`.
     """
     return LIMITS.get(fed.origin_variant, {}).get(operation)
+
+
+def not_native(fed: common.Federation) -> str | None:
+    """Return why the origins are not Pelican's native ones, or None."""
+    if fed.native_origins:
+        return None
+    return f"XRootD serves the origins ({fed.origin_variant}), not Pelican"
 
 
 def digests(fed: common.Federation) -> tuple[tuple[str, ...], str | None]:
@@ -150,8 +151,8 @@ def catalog(origin: common.Origin, namespace: str, rel: str) -> str:
     """Return the path of rel in namespace in a pstore origin's catalog.
 
     The storage API takes it. It is under the export's StoragePrefix
-    (fed_storage_prefix in fed.sh), e.g. /protected-a/data/0.17; /public's
-    is /protected-a's (see common.Origin.storage_namespace()).
+    (fed_storage_prefix in fed.sh), e.g. /protected-a/data/0.17;
+    /public's is /protected-a's (common.Origin.storage_namespace()).
     """
     return f"/{common.storage_dir(origin.storage_namespace(namespace))}/{rel}"
 
@@ -159,8 +160,11 @@ def catalog(origin: common.Origin, namespace: str, rel: str) -> str:
 def storage_route(kind: str, path: str) -> str:
     """Return the storage API's route of kind for path in the catalog.
 
-    kind is `ls`, `stat`, or `digest`. Each segment of path is encoded,
-    as the CLI sends it.
+    Each segment of path is encoded, as the CLI sends it.
+
+    Args:
+        kind: `ls`, `stat`, or `digest`.
+        path: The path in the catalog (catalog()).
     """
     return f"{kind}{quote(path)}"
 
@@ -168,18 +172,20 @@ def storage_route(kind: str, path: str) -> str:
 def storage_admin(session: Session, origin: common.Origin, key: str | None = None) -> str:
     """Return a token that origin's storage API takes as its admin's.
 
-    It is minted as credentials.mint_admin() mints one, signed with key,
-    or with origin's signing key, and lasts STORAGE_TOKEN_LIFETIME. A
-    session mints it once for each key.
+    It is credentials.mint_web_user()'s, lasting STORAGE_TOKEN_LIFETIME
+    seconds; a session mints it once for each key.
+
+    Args:
+        session: The pass, whose scratch directory keeps the token.
+        origin: The pstore origin.
+        key: The PEM file to sign it with, if not origin's signing key.
     """
     fed = session.fed
     key = key or common.signing_key(credentials.key_dir_of(fed, origin.web_url))
     out = session.path(f"tokens/stores.{origin.svc}.{os.path.basename(key)}")
     if not os.path.exists(out):
-        issuer = credentials.local_issuer(fed, origin.web_url)
-        credentials.mint_user(fed, out, issuer, key, "admin", STORAGE_TOKEN_LIFETIME)
-    with open(out, encoding="utf-8") as f:
-        return f.read().strip()
+        return credentials.mint_web_user(fed, out, origin.web_url, "admin", STORAGE_TOKEN_LIFETIME, key=key)
+    return common.read_text(out)
 
 
 def catalog_answer(
@@ -195,7 +201,7 @@ def catalog_answer(
     Its admin asks.
 
     Args:
-        session: The session, whose scratch directory keeps the token.
+        session: The pass, whose scratch directory keeps the token.
         origin: The pstore origin.
         kind: `stat`; `ls`, of a collection, which lists up to 1,000
             entries; or `digest`.
@@ -224,8 +230,8 @@ def written_at(
     """Return when origin's store last wrote rel in namespace, in Unix time.
 
     A store on disk keeps it as the file's modification time; a pstore
-    origin's catalog, as its entry's, which its storage API's `stat` gives
-    (with its zone: the origins keep TZ_STORAGE's).
+    origin's catalog, as its entry's, which its storage API's `stat`
+    gives in RFC 3339, in the origins' zone (TZ_STORAGE).
 
     Returns:
         The time, and ""; or None, and why the store did not say.
@@ -248,10 +254,9 @@ def written_at(
 def storage_namespaces(origin: common.Origin, exports: Mapping[str, AbstractSet[str]]) -> list[str]:
     """Return the exported namespaces with storage of their own at origin.
 
-    Each of exports, by name, has its own, but on a pstore origin
-    /public, which reads /protected-a's (see
-    common.Origin.storage_namespace()). What origin should hold in every
-    exported namespace goes in each of them.
+    That is each of exports but, on a pstore origin, /public, which reads
+    /protected-a's (common.Origin.storage_namespace()). What origin
+    should hold in every exported namespace goes in each of these.
     """
     return [ns for ns in credentials.NAMESPACES if ns in exports and origin.storage_namespace(ns) == ns]
 
@@ -270,8 +275,8 @@ def held_anywhere(
 def unique(origins: Iterable[common.Origin]) -> list[common.Origin]:
     """Return the origins, each store once.
 
-    Disk stores can be shared, as the lab server is under `ssh`, but every
-    pstore origin has its own.
+    Disk stores can be shared, as the lab server's is under `ssh`, but
+    every pstore origin has its own.
     """
     seen: set[str] = set()
     found: list[common.Origin] = []
@@ -308,6 +313,14 @@ def put(
     chunked: bool = False,
 ) -> str | None:
     """Upload data to rel in namespace straight to origin.
+
+    Args:
+        origin: The origin.
+        namespace: The namespace, e.g. `protected-a`.
+        rel: Where to put it, relative to namespace.
+        data: The object.
+        token: A token for namespace.
+        chunked: Whether to send it in chunks, with no Content-Length.
 
     Returns:
         Why it failed, or None if it did not.
@@ -348,8 +361,7 @@ def seed(
     """Put data at rel in namespace at origin, as a test's setup.
 
     It goes through the origin (put()) if the namespace takes writes, and
-    otherwise straight into its storage on disk, which fed.sh ensures it
-    has (but for /public on a pstore origin, which reads /protected-a's).
+    otherwise straight into its storage on disk (write_file()).
 
     Args:
         origin: The origin to put it at.
@@ -376,7 +388,7 @@ def put_in_place(
 
     Its collection is made first. On a pstore origin, /public's storage
     is /protected-a's. The session's setup token for the storage is
-    presented. Once something goes wrong, no more is seeded.
+    presented. Once something goes wrong, nothing more is seeded.
 
     Returns:
         What went wrong; empty if nothing did.
@@ -401,8 +413,10 @@ def seed_everywhere(
     token: str,
     caps: AbstractSet[str],
 ) -> list[str]:
-    """Run seed() at every origin, or at each store once where the
-    namespace takes no writes (see put_everywhere()).
+    """Run seed() at every origin (see put_everywhere()).
+
+    Where the namespace takes no writes, which seed() then writes on
+    disk, it runs at each store once.
 
     Returns:
         What went wrong; empty if nothing did.
@@ -411,23 +425,38 @@ def seed_everywhere(
     return [e for e in (seed(o, namespace, rel, data, token, caps) for o in targets) if e]
 
 
+def _make_tree(store: str, parts: Sequence[str]) -> None:
+    """Make directory parts in store, and its parents, where missing.
+
+    Each is made writable by any uid (e.g. `alice` on the lab server).
+
+    Raises:
+        OSError: One could not be made.
+    """
+    for n in range(1, len(parts) + 1):
+        path = os.path.join(store, *parts[:n])
+        if not os.path.isdir(path):
+            os.mkdir(path)
+            os.chmod(path, 0o777)
+
+
 def write_file(store: str, rel: str, data: bytes) -> str | None:
     """Write data to rel in store, a namespace's storage on disk.
 
-    store is as common.Origin.store_of() names it. Any directories that
-    rel needs are made writable by any uid (see make_dirs()), and the
-    file readable by any.
+    Any directories that rel needs are made (_make_tree()), and the file
+    is readable by any uid.
+
+    Args:
+        store: The storage, as common.Origin.store_of() names it.
+        rel: Where to write, relative to store.
+        data: The object.
 
     Returns:
         Why that failed, or None if nothing did.
     """
     parts = rel.strip("/").split("/")
     try:
-        for n in range(1, len(parts)):
-            path = os.path.join(store, *parts[:n])
-            if not os.path.isdir(path):
-                os.mkdir(path)
-                os.chmod(path, 0o777)
+        _make_tree(store, parts[:-1])
         path = os.path.join(store, *parts)
         with open(path, "wb") as f:
             f.write(data)
@@ -437,12 +466,26 @@ def write_file(store: str, rel: str, data: bytes) -> str | None:
     return None
 
 
+def write_file_everywhere(
+    origins: Iterable[common.Origin], namespace: str, rel: str, data: bytes
+) -> str | None:
+    """Run write_file() for rel in namespace at each store of origins once.
+
+    Returns:
+        What first went wrong, or None if nothing did.
+    """
+    for origin in unique(origins):
+        error = write_file(origin.store_of(namespace), rel, data)
+        if error:
+            return error
+    return None
+
+
 def make_dirs(origins: Iterable[common.Origin], namespace: str, rel: str, token: str) -> list[str]:
     """Make collection rel, and its parents, in namespace at every origin.
 
     This is so that it exists before a test's uploads. A disk store's are
-    made directly, writable by any uid (e.g. `alice` on the lab server); a
-    pstore origin is sent MKCOL for each.
+    made directly (_make_tree()); a pstore origin is sent MKCOL for each.
 
     Returns:
         What went wrong; empty if nothing did.
@@ -451,16 +494,10 @@ def make_dirs(origins: Iterable[common.Origin], namespace: str, rel: str, token:
     parts = rel.strip("/").split("/")
     for origin in unique(origins):
         if not origin.pstore:
-            store = origin.store_of(namespace)
-            path = store
             try:
-                for n in range(1, len(parts) + 1):
-                    path = os.path.join(store, *parts[:n])
-                    if not os.path.isdir(path):
-                        os.mkdir(path)
-                        os.chmod(path, 0o777)
+                _make_tree(origin.store_of(namespace), parts)
             except OSError as e:
-                errors.append(f"making framework/var/{path}: {e.strerror}")
+                errors.append(f"making framework/var/{e.filename}: {e.strerror}")
             continue
         for n in range(1, len(parts) + 1):
             target = url(origin, namespace, "/".join(parts[:n]))
@@ -500,10 +537,10 @@ def delete(origin: common.Origin, namespace: str, rel: str, token: str) -> str |
 def empty_tree(origin: common.Origin, namespace: str, rel: str, token: str) -> list[str]:
     """Remove everything in collection rel in namespace from origin's store.
 
-    rel itself stays, as common.empty_dir() leaves it. A disk store's are
-    removed directly. A pstore origin is listed a level at a time (Depth
-    1, which every origin answers) and sent DELETE for each object, then
-    each collection, deepest first.
+    rel itself stays, as common.empty_dir() leaves it. A disk store's
+    contents are removed directly. A pstore origin is listed a level at a
+    time (Depth 1, which every origin answers) and sent DELETE for each
+    object, then each collection, deepest first.
 
     Returns:
         What went wrong; empty if nothing did.
@@ -554,7 +591,7 @@ def empty_tree_everywhere(
     """Run empty_tree() at every origin's store, and return what went wrong.
 
     It empties rel in each exported namespace with storage of its own
-    there (see storage_namespaces()).
+    there (storage_namespaces()).
 
     Args:
         origins: The origins; each store is emptied once.

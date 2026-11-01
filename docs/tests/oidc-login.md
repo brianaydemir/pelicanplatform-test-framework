@@ -2,15 +2,20 @@
 
 Part of [What the tests check](README.md).
 
-Under `-p auth-oidc-local`, every server lets users log in through an OpenID
-Connect provider: the framework's `idp` service (`https://idp:9007`,
-`OIDC.Issuer`), standing in for CILogon. Its users are those of
-`framework/etc/idp-users.json`, which `local/etc/idp-users.json` may
-override.
+Under [`-p auth-oidc-local`](../../framework/presets/auth-oidc-local.sh),
+every server lets users log in through an
+[OpenID Connect](https://openid.net/connect/) provider: the framework's
+[`idp`](../../framework/idp/idp.py) service (`https://idp:9007`,
+`OIDC.Issuer`), standing in for [CILogon](https://www.cilogon.org/). Its
+users are those of
+[`framework/etc/idp-users.json`](../../framework/etc/idp-users.json), which
+`local/etc/idp-users.json` may override.
 
-The `oidc` suite skips without the provider, and runs in the WLCG pass only
-([token profiles](README.md#token-profiles)). A case's row is named
-`<scenario> <case>`; `enabled` and `login` have a row per server.
+The [`oidc`](../../framework/suites/oidc.py) suite skips without the
+provider, and runs in the [WLCG pass](../glossary.md#pass) only
+([token profiles](README.md#token-profiles)). Each
+[case](../glossary.md#case)'s row is named `<scenario> <case>`; `enabled`
+and `login` have a row per server.
 
 - `enabled`: Each server's `/api/v1.0/auth/oauth` lists its modules. Its
   login route (`/api/v1.0/auth/oauth/login`) answers 307 to the provider's
@@ -37,13 +42,16 @@ The `oidc` suite skips without the provider, and runs in the WLCG pass only
   registry user that `login` made. `pelican namespace delete` must remove
   it. Skips for a standalone origin.
 
-The last three scenarios restart origin-0, in the tests' configuration layer
+`admin`, `groups`, and `client` restart origin-0, in the tests'
+[configuration layer](../glossary.md#configuration-layer)
 ([service control](../../README.md#service-control)), with
 `Server.UIAdminUsers` naming `idp-owner` and `Issuer.GroupSource: oidc`, and
-restore it afterward. They need a control helper, and skip under
-`-p topo-tiny`. `groups` and `client` also need the embedded issuer and a
-protected namespace that takes direct writes; their objects go in the
-groups' [issuer](issuer.md) project prefixes at every origin.
+restore it afterward. They need a
+[control helper](../glossary.md#service-control-helper), and skip under
+[`-p topo-tiny`](../../framework/presets/topo-tiny.sh). `groups` and
+`client` also need the embedded issuer and a protected namespace that takes
+direct writes; their objects go in the groups' [issuer](issuer.md) project
+prefixes at every origin.
 
 - `admin`: `idp-owner` is origin-0's admin by `whoami`, and may list its
   users; so is `idp-admin`, by its group `test-server-admins`

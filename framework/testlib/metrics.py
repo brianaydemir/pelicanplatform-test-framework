@@ -1,8 +1,5 @@
 """A server's Prometheus metrics (/metrics): fetched, parsed, and compared.
 
-They are parsed into series with their labels, and compared between two
-snapshots.
-
 Every server guards its /metrics (Monitoring.MetricAuthorization, on by
 default), so fetch() presents a token of the server's own making with
 scope monitoring.scrape, as the server's own scraper does, unless it is
@@ -140,8 +137,12 @@ def scrape_token(url: str) -> str:
 def fetch(url: str, token: str | None = None) -> Snapshot | None:
     """Return the metrics of the server at web URL url.
 
-    url is e.g. a common.Origin's web_url. Present token, or if none is
-    given, scrape_token(). Return None if it does not answer 200.
+    Args:
+        url: The server's web URL, e.g. a common.Origin's web_url.
+        token: The token to present, if not scrape_token().
+
+    Returns:
+        The metrics, or None if the server does not answer 200.
     """
     if token is None:
         token = scrape_token(url)
@@ -169,6 +170,19 @@ def origins_sent_bytes(fed: common.Federation) -> float | None:
             "pelican_http_bytes_total", server_type="origin", direction="out", method="GET"
         )
     return total
+
+
+def started_ago(url: str) -> float | None:
+    """Return how long ago the server at web URL url started, in seconds.
+
+    Returns:
+        The seconds, or None if it doesn't say
+        (process_start_time_seconds).
+    """
+    found = fetch(url)
+    if found is None or not found.has("process_start_time_seconds"):
+        return None
+    return time.time() - found.value("process_start_time_seconds")
 
 
 def delta(before: Snapshot, after: Snapshot, name: str, /, **labels: str) -> float:

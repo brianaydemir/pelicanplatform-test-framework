@@ -1,30 +1,6 @@
 """What every server reports about itself, and who may see it.
 
-That is, its health, its metrics, its log level, and its log:
-
-  health-api            each server's health report: only its admin may
-                        read it, and every component that applies is
-                        ok; /api/v1.0/health answers anyone
-  health-metrics        pelican_component_health_status agrees with each
-                        server's health report, component by component
-  metric-authorization  who may read each server's /metrics and query
-                        its Prometheus, as Pelican ships them; each
-                        server's scrape of itself, and the directors' of
-                        every origin and cache
-  http-metrics          a native origin's request, byte, and storage
-                        counters count what the suite sent it
-  log-level             each server's log level, raised through its admin
-                        API, falls back by itself, or once the change is
-                        deleted; the changes the API refuses; and
-                        `pelican-server server set-logging-level`
-  log-redaction         a token presented to an origin or a cache, in the
-                        Authorization header, the query, and a cookie,
-                        never reaches its log tail, which only its admin
-                        may read
-  log-level-xrootd      under XRootD, an XRootD log level, which restarts
-                        XRootD: refused if it would revert before the
-                        restart, and otherwise, XRootD restarts and
-                        serves again, and the directors name it again
+See docs/tests/observability.md.
 
 The suite acts as each server's admin, and as an ordinary user
 (testlib.webapi.Access). It reads /metrics with tokens of each server's
@@ -54,13 +30,13 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlencode
 
-from testlib import accounts, common, credentials, director, jwt, metrics, stores, web, webapi
+from testlib import accounts, common, credentials, director, jwt, metrics, stores, suite, web, webapi
 from testlib.common import first, outcome, warn
 from testlib.credentials import RWM, R
 from testlib.director import expected_targets
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
-from testlib.webapi import Server, judge
+from testlib.webapi import API, CONFIG, Server, judge
 
 SCENARIOS = {
     "health-api": "each server's health report: for its admin alone, and every component ok",
@@ -80,13 +56,15 @@ ONE_PROFILE = tuple(s for s in SCENARIOS if s not in ("http-metrics", "log-redac
 # and its note.
 Row = tuple[str, str, str]
 
-API = "/api/v1.0"
 HEALTH = f"{API}/metrics/health"
 LIVENESS = f"{API}/health"
 LOG_LEVEL = f"{API}/logging/level"
 LOG_TAIL = f"{API}/logs/tail"
 PROMQL = f"{API}/prometheus/query"
-CONFIG = f"{API}/config"
+
+# An object that init puts in every namespace (init-data.py), which
+# `log-redaction` and `log-level-xrootd` read.
+SEEDED = "data/0.0"
 
 # The health report's components (metrics/health.go in Pelican): every
 # server's web UI; an origin's or a federated cache's advertisements,
@@ -195,28 +173,36 @@ class Missing(Exception):
     """Something the scenario needs is not there."""
 
 
-class Test:
+def readable(fed: common.Federation) -> str:
+    """Return the first exported namespace with an issuer, else the first.
+
+    A namespace has one if it needs a token to read, or takes writes
+    (credentials.has_issuer()).
+    """
+    exported = credentials.exported(fed)
+    return next((ns for ns in exported if credentials.has_issuer(fed.exports[ns])), exported[0])
+
+
+class Test(suite.Test):
     """The federation's servers, and what the scenarios share.
 
-    They share tokens, cookies, and objects.
+    Its namespace is readable()'s, whose SEEDED object `log-redaction`
+    and `log-level-xrootd` read; `http-metrics` writes the run's
+    collection in a namespace of its own choosing.
 
     Attributes:
         web: The admin's and user's tokens, cookies, and logins at each
             server.
         servers: The federation's servers.
-        base: Where `http-metrics` writes, in a namespace.
         subject: The suite's own subject, in its tokens.
         changes: The IDs of the log level changes that the suite made at
             each server and has not deleted, by server name.
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.run = session.run
+        super().__init__(session, "observability", readable(session.fed))
         self.web = webapi.Access(session)
         self.servers = self.web.servers
-        self.base = f"data/observability/{self.run}"
         self.subject = f"observability-{self.run}"
         self.changes: dict[str, list[str]] = {}
 
@@ -234,8 +220,7 @@ class Test:
         Returns:
             The configuration; {} if reading it fails.
         """
-        answer = web.request("GET", server.web_url + CONFIG, token=self.admin(server))
-        return common.as_object(answer.json()) or {}
+        return web.request("GET", server.web_url + CONFIG, token=self.admin(server)).object()
 
     def caches_at(self, server: Server) -> list[common.Cache]:
         """Return the caches whose web URL is server's."""
@@ -251,9 +236,9 @@ class Test:
 
     def xrootd(self, server: Server) -> bool:
         """Return whether XRootD serves an origin or a cache of server's."""
-        return bool(self.origins_at(server) and self.fed.origin_variant in common.XROOTD_ORIGINS) or any(
-            c.kind == "xrootd" for c in self.caches_at(server)
-        )
+        if self.origins_at(server) and self.fed.origin_variant in common.XROOTD_ORIGINS:
+            return True
+        return any(c.kind == "xrootd" for c in self.caches_at(server))
 
     def federated(self, server: Server) -> bool:
         """Return whether server is a federated origin or cache.
@@ -266,65 +251,65 @@ class Test:
         return bool(self.origins_at(server)) or any(not c.site_local for c in self.caches_at(server))
 
     def web_token(self, server: Server, scopes: tuple[str, ...], key: str | None = None) -> str:
-        """Return a token of server's own making, with scopes.
+        """Return a token of server's own making, for the suite's subject.
 
-        The token is the suite's (see credentials.web_token()); with key,
-        it is signed with key instead.
+        Args:
+            server: The server.
+            scopes: Its scopes.
+            key: The key to sign it with, if not server's own.
         """
         return credentials.web_token(
             self.fed, server.web_url, self.subject, scopes, webapi.TOKEN_LIFETIME, key
         )
 
     def storage_token(self, namespace: str, scopes: tuple[str, ...], key: str = "") -> str:
-        """Return a token of the suite's own subject for namespace.
+        """Return a `server` token of the session's profile, for the suite.
 
-        It has scopes, as `pelican token create` mints a `server` token
-        of the session's profile (credentials.server_claims()), and is
-        signed with the origins' key, or with key. Under
-        -p origin-multiuser, it is for the subject the origins map to a
-        Unix user.
+        Its claims are as `pelican token create` writes them
+        (credentials.server_claims()). Under -p origin-multiuser, it is
+        for the subject the origins map to a Unix user; else for the
+        suite's own.
+
+        Args:
+            namespace: The namespace.
+            scopes: Its scopes.
+            key: The key to sign it with, if not the origins'.
         """
         key = key or self.fed.origin_key
         subject = credentials.SUBJECT if self.fed.multiuser else self.subject
         claims = credentials.server_claims(
             self.fed, namespace, scopes, subject=subject, profile=self.session.profile
         )
-        return jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), claims, key=key)
-
-    def readable(self) -> str:
-        """Return the first exported namespace that needs a token to read.
-
-        If none does, return the first exported namespace.
-        """
-        exported = credentials.exported(self.fed)
-        for namespace in exported:
-            if credentials.has_issuer(self.fed.exports[namespace]):
-                return namespace
-        return exported[0]
-
-
-def parse(answer: web.Response) -> dict[str, Any]:
-    """Return answer's body, as a JSON object; {} if it is not one."""
-    return common.as_object(answer.json()) or {}
+        return jwt.sign(claims, key)
 
 
 def guarded(check: Callable[[], list[Row]]) -> list[Row]:
     """Return check()'s rows, or one failing row if it raised."""
-    return common.guarded(check, lambda note: [("", FAIL, note)])
+    return common.guarded(check, lambda note: [("", FAIL, note)], (Missing, accounts.ApiError))
 
 
 def each_server(
-    test: Test, check: Callable[[Server], list[Row]], servers: Sequence[Server] | None = None
+    test: Test,
+    check: Callable[[Server], list[Row]],
+    servers: Sequence[Server] | None = None,
+    case: str = "",
 ) -> list[Row]:
     """Return check(server)'s rows for each of servers.
 
-    By default, servers are every server. A server where check raised
-    gets one failing row.
+    A server where check raised gets one failing row.
+
+    Args:
+        test: The test.
+        check: What returns a server's rows.
+        servers: The servers; None for every one.
+        case: What follows the server's name in the case of a row that
+            check leaves unnamed.
     """
     rows: list[Row] = []
     for server in test.servers if servers is None else servers:
-        for case, status, note in guarded(functools.partial(check, server)):
-            rows.append((case or server.name, status, note))
+        unnamed = f"{server.name} {case}".strip()
+        for found, status, note in guarded(functools.partial(check, server)):
+            rows.append((found or unnamed, status, note))
     return rows
 
 
@@ -343,6 +328,7 @@ class Verdict:
     """What is wrong with a server's health report.
 
     Attributes:
+        problems: What is wrong.
         pending: Whether any of it may yet change by itself.
         storage_only: Whether the host's disks alone are to blame.
     """
@@ -389,7 +375,7 @@ def judge_report(test: Test, server: Server, answer: web.Response) -> Verdict:
         verdict.problems.append(f"the admin got {answer.describe()}")
         verdict.pending = answer.status is None
         return verdict
-    report = parse(answer)
+    report = answer.object()
     found = components(report)
     must, must_not = expected_components(test, server)
     missing = sorted(must - set(found))
@@ -473,21 +459,15 @@ def health_api(test: Test) -> list[Row]:
             return [("", INCONCLUSIVE, f"only the host's disks: {first(verdict.problems)}")]
         if verdict.problems:
             return [("", FAIL, "; ".join(verdict.problems))]
-        return [("", PASS, f"ok: {', '.join(sorted(components(parse(answer))))}")]
+        return [("", PASS, f"ok: {', '.join(sorted(components(answer.object())))}")]
 
     def access(server: Server) -> list[Row]:
         return [health_access(test, server)]
 
     rows: list[Row] = []
     for server in test.servers:
-        rows += [
-            (case or f"{server.name} components", status, note)
-            for case, status, note in guarded(functools.partial(check, server))
-        ]
-        rows += [
-            (case or f"{server.name} access", status, note)
-            for case, status, note in guarded(functools.partial(access, server))
-        ]
+        rows += each_server(test, check, [server], "components")
+        rows += each_server(test, access, [server], "access")
     return rows
 
 
@@ -516,7 +496,7 @@ def health_metrics(test: Test) -> list[Row]:
             return [("", FAIL, f"the report: {before.describe()}, then {after.describe()}")]
         if snapshot is None:
             return [("", FAIL, "its /metrics did not answer 200 to its own scrape token")]
-        then, now = components(parse(before)), components(parse(after))
+        then, now = components(before.object()), components(after.object())
         steady = {n: s for n, (s, _) in then.items() if n in now and now[n][0] == s}
         found = gauges(snapshot)
         problems: list[str] = []
@@ -542,18 +522,20 @@ def health_metrics(test: Test) -> list[Row]:
 # (web_ui/authorization.go), and the scrapes of configDirectorPromScraper
 # and ConfigureEmbeddedPrometheus (web_ui/prometheus.go).
 
+# A Prometheus instant query's series: each one's labels and value.
+Series = list[tuple[dict[str, str], float]]
 
-def vector(answer: web.Response) -> list[tuple[dict[str, str], float]] | None:
+
+def vector(answer: web.Response) -> Series | None:
     """Return the series of a Prometheus instant query's answer.
 
     Returns:
-        Each series' labels and value; None if the answer is not a
-        successful one.
+        The series; None if the answer is not a successful one.
     """
-    found = parse(answer)
+    found = answer.object()
     if answer.status != 200 or found.get("status") != "success":
         return None
-    result: list[tuple[dict[str, str], float]] = []
+    result: Series = []
     for item in common.as_array((common.as_object(found.get("data")) or {}).get("result")) or []:
         item = common.as_object(item) or {}
         labels = {str(k): str(v) for k, v in (common.as_object(item.get("metric")) or {}).items()}
@@ -627,11 +609,13 @@ def promql_access(test: Test, server: Server) -> Row:
     )
 
 
-def self_scrape_problems(found: list[tuple[dict[str, str], float]] | None) -> list[str]:
-    """Return what is wrong with found, a server's `up` for its own scrape.
+def self_scrape_problems(found: Series | None) -> list[str]:
+    """Return what is wrong with a server's `up` for its scrape of itself.
 
-    found is the answer to the server's query of `up` for its scrape of
-    itself: it must have the one target, up (1).
+    It must have the one target, up (1).
+
+    Args:
+        found: The answer to the server's query (vector()).
     """
     if found is None:
         return ["its query of its own scrape failed"]
@@ -642,14 +626,15 @@ def self_scrape_problems(found: list[tuple[dict[str, str], float]] | None) -> li
     return []
 
 
-def servers_scrape_problems(
-    found: list[tuple[dict[str, str], float]] | None, want: Mapping[tuple[str, str], str]
-) -> list[str]:
-    """Return what is wrong with found, a director's `up` for the servers.
+def servers_scrape_problems(found: Series | None, want: Mapping[tuple[str, str], str]) -> list[str]:
+    """Return what is wrong with a director's `up` for the servers' scrape.
 
-    found is the answer to a director's query of `up` for its scrape of
-    the origins and caches: each of want, by its type and web host
-    (expected_targets()), must be there, and up (1).
+    Each of want must be there, and up (1).
+
+    Args:
+        found: The answer to the director's query (vector()).
+        want: The origins and caches, by type and web host
+            (expected_targets()).
     """
     if found is None:
         return ["its query of the servers' scrape failed"]
@@ -775,8 +760,7 @@ def http_metrics(test: Test) -> list[Row]:
     token = test.storage_token(namespace, RWM)
     unknown = test.storage_token(namespace, R, credentials.keys(fed)["unknown"])
     data = common.digest(test.run.encode()).encode() * (OBJECT_SIZE // 64)
-    rel = f"{test.base}/http-metrics"
-    target = stores.url(origin, namespace, rel)
+    target = stores.url(origin, namespace, test.rel("http-metrics"))
 
     before = metrics.fetch(origin.web_url)
     if before is None:
@@ -869,7 +853,7 @@ def level_status(test: Test, server: Server) -> dict[str, Any]:
         Missing: Reading them fails.
     """
     answer = web.request("GET", server.web_url + LOG_LEVEL, token=test.admin(server))
-    found = parse(answer)
+    found = answer.object()
     if answer.status != 200 or "currentLevel" not in found:
         raise Missing(f"GET {LOG_LEVEL} as the admin: {answer.describe()}")
     return found
@@ -928,14 +912,19 @@ def change_level(
     )
 
 
+def remember(test: Test, server: Server, change: str) -> None:
+    """Note server's log level change, for the suite to delete when done."""
+    test.changes.setdefault(server.name, []).append(change)
+
+
 def made(test: Test, server: Server, answer: web.Response) -> str:
     """Return the ID of the change that answer says server made; "" if none.
 
-    The suite deletes the change later, if it still stands.
+    The change is remembered (remember()).
     """
-    change = str(parse(answer).get("changeId", "")) if answer.status == 200 else ""
+    change = str(answer.object().get("changeId", "")) if answer.status == 200 else ""
     if change:
-        test.changes.setdefault(server.name, []).append(change)
+        remember(test, server, change)
     return change
 
 
@@ -960,6 +949,7 @@ class Raised:
     """A log level change of `log-level`'s at a server.
 
     Attributes:
+        server: The server.
         before: The level before it.
         level: Its level.
         change: Its ID.
@@ -1009,7 +999,7 @@ def expiry_rows(test: Test, changes: Sequence[Raised]) -> list[Row]:
     """Check that each of changes is dropped by itself, on time.
 
     Each must be dropped within EXPIRY_SLACK seconds of its deadline: the
-    level back to what it was, and the change no longer listed.
+    level back to what it was, and the change not listed.
     """
     reverted: dict[str, float] = {}
     last: dict[str, dict[str, Any]] = {}
@@ -1101,7 +1091,7 @@ def refusal_row(test: Test, server: Server) -> Row:
 def cli_row(test: Test, server: Server) -> Row:
     """Check that `pelican-server server set-logging-level` makes a change.
 
-    `pelican-server server set-logging-level <level> 20s --server
+    `pelican-server server set-logging-level <level> <duration> --server
     <web URL> --token <file>`, with the admin's token, must make a change
     that the API then lists, which the suite deletes.
     """
@@ -1131,7 +1121,7 @@ def cli_row(test: Test, server: Server) -> Row:
         return case, FAIL, "it ran for 120s"
     found = re.search(r"Change ID: (\S+)", done.stdout)
     if found:
-        test.changes.setdefault(server.name, []).append(found.group(1))
+        remember(test, server, found.group(1))
     if done.returncode != 0 or not found:
         return case, FAIL, f"exit {done.returncode}: {last_line(done.stderr or done.stdout)}"
     change = found.group(1)
@@ -1190,7 +1180,7 @@ def tail(test: Test, server: Server, since: str = "", limit: int = 0) -> dict[st
         asked["limit"] = str(limit)
     url = server.web_url + LOG_TAIL + (f"?{urlencode(asked)}" if asked else "")
     answer = web.request("GET", url, token=test.admin(server))
-    found = parse(answer)
+    found = answer.object()
     if answer.status != 200 or found.get("enabled") is not True:
         raise Missing(f"GET {LOG_TAIL} as the admin: {answer.describe()}, {found or 'no JSON'}")
     return found
@@ -1213,18 +1203,18 @@ def tail_access(test: Test, server: Server) -> Row:
     )
 
 
-def present(test: Test, server: Server, namespace: str, token: str) -> list[str]:
+def present(test: Test, server: Server, token: str) -> list[str]:
     """Present token to server, as a client might, in requests it logs.
 
     The server logs each request at debug. The token goes in the
     Authorization header and in the query (`authz=Bearer%20<token>`), at
-    each of its data URLs, for an object of namespace; and as a login
-    cookie, at its web API.
+    each of its data URLs, for the SEEDED object; and as a login cookie,
+    at its web API.
 
     Returns:
         The URLs that answered nothing.
     """
-    path = f"/{namespace}/data/0.0"
+    path = test.path(SEEDED)
     urls = [o.url for o in test.origins_at(server)] + [c.url for c in test.caches_at(server)]
     silent: list[str] = []
     for url in urls:
@@ -1233,13 +1223,13 @@ def present(test: Test, server: Server, namespace: str, token: str) -> list[str]
             web.request("GET", f"{url}{path}?authz=Bearer%20{token}"),
         )
         silent += [f"{url}{path}" for a in answers if a.status is None]
-    login = web.request("GET", server.web_url + CONFIG, headers={"Cookie": f"login={token}"})
+    login = web.request("GET", server.web_url + CONFIG, headers=webapi.cookie_header(login=token))
     if login.status is None:
         silent.append(server.web_url + CONFIG)
     return silent
 
 
-def redaction_row(test: Test, server: Server, namespace: str) -> Row:
+def redaction_row(test: Test, server: Server) -> Row:
     """Check that a token presented to server never reaches its log tail.
 
     With server's log level raised to debug, present a fresh token
@@ -1253,8 +1243,8 @@ def redaction_row(test: Test, server: Server, namespace: str) -> Row:
     if not change:
         return case, FAIL, f"raising its level to debug: {answer.describe()}"
     try:
-        token = test.storage_token(namespace, R)
-        silent = present(test, server, namespace, token)
+        token = test.storage_token(test.namespace, R)
+        silent = present(test, server, token)
         time.sleep(LOG_SETTLE)
         found = tail(test, server, since)
     finally:
@@ -1280,12 +1270,9 @@ def log_redaction(test: Test) -> list[Row]:
     At every origin and cache: who may read its log tail (tail_access()),
     and no token presented to it reaching the tail (redaction_row()).
     """
-    namespace = test.readable()
     servers = [s for s in test.servers if test.origins_at(s) or test.caches_at(s)]
     return each_server(
-        test,
-        lambda server: [tail_access(test, server), redaction_row(test, server, namespace)],
-        servers,
+        test, lambda server: [tail_access(test, server), redaction_row(test, server)], servers
     )
 
 
@@ -1301,11 +1288,11 @@ class XrootdTarget:
 
     Attributes:
         kind: Its kind: "origin" or "cache".
-        url: The object's URL there.
+        svc: Its service.
+        server: Its web API.
+        url: The SEEDED object's URL there.
         token: What reads the object; None for no token.
         path: The object's path in the federation.
-        route: The directors' route to it: `origin`, or `object` for a
-            cache.
     """
 
     kind: str
@@ -1314,12 +1301,16 @@ class XrootdTarget:
     url: str
     token: str | None
     path: str
-    route: str
 
     @property
     def parameter(self) -> str:
         """Its XRootD log level parameter."""
         return XROOTD_PARAMETERS[self.kind]
+
+    @property
+    def route(self) -> str:
+        """The directors' route to it: `origin`, or `object` for a cache."""
+        return "origin" if self.kind == "origin" else "object"
 
 
 def xrootd_targets(test: Test) -> list[XrootdTarget]:
@@ -1329,41 +1320,21 @@ def xrootd_targets(test: Test) -> list[XrootdTarget]:
     first federated XRootD cache.
     """
     fed = test.fed
-    namespace = test.readable()
-    path = f"/{namespace}/data/0.0"
-    token = test.session.setup_token(namespace) if credentials.has_issuer(fed.exports[namespace]) else None
-    by_url = {s.web_url: s for s in test.servers}
-    found: list[XrootdTarget] = []
+    found: list[tuple[str, common.Origin | common.Cache]] = []
     if fed.origins and fed.origin_variant in common.XROOTD_ORIGINS:
-        origin = fed.origins[0]
-        found.append(
-            XrootdTarget(
-                "origin",
-                origin.svc,
-                by_url[origin.web_url],
-                origin.url + path,
-                token,
-                path,
-                "origin",
-            )
-        )
+        found.append(("origin", fed.origins[0]))
     cache = next((c for c in fed.federated_caches if c.kind == "xrootd"), None)
     if cache is not None:
-        found.append(
-            XrootdTarget(
-                "cache",
-                cache.svc,
-                by_url[cache.web_url],
-                cache.url + path,
-                token,
-                path,
-                "object",
-            )
-        )
-    return found
+        found.append(("cache", cache))
+    path = test.path(SEEDED)
+    token = test.setup if credentials.has_issuer(test.caps) else None
+    return [
+        XrootdTarget(kind, s.svc, test.web.server_at(s.web_url), s.url + path, token, path)
+        for kind, s in found
+    ]
 
 
-def seconds_of(value: Any) -> float | None:
+def duration_seconds(value: Any) -> float | None:
     """Return a duration from a server's configuration, in seconds.
 
     Go's JSON gives a time.Duration in nanoseconds, and a string may be a
@@ -1425,10 +1396,15 @@ class Watch:
 def watch_restart(test: Test, target: XrootdTarget, served: int | None) -> Watch:
     """Watch target, up to RESTART_WAIT seconds, as XRootD restarts.
 
-    It sees when the object is first not answered as it was before
-    (served), and when it is again; and whether the health report says
-    XRootD is not ok, then ok. RestartXrootd says `shutting down` for the
-    drain period, so a look every RESTART_POLL seconds sees it.
+    It sees when the object is first not answered as before, and when it
+    is again; and whether the health report says XRootD is not ok, then
+    ok. RestartXrootd says `shutting down` for the drain period, so a
+    look every RESTART_POLL seconds sees it.
+
+    Args:
+        test: The test.
+        target: The target.
+        served: The status of a GET of the object before the change.
     """
     seen = Watch()
     started = time.monotonic()
@@ -1439,7 +1415,7 @@ def watch_restart(test: Test, target: XrootdTarget, served: int | None) -> Watch
             seen.down = now
         elif answer.status == served and seen.down is not None and seen.back is None:
             seen.back = now
-        status = components(parse(test.health(target.server))).get("xrootd", ("", ""))[0]
+        status = components(test.health(target.server).object()).get("xrootd", ("", ""))[0]
         seen.xrootd_ok = status == "ok"
         seen.xrootd_down = seen.xrootd_down or status not in ("", "ok")
         if seen.restarted and seen.serving and seen.xrootd_ok:
@@ -1471,9 +1447,7 @@ def restart_problems(seen: Watch) -> tuple[list[str], str]:
 
 
 def named_problems(test: Test, target: XrootdTarget) -> list[str]:
-    """Wait until every director names target for its object.
-
-    It waits up to NAMED_WAIT seconds.
+    """Wait up to NAMED_WAIT seconds until every director names target.
 
     Returns:
         What is still wrong after that.
@@ -1501,7 +1475,7 @@ def xrootd_rows(test: Test, target: XrootdTarget) -> list[Row]:
     """
     name = target.svc
     config = test.config(target.server)
-    drain = seconds_of(setting(config, "Xrootd.ShutdownTimeout"))
+    drain = duration_seconds(setting(config, "Xrootd.ShutdownTimeout"))
     drain = DRAIN_DEFAULT if drain is None else drain
     current = str(setting(config, target.parameter) or "").lower()
     level = "info" if current == "debug" else "debug"
@@ -1520,7 +1494,7 @@ def xrootd_rows(test: Test, target: XrootdTarget) -> list[Row]:
     duration = int(drain) + XROOTD_EXTRA
     answer = change_level(test, target.server, level, duration, target.parameter)
     change = made(test, target.server, answer)
-    found = parse(answer)
+    found = answer.object()
     case = f"{name} restart"
     if not change:
         return rows + [(case, FAIL, f"the POST got {answer.describe()}, and no change ID")]
@@ -1574,10 +1548,7 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 
 
 def skip(_fed: common.Federation) -> str | None:
-    """Return None, as there is always something to test.
-
-    Every server reports on itself.
-    """
+    """Return None: every server reports on itself."""
     return None
 
 
@@ -1591,14 +1562,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     try:
         for name in selected:
             for case, status, note in guarded(functools.partial(RUN[name], test)):
-                results.add(f"{name} {case}".strip(), status, note)
+                results.add(f"{name} {case}" if case else name, status, note)
     finally:
         undo_changes(test)
         test.web.wait_for_logins()
-        fed = session.fed
-        exports = {ns: fed.exports[ns] for ns in credentials.exported(fed)}
-        errors = stores.empty_tree_everywhere(
-            fed.origins, exports, "data/observability", session.setup_tokens()
-        )
-        if errors:
-            warn(f"could not remove the suite's objects: {first(errors)}")
+        test.clean("after the run")

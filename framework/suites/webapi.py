@@ -1,41 +1,13 @@
 """Who may use each server's web API (/api/v1.0/).
 
-Every Pelican server serves it on its web port. The suite tests its admin
-routes; a director's API tokens; logging in, and the login cookie; its
-guards against cross-site requests; malformed paths; and the version each
-server reports.
+See docs/tests/web-api.md.
 
-  admin-matrix    at every server, each admin route refuses no
-                  credentials (401) and an ordinary user (403), and
-                  serves the admin; a bearer token not of the server's
-                  own making counts as no credentials
-  api-tokens      a director's API tokens: made only through a login,
-                  shown once, and good for their scope until deleted or
-                  expired
-  login           logging in and out at every server, the login cookie,
-                  whoami, and the limit of a login a second
-  csrf            the registry's CSRF tokens, and every server's refusal
-                  of a cookie's cross-origin POST
-  malformed-path  a path that is not UTF-8 gets 400, and the server
-                  serves on
-  version         every server reports one version, as do its Server
-                  header and the directors
-
-The suite acts at each server as its admin, with a bearer token that the
-server takes as theirs (credentials.mint_user(), as `pelican cache
-introspect` mints the admin's), or with the cookie of a login as `admin`;
-and as an ordinary user, `test-webapi`, whom the admin creates at each
-server once, and later runs reuse. Each first agrees to the server's AUP
-(accounts.agree_to_aup()), which every server has by default, and
-without which it refuses them its user routes.
-
-As the admin, the suite sends no admin route that would change anything,
-but those that make `test-webapi` and API tokens, and the registry's for
-a registration and a server that do not exist. It sends the routes that
-restart a server and change its configuration and AUP only with no
-credentials or the user's, which they must refuse. It spaces its logins
-at each server a second apart, since a server allows an address a login
-a second (Server.UILoginRateLimit), but where it means to exceed that.
+The suite acts at each server as its admin, and as an ordinary user
+(testlib.webapi.Access). As the admin, it sends no route that would
+change anything, but those that make the user and API tokens, and the
+registry's for a registration and a server that do not exist. It sends
+the routes that restart a server and change its configuration and AUP
+only with no credentials or the user's, which they must refuse.
 """
 
 import os
@@ -45,7 +17,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from functools import partial
 
-from testlib import accounts, common, credentials, director, jwt, web
+from testlib import accounts, common, credentials, director, issuer, jwt, web
 from testlib.common import outcome
 from testlib.director import expected_targets, listing_problems
 from testlib.report import FAIL, PASS, SKIP
@@ -131,14 +103,26 @@ REGISTRY_ROUTES = (
 )
 
 DISCOVERY_SCOPE = "pelican.director_service_discovery"
-# A scope that a user may be granted, and that no role derives: with it, an
-# outside Grafana queries a director's Prometheus, as the OSDF's does.
-QUERY_SCOPE = credentials.QUERY_SCOPE
 PROMQL = f"{API}/prometheus/query"
 
 
 class Missing(Exception):
-    """The absence of something the scenario needs."""
+    """Something the scenario needs is not there."""
+
+
+def each_server(test: Access, rows_of: Callable[[Server], list[Row]], case: str = "") -> list[Row]:
+    """Return rows_of(server)'s rows for every server.
+
+    A server where it raises Missing or accounts.ApiError gets one failing
+    row instead, named for the server and case.
+    """
+    rows: list[Row] = []
+    for server in test.servers:
+        try:
+            rows += rows_of(server)
+        except (Missing, accounts.ApiError) as e:
+            rows.append((f"{server.name} {case}".strip(), FAIL, str(e)))
+    return rows
 
 
 def unknown_ids(test: Access, server: Server) -> tuple[str, str]:
@@ -179,7 +163,7 @@ def namespace_issuer(test: Access, server: Server) -> str:
     for ns in credentials.PROTECTED:
         if test.fed.issuer_of(ns) != local:
             return test.fed.issuer_of(ns)
-    return f"{server.web_url}/api/v1.0/issuer/ns/protected-a"
+    return issuer.url(server.web_url, "/protected-a")
 
 
 def strange_tokens(test: Access, server: Server) -> list[tuple[str, str, str, tuple[int, ...]]]:
@@ -199,18 +183,18 @@ def strange_tokens(test: Access, server: Server) -> list[tuple[str, str, str, tu
     key, whose = other_key(test, server)
     expired = {**claims, "iat": now - 600, "nbf": now - 600, "exp": now - 300}
     nobody = {**claims, "sub": f"webapi-nobody-{test.run}"}
-    issuer = namespace_issuer(test, server)
+    other_issuer = namespace_issuer(test, server)
     return [
         (
             "other-key",
             f"signed by {whose}",
-            jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), claims, key=key),
+            jwt.sign(claims, key),
             (401,),
         ),
         (
             "namespace-issuer",
-            f"from {issuer}",
-            jwt.encode(head, {**claims, "iss": issuer}, key=server.key),
+            f"from {other_issuer}",
+            jwt.encode(head, {**claims, "iss": other_issuer}, key=server.key),
             (401,),
         ),
         ("expired", "expired 300s ago", jwt.encode(head, expired, key=server.key), (401,)),
@@ -302,13 +286,7 @@ def admin_matrix(test: Access) -> list[Row]:
     Each is tried with no credentials, the user's bearer token, and the
     admin's; and with bearer tokens that must count as no credentials.
     """
-    rows: list[Row] = []
-    for server in test.servers:
-        try:
-            rows += matrix_rows(test, server)
-        except (Missing, accounts.ApiError) as e:
-            rows.append((server.name, FAIL, str(e)))
-    return rows
+    return each_server(test, partial(matrix_rows, test))
 
 
 # --------------------------------------------------------------------------
@@ -317,7 +295,7 @@ def admin_matrix(test: Access) -> list[Row]:
 
 
 def kept(answer: web.Response, made: list[str]) -> tuple[str, str, str] | None:
-    """Return the API token that answer hands out, if it does (made_token()).
+    """Return the API token that answer hands out (made_token()), if any.
 
     Its ID goes in made.
     """
@@ -344,8 +322,7 @@ def query_problems(answer: web.Response) -> list[str]:
     """
     if answer.status != 200:
         return []
-    found = common.as_object(answer.json()) or {}
-    return [] if found.get("status") == "success" else ["the 200 is no successful query"]
+    return [] if answer.object().get("status") == "success" else ["the 200 is no successful query"]
 
 
 def listed_problems(answer: web.Response, token_id: str, name: str, secret: str) -> list[str]:
@@ -366,6 +343,25 @@ def listed_problems(answer: web.Response, token_id: str, name: str, secret: str)
     if hashed:
         problems.append(f"the listing has fields {', '.join(hashed)}")
     return problems
+
+
+def expiring_rows(server: Server, cookie: str, name: str, made: list[str]) -> list[Row]:
+    """Check an API token that expires in API_TOKEN_EXPIRY seconds.
+
+    It must work at once, and be refused (403) two seconds after it expires.
+    Its ID goes in made.
+    """
+    expires = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=API_TOKEN_EXPIRY)
+    answer = create_token(server.web_url, name, [DISCOVERY_SCOPE], expires, cookie)
+    token = kept(answer, made)
+    if token is None:
+        return [("expired", FAIL, f"making it: {answer.describe()}, with no API token")]
+    before = discover(server, token[0])
+    wait = expires.timestamp() + 2 - time.time()
+    if wait > 0:
+        time.sleep(wait)
+    after = discover(server, token[0])
+    return [judge("expired", [("before", before, (200,)), ("after", after, (403,))])]
 
 
 def api_tokens(test: Access) -> list[Row]:
@@ -418,27 +414,18 @@ def api_tokens(test: Access) -> list[Row]:
         )
         rows += expiring_rows(server, cookie, f"{name}-expiring", made)
         answer = create_token(
-            server.web_url,
-            f"{name}-bearer",
-            [DISCOVERY_SCOPE],
-            datetime.now(timezone.utc) + timedelta(hours=1),
-            token=test.admin(server),
+            server.web_url, f"{name}-bearer", [DISCOVERY_SCOPE], expires, token=test.admin(server)
         )
         kept(answer, made)
         rows.append(judge("bearer-create", [("admin's bearer token", answer, (403,))]))
         # A token keeps a user-grantable scope only while its creator
         # holds it, and a creator who holds server.admin holds them all
         # (Pelican's docs/user-group-design.md). So the admin must be able
-        # to mint a token of monitoring.query, which no role derives, and
+        # to mint a token of monitoring.query, which no role derives (an
+        # outside Grafana queries a director's Prometheus with one), and
         # it must query the director's Prometheus; a refusal must not be
         # answered 200.
-        answer = create_token(
-            server.web_url,
-            f"{name}-query",
-            [QUERY_SCOPE],
-            datetime.now(timezone.utc) + timedelta(hours=1),
-            cookie,
-        )
+        answer = create_token(server.web_url, f"{name}-query", [credentials.QUERY_SCOPE], expires, cookie)
         token = kept(answer, made)
         if token is None:
             rows.append(("admin-grantable", FAIL, f"{answer.describe()}, with no API token"))
@@ -447,7 +434,7 @@ def api_tokens(test: Access) -> list[Row]:
             rows.append(
                 judge(
                     "admin-grantable",
-                    [(QUERY_SCOPE, answer, (200, 201)), ("query", queried, (200,))],
+                    [(credentials.QUERY_SCOPE, answer, (200, 201)), ("query", queried, (200,))],
                     query_problems(queried),
                 )
             )
@@ -457,25 +444,6 @@ def api_tokens(test: Access) -> list[Row]:
             if not gone.ok:
                 common.warn(f"could not delete API token {token_id}: {gone.describe()}")
     return rows
-
-
-def expiring_rows(server: Server, cookie: str, name: str, made: list[str]) -> list[Row]:
-    """Check an API token that expires in API_TOKEN_EXPIRY seconds.
-
-    It must work at once, and be refused (403) two seconds after it expires.
-    Its ID goes in made.
-    """
-    expires = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=API_TOKEN_EXPIRY)
-    answer = create_token(server.web_url, name, [DISCOVERY_SCOPE], expires, cookie)
-    token = kept(answer, made)
-    if token is None:
-        return [("expired", FAIL, f"making it: {answer.describe()}, with no API token")]
-    before = discover(server, token[0])
-    wait = expires.timestamp() + 2 - time.time()
-    if wait > 0:
-        time.sleep(wait)
-    after = discover(server, token[0])
-    return [judge("expired", [("before", before, (200,)), ("after", after, (403,))])]
 
 
 # --------------------------------------------------------------------------
@@ -545,10 +513,14 @@ def whoami(server: Server, token: str | None = None, cookie: str = "") -> web.Re
 def whoami_row(case: str, answer: web.Response, role: str | None, user: str = "") -> Row:
     """Return case's row: answer, a /whoami's, must say who is logged in.
 
-    It must say so with role (and user, if given), or, for role None, say
-    that no one is, and then carry no CSRF token.
+    Args:
+        case: The row's case.
+        answer: The answer.
+        role: The role it must name; None if no one is logged in, when
+            it must carry no CSRF token either.
+        user: The user it must name, if any.
     """
-    found = common.as_object(answer.json()) or {}
+    found = answer.object()
     problems: list[str] = []
     if role is None:
         if found.get("authenticated") is not False:
@@ -568,8 +540,9 @@ def whoami_row(case: str, answer: web.Response, role: str | None, user: str = ""
 def login_rows(test: Access, server: Server) -> list[Row]:
     """Return login()'s rows for server."""
     name = server.name
+    admin = {"user": "admin", "password": ADMIN_PASSWORD}
     rows: list[Row] = []
-    good = test.post_login(server, {"user": "admin", "password": ADMIN_PASSWORD})
+    good = test.post_login(server, admin)
     rows.append(judge(f"{name} admin", [("admin/asdf", good, (200,))], cookie_problems(good)))
     wrong = test.post_login(server, {"user": "admin", "password": f"wrong-{test.run}"})
     rows.append(judge(f"{name} wrong-password", [("wrong password", wrong, (401,))]))
@@ -593,7 +566,6 @@ def login_rows(test: Access, server: Server) -> list[Row]:
     rows.append(whoami_row(f"{name} whoami-user", user, "user", USER))
     # Two logins at once, the second claiming another address, which a
     # server that trusts no proxy (Server.TrustedProxies) must not believe.
-    admin = {"user": "admin", "password": ADMIN_PASSWORD}
     one = test.post_login(server, admin, early=True)
     two = test.post_login(server, admin, {"X-Forwarded-For": "203.0.113.7"}, spaced=False)
     rows.append(judge(f"{name} rate-limit", [("first", one, (200,)), ("second, at once", two, (429,))]))
@@ -608,13 +580,7 @@ def login(test: Access) -> list[Row]:
     logged in, with no credentials, the admin's cookie, and the user's
     token; and two logins at once.
     """
-    rows: list[Row] = []
-    for server in test.servers:
-        try:
-            rows += login_rows(test, server)
-        except (Missing, accounts.ApiError) as e:
-            rows.append((server.name, FAIL, str(e)))
-    return rows
+    return each_server(test, partial(login_rows, test))
 
 
 # --------------------------------------------------------------------------
@@ -708,12 +674,7 @@ def cross_origin(test: Access, server: Server) -> Row:
 def csrf(test: Access) -> list[Row]:
     """Run registry_csrf(), and cross_origin() at every server."""
     rows = registry_csrf(test)
-    for server in test.servers:
-        try:
-            rows.append(cross_origin(test, server))
-        except accounts.ApiError as e:
-            rows.append((f"{server.name} cross-origin", FAIL, str(e)))
-    return rows
+    return rows + each_server(test, lambda server: [cross_origin(test, server)], "cross-origin")
 
 
 # --------------------------------------------------------------------------
@@ -750,7 +711,7 @@ def reported_version(server: Server) -> tuple[str | None, str]:
         The version and "", or None and why it reports none.
     """
     answer = web.request("GET", server.web_url + VERSION)
-    found = (common.as_object(answer.json()) or {}).get("version")
+    found = answer.object().get("version")
     if answer.status != 200 or not isinstance(found, str) or not found:
         return None, f"{server.name}: {answer.describe()}, with no version"
     return found, ""
@@ -763,6 +724,42 @@ def header_row(case: str, answer: web.Response, reported: str) -> Row:
     if answer.status is None:
         return case, FAIL, "no response"
     return (case, PASS, got) if got == want else (case, FAIL, f"Server is {got!r}, not {want!r}")
+
+
+def listing_row(
+    server: Server,
+    listing: web.Response,
+    by_host: Mapping[str, str],
+    versions: Mapping[str, str],
+) -> Row:
+    """Return a row for the director server's list of servers.
+
+    Each server of the shape in it must have the version that server
+    reports.
+
+    Args:
+        server: A director.
+        listing: Its answer to a GET of its list of servers.
+        by_host: The name of each of the shape's servers, by host.
+        versions: The version that each server reports, by name.
+    """
+    case = f"listed {server.name}"
+    if listing.status != 200:
+        return case, FAIL, f"{DIRECTOR_SERVERS}: {listing.describe()}"
+    problems: list[str] = []
+    count = 0
+    for entry in (common.as_object(e) or {} for e in common.as_array(listing.json()) or []):
+        name = by_host.get(director.host(str(entry.get("webUrl", ""))))
+        if name is None or name not in versions:
+            continue
+        count += 1
+        if entry.get("version") != versions[name]:
+            problems.append(
+                f"it lists {entry.get('name')} at {entry.get('version')!r}, not {versions[name]!r}"
+            )
+    if count == 0:
+        problems.append("it lists none of the shape's servers")
+    return (case, *outcome(problems, f"{count} server(s)"))
 
 
 def version(test: Access) -> list[Row]:
@@ -801,42 +798,6 @@ def version(test: Access) -> list[Row]:
             answer = web.request("GET", server.web_url + REGISTRATIONS)
             rows.append(header_row(f"header {server.name} registry", answer, mine))
     return rows
-
-
-def listing_row(
-    server: Server,
-    listing: web.Response,
-    by_host: Mapping[str, str],
-    versions: Mapping[str, str],
-) -> Row:
-    """Return a row for the director server's list of servers.
-
-    Each server of the shape in it must have the version that server
-    reports.
-
-    Args:
-        server: A director.
-        listing: Its answer to a GET of its list of servers.
-        by_host: The name of each of the shape's servers, by host.
-        versions: The version that each server reports, by name.
-    """
-    case = f"listed {server.name}"
-    if listing.status != 200:
-        return case, FAIL, f"{DIRECTOR_SERVERS}: {listing.describe()}"
-    problems: list[str] = []
-    count = 0
-    for entry in (common.as_object(e) or {} for e in common.as_array(listing.json()) or []):
-        name = by_host.get(director.host(str(entry.get("webUrl", ""))))
-        if name is None or name not in versions:
-            continue
-        count += 1
-        if entry.get("version") != versions[name]:
-            problems.append(
-                f"it lists {entry.get('name')} at {entry.get('version')!r}," + f" not {versions[name]!r}"
-            )
-    if count == 0:
-        problems.append("it lists none of the shape's servers")
-    return (case, *outcome(problems, f"{count} server(s)"))
 
 
 RUN: dict[str, Callable[[Access], list[Row]]] = {

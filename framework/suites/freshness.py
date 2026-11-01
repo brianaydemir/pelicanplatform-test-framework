@@ -1,75 +1,46 @@
 """How long a cache keeps its copy of an object, and what it tells clients.
 
-Both go by the Cache-Control that the origins send (Origin.CacheControl).
-The suite checks that a cache keeps or drops a copy as the origins say,
-tells clients the truth about its copy's freshness, and keeps nothing it
-should not: a 404, an object marked no-store or private, or anything a
-HEAD touched.
-
-  only-if-cached      each V2 cache answers only-if-cached (or the
-                      legacy X-Pelican-NoDownload) from what it holds,
-                      504 otherwise, fetching nothing; a plain HEAD
-                      fetches nothing either
-  no-negative-cache   each cache and director, having said 404 of an
-                      object, serves it once it exists
-  cc-downstream       the Cache-Control and Age that each V2 cache sends
-                      on a fill, a hit, and a 304
-  propfind-freshness  each V2 cache's Depth 0 PROPFIND of an empty
-                      object, and of one overwritten once its copy is
-                      stale
-  stale-if-error      each V2 cache serves its stale copy while every
-                      origin is down, and fails a read of what it lacks
-  must-revalidate     under max-age=30, must-revalidate, each V2 cache
-                      serves no stale copy while every origin is down
-  cc-immediate        under max-age=0 and no-cache, each V2 cache serves
-                      an overwrite at once (no-cache: within its 5-second
-                      grace)
-  cc-not-stored       under no-store and private, each V2 cache passes
-                      the object through, and keeps none of it
-  s-maxage            under max-age=120, s-maxage=20, each V2 cache
-                      serves an overwrite after about 20 seconds, as RFC
-                      9111 says a shared cache must
+See docs/tests/cache-freshness.md.
 
 Each case needs the origins to send a Cache-Control of its own, or any.
 The suite runs the cases in phases, one per Cache-Control: first those
 that take what the origins send as the shape is (none, or
-ORIGIN_CACHE_CONTROL's), then, for each other value, it restarts every
-origin with Origin.CacheControl set to it (control.restart_with()),
+ORIGIN_CACHE_CONTROL's); then, for each other value, it restarts every
+origin with Origin.CacheControl set to it (control.restart_all_with()),
 runs the cases that need it, and restores the origins. Only native
 origins send Origin.CacheControl, and ORIGIN_CACHE_CONTROL beats a
 configuration file, so the restarts need native origins, no
-ORIGIN_CACHE_CONTROL, a control helper, and a topology other than
-`tiny`, whose origin is the whole federation's process; otherwise, their
-cases skip.
+ORIGIN_CACHE_CONTROL, and origins that can restart alone
+(control.unrestartable()); otherwise, their cases skip.
 
 The caches asked are the federated ones (a site-local cache's upstream
 is another cache, which sends Cache-Control of its own). XRootD caches
 do not parse Cache-Control as a V2 cache does, so only
 `no-negative-cache` asks them. Objects go under
 /protected-a/data/freshness/<run>/, a collection per case, put at every
-origin (stores.seed_everywhere()) with a WLCG token; every request for
-them presents a token of the session's profile.
+origin with a WLCG token (suite.Test.put()); every request for them
+presents a token of the session's profile.
 """
 
-import contextlib
 import json
 import os
 import re
 import time
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 from testlib import (
     blocks,
+    cacheapi,
     common,
     control,
-    credentials,
     digests,
     director,
     metrics,
     stores,
+    suite,
     web,
     webdav,
 )
@@ -96,7 +67,7 @@ NAMESPACE = "protected-a"
 # origins restarted to send it, the cases that need a copy to go stale
 # soon run.
 MAX_AGE = "max-age=30"
-# The configuration file that restarts the origins with another.
+# The configuration file with which the origins restart to send another.
 CONFIG_FILE = "90-freshness.yaml"
 
 # A V2 cache's freshness for an object whose origin sends no
@@ -107,12 +78,6 @@ DEFAULT_MIN_AGE = DEFAULT_MAX_AGE * 9 // 10
 # How far an Age may stray from the time that has passed: it is whole
 # seconds, rounded down, and requests take time.
 AGE_SLACK = 2
-# How long a V2 cache may take to say, with Age, that it holds an object
-# it has served whole.
-HELD_WAIT = 30
-# How long, after the origins restart, every director may take to name
-# them, and every cache to reach them.
-SETTLE_WAIT = 150
 # How long past an object's freshness a cache may take to serve a new
 # version, which it fetches on a request: no-cache's grace, and
 # max-age=0's none, are counted from when it last read the old one.
@@ -136,127 +101,32 @@ HELD_SIZE = 10000
 # database (InlineThreshold, 4096 bytes).
 OBJECT_SIZE = 3 * blocks.XROOTD_BLOCK + 7
 
-ONLY_IF_CACHED = {"Cache-Control": "only-if-cached"}
+# Pelican's own header asking a cache to answer only from what it holds
+# (web.ONLY_IF_CACHED is the standard one).
 NO_DOWNLOAD = {"X-Pelican-NoDownload": "true"}
 
-# A row: its status and its note.
-Row = tuple[str, str]
 
-
-class Test:
-    """The run's objects in /protected-a, the token, and the shape.
+class Test(suite.Test):
+    """The run's objects in /protected-a, and the shape.
 
     Attributes:
-        base: The run's collection, in /protected-a.
-        token: A `server` token for /protected-a, of the session's
-            profile.
-        setup: A `server` token for /protected-a, of the WLCG profile,
-            for putting objects in place.
-        caps: /protected-a's capabilities.
-        direct: Whether /protected-a takes direct clients.
+        origins: The origins.
         caches: The federated caches.
         v2: The federated V2 caches.
         sent: What the origins send as the shape is: only native ones send
             Origin.CacheControl.
-        made: The collections that put() has made.
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.base = f"data/freshness/{session.run}"
-        self.token = session.token(NAMESPACE)
-        self.setup = session.setup_token(NAMESPACE)
-        self.caps = self.fed.exports[NAMESPACE]
-        self.direct = "DirectReads" in self.caps
+        super().__init__(session, "freshness", NAMESPACE)
         self.origins = self.fed.origins
         self.caches = self.fed.federated_caches
         self.v2 = [c for c in self.caches if c.kind == "v2"]
         self.sent = self.fed.sent_cache_control
-        self.made: set[str] = set()
-
-    def rel(self, *parts: str) -> str:
-        """Return where parts are, under the run's collection."""
-        return "/".join([self.base, *parts])
-
-    def url(self, server_url: str, rel: str) -> str:
-        """Return rel's URL in /protected-a at the server at server_url."""
-        return f"{server_url}/{NAMESPACE}/{quote(rel)}"
-
-    def path(self, rel: str) -> str:
-        """Return rel's path in the federation."""
-        return f"/{NAMESPACE}/{rel}"
-
-    def put(self, objects: Mapping[str, bytes]) -> str | None:
-        """Put objects, by rel, and their collections, at every origin.
-
-        Returns:
-            What went wrong, or None.
-        """
-        for rel, data in objects.items():
-            parent = rel.rsplit("/", 1)[0]
-            if parent not in self.made:
-                errors = stores.make_dirs(self.origins, NAMESPACE, parent, self.setup)
-                if errors:
-                    return errors[0]
-                self.made.add(parent)
-            errors = stores.seed_everywhere(self.origins, NAMESPACE, rel, data, self.setup, self.caps)
-            if errors:
-                return errors[0]
-        return None
-
-    def ask(
-        self,
-        method: str,
-        server_url: str,
-        rel: str,
-        headers: Mapping[str, str] | None = None,
-        timeout: float = 120,
-    ) -> web.Response:
-        """Send method of rel at server_url, with the token."""
-        return web.request(
-            method,
-            self.url(server_url, rel),
-            token=self.token,
-            headers=headers,
-            timeout=timeout,
-        )
-
-    def admin_token(self, cache: common.Cache) -> str:
-        """Return a token that cache's web API takes as its admin's.
-
-        It is minted by credentials.mint_admin(), signed with the cache's
-        own key.
-        """
-        issuer = credentials.local_issuer(self.fed, cache.web_url)
-        key = common.signing_key(f"issuer-keys/{cache.svc}")
-        out = self.session.path(f"tokens/freshness-admin.{cache.svc}")
-        return credentials.mint_admin(self.fed, out, issuer, key)
 
 
 # --------------------------------------------------------------------------
 # What the caches answer.
-
-
-def age(answer: web.Response) -> int | None:
-    """Return answer's Age, in seconds, or None if it has none."""
-    value = answer.header("Age").strip()
-    return int(value) if value.isdigit() else None
-
-
-def holds(test: Test, cache: common.Cache, rel: str) -> bool:
-    """Return whether a V2 cache says, with Age, it holds all of rel.
-
-    It is asked with the setup token: this is a check of the cache's
-    state, not of the pass's tokens.
-    """
-    answer = web.request("HEAD", test.url(cache.url, rel), token=test.setup)
-    return answer.status == 200 and age(answer) is not None
-
-
-def wait_held(test: Test, cache: common.Cache, rel: str, seconds: float = HELD_WAIT) -> bool:
-    """Return whether a V2 cache says it holds all of rel within seconds."""
-    return common.wait_for(lambda: holds(test, cache, rel), seconds, interval=1)
 
 
 def directives(value: str) -> dict[str, str]:
@@ -277,18 +147,10 @@ def directives(value: str) -> dict[str, str]:
 def seconds_of(value: str, name: str) -> int:
     """Return the seconds of directive name in Cache-Control value.
 
-    value must have the directive.
+    Raises:
+        KeyError: value lacks it.
     """
     return int(directives(value)[name])
-
-
-def served(answer: web.Response, data: bytes) -> str | None:
-    """Return why answer is not a whole object holding data, or None."""
-    if answer.status != 200:
-        return answer.describe()
-    if answer.body != data:
-        return f"{len(answer.body)} bytes, not the object"
-    return None
 
 
 def sleep_until(moment: float) -> None:
@@ -310,6 +172,22 @@ def poll(problem: Callable[[], str | None], seconds: float, interval: float) -> 
         time.sleep(interval)
         found = problem()
     return found
+
+
+def hold(test: Test, cache: common.Cache, rel: str, data: bytes) -> str | None:
+    """Read rel whole through a V2 cache, which must then say it holds it.
+
+    Unlike suite.Test.fill(), the read presents the pass's token.
+
+    Returns:
+        What went wrong, or None.
+    """
+    why = web.served(test.ask("GET", cache.url, rel), data)
+    if why:
+        return f"{cache.svc}: GET of the object to hold got {why}"
+    if not test.wait_held(cache, rel):
+        return f"{cache.svc}: no Age within {suite.HELD_WAIT}s of a whole read"
+    return None
 
 
 # An origin writes an object's ETag from its file's modification time, to
@@ -360,13 +238,18 @@ class Versions:
     ) -> tuple[str | None, str]:
         """Return which version a read of rel through cache came back as.
 
-        request is the range to read, or None for the whole object; a
-        whole read asks for a digest too, which, if one comes, must be
+        A whole read asks for a digest too, which, if one comes, must be
         that version's.
 
+        Args:
+            test: The test.
+            cache: The cache to read through.
+            rel: The object.
+            request: The range to read, or None for the whole object.
+
         Returns:
-            As blocks.which_version() tells: the version, `v1` or `v2`,
-            and ""; or None, and why.
+            The version, `v1` or `v2`, and ""; or None, and why
+            (blocks.which_version()).
         """
         headers = {"Range": blocks.header(request)} if request else {"Want-Digest": "crc32c"}
         answer = test.ask("GET", cache.url, rel, headers)
@@ -406,37 +289,9 @@ class Versions:
 # Phases: the origins sending one Cache-Control.
 
 
-def serving(test: Test) -> str | None:
-    """Return why /protected-a is not served as before, or None if it is.
-
-    Every director must name every origin for the probe, and every cache
-    answer a HEAD of it, which fetches nothing. Each is asked with the
-    setup token, since this is a check of the shape, not of the pass's
-    tokens.
-    """
-    path = test.path(test.rel(PROBE))
-    for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.setup)
-        for origin in test.origins:
-            if not where.names(director.host(origin.url)):
-                return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
-    for cache in test.caches:
-        answer = web.request("HEAD", test.url(cache.url, test.rel(PROBE)), token=test.setup)
-        if answer.status != 200 or answer.header("Content-Length") != str(PROBE_SIZE):
-            return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
-    return None
-
-
 def settle(test: Test) -> str | None:
-    """Wait until the federation serves /protected-a as before.
-
-    See serving(). A server that exited on its own ends the wait at once
-    (control.settle()).
-
-    Returns:
-        Why it doesn't within SETTLE_WAIT seconds, or None.
-    """
-    return control.settle(lambda: serving(test), SETTLE_WAIT)
+    """Wait until the federation serves the probe (suite.Test.settle())."""
+    return test.settle(test.rel(PROBE), PROBE_SIZE)
 
 
 def not_sent(test: Test, value: str) -> str | None:
@@ -477,22 +332,7 @@ def unreachable(test: Test, value: str) -> str | None:
             f"ORIGIN_CACHE_CONTROL ('{test.fed.origin_cache_control}') sets"
             " Origin.CacheControl by environment, which no configuration file overrides"
         )
-    if test.fed.tiny:
-        return "the tiny topology's origin is the whole federation's process"
-    return control.unavailable()
-
-
-@contextlib.contextmanager
-def origins_sending(test: Test, value: str) -> Generator[None, None, None]:
-    """Restart every origin with Origin.CacheControl value.
-
-    Afterward, restart each as it was.
-    """
-    text = f"Origin:\n  CacheControl: {json.dumps(value)}\n"
-    with contextlib.ExitStack() as stack:
-        for origin in test.origins:
-            stack.enter_context(control.restart_with(origin.svc, {CONFIG_FILE: text}))
-        yield
+    return control.unrestartable(test.fed)
 
 
 # --------------------------------------------------------------------------
@@ -500,7 +340,7 @@ def origins_sending(test: Test, value: str) -> Generator[None, None, None]:
 # send, and returns its result and a note.
 
 
-def only_if_cached(test: Test, _value: str) -> Row:
+def only_if_cached(test: Test, _value: str) -> suite.Row:
     """Check that each V2 cache answers only-if-cached from what it holds.
 
     At each V2 cache, an object it lacks: a GET and a HEAD with
@@ -520,8 +360,8 @@ def only_if_cached(test: Test, _value: str) -> Row:
         return FAIL, why
 
     problems: list[str] = []
-    asks = [("GET", ONLY_IF_CACHED), ("HEAD", ONLY_IF_CACHED), ("GET", NO_DOWNLOAD)]
-    asks += [("HEAD", NO_DOWNLOAD), ("GET", ONLY_IF_CACHED)]
+    asks = [("GET", web.ONLY_IF_CACHED), ("HEAD", web.ONLY_IF_CACHED), ("GET", NO_DOWNLOAD)]
+    asks += [("HEAD", NO_DOWNLOAD), ("GET", web.ONLY_IF_CACHED)]
     before = metrics.origins_sent_bytes(test.fed)
     for wait, plan in ((0, asks), (2, asks[:1])):
         time.sleep(wait)
@@ -556,7 +396,7 @@ def only_if_cached(test: Test, _value: str) -> Row:
                 + f" Content-Length '{answer.header('Content-Length')}'"
             )
         for method in ("HEAD", "GET"):
-            answer = test.ask(method, cache.url, rel, ONLY_IF_CACHED)
+            answer = test.ask(method, cache.url, rel, web.ONLY_IF_CACHED)
             if answer.status != 504:
                 problems.append(
                     f"{cache.svc}: after a plain HEAD, {method} with only-if-cached got"
@@ -565,19 +405,16 @@ def only_if_cached(test: Test, _value: str) -> Row:
 
     for cache in test.v2:
         rel, data = held[cache.svc], objects[held[cache.svc]]
-        why = served(test.ask("GET", cache.url, rel), data)
+        why = hold(test, cache, rel, data)
         if why:
-            problems.append(f"{cache.svc}: GET of the object to hold got {why}")
+            problems.append(why)
             continue
-        if not wait_held(test, cache, rel):
-            problems.append(f"{cache.svc}: no Age within {HELD_WAIT}s of a whole read")
-            continue
-        for method, headers in (("GET", ONLY_IF_CACHED), ("GET", NO_DOWNLOAD)):
-            why = served(test.ask(method, cache.url, rel, headers), data)
+        for method, headers in (("GET", web.ONLY_IF_CACHED), ("GET", NO_DOWNLOAD)):
+            why = web.served(test.ask(method, cache.url, rel, headers), data)
             if why:
                 asked = ", ".join(f"{k}: {v}" for k, v in headers.items())
                 problems.append(f"{cache.svc}: {method} with {asked} of what it holds got {why}")
-        answer = test.ask("HEAD", cache.url, rel, ONLY_IF_CACHED)
+        answer = test.ask("HEAD", cache.url, rel, web.ONLY_IF_CACHED)
         if answer.status != 200 or answer.header("Content-Length") != str(HELD_SIZE):
             problems.append(
                 f"{cache.svc}: HEAD with only-if-cached of what it holds got"
@@ -586,7 +423,7 @@ def only_if_cached(test: Test, _value: str) -> Row:
     return outcome(problems, "; ".join([f"{len(test.v2)} cache(s)"] + notes))
 
 
-def bare_get(url: str, test: Test, rel: str) -> tuple[web.Response, str]:
+def bare_get(test: Test, url: str, rel: str) -> tuple[web.Response, str]:
     """GET rel's bare path at the director at url, as curl -L would.
 
     The answer is followed once to where it leads.
@@ -604,19 +441,23 @@ def bare_get(url: str, test: Test, rel: str) -> tuple[web.Response, str]:
 def not_back(test: Test, target: common.Cache | str, rel: str, data: bytes) -> str | None:
     """Return why a GET of rel at target does not get data, or None.
 
-    target is a cache, or the URL of a director, whose bare path is asked
-    and followed (see bare_get()).
+    Args:
+        test: The test.
+        target: A cache, or the URL of a director, whose bare path is
+            asked and followed (bare_get()).
+        rel: The object.
+        data: Its bytes.
     """
     if isinstance(target, common.Cache):
         answer, name, where = test.ask("GET", target.url, rel), target.svc, target.svc
     else:
-        answer, where = bare_get(target, test, rel)
+        answer, where = bare_get(test, target, rel)
         name = f"{director.host(target)} (bare path)"
-    why = served(answer, data)
+    why = web.served(answer, data)
     return f"{name} got {why}" + (f", at {where}" if where != name else "") if why else None
 
 
-def no_negative_cache(test: Test, _value: str) -> Row:
+def no_negative_cache(test: Test, _value: str) -> suite.Row:
     """Check that each cache and director serves an object once it exists.
 
     An object that no origin holds yet: each cache, and each director's
@@ -642,10 +483,10 @@ def no_negative_cache(test: Test, _value: str) -> Row:
         if answer.status != 404:
             problems.append(f"{cache.svc}: before the object was, {answer.describe()}, not 404")
         elif cache.kind == "v2":
-            if (common.as_object(answer.json()) or {}).get("error") != "not_found":
+            if answer.object().get("error") != "not_found":
                 problems.append(f"{cache.svc}: a 404 whose body is not JSON with not_found")
     for url in directors:
-        answer, where = bare_get(url, test, rel)
+        answer, where = bare_get(test, url, rel)
         if answer.status != 404:
             problems.append(
                 f"{director.host(url)} (bare path, at {where}): before the object was,"
@@ -679,11 +520,14 @@ def no_negative_cache(test: Test, _value: str) -> Row:
 def downstream_problems(answer: web.Response, value: str, filled: float) -> list[str]:
     """Return what is wrong with the Cache-Control of a V2 cache's answer.
 
-    The cache first fetched the object at time filled, from origins
-    sending Cache-Control value. With max-age=N, it must send s-maxage=N
-    and max-age=N (ResponseCacheControl in local_cache/schema.go); with
-    none, max-age of what remains of its own freshness, which began at
-    filled.
+    Under max-age=N, the cache must send s-maxage=N and max-age=N
+    (ResponseCacheControl in local_cache/schema.go); under none, max-age
+    of what remains of its own freshness.
+
+    Args:
+        answer: The cache's answer.
+        value: The Cache-Control that the origins send.
+        filled: When the cache first fetched the object (time.time()).
     """
     sent = answer.header("Cache-Control")
     found = directives(sent)
@@ -701,7 +545,7 @@ def downstream_problems(answer: web.Response, value: str, filled: float) -> list
     return []
 
 
-def downstream(test: Test, value: str) -> Row:
+def downstream(test: Test, value: str) -> suite.Row:
     """Check each V2 cache's Cache-Control and Age on fills, hits, and 304s.
 
     At each V2 cache, an object of its own: a cold GET, which fills it;
@@ -724,16 +568,16 @@ def downstream(test: Test, value: str) -> Row:
         rel, data = rels[cache.svc], objects[rels[cache.svc]]
         filled = time.time()
         fill = test.ask("GET", cache.url, rel)
-        why = served(fill, data)
+        why = web.served(fill, data)
         if why:
             problems.append(f"{cache.svc}: the cold GET got {why}")
             continue
         problems += [f"{cache.svc} (fill): {p}" for p in downstream_problems(fill, value, filled)]
-        found = age(fill)
+        found = web.age(fill)
         if found is not None and found > AGE_SLACK:
             problems.append(f"{cache.svc} (fill): Age {found}, for what it just fetched")
-        if not wait_held(test, cache, rel):
-            problems.append(f"{cache.svc}: no Age within {HELD_WAIT}s of a whole read")
+        if not test.wait_held(cache, rel):
+            problems.append(f"{cache.svc}: no Age within {suite.HELD_WAIT}s of a whole read")
             continue
         hits: list[tuple[float, web.Response]] = []
         for pause in (0, 3):
@@ -741,8 +585,8 @@ def downstream(test: Test, value: str) -> Row:
             hits.append((time.time(), test.ask("GET", cache.url, rel)))
         ages: list[int] = []
         for n, (when, hit) in enumerate(hits, 1):
-            why = served(hit, data)
-            found = age(hit)
+            why = web.served(hit, data)
+            found = web.age(hit)
             if why or found is None:
                 problems.append(f"{cache.svc} (hit {n}): {why or 'no Age'}")
                 continue
@@ -790,7 +634,7 @@ def depth_0(test: Test, cache: common.Cache, rel: str) -> tuple[webdav.Entry | N
     return entry, ""
 
 
-def propfind_empty(test: Test, _value: str) -> Row:
+def propfind_empty(test: Test, _value: str) -> suite.Row:
     """Check that each V2 cache's Depth 0 says an empty object is 0 bytes.
 
     At each V2 cache, an empty object: once read whole, a Depth 0
@@ -807,11 +651,11 @@ def propfind_empty(test: Test, _value: str) -> Row:
     unheld: list[str] = []
     for cache in test.v2:
         rel = rels[cache.svc]
-        why = served(test.ask("GET", cache.url, rel), b"")
+        why = web.served(test.ask("GET", cache.url, rel), b"")
         if why:
             problems.append(f"{cache.svc}: GET got {why}")
             continue
-        if not wait_held(test, cache, rel, 10):
+        if not test.wait_held(cache, rel, 10):
             unheld.append(cache.svc)
         entry, why = depth_0(test, cache, rel)
         if entry is None:
@@ -857,7 +701,7 @@ def not_current(
     return None
 
 
-def propfind_overwrite(test: Test, value: str) -> Row:
+def propfind_overwrite(test: Test, value: str) -> suite.Row:
     """Check that each V2 cache's Depth 0 says the new size once stale.
 
     At each V2 cache, an object read whole, which it holds, and whose
@@ -878,12 +722,9 @@ def propfind_overwrite(test: Test, value: str) -> Row:
     for cache in test.v2:
         rel = rels[cache.svc]
         filled[cache.svc] = time.time()
-        why = served(test.ask("GET", cache.url, rel), versions.v1[rel])
+        why = hold(test, cache, rel, versions.v1[rel])
         if why:
-            problems.append(f"{cache.svc}: GET of v1 got {why}")
-            continue
-        if not wait_held(test, cache, rel):
-            problems.append(f"{cache.svc}: no Age within {HELD_WAIT}s of a whole read")
+            problems.append(why)
             continue
         entry, why = depth_0(test, cache, rel)
         if entry is None or entry.size != len(versions.v1[rel]):
@@ -913,7 +754,7 @@ def propfind_overwrite(test: Test, value: str) -> Row:
     return outcome(problems, ", ".join(notes))
 
 
-def stale_if_error(test: Test, value: str) -> Row:
+def stale_if_error(test: Test, value: str) -> suite.Row:
     """Check that each V2 cache serves a stale copy with every origin down.
 
     That is origins_down(), whose stale copy must come back.
@@ -921,7 +762,7 @@ def stale_if_error(test: Test, value: str) -> Row:
     return origins_down(test, value, "stale-if-error", True)
 
 
-def must_revalidate(test: Test, value: str) -> Row:
+def must_revalidate(test: Test, value: str) -> suite.Row:
     """Check that each V2 cache serves no stale copy that must revalidate.
 
     That is origins_down(), under must-revalidate, whose stale copy must
@@ -932,7 +773,7 @@ def must_revalidate(test: Test, value: str) -> Row:
     return origins_down(test, value, "must-revalidate", False)
 
 
-def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> Row:
+def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> suite.Row:
     """Check what each V2 cache serves of a stale copy, every origin down.
 
     At each V2 cache, an object read whole, which it holds, and another
@@ -948,9 +789,7 @@ def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> Row:
         scenario: The scenario, whose collection holds the objects.
         stale_ok: Whether a cache may serve its stale copy.
     """
-    if test.fed.tiny:
-        return SKIP, "the tiny topology's origin is the whole federation's process"
-    why = control.unavailable()
+    why = control.unrestartable(test.fed)
     if why:
         return SKIP, why
     fresh = seconds_of(value, "max-age")
@@ -966,11 +805,9 @@ def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> Row:
     for cache in test.v2:
         rel = held[cache.svc]
         stale_at = time.time() + fresh + 2
-        why = served(test.ask("GET", cache.url, rel), objects[rel])
+        why = hold(test, cache, rel, objects[rel])
         if why:
-            return FAIL, f"{cache.svc}: GET of the object to hold got {why}"
-        if not wait_held(test, cache, rel):
-            return FAIL, f"{cache.svc}: no Age within {HELD_WAIT}s of a whole read"
+            return FAIL, why
     sleep_until(stale_at)
     stopped: list[str] = []
     try:
@@ -980,7 +817,7 @@ def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> Row:
         for cache in test.v2:
             rel = held[cache.svc]
             answer = test.ask("GET", cache.url, rel, timeout=180)
-            why = served(answer, objects[rel])
+            why = web.served(answer, objects[rel])
             if why and stale_ok:
                 problems.append(f"{cache.svc}: its stale copy, with every origin down, got {why}")
             elif answer.ok and not stale_ok:
@@ -1010,7 +847,7 @@ def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> Row:
     return outcome(problems, "; ".join(notes))
 
 
-def immediate(test: Test, value: str) -> Row:
+def immediate(test: Test, value: str) -> suite.Row:
     """Check that each V2 cache serves an overwrite at once.
 
     Under Cache-Control value, a copy is fresh for blocks.freshness()
@@ -1106,16 +943,14 @@ def ranged(data: bytes, request: blocks.Request, answer: web.Response) -> tuple[
 def introspected(test: Test, cache: common.Cache, rel: str) -> tuple[int | None, str]:
     """Return how many instances of rel a V2 cache's introspection lists.
 
-    It is asked as the cache's admin (`/api/v1.0/cache/introspect/list`,
-    whose pattern without a wildcard matches a substring of an object's
-    URL).
+    It is asked as the cache's admin (introspect/list, whose pattern
+    without a wildcard matches a substring of an object's URL).
 
     Returns:
         The count, and ""; or None, and why it said nothing.
     """
-    query = urlencode({"limit": "1000", "pattern": test.path(rel)})
-    url = f"{cache.web_url}/api/v1.0/cache/introspect/list?{query}"
-    answer = web.request("GET", url, token=test.admin_token(cache))
+    token = cacheapi.admin_token(test.session, cache)
+    answer = cacheapi.introspect(cache, token, "GET", "list", limit="1000", pattern=test.path(rel))
     if answer.status != 200:
         return None, f"introspection answered {answer.describe()}"
     found = common.as_array(answer.json())
@@ -1124,7 +959,7 @@ def introspected(test: Test, cache: common.Cache, rel: str) -> tuple[int | None,
     return len(found), ""
 
 
-def not_stored(test: Test, value: str) -> Row:
+def not_stored(test: Test, value: str) -> suite.Row:
     """Check that each V2 cache passes the object through, and keeps none.
 
     At each V2 cache, an object the origins mark value (no-store or
@@ -1147,14 +982,14 @@ def not_stored(test: Test, value: str) -> Row:
         before = store_bytes(cache)
         for n in (1, 2):
             answer = test.ask("GET", cache.url, rel)
-            why = served(answer, data)
+            why = web.served(answer, data)
             sent = answer.header("Cache-Control")
             if why:
                 problems.append(f"{cache.svc} (GET {n}): {why}")
             elif value not in directives(sent):
                 problems.append(f"{cache.svc} (GET {n}): Cache-Control '{sent}', without {value}")
-            elif age(answer) is not None:
-                problems.append(f"{cache.svc} (GET {n}): Age {age(answer)}, as if it held it")
+            elif web.age(answer) is not None:
+                problems.append(f"{cache.svc} (GET {n}): Age {web.age(answer)}, as if it held it")
         requests = blocks.requests(len(data))
         whole = 0
         for request in requests:
@@ -1172,7 +1007,7 @@ def not_stored(test: Test, value: str) -> Row:
                 + " with Accept-Ranges: none"
             )
         for method in ("GET", "HEAD"):
-            answer = test.ask(method, cache.url, rel, ONLY_IF_CACHED)
+            answer = test.ask(method, cache.url, rel, web.ONLY_IF_CACHED)
             if answer.status != 504:
                 problems.append(
                     f"{cache.svc}: {method} with only-if-cached got {answer.describe()}, not 504"
@@ -1193,7 +1028,7 @@ def not_stored(test: Test, value: str) -> Row:
     return outcome(problems, "; ".join([f"{len(test.v2)} cache(s)"] + notes))
 
 
-def s_maxage(test: Test, value: str) -> Row:
+def s_maxage(test: Test, value: str) -> suite.Row:
     """Check that each V2 cache takes s-maxage over max-age.
 
     At each V2 cache, an object read whole, which the origins then
@@ -1243,6 +1078,7 @@ class Case:
     """A case of a scenario.
 
     Attributes:
+        scenario: Its scenario.
         name: Its row's name after the scenario's.
         control: The Cache-Control the origins must send for it (None:
             whatever they send).
@@ -1253,7 +1089,7 @@ class Case:
     scenario: str
     name: str
     control: str | None
-    run: Callable[[Test, str], Row]
+    run: Callable[[Test, str], suite.Row]
     v2: bool = True
 
     @property
@@ -1282,10 +1118,7 @@ CASES = (
 
 def run_case(test: Test, case: Case, value: str, results: common.Results) -> None:
     """Run case, with the origins sending value, and record its row."""
-    status, note = common.guarded(
-        partial(case.run, test, value), lambda note: (FAIL, note), (stores.Unreadable,)
-    )
-    results.add(case.row, status, note)
+    results.add(case.row, *suite.attempt(partial(case.run, test, value), (stores.Unreadable,)))
 
 
 def run_phase(test: Test, value: str, cases: Sequence[Case], results: common.Results) -> None:
@@ -1313,9 +1146,10 @@ def run_phase(test: Test, value: str, cases: Sequence[Case], results: common.Res
             run_case(test, case, value, results)
         return
     print(f"\nRestarting the origins to send Cache-Control: {value}")
+    text = f"Origin:\n  CacheControl: {json.dumps(value)}\n"
     done: set[str] = set()
     try:
-        with origins_sending(test, value):
+        with control.restart_all_with({o.svc: {CONFIG_FILE: text} for o in test.origins}):
             why = settle(test) or not_sent(test, value)
             for case in ready:
                 if why:
@@ -1336,8 +1170,9 @@ def run_phase(test: Test, value: str, cases: Sequence[Case], results: common.Res
 
 def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test: no /protected-a, or no cache."""
-    if NAMESPACE not in fed.exports:
-        return "this shape does not export /protected-a"
+    why = suite.unexported(fed)
+    if why:
+        return why
     if not fed.federated_caches:
         return "this shape has no federated cache"
     return None
@@ -1349,18 +1184,10 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     The probe is put in place first, and the run's objects are removed
     afterward.
     """
-    fed = session.fed
-    stores.require_dirs(fed.origins, [NAMESPACE], "data/freshness")
-    tokens = session.setup_tokens()
-
-    def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/freshness", tokens)
-        if errors:
-            warn(f"emptying data/freshness {when}: {first(errors)}")
-
-    clean("before the run")
     test = Test(session)
-    print(f"Freshness test against {fed.url}, objects under /{NAMESPACE}/{test.base}/")
+    stores.require_dirs(test.fed.origins, [NAMESPACE], f"data/{test.area}")
+    test.clean("before the run")
+    print(f"Freshness test against {test.fed.url}, objects under {test.path(test.base)}/")
     try:
         why = test.put({test.rel(PROBE): os.urandom(PROBE_SIZE)})
         if why:
@@ -1372,4 +1199,4 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             if here:
                 run_phase(test, value, here, results)
     finally:
-        clean("after the run")
+        test.clean("after the run")

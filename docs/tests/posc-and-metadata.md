@@ -3,21 +3,27 @@
 Part of [What the tests check](README.md).
 
 POSC (persist on successful close) and metadata publishing are features of
-the `posixv2` origin, the default (Pelican's
-`docs/v2-origin-posc-and-metadata.md` and
-`docs/metadata-publish-design.md`); `fed.sh` refuses either with another
-origin. A case's row is named `<scenario> <case>`.
+the `posixv2` origin, the default
+([`-p origin-posixv2`](../../framework/presets/origin-posixv2.sh); Pelican's
+[`docs/v2-origin-posc-and-metadata.md`](https://github.com/PelicanPlatform/pelican/blob/main/docs/v2-origin-posc-and-metadata.md)
+and
+[`docs/metadata-publish-design.md`](https://github.com/PelicanPlatform/pelican/blob/main/docs/metadata-publish-design.md));
+[`fed.sh`](../../fed.sh) refuses either with another origin. A
+[case](../glossary.md#case)'s row is named `<scenario> <case>`.
 
 ## posc
 
-The `posc` suite interrupts uploads to the first origin, or races two, and
-checks what the origin answers, serves meanwhile, and keeps. It runs
-wherever `/protected-a` takes writes, and judges each origin by its staging:
-POSC (`-p origin-posc`), XRootD's atomic uploads
-(`-p origin-atomic-uploads`), pstore (`-p origin-pstore`), or none. An
-interruption is judged once the upload is seen under way; an upload refused
-or unanswered before then fails. An interrupted upload must not be answered
-with a success or 405.
+The [`posc`](../../framework/suites/posc.py) suite interrupts uploads to the
+first origin, or races two, and checks what the origin answers, serves
+meanwhile, and keeps. It runs wherever `/protected-a` takes writes, and
+judges each origin by its staging: POSC
+([`-p origin-posc`](../../framework/presets/origin-posc.sh)),
+[XRootD](../glossary.md#native-and-xrootd)'s atomic uploads
+([`-p origin-atomic-uploads`](../../framework/presets/origin-atomic-uploads.sh)),
+pstore ([`-p origin-pstore`](../../framework/presets/origin-pstore.sh)), or
+none. An interruption is judged once the upload is seen under way; an upload
+refused or unanswered before then fails. An interrupted upload must not be
+answered with a success or 405.
 
 - `commit`: A complete 1 MiB upload must land whole, leaving no staging
   file.
@@ -25,13 +31,14 @@ with a success or 405.
   by a HEAD. Under POSC, `pelican_origin_posc_active_uploads` must count it.
   Skips on pstore.
 - `sized`, `chunked`: An upload cut short of its `Content-Length`, or in
-  chunks, must leave no object (RFC 9110, section 8.6).
+  chunks, must leave no object
+  ([RFC 9110, section 8.6](https://www.rfc-editor.org/rfc/rfc9110#section-8.6)).
 - `overwrite`: During an overwrite, and once it is cut short, the origin
   must serve the old object intact.
 - `concurrent`: Of two uploads of one object at once, the object must end up
   all of one that succeeded.
-- `client`: Killing `pelican object put` midway through a 1 GiB upload must
-  leave nothing.
+- `client`: Killing the [Pelican client](../glossary.md#pelican-client)'s
+  `pelican object put` midway through a 1 GiB upload must leave nothing.
 - `hidden`: While an upload is staged, neither a Depth 1 PROPFIND of the
   export nor an HTML listing may show `.pelican-posc`. POSC only.
 - `posc-expiry`, at the first origin, POSC only:
@@ -46,28 +53,35 @@ with a success or 405.
     ([service control](../../README.md#service-control)), a staging file 40
     seconds old must be reaped, and an upload that idles 35 seconds midway
     must keep its staging file and complete whole. Needs a
-    [control helper](../glossary.md#service-control-helper) and a topology
-    other than `tiny`.
+    [control helper](../glossary.md#service-control-helper) and a
+    [topology](../glossary.md#topology) other than
+    [`tiny`](../../framework/presets/topo-tiny.sh).
 
 ## metadata
 
-Under `-p origin-metadata` (eventual mode) or `-p origin-metadata-tx`
-(transactional mode), origins send the `metadata` recorder an event for each
+Under [`-p origin-metadata`](../../framework/presets/origin-metadata.sh)
+(eventual mode) or
+[`-p origin-metadata-tx`](../../framework/presets/origin-metadata-tx.sh)
+(transactional mode), origins send the `metadata`
+[helper service](../glossary.md#helper-service), a
+[recorder](../../framework/metadata-server/recorder.py), an event for each
 object committed, overwritten, or deleted. The recorder logs each in
 `framework/var/data/metadata/`, and passes it to `metadata-verifier`,
-Pelican's `sample_metadata_server`. It answers 503 once for objects named
-`fail-once-*`, 503 always for `fail-always-*`, and 422 for `reject-*`.
+Pelican's
+[`sample_metadata_server`](https://github.com/PelicanPlatform/pelican/tree/main/cmd/sample_metadata_server).
+It answers 503 once for objects named `fail-once-*`, 503 always for
+`fail-always-*`, and 422 for `reject-*`.
 
-In transactional mode, `status-urls`, `catalog`'s reconcile rows, and
-`backpressure` skip. With publishing off, only `queue-admin off` runs.
-`object-metadata-cli` and `queue-admin` run in the WLCG pass only
+In transactional mode, the [`metadata`](../../framework/suites/metadata.py)
+suite's `status-urls`, `catalog`'s reconcile rows, and `backpressure` skip.
+With publishing off, only `queue-admin off` runs. `object-metadata-cli` and
+`queue-admin` run in the [WLCG pass](../glossary.md#pass) only
 ([token profiles](README.md#token-profiles)).
 
 `queue-admin`, `backpressure`, and `catalog`'s reconcile rows restart the
-first origin with configuration of their own, removed afterward
-([service control](../../README.md#service-control)). Without a
-[control helper](../glossary.md#service-control-helper), or under `tiny`,
-their rows skip, but for `queue-admin`'s other than `retry`.
+first origin with configuration of their own, removed afterward. Without a
+control helper, or under `tiny`, their rows skip, but for `queue-admin`'s
+other than `retry`.
 
 - `fields`: `pelican object put --metadata-file` must send
   `object.committed` with the file's custom fields, type for type.
@@ -100,8 +114,8 @@ their rows skip, but for `queue-admin`'s other than `retry`.
   - `reconcile-cancelled`, `reconcile-rejected`, `reconcile-observed`: The
     reconcile sweep (`Origin.Metadata.ReconcileEnabled`), run every 15
     seconds, must not publish, for 45 seconds, a cancelled event, a rejected
-    one, or an object written straight to the store
-    (`docs/parameters.yaml`).
+    one, or an object written straight to the store (Pelican's
+    [`docs/parameters.yaml`](https://github.com/PelicanPlatform/pelican/blob/main/docs/parameters.yaml)).
 - `object-metadata-cli`: The first origin's record of objects
   (`Origin.Metadata.TrackAccess`):
   - `api`: Its admin routes, `/api/v1.0/origin_ui/object_metadata`,

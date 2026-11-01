@@ -34,7 +34,7 @@ repos:
     rev: v0.11.0.1
     hooks:
       - id: shellcheck
-        # Require that only the most serious problems be addressed
+        # Report only warnings and errors, not info or style
         args: [--severity=warning]
   #
   # Check Python code
@@ -89,5 +89,5 @@ repos:
     rev: v1.51.1
     hooks:
       - id: typos
-        # Override the hook's default behavior that fixes alleged typos
+        # Report typos, not fix them as the hook's default args would
         args: [--sort, --force-exclude]

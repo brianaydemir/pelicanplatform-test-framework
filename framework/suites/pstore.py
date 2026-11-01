@@ -1,44 +1,13 @@
 """What a pstore origin does that is its own, beyond serving objects.
 
-That is its administrative storage API and CLI, its scheduled
-verification passes, refusing writes once it is full, and backing up
-its catalog.
-
-  storage-api       at each pstore origin, the storage API
-                    (/api/v1.0/origin/storage/pstore/...) answers its
-                    admin alone; lists in pages; and agrees with the
-                    data port and the metrics; at another native origin,
-                    it is absent (404)
-  introspect-cli    `pelican-server origin introspect` says what the
-                    storage API says, with an admin token's file or one
-                    it mints, and fails for a missing file
-  scheduled-passes  at each pstore origin, the index check and the data
-                    scan run and find nothing wrong, and an object
-                    overwritten and one deleted are reclaimed
-  corruption        at each pstore origin, a block of an object, changed
-                    in its file, is counted by the next data scan
-  capacity          the first origin's store, bounded just above what it
-                    holds and filled: a PUT that would not fit gets 507
-                    before its body, with or without Expect:
-                    100-continue, and in chunks midway, leaving nothing;
-                    after a DELETE, it fits
-  backups           the first origin backs up its catalog at startup,
-                    then once an interval, keeping only the newest
-  restore           with the first origin stopped, one of those backups
-                    is restored into its store by the offline CLI
-                    (`pelican-server origin pstore metadata-restore`),
-                    which must then export every object the backup
-                    held, byte for byte, and none written after it; and
-                    the origin, started again, must serve them so
+See docs/tests/pstore.md.
 
 A pstore is an encrypted store that only the running origin can read
 (Pelican's docs/pstore-design.md). The suite writes under
 /<ns>/data/pstore/<run>/, in the first protected namespace that takes
-writes, at every pstore origin, and removes it afterward. Beyond their
-setup, `introspect-cli`, `scheduled-passes`, `corruption`, and
-`backups` present no storage token, so they run in the WLCG pass alone.
-`corruption` changes the block file of an object of its own,
-from the dev container, which can write the stores.
+writes, at every pstore origin, and removes it afterward. `corruption`
+changes the block file of an object of its own, from the dev container,
+which can write the stores.
 
 No shape bounds a store or backs one up, since a bound would bound every
 suite's writes. So for `capacity`, `backups`, and `restore`, the suite
@@ -70,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 from testlib import (
     blocks,
@@ -78,14 +47,15 @@ from testlib import (
     control,
     credentials,
     digests,
-    director,
     metrics,
     stores,
+    suite,
     web,
 )
-from testlib.common import first, outcome, warn
+from testlib.common import outcome, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
+from testlib.suite import Row
 
 SCENARIOS = {
     "storage-api": "the pstore storage API: its admin alone; pages; agrees with the data port",
@@ -113,9 +83,6 @@ TOKEN_LIFETIME = 3600
 # An ordinary user, whom no server makes an admin. No server need know of
 # them: a token of the server's own making names its user.
 USER = "test-pstore"
-
-# A row: its status, and its note.
-Row = tuple[str, str]
 
 # How long a pstore origin may take to republish its capacity gauges:
 # its janitor does so once a sweep, every 30 seconds (janitorInterval in
@@ -218,52 +185,27 @@ MASTER_KEY = "masterkey.json"
 CLI_TIMEOUT = 300
 RESTORED = "Restored the catalog from"
 
-# How long, after the restore, every director may take to name every
-# origin, and every cache to reach them.
-SETTLE_WAIT = 150
 # A small object that shows the federation serves the namespace again.
 PROBE = "probe"
 
 
-class Test:
+class Test(suite.Test):
     """The run's objects, the tokens, and the shape.
 
     Attributes:
-        namespace: The namespace that the suite writes in.
-        base: The run's collection, within the namespace.
-        token: A `server` token for the namespace, of the session's
-            profile.
-        setup: A `server` token for the namespace, of the WLCG profile,
-            for putting objects in place.
         pstores: The pstore origins.
-        tmp: A directory of the run's own, for the CLI's files.
         objects: The storage API's collection, by rel (see
             listing_objects()).
     """
 
     def __init__(self, session: Session, namespace: str):
-        self.session = session
-        self.fed = session.fed
-        self.namespace = namespace
-        self.base = f"data/pstore/{session.run}"
-        self.token = session.token(namespace)
-        self.setup = session.setup_token(namespace)
+        super().__init__(session, "pstore", namespace)
         self.pstores = [o for o in self.fed.origins if o.pstore]
-        self.tmp = session.path("pstore")
-        os.makedirs(self.tmp, exist_ok=True)
         self._tokens: dict[tuple[str, str], str] = {}
         self.objects = listing_objects(self)
         # What went wrong putting the collection at each origin that has
         # it, by service.
         self._listed: dict[str, str | None] = {}
-
-    def rel(self, *parts: str) -> str:
-        """Return where parts are, under the run's collection."""
-        return "/".join([self.base, *parts])
-
-    def url(self, origin: common.Origin, rel: str) -> str:
-        """Return rel's URL at origin's data port."""
-        return stores.url(origin, self.namespace, rel)
 
     def catalog(self, origin: common.Origin, rel: str) -> str:
         """Return rel's path in origin's store, which the storage API takes.
@@ -272,41 +214,43 @@ class Test:
         """
         return stores.catalog(origin, self.namespace, rel)
 
-    def web_token(self, origin: common.Origin, user: str) -> str:
+    def web_token_file(self, origin: common.Origin, user: str) -> str:
         """Return the file of a token that origin's web API takes as user's.
 
-        The token is minted once, by credentials.mint_user().
+        The token is minted once, by credentials.mint_web_user().
         """
-        key = (origin.svc, user)
-        if key not in self._tokens:
-            out = self.session.path(f"tokens/pstore.{origin.svc}.{user}")
-            credentials.mint_user(
-                self.fed,
-                out,
-                credentials.local_issuer(self.fed, origin.web_url),
-                common.signing_key(f"issuer-keys/{origin.svc}"),
-                user,
-                TOKEN_LIFETIME,
+        out = self.session.path(f"tokens/pstore.{origin.svc}.{user}")
+        if (origin.svc, user) not in self._tokens:
+            self._tokens[(origin.svc, user)] = credentials.mint_web_user(
+                self.fed, out, origin.web_url, user, TOKEN_LIFETIME
             )
-            self._tokens[key] = out
-        return self._tokens[key]
+        return out
+
+    def web_token(self, origin: common.Origin, user: str) -> str:
+        """Return the token of web_token_file() itself."""
+        self.web_token_file(origin, user)
+        return self._tokens[(origin.svc, user)]
 
     def admin_file(self, origin: common.Origin) -> str:
         """Return the file of the admin's token for origin's web API."""
-        return self.web_token(origin, "admin")
+        return self.web_token_file(origin, "admin")
 
     def admin(self, origin: common.Origin) -> str:
         """Return the admin's token for origin's web API."""
-        return read_token(self.admin_file(origin))
+        return self.web_token(origin, "admin")
 
     def user(self, origin: common.Origin) -> str:
         """Return USER's token for origin's web API."""
-        return read_token(self.web_token(origin, USER))
+        return self.web_token(origin, USER)
 
     def api(self, origin: common.Origin, path: str, token: str | None, **query: Any) -> web.Response:
         """GET path of origin's storage API, with query, presenting token.
 
-        path is e.g. `usage`, or `ls/<path>`.
+        Args:
+            origin: The origin.
+            path: The route, e.g. `usage`, or `ls/<path>`.
+            token: The token, if any.
+            **query: The query's parameters.
         """
         url = f"{origin.web_url}{stores.STORAGE_API}/{path}"
         if query:
@@ -320,11 +264,11 @@ class Test:
             What went wrong, or None.
         """
         if origin.svc not in self._listed:
-            puts = (self.put(origin, rel, data) for rel, data in self.objects.items())
+            puts = (self.upload(origin, rel, data) for rel, data in self.objects.items())
             self._listed[origin.svc] = next((why for why in puts if why), None)
         return self._listed[origin.svc]
 
-    def put(self, origin: common.Origin, rel: str, data: bytes) -> str | None:
+    def upload(self, origin: common.Origin, rel: str, data: bytes) -> str | None:
         """Upload data to rel at origin, with its length.
 
         The store makes rel's collections.
@@ -341,12 +285,6 @@ def store_dir(origin: common.Origin) -> str:
     It is STORE (/data/pstore) in the origin, whose /data is origin.store.
     """
     return f"{origin.store}/{STORE[len('/data/') :]}"
-
-
-def read_token(path: str) -> str:
-    """Return the token in the file at path."""
-    with open(path, encoding="utf-8") as f:
-        return f.read().strip()
 
 
 def usage(test: Test, origin: common.Origin) -> tuple[dict[str, Any] | None, str]:
@@ -528,7 +466,7 @@ def stat(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row
         if found is None:
             problems.append(f"stat of {name} did not answer 200 with an object")
             continue
-        head = web.request("HEAD", test.url(origin, rel), token=test.token)
+        head = test.ask("HEAD", origin.url, rel, timeout=60)
         if head.status != 200:
             problems.append(f"HEAD of {name}: {head.describe()}")
             continue
@@ -547,7 +485,7 @@ def stat(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> Row
             if found.get(key) != value:
                 problems.append(f"stat of {name}: {key} {found.get(key)!r}, not {value!r}")
     path = test.catalog(origin, test.rel("api", "sub"))
-    found = common.as_object(test.api(origin, stores.storage_route("stat", path), admin).json()) or {}
+    found = test.api(origin, stores.storage_route("stat", path), admin).object()
     if found.get("isDir") is not True or found.get("etag"):
         problems.append(f"stat of sub: isDir {found.get('isDir')!r}, etag {found.get('etag')!r}")
     answer = test.api(
@@ -580,9 +518,7 @@ def digest(test: Test, origin: common.Origin, objects: Mapping[str, bytes]) -> R
         if algorithm not in right:
             problems.append(f"digest '{header}' gives no {algorithm}")
     for algorithm, value in digests.parse(header).items():
-        head = web.request(
-            "HEAD", test.url(origin, rel), token=test.token, headers={"Want-Digest": algorithm}
-        )
+        head = test.ask("HEAD", origin.url, rel, {"Want-Digest": algorithm}, timeout=60)
         got = digests.parse(head.header("Digest")).get(algorithm)
         if got != value:
             problems.append(f"Want-Digest {algorithm} at the data port: {got!r}, not {value!r}")
@@ -681,6 +617,37 @@ def storage_api(test: Test) -> dict[str, Row]:
 # introspect-cli
 
 
+def server_cmd(
+    test: Test, command: list[str], env: Mapping[str, str], timeout: float
+) -> tuple[int, str, str]:
+    """Run a pelican-server command in tmp.
+
+    Args:
+        test: The run.
+        command: The command.
+        env: What to add to the session's environment.
+        timeout: How long it may take, in seconds.
+
+    Returns:
+        Its exit status, stdout, and stderr.
+    """
+    try:
+        done = subprocess.run(
+            command,
+            env={**test.session.env, **env},
+            cwd=test.tmp,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return -1, "", f"timed out after {timeout:.0f}s"
+    return done.returncode, done.stdout, done.stderr
+
+
 @dataclass
 class Cli:
     """`pelican-server origin introspect` at one origin.
@@ -698,8 +665,10 @@ class Cli:
     ) -> tuple[int, str, str]:
         """Run `origin introspect <args> --json` at the origin.
 
-        It gets --token token_file, if given, and runs with env added to
-        the session's environment.
+        Args:
+            *args: Its arguments.
+            token_file: Its --token, if any.
+            env: What to add to the session's environment.
 
         Returns:
             Its exit status, stdout, and stderr.
@@ -708,21 +677,7 @@ class Cli:
         if token_file is not None:
             command += ["--token", token_file]
         command.append("--json")
-        try:
-            done = subprocess.run(
-                command,
-                env={**self.test.session.env, **(env or {})},
-                cwd=self.test.tmp,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return -1, "", "timed out after 120s"
-        return done.returncode, done.stdout, done.stderr
+        return server_cmd(self.test, command, env or {}, timeout=120)
 
     def compare(
         self, args: Sequence[str], api_route: str, env: Mapping[str, str] | None = None
@@ -844,7 +799,10 @@ def wait_metrics(
 ) -> tuple[bool, metrics.Snapshot]:
     """Fetch origin's metrics every 3 seconds until done(), or seconds pass.
 
-    done() says whether they show what it waits for.
+    Args:
+        origin: The origin.
+        done: Return whether the metrics show what it waits for.
+        seconds: How long to wait.
 
     Returns:
         Whether they did, and the last.
@@ -885,11 +843,11 @@ def passes_at(test: Test, origin: common.Origin) -> Row:
         (test.rel("passes", "overwritten"), old),
         (test.rel("passes", "gone"), old),
     ):
-        why = test.put(origin, rel, data)
+        why = test.upload(origin, rel, data)
         if why:
             return FAIL, why
     before = fetch_metrics(origin)
-    why = test.put(origin, test.rel("passes", "overwritten"), new)
+    why = test.upload(origin, test.rel("passes", "overwritten"), new)
     why = why or stores.delete(origin, test.namespace, test.rel("passes", "gone"), test.setup)
     if why:
         return FAIL, why
@@ -1008,7 +966,7 @@ def corrupted_at(test: Test, origin: common.Origin) -> Row:
     rel = test.rel("corruption", origin.svc)
     data = os.urandom(CORRUPT_SIZE)
     known = set(block_files(origin))
-    why = test.put(origin, rel, data)
+    why = test.upload(origin, rel, data)
     if why:
         return FAIL, why
     try:
@@ -1024,7 +982,7 @@ def corrupted_at(test: Test, origin: common.Origin) -> Row:
         # Passes begun before now may have read the object before it
         # changed.
         begun = pass_counts(fetch_metrics(origin))["data_scan"]
-        answer = web.request("GET", test.url(origin, rel), token=test.setup)
+        answer = web.request("GET", test.url(origin.url, rel), token=test.setup)
         if answer.status == 200 and answer.body == data:
             return INCONCLUSIVE, "with a block of its file changed, the object was served whole"
         served = answer.describe()
@@ -1060,8 +1018,9 @@ def corruption(test: Test) -> dict[str, Row]:
 def config_text(bound: int | None, backups: str | None) -> str:
     """Return the restart's configuration.
 
-    It bounds the store's one directory at bound bytes, if given, and
-    sends backups to the directory backups, if given.
+    Args:
+        bound: The bound of the store's one directory, in bytes, if any.
+        backups: The directory to send backups to, if any.
     """
     lines = ["Origin:"]
     if bound is not None:
@@ -1073,43 +1032,6 @@ def config_text(bound: int | None, backups: str | None) -> str:
             f"  PStoreMetadataBackupsToKeep: {BACKUPS_KEPT}",
         ]
     return "\n".join(lines) + "\n"
-
-
-def serving(test: Test) -> str | None:
-    """Return why the namespace is not served as before, or None.
-
-    Every origin must answer a HEAD of the probe, every director name
-    every origin for it, and every federated cache answer a HEAD of it,
-    with the setup token.
-    """
-    rel = test.rel(PROBE)
-    for origin in test.fed.origins:
-        answer = web.request("HEAD", test.url(origin, rel), token=test.setup)
-        if answer.status != 200:
-            return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
-    path = f"/{test.namespace}/{rel}"
-    for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.setup)
-        for origin in test.fed.origins:
-            if not where.names(director.host(origin.url)):
-                return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
-    for cache in test.fed.federated_caches:
-        answer = web.request("HEAD", f"{cache.url}/{test.namespace}/{quote(rel)}", token=test.setup)
-        if answer.status != 200:
-            return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
-    return None
-
-
-def settle(test: Test) -> str | None:
-    """Wait until the federation serves the namespace as before.
-
-    See serving(). A server that exited on its own ends the wait at once
-    (control.settle()).
-
-    Returns:
-        Why it doesn't within SETTLE_WAIT seconds, or None.
-    """
-    return control.settle(lambda: serving(test), SETTLE_WAIT)
 
 
 # --------------------------------------------------------------------------
@@ -1179,7 +1101,9 @@ class Capacity:
             if not size:
                 break
             rel = self.test.rel("capacity", f"filler-{len(self.fillers)}")
-            answer = web.request("PUT", self.test.url(self.origin, rel), self.test.setup, os.urandom(size))
+            answer = web.request(
+                "PUT", self.test.url(self.origin.url, rel), self.test.setup, os.urandom(size)
+            )
             if not answer.ok:
                 return FAIL, f"a filler of {size} bytes, with {room} left: {answer.describe()}"
             self.fillers.append(rel)
@@ -1238,7 +1162,7 @@ class Capacity:
             headers = {"Content-Length": str(room + SIZED_OVER)}
             if expect:
                 headers["Expect"] = "100-continue"
-            url = self.test.url(self.origin, self.test.rel("capacity", "sized"))
+            url = self.test.url(self.origin.url, self.test.rel("capacity", "sized"))
             got = web.statuses_before_body("PUT", url, self.test.token, headers, timeout=HEADERS_WAIT)
             if got != (507,):
                 shown = ", then ".join(str(s) for s in got) or "nothing"
@@ -1260,7 +1184,7 @@ class Capacity:
             return why, ""
         answer = web.request(
             "PUT",
-            self.test.url(self.origin, rel),
+            self.test.url(self.origin.url, rel),
             self.test.token,
             os.urandom(room + CHUNKED_OVER),
             chunked=True,
@@ -1270,7 +1194,7 @@ class Capacity:
                 f"a chunked PUT of {room + CHUNKED_OVER} bytes: {answer.describe()}, not 507",
                 "",
             )
-        head = web.request("HEAD", self.test.url(self.origin, rel), token=self.test.token)
+        head = self.test.ask("HEAD", self.origin.url, rel, timeout=60)
         if head.status != 404:
             return f"after the refused chunked PUT, a HEAD of it got {head.describe()}", ""
         path = stores.storage_route("stat", self.test.catalog(self.origin, rel))
@@ -1305,10 +1229,10 @@ class Capacity:
         before = self.refusals()
         data = os.urandom(size)
         rel = self.test.rel("capacity", "sized")
-        answer = web.request("PUT", self.test.url(self.origin, rel), self.test.token, data)
+        answer = web.request("PUT", self.test.url(self.origin.url, rel), self.test.token, data)
         if not answer.ok:
             return FAIL, f"the sized PUT, once freed: {answer.describe()}"
-        back = web.request("GET", self.test.url(self.origin, rel), token=self.test.token)
+        back = self.test.ask("GET", self.origin.url, rel, timeout=60)
         if back.status != 200 or back.body != data:
             return (
                 FAIL,
@@ -1353,17 +1277,8 @@ class Capacity:
             if case not in ("fill", "gauges") and not filled:
                 self.rows[case] = (FAIL, "the store was not filled")
                 continue
-            self.rows[case] = guarded(step)
+            self.rows[case] = suite.attempt(step)
         return self.rows
-
-
-def guarded(step: Callable[[], Row]) -> Row:
-    """Return step(), or a FAIL for the exception it raised.
-
-    Such an exception is a bug, or a server answering what the suite
-    can't read (common.guarded()).
-    """
-    return common.guarded(step, lambda note: (FAIL, note))
 
 
 # --------------------------------------------------------------------------
@@ -1387,7 +1302,7 @@ def backup_time(name: str) -> float | None:
 class Backups:
     """backups' state, at the first origin.
 
-    Its backups go to a directory in its state (see inside and outside).
+    Its backups go to a directory of the run's in its state.
 
     Attributes:
         asked: When its restart was asked for, in Unix time.
@@ -1402,12 +1317,12 @@ class Backups:
     @property
     def inside(self) -> str:
         """The directory, as the origin sees it."""
-        return f"{STATE}/{BACKUPS}/{self.test.session.run}"
+        return f"{STATE}/{BACKUPS}/{self.test.run}"
 
     @property
     def outside(self) -> str:
         """The directory, under framework/var."""
-        return f"state/{self.origin.svc}/{BACKUPS}/{self.test.session.run}"
+        return f"state/{self.origin.svc}/{BACKUPS}/{self.test.run}"
 
     def names(self) -> list[str]:
         """Return what is in the directory, sorted.
@@ -1491,7 +1406,7 @@ class Backups:
             problems.append(f"{failed:.0f} backup passes failed")
         return {
             "schedule": outcome(problems, f"{len(kept)} backups, {BACKUP_INTERVAL}s apart"),
-            "files": guarded(self.files),
+            "files": suite.attempt(self.files),
         }
 
     def files(self) -> Row:
@@ -1631,23 +1546,8 @@ class Restore:
         Returns:
             Its exit status, stdout, and stderr.
         """
-        command = [self.server, "origin", "pstore", *args]
-        command += ["--location", os.path.abspath(self.store)]
-        try:
-            done = subprocess.run(
-                command,
-                env={**self.test.session.env, **keys_env(self.test, self.origin)},
-                cwd=self.test.tmp,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=CLI_TIMEOUT,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return -1, "", f"timed out after {CLI_TIMEOUT}s"
-        return done.returncode, done.stdout, done.stderr
+        command = [self.server, "origin", "pstore", *args, "--location", os.path.abspath(self.store)]
+        return server_cmd(self.test, command, keys_env(self.test, self.origin), CLI_TIMEOUT)
 
     def written(self) -> Row:
         """Write the objects, and wait for a backup of them (`objects`).
@@ -1659,7 +1559,7 @@ class Restore:
         """
         for size in RESTORE_SIZES:
             data = os.urandom(size)
-            why = self.test.put(self.origin, self.rel(str(size)), data)
+            why = self.test.upload(self.origin, self.rel(str(size)), data)
             if why:
                 return FAIL, why
             self.data[str(size)] = data
@@ -1676,10 +1576,10 @@ class Restore:
         self.copied = os.path.join(self.test.tmp, f"restore-{name}")
         shutil.copyfile(os.path.join(self.backups.outside, name), self.copied)
         late = os.urandom(5000)
-        why = self.test.put(self.origin, self.rel(LATE), late)
+        why = self.test.upload(self.origin, self.rel(LATE), late)
         if why:
             return FAIL, why
-        answer = web.request("GET", self.test.url(self.origin, self.rel(LATE)), token=self.test.token)
+        answer = self.test.ask("GET", self.origin.url, self.rel(LATE), timeout=60)
         if answer.status != 200 or answer.body != late:
             return FAIL, f"{LATE}, written after the backup, {answer.describe()}"
         return PASS, f"{len(RESTORE_SIZES)} objects, backup {name}, then {LATE}"
@@ -1696,7 +1596,7 @@ class Restore:
         for part in (CATALOG_DIR, OBJECTS_DIR, MASTER_KEY):
             if not os.path.exists(f"{self.store}/{part}"):
                 return f"framework/var/{self.store} has no {part}"
-        self.aside = f"{self.store}/{CATALOG_DIR}.{self.test.session.run}.before-restore"
+        self.aside = f"{self.store}/{CATALOG_DIR}.{self.test.run}.before-restore"
         try:
             os.rename(self.catalog, self.aside)
         except OSError as e:
@@ -1762,17 +1662,17 @@ class Restore:
         Started on it, the origin must serve every object the backup
         held, byte for byte, and answer 404 for LATE.
         """
-        why = settle(self.test)
+        why = self.test.settle(self.test.rel(PROBE))
         if why:
             return FAIL, f"once the origin started on the restored catalog, {why}"
         problems: list[str] = []
         for name, data in self.data.items():
-            answer = web.request("GET", self.test.url(self.origin, self.rel(name)), token=self.test.token)
+            answer = self.test.ask("GET", self.origin.url, self.rel(name), timeout=60)
             if answer.status != 200:
                 problems.append(f"{name}: {answer.describe()}")
             elif answer.body != data:
                 problems.append(f"{name}: not its bytes")
-        answer = web.request("GET", self.test.url(self.origin, self.rel(LATE)), token=self.test.token)
+        answer = self.test.ask("GET", self.origin.url, self.rel(LATE), timeout=60)
         if answer.status != 404:
             problems.append(f"{LATE}, written after the backup: {answer.describe()}, not 404")
         return outcome(problems, f"{len(self.data)} objects served; {LATE} gone")
@@ -1786,7 +1686,7 @@ class Restore:
         started again, on the catalog set aside unless the restored one
         served.
         """
-        rows: dict[str, Row] = {"objects": guarded(self.written)}
+        rows: dict[str, Row] = {"objects": suite.attempt(self.written)}
         if rows["objects"][0] != PASS:
             return rows
         stopped = False
@@ -1797,10 +1697,10 @@ class Restore:
             if why:
                 rows["cli"] = (FAIL, why)
                 return rows
-            rows["cli"] = guarded(self.restored)
+            rows["cli"] = suite.attempt(self.restored)
             if rows["cli"][0] != PASS:
                 return rows
-            rows["export"] = guarded(self.exported)
+            rows["export"] = suite.attempt(self.exported)
         except control.ControlError as e:
             rows["cli"] = (FAIL, str(e))
             return rows
@@ -1817,7 +1717,7 @@ class Restore:
                     control.start(self.origin.svc)
                 except control.ControlError as e:
                     warn(f"starting {self.origin.svc} again: {e}")
-        rows["served"] = guarded(self.served)
+        rows["served"] = suite.attempt(self.served)
         if rows["served"][0] != PASS:
             # Leave the rest of the run the catalog that served before.
             try:
@@ -1836,27 +1736,21 @@ class Restore:
 # Running the restart's scenarios.
 
 
-def unrestartable(test: Test) -> str | None:
-    """Return why the suite cannot restart the first origin, or None.
-
-    The restart is with configuration of the suite's own.
-    """
-    if test.fed.tiny:
-        return "the tiny topology's origin is the whole federation's process"
-    return control.unavailable()
-
-
 def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], None]) -> None:
     """Run the scenarios in wanted with the first origin restarted.
 
     Restart the first origin for the scenarios in wanted (`capacity`,
     `backups`, and `restore`), run them, restore it, and wait until the
-    federation serves again. add() records a row: its scenario, case,
-    and result. `restore` needs the backups that `backups` configures,
-    and the `pelican-server` that has the CLI.
+    federation serves again. `restore` needs the backups that `backups`
+    configures, and the `pelican-server` that has the CLI.
+
+    Args:
+        test: The run.
+        wanted: The scenarios.
+        add: Record a row: its scenario, case, and result.
     """
     origin = test.fed.origins[0]
-    why = unrestartable(test)
+    why = control.unrestartable(test.fed)
     if why:
         for scenario in wanted:
             add(scenario, "", (SKIP, why))
@@ -1884,7 +1778,7 @@ def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], 
     done: set[str] = set()
     try:
         with control.restart_with(origin.svc, {CONFIG_FILE: text}):
-            startup = guarded(backups.started) if backups else None
+            startup = suite.attempt(backups.started) if backups else None
             # restore comes before capacity, which would leave the store
             # too full for its objects, and backups' later cases last,
             # once the schedule has run on past restore's stop and start.
@@ -1912,7 +1806,7 @@ def restarted(test: Test, wanted: Sequence[str], add: Callable[[str, str, Row], 
     finally:
         if backups:
             backups.remove()
-    why = settle(test)
+    why = test.settle(test.rel(PROBE))
     if why:
         warn(f"with {origin.svc} restored, {why}")
 
@@ -1967,15 +1861,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             )
         return
     test = Test(session, namespace)
-    tokens = session.setup_tokens()
-
-    def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(test.pstores, fed.exports, "data/pstore", tokens)
-        if errors:
-            warn(f"emptying data/pstore {when}: {first(errors)}")
-
     if pstore:
-        clean("before the run")
+        suite.clean(session, test.area, "before the run", test.pstores)
     print(f"pstore test against {fed.url}, objects under /{namespace}/{test.base}/")
     try:
         later = [s for s in selected if s in ("capacity", "backups", "restore")]
@@ -2008,4 +1895,4 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 restarted(test, later, add)
     finally:
         if pstore:
-            clean("after the run")
+            suite.clean(session, test.area, "after the run", test.pstores)

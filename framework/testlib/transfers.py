@@ -169,13 +169,10 @@ HOW = {
 }
 
 
-def _how(route: str) -> str:
-    return HOW[route]
-
-
 def _gets(route: str) -> list[Scenario]:
+    """Return the `pelican` client's get scenarios by route."""
     prefix = PREFIXES[route]
-    how = _how(route)
+    how = HOW[route]
     scenarios = [
         Scenario(
             f"{prefix}exist",
@@ -237,6 +234,7 @@ def _gets(route: str) -> list[Scenario]:
 
 
 def _puts() -> list[Scenario]:
+    """Return the `pelican` client's put scenarios."""
     scenarios: list[Scenario] = []
     for ns in NAMESPACES:
         for cred in CREDENTIALS:
@@ -319,7 +317,7 @@ def placed(scenario: Scenario, exports: Exports) -> Scenario:
         credential=credentials.BY_NAME["server"],
         collection=collection,
         description=(
-            f"get {collection}{scenario.stem}.<n> {_how(scenario.route)}, which never"
+            f"get {collection}{scenario.stem}.<n> {HOW[scenario.route]}, which never"
             f" exists, with the `server` token"
         ),
     )
@@ -372,7 +370,11 @@ CONCURRENCY = 16
 
 @dataclass(frozen=True)
 class Batch:
-    """One client invocation of a scenario's."""
+    """One client invocation of a scenario's.
+
+    Attributes:
+        index: Its place among the scenario's batches, from 0.
+    """
 
     scenario: Scenario
     index: int
@@ -433,14 +435,13 @@ def batch_url(federation: str, scenario: Scenario, name: str) -> str:
 def http_target(scenario: Scenario, url: str, federation: str, director: str, cache: str) -> str:
     """Return where a plain HTTP client sends its request for url.
 
-    url is a batch URL of scenario's, at the federation (see batch_url()).
     A named get goes to the cache's own URL; everything else to the
     director, by the object's bare path, with the URL's query (e.g.
     ?directread) kept.
 
     Args:
         scenario: The batch's scenario, of the http client.
-        url: The batch URL.
+        url: A batch URL of scenario's, at the federation (batch_url()).
         federation: The federation's URL, which url begins with.
         director: The director's URL, as the federation names it.
         cache: The named cache's data URL.
@@ -682,7 +683,9 @@ def failure_lines(client: str, text: str) -> list[str]:
 
 
 def read_stats(path: str) -> Any:
-    """Return the pelican client's transfer stats (--transfer-stats) at path.
+    """Return the pelican client's transfer stats at path.
+
+    They are what --transfer-stats writes.
 
     Returns:
         A list (of lists) of results, each with its attempts; None if the

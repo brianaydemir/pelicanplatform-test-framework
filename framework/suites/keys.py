@@ -9,27 +9,10 @@ sealed their stores. It runs last, since servers cache keys for up to
 `-p server-unprivileged`, whose servers' keys the host may not write,
 and the tiny topology, whose one process holds every key.
 
-  hot-add      a verify-only key added to the origins appears in
-               origin-0's JWKS and the registry's within 2 minutes, and
-               disappears once removed; no director drops origin-0
-  hot-rotate   new signing keys on the origins and a V2 cache: every
-               director keeps naming both; each origin and cache accepts
-               tokens of the new key and of the old; the issuer's tokens
-               carry the new kid; the registry learns each new key
-  master-key   a V2 cache's master key is sealed with each of its keys,
-               before and after a restart; destructively, with every
-               key but the newest retired, the cache still opens its
-               store
-  pstore-master-key
-               the same for a pstore origin, whose store holds the only
-               copy of its objects
-  backups      every server writes an encrypted database backup that
-               `pelican-server server database backup verify` opens
-
 Every scenario runs in the WLCG pass alone, since a second pass would
-change the keys again. `hot-rotate` presents tokens of every profile in
-its one rotation; rows for other profiles end in the profile's name
-(e.g. `new-key origin-0 scitokens`).
+change the keys again. `hot-rotate` presents every profile's tokens
+itself; the rows of each profile but WLCG end in its name (e.g.
+`new-key origin-0 scitokens`). See docs/tests/keys.md.
 """
 
 import functools
@@ -53,6 +36,7 @@ from testlib import (
     metrics,
     registry,
     stores,
+    suite,
     web,
 )
 from testlib.common import die, first, outcome, warn
@@ -84,8 +68,7 @@ SCENARIOS = {
 }
 
 NAMESPACE = "protected-a"
-# Every scenario runs in one pass (see suites/__init__.py): hot-rotate
-# presents every profile's tokens itself.
+# See suites/__init__.py.
 ONE_PROFILE = tuple(SCENARIOS)
 # A row: its case (appended to the scenario's name, if any), its status,
 # and its note. A scenario returns its rows.
@@ -97,11 +80,6 @@ KEY_WAIT = 120
 # How long hot-rotate watches, and how often it asks.
 ROTATE_WINDOW = 180
 ROTATE_INTERVAL = 15
-# How long the directors may take to name a server again once its keys
-# are back, or it has restarted.
-NAMED_WAIT = 150
-# How long a V2 cache may take to say, with Age, that it holds an object.
-HELD_WAIT = 30
 # How long master-key waits for a V2 cache to serve the probe, which a
 # failed hot-rotate can keep it from for a while.
 PROBE_WAIT = 150
@@ -120,7 +98,9 @@ PSTORE_MASTER_KEY = "pstore/masterkey.json"
 BACKUPS = "backups"
 BACKUP_MAGIC = b"-----BEGIN "
 SQLITE_MAGIC = b"SQLite format 3"
-OBJECT_SIZE = 200_000
+# The probe's name, in the run's collection, and size.
+PROBE = "probe"
+PROBE_SIZE = 200_000
 
 
 def skip(fed: common.Federation) -> str | None:
@@ -134,9 +114,7 @@ def skip(fed: common.Federation) -> str | None:
         return "under -p server-unprivileged, the host may not write the servers' keys"
     if fed.tiny:
         return "the tiny topology's one process holds every server's keys"
-    if NAMESPACE not in fed.exports:
-        return "this shape does not export /protected-a"
-    return None
+    return suite.unexported(fed)
 
 
 # --------------------------------------------------------------------------
@@ -220,13 +198,10 @@ def key_ids_at(url: str) -> frozenset[str] | None:
         return None
 
 
-class Test:
-    """What the scenarios share: the federation, the run's keys and objects.
+class Test(suite.Test):
+    """The probe in /protected-a, and the keys that the scenarios change.
 
     Attributes:
-        caps: The capabilities of /protected-a.
-        rel: The probe object's path in /protected-a.
-        path: The probe's path in the federation.
         data: The probe's bytes.
         origin_dirs: The origins' key directories.
         origin_key: The origins' signing key, before anything changed.
@@ -238,17 +213,8 @@ class Test:
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.run = session.run
-        self.base = f"data/keys/{self.run}"
-        self.tmp = session.path("keys")
-        os.makedirs(self.tmp)
-        self.caps = self.fed.exports[NAMESPACE]
-        self.token = session.setup_token(NAMESPACE)
-        self.rel = f"{self.base}/probe"
-        self.path = f"/{NAMESPACE}/{self.rel}"
-        self.data = os.urandom(OBJECT_SIZE)
+        super().__init__(session, "keys", NAMESPACE)
+        self.data = os.urandom(PROBE_SIZE)
         self._probed = False
         self.origin_dirs = key_dirs_of(self.fed, "origins")
         self.origin_key = self.fed.origin_key
@@ -259,16 +225,13 @@ class Test:
         self._cache_name: str | None = None
 
     def put_probe(self) -> None:
-        """Put the probe object at every origin, once."""
+        """Put the probe at every origin, once."""
         if self._probed:
             return
         self._probed = True
-        errors = stores.make_dirs(self.fed.origins, NAMESPACE, self.base, self.token)
-        errors += stores.seed_everywhere(
-            self.fed.origins, NAMESPACE, self.rel, self.data, self.token, self.caps
-        )
-        if errors:
-            die(f"could not put the probe in place: {first(errors)}")
+        why = self.put({self.rel(PROBE): self.data})
+        if why:
+            die(f"could not put the probe in place: {why}")
 
     def origin_host(self) -> str:
         """Return origin-0's host, as the directors name it."""
@@ -298,11 +261,12 @@ class Test:
             if self.cache:
                 api = accounts.Api(
                     self.cache.web_url,
-                    credentials.mint_admin(
+                    credentials.mint_web_user(
                         self.fed,
                         self.session.path(f"tokens/keys.admin.{self.cache.svc}"),
-                        credentials.local_issuer(self.fed, self.cache.web_url),
-                        self.cache_key,
+                        self.cache.web_url,
+                        "admin",
+                        key=self.cache_key,
                     ),
                 )
                 answer = api.call("GET", "/api/v1.0/server/localMetadata")
@@ -318,25 +282,17 @@ class Test:
                 `origin`.
             host: A server's host, as the directors name it.
         """
-        return director.naming(self.fed.directors, route, self.path, host)
+        return director.naming(self.fed.directors, route, self.path(self.rel(PROBE)), host)
 
-    def wait_named(self, route: str, host: str, seconds: float = NAMED_WAIT) -> str | None:
+    def wait_named(self, route: str, host: str, seconds: float = suite.SETTLE_WAIT) -> str | None:
         """Wait until every director names host for the probe.
 
-        A server that exited on its own ends the wait at once
-        (control.settle()).
+        See director.wait_named().
 
         Returns:
             Why they did not all within seconds, or None if they did.
         """
-
-        def unnamed() -> str | None:
-            named = self.named(route, host)
-            if len(named) == len(self.fed.directors):
-                return None
-            return f"{len(named)} of {len(self.fed.directors)} director(s) named {host}"
-
-        return control.settle(unnamed, seconds)
+        return director.wait_named(self.fed.directors, route, self.path(self.rel(PROBE)), host, seconds)
 
     def signed_with(self, key: str, profile: str) -> str:
         """Return a token like the `server` token, but signed with key.
@@ -345,7 +301,7 @@ class Test:
         credentials.server_claims()).
         """
         claims = credentials.server_claims(self.fed, NAMESPACE, profile=profile)
-        return jwt.encode(jwt.header(jwt.algorithm(key), jwt.key_id(key)), claims, key=key)
+        return jwt.sign(claims, key)
 
     def data_servers(self) -> list[tuple[str, str]]:
         """Return each origin that takes direct clients, and each cache.
@@ -354,7 +310,7 @@ class Test:
             The service and data URL of each such origin, and of each
             federated cache.
         """
-        found = [(o.svc, o.url) for o in self.fed.origins if "DirectReads" in self.caps]
+        found = [(o.svc, o.url) for o in self.fed.origins if self.direct]
         found += [(c.svc, c.url) for c in self.fed.federated_caches]
         return found
 
@@ -363,13 +319,13 @@ class Test:
         return self.probe(url, token) == SERVED
 
     def probe(self, url: str, token: str) -> str:
-        """Return how the server at url answers a GET of the probe for token.
+        """Return how the server at url answers the probe for token.
 
         Returns:
             SERVED, if it serves the probe; REFUSED, if it refuses the
             token (REFUSALS); or else what it answered, for a message.
         """
-        answer = web.request("GET", f"{url}{self.path}", token=token, timeout=60)
+        answer = web.request("GET", self.url(url, self.rel(PROBE)), token=token, timeout=60)
         if answer.status == 200 and answer.body == self.data:
             return SERVED
         if answer.status in REFUSALS:
@@ -429,7 +385,7 @@ def hot_add(test: Test) -> list[Row]:
     dropped: list[float] = []
 
     def watch(present: bool) -> dict[str, float]:
-        """Return how soon each source came to list the key (present), or not.
+        """Return how soon each source listed the key, or not (present).
 
         Each is asked until it does, for KEY_WAIT seconds at most; one
         whose JWKS does not answer, or holds no key, does neither.
@@ -498,11 +454,12 @@ def hot_rotate(test: Test) -> list[Row]:
     client: issuer.Client | None = None
     admin_web = ""
     if fed.embedded_issuer and not fed.external_issuer:
-        admin_web = credentials.mint_admin(
+        admin_web = credentials.mint_web_user(
             test.fed,
             test.session.path("tokens/keys.admin.origin"),
-            credentials.local_issuer(fed, fed.origin_web_url),
-            test.origin_key,
+            fed.origin_web_url,
+            "admin",
+            key=test.origin_key,
         )
         client = issuer.create_client(
             fed.origin_web_url,
@@ -697,12 +654,12 @@ def master_key_path(cache: common.Cache) -> str:
 
 
 def pstore_key_path(origin: common.Origin) -> str:
-    """Return the master key file of a pstore origin, under framework/var."""
+    """Return a pstore origin's master key file, under framework/var."""
     return f"{origin.store}/{PSTORE_MASTER_KEY}"
 
 
 def sealed_row(case: str, path: str, keys: Sequence[str]) -> Row:
-    """Return a row: whether the master key file at path is sealed with keys.
+    """Return a row: whether master key file path is sealed with keys.
 
     keys are the files of private keys, each of whose kids it must hold.
     """
@@ -790,35 +747,35 @@ def held_with_age(test: Test, cache: common.Cache) -> int | None:
     Returns:
         The Age, or None if cache does not serve the probe from its store.
     """
-    answer = web.request("GET", f"{cache.url}{test.path}", token=test.token, timeout=120)
-    if answer.status != 200 or answer.body != test.data:
+    answer = web.request("GET", test.url(cache.url, test.rel(PROBE)), token=test.setup, timeout=120)
+    if web.served(answer, test.data):
         return None
-    age = answer.header("Age").strip()
-    return int(age) if age.isdigit() else None
+    return web.age(answer)
 
 
 def hold_probe(test: Test, cache: common.Cache) -> str | None:
     """Have cache hold the probe, by reading it whole.
 
-    The cache has PROBE_WAIT seconds to serve it, and must then say,
-    with Age, that it holds it.
+    The cache has PROBE_WAIT seconds to serve it, and must then serve it
+    with an Age (held_with_age()).
 
     Returns:
         Why it does not hold it, or None if it does.
     """
+    probe = test.rel(PROBE)
     if held_with_age(test, cache) is not None:
         return None
-    last = [""]
+    last: list[str | None] = [None]
 
     def read() -> bool:
-        answer = web.request("GET", f"{cache.url}{test.path}", token=test.token, timeout=120)
-        last[0] = answer.describe()
-        return answer.status == 200 and answer.body == test.data
+        answer = web.request("GET", test.url(cache.url, probe), token=test.setup, timeout=120)
+        last[0] = web.served(answer, test.data)
+        return last[0] is None
 
     if not common.wait_for(read, PROBE_WAIT, 5):
-        return f"{PROBE_WAIT}s on, a GET of the probe got {last[0]}, or not the probe"
-    if not common.wait_for(lambda: held_with_age(test, cache) is not None, HELD_WAIT, 1):
-        return f"no Age within {HELD_WAIT}s of a whole read of the probe"
+        return f"{PROBE_WAIT}s on, a GET of the probe got {last[0]}"
+    if not common.wait_for(lambda: held_with_age(test, cache) is not None, suite.HELD_WAIT, 1):
+        return f"no Age within {suite.HELD_WAIT}s of a whole read of the probe"
     return None
 
 
@@ -883,7 +840,7 @@ def master_key(test: Test) -> list[Row]:
                 if age is None:
                     problems.append("with the old keys retired, it does not serve the probe from its store")
                 after = metrics.origins_sent_bytes(fed)
-                if before is not None and after is not None and after - before >= OBJECT_SIZE:
+                if before is not None and after is not None and after - before >= PROBE_SIZE:
                     problems.append("with the old keys retired, the origins sent the probe again")
         except control.ControlError as e:
             problems.append(f"with the old keys retired, {e}")
@@ -934,30 +891,29 @@ def stored_probe(test: Test, origin: common.Origin, key: str | None = None) -> s
         Why not, or None if it does.
     """
     token = stores.storage_admin(test.session, origin, key)
-    found, why = stores.catalog_answer(test.session, origin, "stat", NAMESPACE, test.rel, token)
+    found, why = stores.catalog_answer(test.session, origin, "stat", NAMESPACE, test.rel(PROBE), token)
     if found is None:
         return why
-    if found.get("size") != OBJECT_SIZE:
+    if found.get("size") != PROBE_SIZE:
         return f"the storage API's stat of the probe gave its size as {found.get('size')!r}"
     return None
 
 
 def pstore_master_key(test: Test) -> list[Row]:
-    """Check that a pstore origin's master key is sealed with each of its keys.
+    """Check a pstore origin's master key, as master_key() a V2 cache's.
 
-    As master_key() checks a V2 cache's, at the first pstore origin,
-    whose store is encrypted with a master key that the master key file
-    in it seals with each of the origin's keys. Given a verify-only key
-    on the origins, which the suite adds if hot-rotate left none, the
-    file must seal the master key with every key in the origin's key
-    directory, before a restart (`sealed`) and after one
-    (`sealed-after-restart`). Then, destructively, every key but the
-    newest is removed from the origin's own key directory (a replica
-    keeps them). The origin, restarted, must still open its store, keep
-    its master key file, and have its storage API stat the probe for
-    its admin, by a token signed with that key (`retired`). Afterward
-    the keys and the master key file are put back, and the origin
-    restarted again, whose storage API must then stat the probe.
+    The first pstore origin's store is encrypted with a master key that the
+    master key file in it seals with each of the origin's keys. Given a
+    verify-only key on the origins, which the suite adds if hot-rotate left
+    none, the file must seal the master key with every key in the origin's
+    key directory, before a restart (`sealed`) and after one
+    (`sealed-after-restart`). Then, destructively, every key but the newest
+    is removed from the origin's own key directory (a replica keeps them).
+    The origin, restarted, must still open its store, keep its master key
+    file, and have its storage API stat the probe for its admin, by a token
+    signed with that key (`retired`). Afterward the keys and the master key
+    file are put back, and the origin restarted again, whose storage API
+    must then stat the probe.
     """
     origin = next((o for o in test.fed.origins if o.pstore), None)
     if origin is None:
@@ -1138,9 +1094,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
 
     The run's objects are removed too.
     """
-    fed = session.fed
     test = Test(session)
-    print(f"Keys against {fed.url}, the probe at /{NAMESPACE}/{test.rel}\n")
+    print(f"Keys against {session.fed.url}, the probe at {test.path(test.rel(PROBE))}\n")
     try:
         for name in selected:
             rows = common.guarded(functools.partial(RUN[name], test), lambda why: [("", FAIL, why)])
@@ -1148,8 +1103,5 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 results.add(f"{name} {case}".strip(), status, note)
     finally:
         put_back(test)
-        tokens = session.setup_tokens()
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/keys", tokens)
-        if errors:
-            common.warn(f"could not remove the run's objects: {first(errors)}")
+        test.clean("after the run")
         shutil.rmtree(test.tmp, ignore_errors=True)

@@ -1,30 +1,37 @@
 # Pelican Test Framework
 
-A white-box test framework for [Pelican](https://pelicanplatform.org/)
-data federations. It runs a federation in Docker, fills it with known
-objects, and checks that Pelican does what it should.
+A white-box test framework for [Pelican](https://pelicanplatform.org/) data
+federations. It runs a [federation](docs/glossary.md#federation) in Docker,
+fills it with known objects, and checks that Pelican does what it should.
 
 Use it to:
 
-- **Run the smoke tests.** `smoke.sh` runs every suite over a matrix of
-  federation shapes, each from a clean start, and writes results for
-  people and CI ([CI and results](docs/ci.md)).
+- **Run the [smoke tests](docs/glossary.md#smoke-tests).**
+  [`smoke.sh`](smoke.sh) runs every [suite](docs/glossary.md#suite) over a
+  [matrix](docs/glossary.md#smoke-matrix) of federation
+  [shapes](docs/glossary.md#shape), each from a clean start, and writes
+  results for people and CI ([CI and results](docs/ci.md)).
 - **Test your changes.** Point it at your own images, client, or
   configuration ([Testing your changes](#testing-your-changes)).
 
-By default, the federation has one director, one registry, one origin,
-and one cache. An nginx host serves the federation's metadata, as the
-OSDF does. [Presets](#presets) change this shape.
+By default, the federation has one director, one registry, one origin, and
+one cache. An [nginx](https://nginx.org/) host serves the federation's
+metadata, as the [OSDF](https://osg-htc.org/services/osdf) does
+([discovery host](docs/glossary.md#discovery-host)). [Presets](#presets)
+change this shape.
 
 ## Requirements
 
-- Docker Engine 25+ and Docker Compose v2.24+. On Docker Desktop, use
-  VirtioFS file sharing.
+- [Docker Engine](https://docs.docker.com/engine/) 25+ and
+  [Docker Compose](https://docs.docker.com/compose/) v2.24+. On Docker
+  Desktop, use VirtioFS file sharing.
 - `sh`, `curl`, `openssl`, `ssh-keygen`, and `tar`.
 - [uv](https://docs.astral.sh/uv/), which provides the scripts' Python.
 - About 2.5 GB of memory for the containers, or 3.5 GB with
-  `-p topo-multi-origin -p topo-multi-cache`.
-- Optional: a Pelican checkout, mounted in the dev container at `/app`.
+  [`-p topo-multi-origin`](framework/presets/topo-multi-origin.sh) and
+  [`-p topo-multi-cache`](framework/presets/topo-multi-cache.sh).
+- Optional: a Pelican checkout, mounted in the
+  [dev container](docs/glossary.md#dev-container) at `/app`.
 
 ## Quickstart
 
@@ -39,11 +46,13 @@ OSDF does. [Presets](#presets) change this shape.
 
 ## Running the tests
 
-`./fed.sh test` runs `test.py` in the
-[dev container](docs/glossary.md#dev-container). It runs each suite in
-`framework/suites/` that applies to the shape, and skips the rest,
-saying why. Each suite runs twice: first presenting WLCG tokens, then
-SciTokens ([token profiles](docs/tests/README.md#token-profiles)).
+`./fed.sh test` runs [`test.py`](test.py) in the dev container. It runs each
+suite in [`framework/suites/`](framework/suites/) that applies to the shape,
+and [skips](docs/glossary.md#skip) the rest, saying why. Each suite runs in
+two [passes](docs/glossary.md#pass): first presenting
+[WLCG](https://github.com/WLCG-AuthZ-WG/common-jwt-profile/blob/master/profile.md)
+tokens, then [SciTokens](https://scitokens.org/technical_docs/Claims)
+([token profiles](docs/tests/README.md#token-profiles)).
 [What the tests check](docs/tests/README.md) describes each suite.
 
 ```sh
@@ -55,10 +64,11 @@ SciTokens ([token profiles](docs/tests/README.md#token-profiles)).
 ```
 
 The run prints each suite's results as it goes, then a summary of the
-failures, and exits non-zero if any case failed. Each suite writes a row
-per case to `framework/var/results/` ([Results](docs/ci.md#results)). A
-watchdog abandons a pass that prints nothing for 20 minutes, or runs for
-90, and records it as `aborted`.
+failures, and exits non-zero if any [case](docs/glossary.md#case) failed.
+Each suite writes a row per case to `framework/var/results/`
+([Results](docs/ci.md#results)). A [watchdog](docs/glossary.md#watchdog)
+abandons a pass that prints nothing for 20 minutes, or runs for 90, and
+records it as `aborted`.
 
 ### Logs
 
@@ -71,16 +81,16 @@ After every run, pass or fail, `./fed.sh test` saves these in
 | `shape.txt`                              | presets, topology, profiles, tag, and images                                |
 | `ps.txt`, `containers.txt`               | each container's state and exit code, and whether it was killed for memory  |
 | `stats.txt`                              | each container's memory use against its limit                               |
-| `config/`                                | the configuration that `fed.sh` generated, without secrets                  |
+| `config/`                                | the configuration that [`fed.sh`](fed.sh) generated, without secrets        |
 | `results/`                               | the run's [results](docs/ci.md#results)                                     |
 | `commands.log`, `commands-scitokens.log` | each pass's client commands, with exit status, output, and the plugin's ads |
 | `test.log`                               | everything the tests printed                                                |
 | `control.log`                            | what the [control helper](#service-control) did                             |
 
-Tokens in these files are kept without their signatures. The tests
-restart services but never recreate them, so each log covers the whole
-run; `./fed.sh up` and `restart` start a recreated container's log
-afresh.
+Tokens in these files lack their signatures. The tests restart
+[services](docs/glossary.md#service) but never recreate them, so each log
+covers the whole run; `./fed.sh up` and `restart` start a recreated
+container's log afresh.
 
 ## Workflow
 
@@ -95,13 +105,12 @@ afresh.
    without Docker. Rerun it after changing presets, since the test data
    depends on the shape.
 
-3. **Start** with `./fed.sh up`. It also removes containers that the
-   shape doesn't use.
+3. **Start** with `./fed.sh up`. It also removes containers that the shape
+   doesn't use.
 
-4. **Test** with `./fed.sh test`. Or open a shell in the dev container
-   with `./fed.sh dev`, where this checkout is `/scratch` and your
-   Pelican checkout is `/app`, and run `python3.13 /scratch/test.py` or
-   the client:
+4. **Test** with `./fed.sh test`. Or open a shell in the dev container with
+   `./fed.sh dev`, where this checkout is `/scratch` and your Pelican
+   checkout is `/app`, and run `python3.13 /scratch/test.py` or the client:
 
    ```
    /scratch/framework/var/bin/linux/pelican object get \
@@ -114,140 +123,145 @@ afresh.
 6. **Change something** ([Testing your changes](#testing-your-changes)),
    then apply it.
 
-7. **Reset** with `./reset.sh`. It stops everything, and discards
-   `framework/var/` (but Grafana's database) and the dev container's
-   volumes. It leaves `local/` alone.
+7. **Reset** with [`./reset.sh`](reset.sh). It stops everything, and
+   discards `framework/var/` (except Grafana's database) and the dev
+   container's volumes. It leaves `local/` alone.
 
 ## Presets
 
-Presets combine, e.g. `./fed.sh -p origin-pstore -p topo-multi-cache up`.
-A preset's name begins with what it changes: the topology (`topo-`),
-origins (`origin-`), caches (`cache-`), authorization (`auth-`),
-directors (`director-`), registry (`registry-`), every server
-(`server-`), or a helper service (`with-`). Presets that choose among
-alternatives set the same knob, and `fed.sh` refuses two of them
-together.
+[Presets](docs/glossary.md#preset) combine, e.g.
+`./fed.sh -p origin-pstore -p topo-multi-cache up`. A preset's name begins
+with what it changes: the topology (`topo-`), origins (`origin-`), caches
+(`cache-`), authorization (`auth-`), directors (`director-`), registry
+(`registry-`), every server (`server-`), or a helper service (`with-`).
+Presets that choose among alternatives set the same knob, and `fed.sh`
+refuses two of them together.
 
 With no presets, the federation has one director, one registry, one
-`posixv2` origin, and one V2 cache, and the origins run Pelican's
-embedded issuer. The origins export three namespaces, which hold the
-same objects:
+`posixv2` origin, and one V2 cache (both
+[native](docs/glossary.md#native-and-xrootd)), and the origins run Pelican's
+[embedded issuer](docs/tests/issuer.md). The origins export three
+[namespaces](docs/glossary.md#namespace), which hold the same
+[test data](docs/tests/test-data.md):
 
-- `/public`: anyone may read and list it; no one may write it, so it has
-  no issuer (but see `origin-public-writes`).
-- `/protected-a` and `/protected-b`: reading, listing, and writing each
-  take a token. Each has its own issuer and test key.
+- `/public`: anyone may read and list it; no one may write it, so it has no
+  issuer (but see
+  [`origin-public-writes`](framework/presets/origin-public-writes.sh)).
+- `/protected-a` and `/protected-b`: reading, listing, and writing each take
+  a token. Each has its own issuer and
+  [test key](docs/tests/authorization.md).
 
-Each preset is a short file in `framework/presets/`; read it for the
-details, including what it refuses. To write your own, see
+Each preset is a short file in [`framework/presets/`](framework/presets/);
+read it for the details, including what it refuses. To write your own, see
 [Configuration](docs/configuration.md#presets).
 
-**Topology** (`topo-basic`, `topo-tiny`, or `topo-standalone`; the
-others change `topo-basic`)
+**[Topology](docs/glossary.md#topology)** (`topo-basic`, `topo-tiny`, or
+`topo-standalone`; the others change `topo-basic`)
 
-| Preset                  | Effect                                                                                                                                                                                 |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `topo-basic`            | the default: each server in its own container                                                                                                                                          |
-| `topo-tiny`             | the whole federation in one process: director, registry, origin, and V2 cache; `posixv2`, `xrootd`, or `pstore` origins only; scenarios that restart one server skip                   |
-| `topo-multi-origin`     | adds origin-1, a replica of origin-0: the same prefixes, key, and issuer, over its own store (under `origin-ssh`, the same one)                                                        |
-| `topo-multi-cache`      | adds cache-1                                                                                                                                                                           |
-| `topo-multi-owner`      | adds origin-2, another owner with its own key and issuer, exporting `/other`, and `/public/other` and `/public/secret` inside `/public` ([another owner](docs/tests/another-owner.md)) |
-| `topo-multi-director`   | adds director-1, which shares director-0's key; servers advertise to both, but clients ask director-0 (unless `director-ha`)                                                           |
-| `topo-site-local-cache` | adds cache-2, a site-local cache that no director knows of, which reads through a federated cache ([site-local cache](docs/tests/site-local-cache.md))                                 |
-| `topo-transfer-server`  | adds `transfer`, a transfer server of its own, tested in place of origin-0's transfer API ([transfer API](docs/tests/transfer-api.md))                                                 |
-| `topo-no-cache`         | removes cache-0, so the directors send every read to an origin                                                                                                                         |
-| `topo-standalone`       | origin-0 alone, as a standalone origin and its own discovery host; native origins only                                                                                                 |
+| Preset                                                                | Effect                                                                                                                                                                                 |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`topo-basic`](framework/presets/topo-basic.sh)                       | the default: each server in its own container                                                                                                                                          |
+| [`topo-tiny`](framework/presets/topo-tiny.sh)                         | the whole federation in one process: director, registry, origin, and V2 cache; `posixv2`, `xrootd`, or `pstore` origins only; scenarios that restart one server skip                   |
+| [`topo-multi-origin`](framework/presets/topo-multi-origin.sh)         | adds origin-1, a replica of origin-0: the same prefixes, key, and issuer, over its own store (under `origin-ssh`, the same one)                                                        |
+| [`topo-multi-cache`](framework/presets/topo-multi-cache.sh)           | adds cache-1                                                                                                                                                                           |
+| [`topo-multi-owner`](framework/presets/topo-multi-owner.sh)           | adds origin-2, another owner with its own key and issuer, exporting `/other`, and `/public/other` and `/public/secret` inside `/public` ([another owner](docs/tests/another-owner.md)) |
+| [`topo-multi-director`](framework/presets/topo-multi-director.sh)     | adds director-1, which shares director-0's key; servers advertise to both, but clients ask director-0 (unless `director-ha`)                                                           |
+| [`topo-site-local-cache`](framework/presets/topo-site-local-cache.sh) | adds cache-2, a site-local cache that no director knows of, which reads through a federated cache ([site-local cache](docs/tests/site-local-cache.md))                                 |
+| [`topo-transfer-server`](framework/presets/topo-transfer-server.sh)   | adds `transfer`, a transfer server of its own, tested in place of origin-0's transfer API ([transfer API](docs/tests/transfer-api.md))                                                 |
+| [`topo-no-cache`](framework/presets/topo-no-cache.sh)                 | removes cache-0, so the directors send every read to an origin                                                                                                                         |
+| [`topo-standalone`](framework/presets/topo-standalone.sh)             | origin-0 alone, as a standalone origin and its own discovery host; native origins only                                                                                                 |
 
 **Origin storage** (one of)
 
-| Preset           | Effect                                                                                                                                     |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `origin-posixv2` | the default: native `posixv2`                                                                                                              |
-| `origin-xrootd`  | XRootD `posix`                                                                                                                             |
-| `origin-pstore`  | native `pstore`, the encrypted Pelican store, filled by uploads; `/public` reads `/protected-a`'s objects ([pstore](docs/tests/pstore.md)) |
-| `origin-ssh`     | native `ssh`, to the `lab-server` service, logging in with a key; every origin shares its store; no checksums                              |
-| `origin-httpsv2` | native `httpsv2`, in front of the `webdav` service (rclone), which takes no credentials; `/protected-a` only; no checksums                 |
-| `origin-s3v2`    | native `s3v2`, in front of the `s3` service (rclone), a bucket per origin; MD5 only                                                        |
-| `origin-https`   | XRootD `https`, in front of the `webdav` service; `/protected-a` only; no checksums                                                        |
-| `origin-s3`      | XRootD `s3`, in front of the `s3` service, a bucket per export; no deletes or checksums                                                    |
+| Preset                                                  | Effect                                                                                                                                            |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`origin-posixv2`](framework/presets/origin-posixv2.sh) | the default: native `posixv2`                                                                                                                     |
+| [`origin-xrootd`](framework/presets/origin-xrootd.sh)   | [XRootD](https://xrootd.org/) `posix`                                                                                                             |
+| [`origin-pstore`](framework/presets/origin-pstore.sh)   | native `pstore`, the encrypted Pelican store, filled by uploads; `/public` reads `/protected-a`'s objects ([pstore](docs/tests/pstore.md))        |
+| [`origin-ssh`](framework/presets/origin-ssh.sh)         | native `ssh`, to the `lab-server` service, logging in with a key; every origin shares its store; no checksums                                     |
+| [`origin-httpsv2`](framework/presets/origin-httpsv2.sh) | native `httpsv2`, in front of the `webdav` service ([rclone](https://rclone.org/)), which takes no credentials; `/protected-a` only; no checksums |
+| [`origin-s3v2`](framework/presets/origin-s3v2.sh)       | native `s3v2`, in front of the `s3` service (rclone), a bucket per origin; MD5 only                                                               |
+| [`origin-https`](framework/presets/origin-https.sh)     | XRootD `https`, in front of the `webdav` service; `/protected-a` only; no checksums                                                               |
+| [`origin-s3`](framework/presets/origin-s3.sh)           | XRootD `s3`, in front of the `s3` service, a bucket per export; no deletes or checksums                                                           |
 
 **Caches** (one of)
 
-| Preset         | Effect                                                                  |
-| -------------- | ----------------------------------------------------------------------- |
-| `cache-v2`     | the default: V2 caches                                                  |
-| `cache-xrootd` | XRootD caches                                                           |
-| `cache-mixed`  | cache-1 is an XRootD cache beside the V2 ones; needs `topo-multi-cache` |
+| Preset                                              | Effect                                                                  |
+| --------------------------------------------------- | ----------------------------------------------------------------------- |
+| [`cache-v2`](framework/presets/cache-v2.sh)         | the default: V2 caches                                                  |
+| [`cache-xrootd`](framework/presets/cache-xrootd.sh) | XRootD caches                                                           |
+| [`cache-mixed`](framework/presets/cache-mixed.sh)   | cache-1 is an XRootD cache beside the V2 ones; needs `topo-multi-cache` |
 
 **Cache features**
 
-| Preset         | Effect                                                                                                                                             |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cache-tiered` | V2 caches move objects of 16 MiB or more to the `s3` service, and redirect clients there (cache-1 proxies them) ([tiering](docs/tests/tiering.md)) |
-| `cache-memory` | V2 caches keep up to 64 MB of decrypted blocks in memory (`Cache.MemoryCacheSize`)                                                                 |
-| `cache-small`  | caches evict at 128 MiB, down to 96 MiB (V2: `Cache.HighWaterMark`; XRootD: `Cache.FilesMaxSize`)                                                  |
+| Preset                                              | Effect                                                                                                                                             |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`cache-tiered`](framework/presets/cache-tiered.sh) | V2 caches move objects of 16 MiB or more to the `s3` service, and redirect clients there (cache-1 proxies them) ([tiering](docs/tests/tiering.md)) |
+| [`cache-memory`](framework/presets/cache-memory.sh) | V2 caches keep up to 64 MB of decrypted blocks in memory (`Cache.MemoryCacheSize`)                                                                 |
+| [`cache-small`](framework/presets/cache-small.sh)   | caches evict at 128 MiB, down to 96 MiB (V2: `Cache.HighWaterMark`; XRootD: `Cache.FilesMaxSize`)                                                  |
 
 **Origin features**
 
-| Preset                    | Effect                                                                                                                                                                                           |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `origin-posc`             | stages uploads until they complete (POSC); `posixv2` only ([POSC and metadata](docs/tests/posc-and-metadata.md))                                                                                 |
-| `origin-atomic-uploads`   | XRootD's POSC (`Origin.EnableAtomicUploads`); `origin-xrootd` only                                                                                                                               |
-| `origin-metadata`         | publishes an event, with the uploader's metadata, for each object committed, overwritten, or deleted, to a recorder (eventual mode); `posixv2` only                                              |
-| `origin-metadata-tx`      | `origin-metadata` in transactional mode: an upload whose event is not delivered fails, and is rolled back                                                                                        |
-| `origin-max-age`          | origins send `max-age=30` (`Origin.CacheControl`); native origins only ([cache freshness](docs/tests/cache-freshness.md))                                                                        |
-| `origin-no-direct`        | origins serve only caches (`Origin.DisableDirectClients`); one read-only export: `/protected-a`, or `/public` with `origin-public`; suites that write skip                                       |
-| `origin-multiuser`        | origins act as each token's Unix user (`Origin.Multiuser`); `posixv2` and `origin-xrootd` only ([Unix users](docs/tests/unix-users.md))                                                          |
-| `origin-broker`           | origin-0 uses director-0 as its connection broker; XRootD origins only; one export: `/protected-a`, or `/public` with `origin-public`                                                            |
-| `origin-firewalled`       | `origin-broker`, with origin-0 on a network of its own, which the caches reach only through the broker; XRootD caches only; needs `auth-external-issuer` or `origin-public`; not `topo-no-cache` |
-| `origin-ssh-tunnel`       | the origin reaches its helper on the lab server through the SSH connection (`Origin.SSH.TunnelCallback`); `origin-ssh` only                                                                      |
-| `origin-transfer-api`     | origins run the transfer API (`Origin.EnableTransferAPI`) ([transfer API](docs/tests/transfer-api.md))                                                                                           |
-| `origin-short-tokens`     | the issuer's access tokens and codes last a minute, and refresh tokens four (`Issuer.*Lifetime`) ([issuer](docs/tests/issuer.md))                                                                |
-| `origin-export-templates` | `/protected-b` has authorization templates of its own, in place of the global ones                                                                                                               |
-| `origin-public`           | origins export only `/public`: no issuer, and no writes; most suites of the data path skip                                                                                                       |
-| `origin-public-writes`    | `/public` takes writes with a token (`PublicReads` and `Writes`), so it has an issuer                                                                                                            |
+| Preset                                                                    | Effect                                                                                                                                                                                           |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`origin-posc`](framework/presets/origin-posc.sh)                         | stages uploads until they complete (POSC); `posixv2` only ([POSC and metadata](docs/tests/posc-and-metadata.md))                                                                                 |
+| [`origin-atomic-uploads`](framework/presets/origin-atomic-uploads.sh)     | XRootD's POSC (`Origin.EnableAtomicUploads`); `origin-xrootd` only                                                                                                                               |
+| [`origin-metadata`](framework/presets/origin-metadata.sh)                 | publishes an event, with the uploader's metadata, for each object committed, overwritten, or deleted, to a recorder (eventual mode); `posixv2` only                                              |
+| [`origin-metadata-tx`](framework/presets/origin-metadata-tx.sh)           | `origin-metadata` in transactional mode: an upload whose event is not delivered fails, and is rolled back                                                                                        |
+| [`origin-max-age`](framework/presets/origin-max-age.sh)                   | origins send `max-age=30` (`Origin.CacheControl`); native origins only ([cache freshness](docs/tests/cache-freshness.md))                                                                        |
+| [`origin-no-direct`](framework/presets/origin-no-direct.sh)               | origins serve only caches (`Origin.DisableDirectClients`); one read-only export: `/protected-a`, or `/public` with `origin-public`; suites that write skip                                       |
+| [`origin-multiuser`](framework/presets/origin-multiuser.sh)               | origins act as each token's Unix user (`Origin.Multiuser`); `posixv2` and `origin-xrootd` only ([Unix users](docs/tests/unix-users.md))                                                          |
+| [`origin-broker`](framework/presets/origin-broker.sh)                     | origin-0 uses director-0 as its connection broker; XRootD origins only; one export: `/protected-a`, or `/public` with `origin-public`                                                            |
+| [`origin-firewalled`](framework/presets/origin-firewalled.sh)             | `origin-broker`, with origin-0 on a network of its own, which the caches reach only through the broker; XRootD caches only; needs `auth-external-issuer` or `origin-public`; not `topo-no-cache` |
+| [`origin-ssh-tunnel`](framework/presets/origin-ssh-tunnel.sh)             | the origin reaches its helper on the lab server through the SSH connection (`Origin.SSH.TunnelCallback`); `origin-ssh` only                                                                      |
+| [`origin-transfer-api`](framework/presets/origin-transfer-api.sh)         | origins run the transfer API (`Origin.EnableTransferAPI`) ([transfer API](docs/tests/transfer-api.md))                                                                                           |
+| [`origin-short-tokens`](framework/presets/origin-short-tokens.sh)         | the issuer's access tokens and codes last a minute, and refresh tokens four (`Issuer.*Lifetime`) ([issuer](docs/tests/issuer.md))                                                                |
+| [`origin-export-templates`](framework/presets/origin-export-templates.sh) | `/protected-b` has authorization templates of its own, in place of the global ones                                                                                                               |
+| [`origin-public`](framework/presets/origin-public.sh)                     | origins export only `/public`: no issuer, and no writes; most suites of the data path skip                                                                                                       |
+| [`origin-public-writes`](framework/presets/origin-public-writes.sh)       | `/public` takes writes with a token (`PublicReads` and `Writes`), so it has an issuer                                                                                                            |
 
 **Authorization**
 
-| Preset                 | Effect                                                                                                                                                                                            |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `auth-oidc-local`      | web UI login, and the registry's `--with-identity`, through the framework's identity provider (`idp`), whose users are in `framework/etc/idp-users.json` ([OIDC login](docs/tests/oidc-login.md)) |
-| `auth-oidc-cilogon`    | the same through CILogon, with your own client in `local/etc/oidc-client-{id,secret}`, which must accept each server's redirect URI ([Ports](#ports)); `oidc` skips                               |
-| `auth-external-issuer` | the exports trust `https://discovery:8444/issuer`, which signs the tests' tokens, in place of the origins' issuers, which are off                                                                 |
-| `auth-no-issuer`       | origins run no issuer (`Origin.EnableIssuer`); each namespace's issuer is the origin, whose key signs tokens out of band, as `pelican token create` does                                          |
+| Preset                                                              | Effect                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`auth-oidc-local`](framework/presets/auth-oidc-local.sh)           | web UI login, and the registry's `--with-identity`, through the framework's identity provider (`idp`), whose users are in [`framework/etc/idp-users.json`](framework/etc/idp-users.json) ([OIDC login](docs/tests/oidc-login.md)) |
+| [`auth-oidc-cilogon`](framework/presets/auth-oidc-cilogon.sh)       | the same through [CILogon](https://www.cilogon.org/), with your own client in `local/etc/oidc-client-{id,secret}`, which must accept each server's redirect URI ([Ports](#ports)); [`oidc`](docs/tests/oidc-login.md) skips       |
+| [`auth-external-issuer`](framework/presets/auth-external-issuer.sh) | the exports trust `https://discovery:8444/issuer`, which signs the tests' tokens, in place of the origins' issuers, which are off                                                                                                 |
+| [`auth-no-issuer`](framework/presets/auth-no-issuer.sh)             | origins run no issuer (`Origin.EnableIssuer`); each namespace's issuer is the origin, whose key signs tokens out of band, as `pelican token create` does                                                                          |
 
 **Director and registry**
 
-| Preset                    | Effect                                                                                                                                                                         |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `director-default-origin` | directors send a GET of a bare path to an origin, not a cache (`Director.DefaultResponse`); this affects curl and browsers, not the Pelican client                             |
-| `director-discovery`      | director-0 serves the federation's metadata (`Director.EnableFederationMetadataHosting`) in place of the `discovery` service, so the federation is `pelican://director-0:8444` |
-| `director-ha`             | adds `director`, a load balancer that passes TLS through to director-0 and director-1, and that the federation names as its director; needs `topo-multi-director`              |
-| `registry-approval`       | nothing serves until an administrator approves its registration (`Registry.Require{Origin,Cache}Approval`), which `federation`'s `ready` does                                  |
+| Preset                                                                    | Effect                                                                                                                                                                         |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`director-default-origin`](framework/presets/director-default-origin.sh) | directors send a GET of a bare path to an origin, not a cache (`Director.DefaultResponse`); this affects curl and browsers, not the Pelican client                             |
+| [`director-discovery`](framework/presets/director-discovery.sh)           | director-0 serves the federation's metadata (`Director.EnableFederationMetadataHosting`) in place of the `discovery` service, so the federation is `pelican://director-0:8444` |
+| [`director-ha`](framework/presets/director-ha.sh)                         | adds `director`, a load balancer that passes TLS through to director-0 and director-1, and that the federation names as its director; needs `topo-multi-director`              |
+| [`registry-approval`](framework/presets/registry-approval.sh)             | nothing serves until an administrator approves its registration (`Registry.Require{Origin,Cache}Approval`), which [`federation`](docs/tests/federation.md)'s `ready` does      |
 
 Under `director-ha`, every director serves the metadata of
 `director-discovery`, and the federation is `pelican://director:8444`.
 
 **Every server**
 
-| Preset                | Effect                                                                                |
-| --------------------- | ------------------------------------------------------------------------------------- |
-| `server-unprivileged` | each server drops root for the `pelican` user (`Server.DropPrivileges`); `keys` skips |
+| Preset                                                            | Effect                                                                                                      |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| [`server-unprivileged`](framework/presets/server-unprivileged.sh) | each server drops root for the `pelican` user (`Server.DropPrivileges`); [`keys`](docs/tests/keys.md) skips |
 
 **Helpers**
 
-| Preset         | Effect                                                               |
-| -------------- | -------------------------------------------------------------------- |
-| `with-grafana` | adds Grafana, with no data source (see the preset); no suite uses it |
+| Preset                                              | Effect                                                                                       |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| [`with-grafana`](framework/presets/with-grafana.sh) | adds [Grafana](https://grafana.com/), with no data source (see the preset); no suite uses it |
 
-`smoke.sh`'s `pelican-defaults` shape runs Pelican's own defaults in
-place of the framework's: `origin-xrootd`, `cache-xrootd`,
-`auth-no-issuer`, and `director-discovery`.
+The [smoke matrix](docs/development.md#the-smoke-matrix)'s
+`pelican-defaults` shape runs Pelican's own defaults in place of the
+framework's: `origin-xrootd`, `cache-xrootd`, `auth-no-issuer`, and
+`director-discovery`.
 
 ## Testing your changes
 
-Nothing needs to be released first. Your changes go in `local/`, or, for
-the client, in `framework/var/bin/`:
+Nothing needs a release first. Your changes go in `local/`, or, for the
+client, in `framework/var/bin/`:
 
 | To test                                              | Put it in                                  | Then                            |
 | ---------------------------------------------------- | ------------------------------------------ | ------------------------------- |
@@ -267,8 +281,8 @@ containers, so they read it again.
 
 ### Server images
 
-Build images from your Pelican checkout. The build compiles the server
-and its web UI inside Docker, so the first build is slow.
+Build images from your Pelican checkout. The build compiles the server and
+its web UI inside Docker, so the first build is slow.
 
 ```sh
 cd ~/pelican
@@ -291,31 +305,33 @@ whose image changed. `topo-tiny` runs everything from `IMAGE_ORIGIN`.
 
 ### Client binary
 
-The tests run `framework/var/bin/linux/pelican`, and `stash_plugin`, a
-symlink to it. To test your own client, build it over that file from
-the dev container:
+The tests run `framework/var/bin/linux/pelican`
+([Pelican client](docs/glossary.md#pelican-client)), and
+[`stash_plugin`](docs/glossary.md#stash_plugin), a symlink to it. To test
+your own client, build it over that file from the dev container:
 
 ```sh
 cd /app && CGO_ENABLED=0 go build -tags client -o /scratch/framework/var/bin/linux/pelican ./cmd
 ```
 
-`init` keeps your binary; only a change of `PELICAN_TAG`, or
-`reset.sh`, replaces it.
+`init` keeps your binary; only a change of `PELICAN_TAG`, or `reset.sh`,
+replaces it.
 
-For server-only commands, such as `origin collection`, the tests run
-the dev container's `pelican-server`, if it has one, or else
+For server-only commands, such as `origin collection`, the tests run the dev
+container's `pelican-server`, if it has one, or else
 `framework/var/bin/linux/pelican-server`, which `init` fetches if it is
-missing. To test your own, put it there. On a Linux host, that binary
-is also the host's, so `init` keeps it only if it reports
-`PELICAN_TAG`'s version; otherwise it replaces it and the client.
+missing. To test your own, put it there. On a Linux host, that binary is
+also the host's, so `init` keeps it only if it reports `PELICAN_TAG`'s
+version; otherwise it replaces it and the client.
 
 ### Pelican configuration
 
-Each service merges layers of configuration files; later ones win. The
-framework's own (`framework/config.d/`) and those that `fed.sh`
-generates come first, then yours: `local/config.d/base/` for every
-service, then `local/config.d/instance/<service>/`. Within a directory,
-files merge in lexicographic order. For example:
+Each service merges [layers](docs/glossary.md#configuration-layer) of
+configuration files; later ones win. The framework's own
+([`framework/config.d/`](framework/config.d/)) and those that `fed.sh`
+generates come first, then yours: `local/config.d/base/` for every service,
+then `local/config.d/instance/<service>/`. Within a directory, files merge
+in lexicographic order. For example:
 
 ```sh
 mkdir -p local/config.d/instance/director-0
@@ -326,52 +342,52 @@ EOF
 ./fed.sh restart director-0
 ```
 
-A later layer replaces a list instead of merging it, and a few settings
-come from environment variables, which files can't override.
+A later layer replaces a list instead of merging it, and a few settings come
+from environment variables, which files can't override.
 [Configuration](docs/configuration.md) has the details, and the
 [knobs](docs/configuration.md#knobs) that `fed.sh` reads.
 
 ## Commands
 
-| Command                           | Does                                                            |
-| --------------------------------- | --------------------------------------------------------------- |
-| `./fed.sh [-p PRESET]... init`    | create what's missing: certs, binaries, keys, data              |
-| `./fed.sh up` / `down`            | start / stop everything                                         |
-| `./fed.sh restart [SERVICE]...`   | recreate containers so they reread configuration                |
-| `./fed.sh test [ARG]...`          | the tests: `test.py` in the dev container                       |
-| `./fed.sh control`                | [service control](#service-control) for a `test.py` run by hand |
-| `./fed.sh dev [CMD]...`           | a shell (or `CMD`) in the dev container                         |
-| `./fed.sh status`                 | containers, presets, and images                                 |
-| `./fed.sh [-p PRESET]... check`   | exit 0 if it accepts the presets                                |
-| `./fed.sh keys [...]`             | [issuer keys](docs/configuration.md#issuer-keys)                |
-| `./fed.sh <other>`                | passed to `docker compose`, e.g. `logs -f cache-0`              |
-| `./test.py [SUITE[/SCENARIO]]...` | the tests (in the dev container); `-l` lists them               |
-| `./reset.sh`                      | discard everything generated                                    |
-| `./smoke.sh [-o DIR] [SHAPE]...`  | the smoke tests, over every shape; destructive                  |
-| `framework/report.py`             | merge [results](docs/ci.md#results); JUnit XML; Markdown        |
+| Command                                      | Does                                                            |
+| -------------------------------------------- | --------------------------------------------------------------- |
+| `./fed.sh [-p PRESET]... init`               | create what's missing: certs, binaries, keys, data              |
+| `./fed.sh up` / `down`                       | start / stop everything                                         |
+| `./fed.sh restart [SERVICE]...`              | recreate containers so they reread configuration                |
+| `./fed.sh test [ARG]...`                     | the tests: `test.py` in the dev container                       |
+| `./fed.sh control`                           | [service control](#service-control) for a `test.py` run by hand |
+| `./fed.sh dev [CMD]...`                      | a shell (or `CMD`) in the dev container                         |
+| `./fed.sh status`                            | containers, presets, and images                                 |
+| `./fed.sh [-p PRESET]... check`              | exit 0 if it accepts the presets                                |
+| `./fed.sh keys [...]`                        | [issuer keys](docs/configuration.md#issuer-keys)                |
+| `./fed.sh <other>`                           | passed to `docker compose`, e.g. `logs -f cache-0`              |
+| `./test.py [SUITE[/SCENARIO]]...`            | the tests (in the dev container); `-l` lists them               |
+| `./reset.sh`                                 | discard everything generated                                    |
+| `./smoke.sh [-o DIR] [SHAPE]...`             | the smoke tests, over every shape; destructive                  |
+| [`framework/report.py`](framework/report.py) | merge [results](docs/ci.md#results); JUnit XML; Markdown        |
 
 ## Service control
 
-Some tests restart, stop, start, pause, or kill a service mid-run,
-restart one with configuration of their own, or freeze the XRootD
-daemons in one. The dev container can't control Docker, so
-`./fed.sh test` runs a helper on the host (`framework/control.py`) that
-does this for them. The tests ask it through files in
-`framework/var/control/`. It acts only on the shape's services, never
-`dev`, and only with `docker compose`. `smoke.sh` runs the tests through
-`./fed.sh test`, so it has the helper too.
+Some tests restart, stop, start, pause, or kill a service mid-run, restart
+one with configuration of their own, or freeze the XRootD daemons in one.
+The dev container can't control Docker, so `./fed.sh test` runs a
+[helper](docs/glossary.md#service-control-helper) on the host
+([`framework/control.py`](framework/control.py)) that does this for them.
+The tests ask it through files in `framework/var/control/`. It acts only on
+the shape's services, never `dev`, and only with `docker compose`.
+`smoke.sh` runs the tests through `./fed.sh test`, so it has the helper too.
 
-To run `test.py` by hand in the dev container, run `./fed.sh control`
-on the host beside it, and stop it with Ctrl-C when you're done. Without
-a helper, the scenarios that need one skip, and say why.
+To run `test.py` by hand in the dev container, run `./fed.sh control` on the
+host beside it, and stop it with Ctrl-C when you're done. Without a helper,
+the scenarios that need one skip, and say why.
 
 A test's configuration of a service goes in
 `framework/var/control/config/<service>/`, the last
-[configuration layer](docs/configuration.md#pelican-configuration). When
-the helper stops, it puts back what the tests left: it removes their
-configuration, restarting the services that had it, and starts,
-unpauses, or thaws what they left stopped, killed, paused, or frozen. A
-helper that starts removes any configuration that an earlier one left.
+[configuration layer](docs/configuration.md#pelican-configuration). When the
+helper stops, it puts back what the tests left: it removes their
+configuration, restarting the services that had it, and starts, unpauses, or
+thaws what they left stopped, killed, paused, or frozen. A helper that
+starts removes any configuration that an earlier one left.
 
 ## Where things live
 
@@ -391,34 +407,34 @@ smoke-logs/   smoke.sh's logs and results (ignored by Git)
 Everything the framework creates is in plain directories under
 `framework/var/`. Stop the federation before editing anything there.
 
-| Path                 | Contents                                                                                                            |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `state/<service>/`   | database and backups (`/var/lib/pelican`)                                                                           |
-| `data/origin/<N>/`   | origin-N's store (`/data`; `/srv/origin-<N>` on the `webdav` and `s3` backends), a directory per namespace          |
-| `data/cache/<N>/`    | cache-N's storage (`/data`)                                                                                         |
-| `data/lab-server/`   | the lab server's shared directory                                                                                   |
-| `data/transfers/`    | the `transfers` suite's batches (`input/`) and results; `transfers-scitokens/` for its SciTokens pass               |
-| `data/auth-test/`    | the responses the `auth` suite got; `auth-test-scitokens/` for its SciTokens pass                                   |
-| `data/owners-test/`  | the responses the `owners` suite got; `owners-test-scitokens/` for its SciTokens pass                               |
-| `data/metadata/`     | every request the metadata recorder received                                                                        |
-| `data/webdav-gate/`  | the `Authorization` of each request that an `https` or `httpsv2` origin sent its backend through the gate           |
-| `data/idp/`          | every request the identity provider served (`-p auth-oidc-local`), one JSON object per line, without secrets        |
-| `data/commands.log`  | the client commands the tests ran, with exit status and output; `commands-scitokens.log` for the SciTokens pass     |
-| `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                       |
-| `logs/<time>/`       | each `./fed.sh test` run's [logs](#logs)                                                                            |
-| `control/`           | the tests' requests to [control services](#service-control), and their configuration of a service (`config/<svc>/`) |
-| `issuer-keys/<svc>/` | each service's issuer keys (`/fed/issuer-keys`), and `issuer/`, the external issuer's                               |
-| `test-keys/`         | private keys for the [authorization tests](docs/tests/authorization.md)                                             |
-| `issuer-jwks/`       | the public keys that the origins add with `Server.IssuerJwks` and each export's `IssuerJwks`                        |
-| `generated/`         | files that `fed.sh` derives from the shape and `local/`, e.g. each service's own layer in `instance/<service>/`     |
-| `bin/`               | binaries; the dev container uses `linux/`                                                                           |
-| `certs/`             | the framework's CA and server certificate                                                                           |
-| `grafana/`           | Grafana's database (`reset.sh` keeps it)                                                                            |
+| Path                 | Contents                                                                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `state/<service>/`   | database and backups (`/var/lib/pelican`)                                                                                            |
+| `data/origin/<N>/`   | origin-N's store (`/data`; `/srv/origin-<N>` on the `webdav` and `s3` backends), a directory per namespace                           |
+| `data/cache/<N>/`    | cache-N's storage (`/data`)                                                                                                          |
+| `data/lab-server/`   | the lab server's shared directory                                                                                                    |
+| `data/transfers/`    | the [`transfers`](docs/tests/test-data.md) suite's batches (`input/`) and results; `transfers-scitokens/` for its SciTokens pass     |
+| `data/auth-test/`    | the responses the [`auth`](docs/tests/authorization.md) suite got; `auth-test-scitokens/` for its SciTokens pass                     |
+| `data/owners-test/`  | the responses the [`owners`](docs/tests/another-owner.md) suite got; `owners-test-scitokens/` for its SciTokens pass                 |
+| `data/metadata/`     | every request the [metadata recorder](framework/metadata-server/recorder.py) received                                                |
+| `data/webdav-gate/`  | the `Authorization` of each request that an `https` or `httpsv2` origin sent its backend through the gate                            |
+| `data/idp/`          | every request the [identity provider](framework/idp/idp.py) served (`-p auth-oidc-local`), one JSON object per line, without secrets |
+| `data/commands.log`  | the client commands the tests ran, with exit status and output; `commands-scitokens.log` for the SciTokens pass                      |
+| `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                                        |
+| `logs/<time>/`       | each `./fed.sh test` run's [logs](#logs)                                                                                             |
+| `control/`           | the tests' requests to [control services](#service-control), and their configuration of a service (`config/<svc>/`)                  |
+| `issuer-keys/<svc>/` | each service's issuer keys (`/fed/issuer-keys`), and `issuer/`, the external issuer's                                                |
+| `test-keys/`         | private keys for the [authorization tests](docs/tests/authorization.md)                                                              |
+| `issuer-jwks/`       | the public keys that the origins add with `Server.IssuerJwks` and each export's `IssuerJwks`                                         |
+| `generated/`         | files that `fed.sh` derives from the shape and `local/`, e.g. each service's own layer in `instance/<service>/`                      |
+| `bin/`               | binaries; the dev container uses `linux/`                                                                                            |
+| `certs/`             | the framework's CA and server certificate                                                                                            |
+| `grafana/`           | Grafana's database (`reset.sh` keeps it)                                                                                             |
 
 ## Ports
 
-The web UIs log in as `admin` / `asdf`. `framework/var/certs/ca.crt`
-signs the certificates.
+The web UIs log in as `admin` / `asdf`. `framework/var/certs/ca.crt` signs
+the certificates.
 
 | URL                      | Service                                                                               |
 | ------------------------ | ------------------------------------------------------------------------------------- |
@@ -431,51 +447,49 @@ signs the certificates.
 | <https://localhost:9007> | idp, the identity provider (`auth-oidc-local`); `https://idp:9007` to the servers     |
 | <https://localhost:9008> | director, the directors' load balancer (`director-ha`)                                |
 | <http://localhost:9002>  | dev container (serve on `0.0.0.0:8444` inside)                                        |
-| <http://localhost:9003>  | Grafana (`admin` / `admin`; see `framework/presets/with-grafana.sh`)                  |
+| <http://localhost:9003>  | Grafana (`admin` / `admin`; see [`with-grafana`](framework/presets/with-grafana.sh))  |
 
-Under `-p auth-oidc-local` or `-p auth-oidc-cilogon`, each server's
-OIDC redirect URI is
-`https://localhost:<port>/api/v1.0/auth/oauth/callback`. To log in
-through `idp` from a browser, map `idp` to `127.0.0.1` in your hosts
+Under `-p auth-oidc-local` or `-p auth-oidc-cilogon`, each server's OIDC
+redirect URI is `https://localhost:<port>/api/v1.0/auth/oauth/callback`. To
+log in through `idp` from a browser, map `idp` to `127.0.0.1` in your hosts
 file, and log in as a user in `framework/etc/idp-users.json` or
 `local/etc/idp-users.json`.
 
 ## Sharp edges
 
 - **Switching storage.** Another `origin-*` or `cache-*` preset reuses
-  `framework/var/data/` with a different layout. Run `./reset.sh`
-  between them.
-- **Changing shape while running.** `up` recreates only the containers
-  whose definition changed. If that leaves a service on its old
-  configuration, `up` names it, and the `restart` that fixes it.
+  `framework/var/data/` with a different layout. Run `./reset.sh` between
+  them.
+- **Changing shape while running.** `up` recreates only the containers whose
+  definition changed. If that leaves a service on its old configuration,
+  `up` names it, and the `restart` that fixes it.
 - **Linux hosts.** Containers run as root, so the files they write under
   `framework/var/` are root's. `./reset.sh` removes them anyway. Under
-  `-p server-unprivileged`, each server's keys and database belong to
-  uid 10941, so `./fed.sh keys add` and `rotate` refuse until
-  `./reset.sh`.
-- **New hosts.** When `framework/etc/tls.req` names a host that the
-  server certificate lacks, `./fed.sh init` issues a new certificate
-  from the same CA, which running services still trust.
-- **`~/.gitconfig`.** The dev container mounts it, so `fed.sh` creates
-  an empty one if it's missing.
+  `-p server-unprivileged`, each server's keys and database belong to uid
+  10941, so `./fed.sh keys add` and `rotate` refuse until `./reset.sh`.
+- **New hosts.** When [`framework/etc/tls.req`](framework/etc/tls.req) names
+  a host that the server certificate lacks, `./fed.sh init` issues a new
+  certificate from the same CA, which running services still trust.
+- **`~/.gitconfig`.** The dev container mounts it, so `fed.sh` creates an
+  empty one if it's missing.
 - **Your Pelican checkout.** The dev image's entrypoint runs
-  `pre-commit install` in `/app`, which installs Pelican's Git hook in
-  the checkout that `PELICAN_SRC_DIR` names.
+  `pre-commit install` in `/app`, which installs Pelican's Git hook in the
+  checkout that `PELICAN_SRC_DIR` names.
 - **`-p topo-tiny`** refuses `cache-xrootd`, `auth-external-issuer`,
   `director-discovery`, `origin-broker`, `origin-firewalled`,
   `topo-no-cache`, and every preset that adds a service but
   `origin-metadata`, `origin-metadata-tx`, and `auth-oidc-local`.
-- **`-p origin-metadata`** builds the verifier's image from GitHub on
-  the first `up`, which needs network access and takes a few minutes.
+- **`-p origin-metadata`** builds the verifier's image from GitHub on the
+  first `up`, which needs network access and takes a few minutes.
 
 ## More documentation
 
-- [What the tests check](docs/tests/README.md): each suite, the test
-  data, and the credentials.
+- [What the tests check](docs/tests/README.md): each suite, the test data,
+  and the credentials.
 - [Configuration](docs/configuration.md): configuration layers, knobs,
   writing presets, and issuer keys.
 - [CI and results](docs/ci.md): running the smoke tests in CI, and the
   results format.
-- [Developing the framework](docs/development.md): its layout, what a
-  suite is made of, and the checks that keep it consistent.
+- [Developing the framework](docs/development.md): its layout, what a suite
+  is made of, and the checks that keep it consistent.
 - [Glossary](docs/glossary.md): the terms these docs use.

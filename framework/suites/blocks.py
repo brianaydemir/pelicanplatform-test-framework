@@ -1,86 +1,7 @@
 """Objects and byte ranges at the block boundaries of pstore and caches.
 
-The suite writes objects of sizes on either side of the block boundaries
-of pstore (an origin's encrypted store), the V2 cache, and the XRootD
-cache, and reads them back, whole and in ranges, from each origin,
-through each cache and director, and with both clients.
-framework/testlib/blocks.py lists the sizes and ranges, and the layout
-facts behind them. Around these reads, the suite checks digests, ETags,
-conditional requests, the X-Transfer-Status trailer, and what caches do
-with partial reads, overwrites, corruption, and eviction.
-
-  put-declared       every size uploaded to each origin with a
-                     Content-Length; at a pstore origin, each lands in
-                     the tier its size predicts
-  put-chunked        the same, in chunks with no length
-  put-client         every size uploaded by `pelican object put`
-  put-plugin         every size uploaded by stash_plugin
-  put-checksum       `pelican object put --require-checksum` succeeds
-                     where the storage reports a digest, and fails
-                     elsewhere
-  origin-read        each origin returns every object whole and every
-                     range
-  client-get         `pelican object get` of every size, through a
-                     cache, direct, and from each federated cache, named
-  plugin-get         the same by stash_plugin
-  cache-whole-first  each cache: a cold whole read, a warm one, then
-                     every range
-  director-read      each director's redirect, followed by a plain HTTP
-                     client, leads to every object and range
-  cache-range-first  each cache: a cold range, then every range, then
-                     the whole
-  cache-stored       each XRootD cache's store on disk holds the
-                     objects' bytes
-  cache-overlap      each cache: ranges that overlap what it holds, in
-                     turn and at once
-  coalescing         each federated cache, read cold by many clients at
-                     once, fetches the object from the origins once
-  cache-assemble     each cache: ranges that cover an object leave it
-                     holding all of it
-  cache-abandoned    each cache: a cold read given up on spoils nothing
-  cache-corrupted    each V2 cache never serves a block corrupted or cut
-                     from its store
-  transfer-status    each federated cache, asked, ends a GET with an
-                     X-Transfer-Status trailer of `200: OK`
-  transfer-status-failure
-                     each federated V2 cache reports a block it cannot
-                     repair in the trailer, and the clients fail
-  origin-transfer-status
-                     each origin, asked, sends the trailer too
-  digests            every digest a server reports is the object's; the
-                     origins and V2 caches report the storage's
-  digest-overwrite   each origin's digests and ETag follow overwrites
-  digest-defaults    each origin's digests unasked, asked for two, and
-                     asked with q-values
-  digest-relay       each federated V2 cache relays the origins' digests
-                     to HEAD, GET, and the client
-  digest-range-first
-                     the same, of an object it first read in a range
-  stale-origin-digest
-                     each federated V2 cache neither passes off as good
-                     nor keeps an object that fails the origins' digests
-  past-end           a range at or past an object's end gets 416
-  empty              a 0-byte object comes back with no body
-  huge-ranges        an object past 4 GiB: its length, and ranges across
-                     2 GiB and 4 GiB, at every server and by the client
-  conditional        a conditional GET gets 304 only if its condition
-                     holds
-  conditional-put    a conditional PUT is refused (412) unless its
-                     condition holds
-  etag-agreement     each origin reports one ETag for one version, by
-                     every method, and honors it in conditions
-  conditional-edges  each origin: conditions on a missing object,
-                     invalid or combined conditions, and racing PUTs
-  mixed-version      each cache serves an object overwritten mid-read
-                     as one version
-  overwrite-cached   each cache serves an object it holds, once
-                     overwritten, as one version
-  overwrite-range-first
-                     the same, of an object it first read in a range
-  write-through      each V2 cache relays a PUT and a DELETE; an XRootD
-                     cache refuses them
-  cache-evicted      each bounded cache (`-p cache-small`) evicts the
-                     oldest objects, and still serves every one
+See docs/tests/block-boundaries.md. framework/testlib/blocks.py lists
+the sizes and ranges, and the layout facts behind them.
 
 Objects go under /protected-a/data/blocks/<run>/ in four sets, each
 first read a different way, since that decides how a V2 cache fills:
@@ -88,7 +9,7 @@ first read a different way, since that decides how a V2 cache fills:
 ranges), `client` (first read by `pelican object get`), and `plugin`
 (first read by stash_plugin). `ranged` is uploaded in chunks with no
 length, as the clients upload; the rest, with a Content-Length. The
-other cache scenarios upload objects of their own, one per cache, so
+other scenarios put objects of their own, one per cache or origin, so
 that each is cold where it is read. Where /protected-a takes no writes,
 the objects are put straight in each store (stores.seed()), and the
 upload scenarios skip. Where it takes no direct clients, the origins are
@@ -111,7 +32,7 @@ import re
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from email.utils import formatdate
 from urllib.parse import urlencode
 
@@ -124,6 +45,7 @@ from testlib import (
     director,
     metrics,
     stores,
+    suite,
     transfers,
     web,
     webdav,
@@ -217,59 +139,78 @@ def tier_counts(declared: bool, sets: int = 1) -> dict[str, int]:
     return found
 
 
-class Test:
-    """The objects of every set, the token, and how the uploads went.
+# Why a scenario skips where /protected-a takes no writes, or no direct
+# clients.
+NO_WRITES = "/protected-a takes no writes"
+NO_DIRECT = "/protected-a takes no direct clients"
+
+
+class Test(suite.Test):
+    """The objects of every set, and how the uploads went.
 
     Attributes:
         origins: The origins, each store once.
-        tmp: A local directory for the suite's files.
-        base: Where the run's objects go in /protected-a.
-        token_file: The file of the server's token for /protected-a, of
-            the session's profile.
-        token: The server's token for /protected-a, of the session's
-            profile.
-        setup: The server's token for /protected-a, of the WLCG profile,
-            for putting objects in place, and checking and cleaning the
-            stores and caches.
-        caps: The capabilities of /protected-a.
-        writes: Whether /protected-a takes writes.
-        direct: Whether /protected-a takes direct clients.
+        caches: Every cache.
+        federated_v2: The federated V2 caches.
         data: Each set's object of each size, by set and size.
         uploads: How each kind of upload went, by "declared" or "chunked".
         digests: The digests the origins' storage reports.
         no_digests: Why the storage does not report the rest, or None.
-        admins: Each V2 cache's admin token, by service (see
-            cache_admin()).
+        admins: Each V2 cache's admin token, by service (admin_token()).
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.origins = stores.unique(session.fed.origins)
-        self.caches = session.fed.caches
-        self.tmp = session.path("blocks")
-        os.makedirs(self.tmp)
-        self.run = session.run
-        self.base = f"data/blocks/{self.run}"
-        self.token_file = session.token_file("protected-a")
-        self.token = session.token("protected-a")
-        self.setup = session.setup_token("protected-a")
-        self.caps = session.fed.exports["protected-a"]
-        self.writes = "Writes" in self.caps
-        self.direct = "DirectReads" in self.caps
+        super().__init__(session, "blocks")
+        self.origins = stores.unique(self.fed.origins)
+        self.caches = self.fed.caches
+        self.federated_v2 = [c for c in self.fed.federated_caches if c.kind == "v2"]
         self.data = {(s, size): os.urandom(size) for s in SETS for size in blocks.SIZES}
         self.uploads: dict[str, tuple[str, str]] = {}
-        self.digests, self.no_digests = stores.digests(session.fed)
+        self.digests, self.no_digests = stores.digests(self.fed)
         self.admins: dict[str, str] = {}
+        # Minted now, since the reads that first present it may be
+        # concurrent.
+        self.session.token_file(self.namespace)
 
-    def rel(self, set_name: str, size: int) -> str:
-        """Return where a set's object of size is in /protected-a."""
-        return f"{self.base}/{set_name}/{size}"
+    def set_rel(self, set_name: str, size: int) -> str:
+        """Return the rel of a set's object of size."""
+        return self.rel(set_name, str(size))
+
+    def make(self, rel: str) -> str | None:
+        """Make collection rel at every origin.
+
+        Returns:
+            What went wrong, or None.
+        """
+        errors = stores.make_dirs(self.origins, self.namespace, rel, self.setup)
+        if errors:
+            return errors[0]
+        self.made.add(rel)
+        return None
+
+    def admin_token(self, cache: common.Cache) -> str:
+        """Return a V2 cache's admin token, minted once.
+
+        See cacheapi.admin_token().
+        """
+        if cache.svc not in self.admins:
+            self.admins[cache.svc] = cacheapi.admin_token(self.session, cache)
+        return self.admins[cache.svc]
+
+    def digestless(self) -> str | None:
+        """Return why the origins report no digest, or None if they do."""
+        return None if self.digests else self.no_digests or "the origins report no digest"
+
+    def object_route(self, director_url: str, rel: str) -> str:
+        """Return the URL of rel at the director's object route."""
+        return f"{director_url}/api/v1.0/director/object{self.path(rel)}"
 
     def tiers(self, origin: common.Origin) -> dict[str, float] | None:
-        """Return pstore's writes at origin, by tier, or None.
+        """Return pstore's writes at origin, by tier.
 
-        None means /metrics has none, as before an origin's first write.
+        Returns:
+            The writes, or None if /metrics has none, as before an
+            origin's first write.
         """
         found = metrics.fetch(origin.web_url) or metrics.EMPTY
         if not found.has(PSTORE_WRITES):
@@ -288,34 +229,34 @@ class Test:
             The result and a note.
         """
         names = [s for s, d in SETS.items() if d == declared]
-        # Each object: its set and size, as a message names it; where it
-        # is in /protected-a; and its bytes.
+        # Each object: its set and size, as a message names it; its rel;
+        # and its bytes.
         objects = [
-            (f"{set_name}/{size}", self.rel(set_name, size), self.data[(set_name, size)])
+            (f"{set_name}/{size}", self.set_rel(set_name, size), self.data[(set_name, size)])
             for set_name in names
             for size in blocks.SIZES
         ]
         if not self.writes:
             for origin in self.origins:
                 for _, rel, data in objects:
-                    error = stores.write_file(origin.store_of("protected-a"), rel, data)
+                    error = stores.write_file(origin.store_of(self.namespace), rel, data)
                     if error:
                         return FAIL, error
             return PASS, f"put in place in {len(self.origins)} store(s)"
         notes: list[str] = []
         for origin in self.origins:
             for set_name in names:
-                errors = stores.make_dirs([origin], "protected-a", f"{self.base}/{set_name}", self.setup)
+                errors = stores.make_dirs([origin], self.namespace, self.rel(set_name), self.setup)
                 if errors:
                     return FAIL, "; ".join(errors)
             before = (self.tiers(origin) or dict.fromkeys(TIERS, 0.0)) if origin.pstore else None
             for _, rel, data in objects:
-                error = stores.put(origin, "protected-a", rel, data, self.token, chunked=not declared)
+                error = stores.put(origin, self.namespace, rel, data, self.token, chunked=not declared)
                 if error:
                     return FAIL, error
             for what, rel, data in objects:
                 try:
-                    got = stores.held(origin, "protected-a", rel, self.setup)
+                    got = stores.held(origin, self.namespace, rel, self.setup)
                 except stores.Unreadable as e:
                     return FAIL, str(e)
                 if got != common.digest(data):
@@ -325,10 +266,7 @@ class Test:
             if origin.pstore:
                 after = self.tiers(origin)
                 if before is None or after is None:
-                    return (
-                        FAIL,
-                        f"{origin.svc}: no pelican_pstore_writes_total after its writes",
-                    )
+                    return FAIL, f"{origin.svc}: no {PSTORE_WRITES} after its writes"
                 want_tiers = tier_counts(declared, len(names))
                 got_tiers = {t: int(after[t] - before[t]) for t in before}
                 if got_tiers != want_tiers:
@@ -366,30 +304,22 @@ class Test:
             data: The object's bytes.
             request: The ranges asked for, or None for the whole object.
         """
-        if request is None:
-            if answer.status != 200:
-                return f"{answer.describe()}, not 200"
-            if answer.body != data:
-                return f"{len(answer.body)} bytes, not the object"
-            return None
-        return blocks.check(data, request, answer)
+        return web.served(answer, data) if request is None else blocks.check(data, request, answer)
 
-    def get(self, base_url: str, rel: str, data: bytes, request: blocks.Request | None) -> str | None:
-        """Read rel in /protected-a, or a range of it, from base_url.
+    def get(self, server_url: str, rel: str, data: bytes, request: blocks.Request | None) -> str | None:
+        """Read rel, or a range of it, from the server at server_url.
+
+        Args:
+            server_url: The server's URL.
+            rel: The object, which should hold data.
+            data: Its bytes.
+            request: The ranges to ask for, or None for the whole object.
 
         Returns:
-            What is wrong with the answer, given that rel should hold
-            data, or None if nothing is.
+            What is wrong with the answer, or None.
         """
         headers = {"Range": blocks.header(request)} if request else {}
-        answer = web.request(
-            "GET",
-            f"{base_url}/protected-a/{rel}",
-            token=self.token,
-            headers=headers,
-            timeout=120,
-        )
-        return self.judge(answer, data, request)
+        return self.judge(self.ask("GET", server_url, rel, headers), data, request)
 
     def get_through(
         self, director_url: str, rel: str, data: bytes, request: blocks.Request | None
@@ -402,8 +332,7 @@ class Test:
         all, is then sent there, as curl -L sends it.
         """
         headers = {"Range": blocks.header(request)} if request else {}
-        route = f"{director_url}/api/v1.0/director/object/protected-a/{rel}"
-        answer = web.request("GET", route, token=self.token, headers=headers)
+        answer = web.request("GET", self.object_route(director_url, rel), token=self.token, headers=headers)
         where = answer.header("Location")
         if answer.status != 307 or not where:
             return f"{answer.describe()} from the director, not a redirect"
@@ -417,27 +346,41 @@ class Test:
 
     def read(
         self,
-        base_url: str,
+        server_url: str,
         set_name: str,
         size: int,
         request: blocks.Request | None,
         through: bool = False,
     ) -> str | None:
-        """Read an object of a set (or a range of it).
+        """Read a set's object of size, or a range of it.
 
-        Read it straight from the server at base_url, or, with through,
-        through the director there (see get_through()).
+        Args:
+            server_url: The server to read it from.
+            set_name: The set.
+            size: The object's size.
+            request: The ranges to ask for, or None for the whole object.
+            through: Whether the server is a director, to read through
+                (get_through()).
 
         Returns:
-            What went wrong, or None if nothing did.
+            What went wrong, or None.
         """
         reader = self.get_through if through else self.get
-        why = reader(base_url, self.rel(set_name, size), self.data[(set_name, size)], request)
+        why = reader(server_url, self.set_rel(set_name, size), self.data[(set_name, size)], request)
         if not why:
             return None
         return f"{set_name}/{size}{' ' + blocks.header(request) if request else ''}: {why}"
 
-    def read_all(self, base_url: str, set_name: str, through: bool = False) -> list[str]:
+    def read_whole(self, server_url: str, set_name: str, through: bool = False) -> list[str]:
+        """Read every size in a set whole, one at a time.
+
+        Returns:
+            What went wrong with each read (see read()) that failed.
+        """
+        found = (self.read(server_url, set_name, size, None, through) for size in blocks.SIZES)
+        return [p for p in found if p]
+
+    def read_all(self, server_url: str, set_name: str, through: bool = False) -> list[str]:
         """Read every range of every size in a set, 8 at a time.
 
         Returns:
@@ -446,29 +389,52 @@ class Test:
         jobs = [(size, r) for size in blocks.SIZES for r in blocks.requests(size)]
 
         def one(job: tuple[int, blocks.Request]) -> str | None:
-            return self.read(base_url, set_name, *job, through=through)
+            return self.read(server_url, set_name, *job, through=through)
 
         with common.pool(8) as pool:
             found = pool.map(one, jobs)
         return [p for p in found if p]
 
 
-def upload_each(test: Test, base: str, objects: dict[str, bytes]) -> list[str]:
-    """Put objects, by name, at <base>/<name> at every origin.
+def put_under(test: Test, base: str, objects: Mapping[str, bytes]) -> str | None:
+    """Put objects, by name, at <base>/<name> at every origin (put())."""
+    return test.put({f"{base}/{name}": data for name, data in objects.items()})
 
-    See stores.seed_everywhere() for how.
+
+def servers(test: Test) -> list[tuple[str, str]]:
+    """Return each server to ask straight, by service and URL.
+
+    They are the origins, if /protected-a takes direct clients, then
+    every cache.
+    """
+    found = [(o.svc, o.url) for o in test.origins] if test.direct else []
+    return found + [(c.svc, c.url) for c in test.caches]
+
+
+def each_origin(
+    test: Test, name: str, check: Callable[[common.Origin, str], tuple[list[str], str]]
+) -> tuple[str, str]:
+    """Run check at each origin, of an object of its own.
+
+    Args:
+        test: The test.
+        name: The objects' collection, in the run's.
+        check: Returns what is wrong at an origin, and a note, given the
+            origin and its object's rel.
 
     Returns:
-        What went wrong; empty if nothing did.
+        FAIL with the first problem, or PASS with each origin's note.
     """
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
-    for name, data in objects.items():
-        if errors:
-            break
-        errors += stores.seed_everywhere(
-            test.origins, "protected-a", f"{base}/{name}", data, test.setup, test.caps
-        )
-    return errors
+    base = test.rel(name)
+    if why := test.make(base):
+        return FAIL, why
+    problems: list[str] = []
+    notes: list[str] = []
+    for origin in test.origins:
+        wrong, note = check(origin, f"{base}/{origin.svc}")
+        problems += [f"{origin.svc}: {w}" for w in wrong]
+        notes.append(f"{origin.svc}: {note}")
+    return outcome(problems, "; ".join(notes))
 
 
 def at_once(jobs: list[Callable[[], str | None]]) -> list[str | None]:
@@ -493,8 +459,6 @@ def at_once(jobs: list[Callable[[], str | None]]) -> list[str | None]:
 # --------------------------------------------------------------------------
 # The scenarios.
 
-NO_WRITES = "/protected-a takes no writes"
-
 
 def put_declared(test: Test) -> tuple[str, str]:
     """Upload every size with a Content-Length to every origin."""
@@ -509,15 +473,14 @@ def put_chunked(test: Test) -> tuple[str, str]:
 
 
 def local_sizes(test: Test, name: str) -> tuple[str, dict[int, bytes]]:
-    """Make a local directory, name, holding a new file of each size.
+    """Make a local directory holding a new file of each size.
 
     Each file is named for its size.
 
     Returns:
         The directory's path, and each file's bytes, by size.
     """
-    directory = os.path.join(test.tmp, name)
-    os.makedirs(directory)
+    directory = test.directory(name)
     files = {size: os.urandom(size) for size in blocks.SIZES}
     for size, data in files.items():
         with open(os.path.join(directory, str(size)), "wb") as f:
@@ -530,58 +493,71 @@ def pstore_tiers(test: Test) -> dict[str, dict[str, float]]:
     return {o.svc: test.tiers(o) or dict.fromkeys(TIERS, 0.0) for o in test.origins if o.pstore}
 
 
+def holdings(test: Test, rel: str) -> list[str | None]:
+    """Return the digest of what each store holds at rel (stores.held())."""
+    return stores.held_anywhere(test.origins, test.namespace, rel, {test.namespace: test.setup})
+
+
 def uploaded(test: Test, files: dict[int, bytes], collection: str) -> str | None:
     """Return why no origin holds one of files intact, or None.
 
-    Each of files (bytes by size) should be at collection/<size> in
-    /protected-a.
+    Args:
+        test: The test.
+        files: Each file's bytes, by size.
+        collection: Where they should be, each at <collection>/<size>.
     """
     for size, data in files.items():
-        held = stores.held_anywhere(
-            test.origins,
-            "protected-a",
-            f"{collection}/{size}",
-            {"protected-a": test.setup},
-        )
-        if common.digest(data) not in held:
+        if common.digest(data) not in holdings(test, f"{collection}/{size}"):
             return f"no origin holds {size} intact"
     return None
 
 
-def tiers_landed(test: Test, before: dict[str, dict[str, float]]) -> tuple[str | None, str]:
-    """Return why pstore origins' writes since before are not as predicted.
+def landed(
+    test: Test, files: dict[int, bytes], collection: str, before: dict[str, dict[str, float]]
+) -> tuple[str, str]:
+    """Check a client's upload of one file of each size.
 
-    They should be one of every size, in the tier its size predicts for an
-    upload of no declared length, as the clients upload.
+    An origin must hold each intact (uploaded()); and the pstore origins'
+    writes since before must be one of each size, in the tier its size
+    predicts for an upload of no declared length, as the clients upload.
+
+    Args:
+        test: The test.
+        files: Each file's bytes, by size.
+        collection: Where they should be, each at <collection>/<size>.
+        before: pstore_tiers() before the upload.
 
     Returns:
-        Why not, or None if they are as predicted; and a note.
+        The result and a note.
     """
-    if not before:
-        return None, ""
-    got = {t: 0 for t in TIERS}
-    for origin in test.origins:
-        if not origin.pstore:
-            continue
-        was, now = before[origin.svc], test.tiers(origin)
-        if now is None:
-            return f"{origin.svc}: no pelican_pstore_writes_total after its writes", ""
-        for t in got:
-            got[t] += int(now[t] - was[t])
-    want = tier_counts(False)
-    if got != want:
-        return f"tiers {got}, not {want} (the clients declare no length)", ""
-    return None, f"tiers {got}"
+    why = uploaded(test, files, collection)
+    if why:
+        return FAIL, why
+    notes = [f"{len(files)} objects"]
+    if before:
+        got = {t: 0 for t in TIERS}
+        for origin in test.origins:
+            if not origin.pstore:
+                continue
+            was, now = before[origin.svc], test.tiers(origin)
+            if now is None:
+                return FAIL, f"{origin.svc}: no {PSTORE_WRITES} after its writes"
+            for t in got:
+                got[t] += int(now[t] - was[t])
+        want = tier_counts(False)
+        if got != want:
+            return FAIL, f"tiers {got}, not {want} (the clients declare no length)"
+        notes.append(f"tiers {got}")
+    return PASS, "; ".join(notes)
 
 
 def put_client(test: Test) -> tuple[str, str]:
     """Upload every size, into a collection, by `pelican object put`."""
     if not test.writes:
         return SKIP, NO_WRITES
-    collection = f"{test.base}/put-client"
-    errors = stores.make_dirs(test.origins, "protected-a", collection, test.setup)
-    if errors:
-        return FAIL, "; ".join(errors)
+    collection = test.rel("put-client")
+    if why := test.make(collection):
+        return FAIL, why
     directory, files = local_sizes(test, "put-client")
     sources = [os.path.join(directory, str(size)) for size in files]
     before = pstore_tiers(test)
@@ -591,17 +567,11 @@ def put_client(test: Test) -> tuple[str, str]:
         "--token",
         test.token_file,
         *sources,
-        f"{test.fed.url}/protected-a/{collection}/",
+        test.pelican_url(collection) + "/",
     )
     if code != 0:
         return FAIL, f"exit {code}: {last_line(err or out)}"
-    why = uploaded(test, files, collection)
-    if why:
-        return FAIL, why
-    why, note = tiers_landed(test, before)
-    if why:
-        return FAIL, why
-    return PASS, "; ".join(n for n in (f"{len(sources)} objects", note) if n)
+    return landed(test, files, collection, before)
 
 
 def plugin(
@@ -612,7 +582,7 @@ def plugin(
     upload: bool,
     cache: str | None = None,
 ) -> tuple[bool, str]:
-    """Run stash_plugin on urls, with the server's token for /protected-a.
+    """Run stash_plugin on urls, with the token's file.
 
     Args:
         test: The test.
@@ -628,7 +598,7 @@ def plugin(
         where it wrote none, its output).
     """
     _, out, err, ads = test.session.plugin_run(
-        f"blocks/{name}",
+        f"{test.area}/{name}",
         [(url, transfers.local_name(url)) for url in urls],
         {"server.use": test.token_file},
         upload,
@@ -642,23 +612,16 @@ def put_plugin(test: Test) -> tuple[str, str]:
     """Upload every size by stash_plugin."""
     if not test.writes:
         return SKIP, NO_WRITES
-    collection = f"{test.base}/put-plugin"
-    errors = stores.make_dirs(test.origins, "protected-a", collection, test.setup)
-    if errors:
-        return FAIL, "; ".join(errors)
+    collection = test.rel("put-plugin")
+    if why := test.make(collection):
+        return FAIL, why
     directory, files = local_sizes(test, "put-plugin")
-    urls = [f"{test.fed.url}/protected-a/{collection}/{size}" for size in files]
+    urls = [test.pelican_url(f"{collection}/{size}") for size in files]
     before = pstore_tiers(test)
     passed, said = plugin(test, "put-plugin", urls, directory, upload=True)
     if not passed:
         return FAIL, f"failed: {last_line(said)}"
-    why = uploaded(test, files, collection)
-    if why:
-        return FAIL, why
-    why, note = tiers_landed(test, before)
-    if why:
-        return FAIL, why
-    return PASS, "; ".join(n for n in (f"{len(urls)} objects", note) if n)
+    return landed(test, files, collection, before)
 
 
 def put_checksum(test: Test) -> tuple[str, str]:
@@ -673,10 +636,9 @@ def put_checksum(test: Test) -> tuple[str, str]:
     """
     if not test.writes:
         return SKIP, NO_WRITES
-    collection = f"{test.base}/put-checksum"
-    errors = stores.make_dirs(test.origins, "protected-a", collection, test.setup)
-    if errors:
-        return FAIL, "; ".join(errors)
+    collection = test.rel("put-checksum")
+    if why := test.make(collection):
+        return FAIL, why
     directory, files = local_sizes(test, "put-checksum")
     verifiable = {
         size: data for size, data in files.items() if stores.has_digests(test.fed, size, declared=False)
@@ -694,7 +656,7 @@ def put_checksum(test: Test) -> tuple[str, str]:
             "--token",
             test.token_file,
             *(os.path.join(directory, str(size)) for size in sorted(sizes)),
-            f"{test.fed.url}/protected-a/{collection}/",
+            test.pelican_url(collection) + "/",
         )
         if verified:
             if code != 0:
@@ -716,15 +678,13 @@ def put_checksum(test: Test) -> tuple[str, str]:
 def origin_read(test: Test) -> tuple[str, str]:
     """Check that each origin returns each object whole, and every range."""
     if not test.direct:
-        return SKIP, "/protected-a takes no direct clients"
+        return SKIP, NO_DIRECT
     if why := test.not_uploaded(True, False):
         return FAIL, why
     problems: list[str] = []
     for origin in test.origins:
         for set_name in ("whole", "ranged"):
-            problems += [
-                p for p in (test.read(origin.url, set_name, size, None) for size in blocks.SIZES) if p
-            ]
+            problems += test.read_whole(origin.url, set_name)
             problems += test.read_all(origin.url, set_name)
     return outcome(problems, f"{len(test.origins)} origin(s)")
 
@@ -765,7 +725,7 @@ def client_get(test: Test) -> tuple[str, str]:
     """
     if why := test.not_uploaded(True):
         return FAIL, why
-    urls = [f"{test.fed.url}/protected-a/{test.rel('client', size)}" for size in blocks.SIZES]
+    urls = [test.pelican_url(test.set_rel("client", size)) for size in blocks.SIZES]
     notes: list[str] = []
     routed = "through a cache" if test.caches else "without --direct"
     # Each way: its key, its label, the client's flags, and the cache it
@@ -777,8 +737,7 @@ def client_get(test: Test) -> tuple[str, str]:
     for named in named_caches(test):
         ways.append((f"named-{named.svc}", f"named ({named.svc})", ["--cache", named.url], named))
     for key, label, flags, cache in ways:
-        target = os.path.join(test.tmp, f"client-get-{key}")
-        os.makedirs(target)
+        target = test.directory(f"client-get-{key}")
         stats = os.path.join(test.tmp, f"client-get-{key}.stats.json")
         code, out, err = test.session.pelican_cmd(
             "object",
@@ -793,7 +752,7 @@ def client_get(test: Test) -> tuple[str, str]:
         )
         if "--direct" in flags and not test.direct:
             if code == 0:
-                return FAIL, f"{label}: succeeded, but /protected-a takes no direct clients"
+                return FAIL, f"{label}: succeeded, but {NO_DIRECT}"
             why = transfers.refused(out + err)
             if why is None:
                 return FAIL, f"{label}: failed, but not by refusal: {last_line(err or out)}"
@@ -837,13 +796,12 @@ def plugin_get(test: Test) -> tuple[str, str]:
         ways.append((f"named-{named.svc}", f"preferred ({named.svc})", "", named))
     for key, label, query, cache in ways:
         name = f"plugin-get-{key}"
-        directory = os.path.join(test.tmp, name)
-        os.makedirs(directory)
-        urls = [f"{test.fed.url}/protected-a/{test.rel('plugin', size)}{query}" for size in blocks.SIZES]
+        directory = test.directory(name)
+        urls = [test.pelican_url(test.set_rel("plugin", size)) + query for size in blocks.SIZES]
         passed, said = plugin(test, name, urls, directory, upload=False, cache=cache.url if cache else None)
         if query and not test.direct:
             if passed:
-                return FAIL, f"{label}: succeeded, but /protected-a takes no direct clients"
+                return FAIL, f"{label}: succeeded, but {NO_DIRECT}"
             lines = transfers.failure_lines("plugin", said)
             why = transfers.combine(transfers.classify(line) for line in lines)
             if why not in transfers.REFUSALS | {"mixed"}:
@@ -895,11 +853,7 @@ def director_read(test: Test) -> tuple[str, str]:
     problems: list[str] = []
     for url in test.fed.directors:
         name = director.host(url)
-        problems += [
-            f"{name}: {p}"
-            for p in (test.read(url, "whole", size, None, through=True) for size in blocks.SIZES)
-            if p
-        ]
+        problems += [f"{name}: {p}" for p in test.read_whole(url, "whole", through=True)]
         problems += [f"{name}: {p}" for p in test.read_all(url, "whole", through=True)]
     where = "a cache" if test.fed.federated_caches else "an origin, there being no cache"
     return outcome(problems, f"{len(test.fed.directors)} director(s), each leading to {where}")
@@ -918,10 +872,9 @@ def cache_range_first(test: Test) -> tuple[str, str]:
             if why:
                 problems.append(f"{cache.svc} (cold): {why}")
         problems += [f"{cache.svc}: {p}" for p in test.read_all(cache.url, "ranged")]
-        for size in blocks.SIZES:
-            why = test.read(cache.url, "ranged", size, None)
-            if why:
-                problems.append(f"{cache.svc} (whole, after ranges): {why}")
+        problems += [
+            f"{cache.svc} (whole, after ranges): {p}" for p in test.read_whole(cache.url, "ranged")
+        ]
     return outcome(problems, f"{len(test.caches)} cache(s)")
 
 
@@ -950,7 +903,7 @@ def cache_stored(test: Test) -> tuple[str, str]:
         missing: list[str] = []
         for set_name in ("whole", "ranged"):
             for size in blocks.SIZES:
-                rel = test.rel(set_name, size)
+                rel = test.set_rel(set_name, size)
                 count, wrong, why = blocks.xrootd_stored(cache, rel, test.data[(set_name, size)])
                 problems += [f"{cache.svc}: {set_name}/{size}: {w}" for w in wrong]
                 if why:
@@ -984,15 +937,14 @@ def cache_overlap(test: Test) -> tuple[str, str]:
     each, the whole object must come back intact.
     """
     plans = blocks.overlap_plans()
-    base = f"{test.base}/overlap"
+    base = test.rel("overlap")
     objects = {
         f"{c.svc}-{plan}": os.urandom(blocks.OVERLAP_SIZE)
         for c in test.caches
         for plan in [*plans, "concurrent"]
     }
-    errors = upload_each(test, base, objects)
-    if errors:
-        return FAIL, errors[0]
+    if why := put_under(test, base, objects):
+        return FAIL, why
     problems: list[str] = []
     reads = blocks.concurrent_reads()
     for cache in test.caches:
@@ -1024,11 +976,31 @@ def cache_overlap(test: Test) -> tuple[str, str]:
 def has_age(test: Test, cache: common.Cache, rel: str) -> bool | None:
     """Return whether a V2 cache says, with Age, that it holds all of rel.
 
+    Unlike Test.held(), this tells a failed HEAD apart.
+
     Returns:
         Whether it does, or None if a HEAD of rel fails.
     """
-    answer = web.request("HEAD", f"{cache.url}/protected-a/{rel}", token=test.setup)
+    answer = web.request("HEAD", test.url(cache.url, rel), token=test.setup)
     return bool(answer.header("Age")) if answer.status == 200 else None
+
+
+def wait_last[T](
+    probe: Callable[[], T], done: Callable[[T], bool], seconds: float, interval: float = 0.5
+) -> T:
+    """Call probe until what it returns is done, for up to seconds.
+
+    Returns:
+        What probe returned last.
+    """
+    last: list[T] = []
+
+    def finished() -> bool:
+        last[:] = [probe()]
+        return done(last[0])
+
+    common.wait_for(finished, seconds, interval)
+    return last[0]
 
 
 def wait_cinfo(
@@ -1042,30 +1014,15 @@ def wait_cinfo(
     Returns:
         What blocks.read_cinfo() returned last.
     """
-    last: list[tuple[blocks.Cinfo | None, str]] = []
-
-    def wanted() -> bool:
-        last[:] = [blocks.read_cinfo(cache, rel)]
-        found = last[0][0]
-        return found is not None and want(found)
-
-    common.wait_for(wanted, seconds)
-    return last[0]
+    return wait_last(
+        lambda: blocks.read_cinfo(cache, rel),
+        lambda found: found[0] is not None and want(found[0]),
+        seconds,
+    )
 
 
-class Findings:
-    """What a scenario found.
-
-    Attributes:
-        problems: What fails it.
-        doubts: What leaves it inconclusive.
-        notes: What went right.
-    """
-
-    def __init__(self) -> None:
-        self.problems: list[str] = []
-        self.doubts: list[str] = []
-        self.notes: list[str] = []
+class Findings(common.Findings):
+    """What a scenario found, recorded as it goes."""
 
     def fail(self, why: str) -> None:
         """Record a problem."""
@@ -1080,7 +1037,10 @@ class Findings:
         self.notes.append(what)
 
     def verdict(self) -> tuple[str, str]:
-        """Return FAIL, INCONCLUSIVE, or PASS, and a note."""
+        """Return FAIL, INCONCLUSIVE, or PASS, and a note.
+
+        Unlike row(), the note names what went right, if inconclusive too.
+        """
         if self.problems:
             return FAIL, first(self.problems)
         if self.doubts:
@@ -1088,23 +1048,46 @@ class Findings:
         return PASS, "; ".join(self.notes)
 
 
-def cache_admin(test: Test, cache: common.Cache) -> str:
-    """Return a V2 cache's admin token, minted once (cacheapi.admin_token())."""
-    if cache.svc not in test.admins:
-        test.admins[cache.svc] = cacheapi.admin_token(test.session, cache)
-    return test.admins[cache.svc]
+def each_cache(
+    test: Test,
+    name: str,
+    size: int,
+    caches: list[common.Cache],
+    check: Callable[[common.Cache, str, bytes, Findings], None],
+) -> tuple[str, str]:
+    """Run check at each of caches, of a new object of its own.
+
+    Args:
+        test: The test.
+        name: The objects' collection, in the run's.
+        size: Each object's size.
+        caches: The caches.
+        check: Records what it finds at a cache, given the cache, its
+            object's rel, and the object's bytes.
+
+    Returns:
+        The findings' verdict, or FAIL if the objects could not be put.
+    """
+    base = test.rel(name)
+    objects = {c.svc: os.urandom(size) for c in caches}
+    if why := put_under(test, base, objects):
+        return FAIL, why
+    found = Findings()
+    for cache in caches:
+        check(cache, f"{base}/{cache.svc}", objects[cache.svc], found)
+    return found.verdict()
 
 
 def summary(test: Test, cache: common.Cache, rel: str) -> tuple[cacheapi.Blocks | None, str]:
-    """Return which blocks of rel in /protected-a a V2 cache holds.
+    """Return which blocks of rel a V2 cache holds.
 
     Its admin asks its introspection (cacheapi.blocks_held()).
 
     Returns:
         The blocks it holds, or None; and why it did not say.
     """
-    url = cacheapi.object_url(test.fed, f"/protected-a/{rel}")
-    return cacheapi.blocks_held(cache, cache_admin(test, cache), url)
+    url = cacheapi.object_url(test.fed, test.path(rel))
+    return cacheapi.blocks_held(cache, test.admin_token(cache), url)
 
 
 def assembled_part(test: Test, cache: common.Cache, rel: str, found: Findings) -> bool:
@@ -1167,26 +1150,23 @@ def assemble(test: Test, cache: common.Cache, rel: str, data: bytes, found: Find
             found.doubt(f"{cache.svc}: after the first range, {why}")
         elif not 0 < cinfo.count < cinfo.blocks:
             found.doubt(
-                f"{cache.svc}: {cinfo.count} of {cinfo.blocks} blocks after the first range," + " not some"
+                f"{cache.svc}: {cinfo.count} of {cinfo.blocks} blocks after the first range, not some"
             )
     for request in ranges[1:]:
         why = test.get(cache.url, rel, data, request)
         if why:
             found.fail(f"{cache.svc}: {blocks.header(request)}: {why}")
     if introspected:
-        last: list[cacheapi.Blocks | None] = [None]
-
-        def complete() -> bool:
-            last[0] = summary(test, cache, rel)[0]
-            return last[0] is not None and last[0].complete
-
-        if common.wait_for(complete, 10, interval=1):
-            found.note(f"{cache.svc}: {last[0].describe() if last[0] else ''}")
+        held = wait_last(
+            lambda: summary(test, cache, rel)[0], lambda b: b is not None and b.complete, 10, 1
+        )
+        if held is not None and held.complete:
+            found.note(f"{cache.svc}: {held.describe()}")
         else:
-            held = last[0].describe() if last[0] else "no block summary"
-            found.fail(f"{cache.svc}: {held} after every range, not all")
+            said = held.describe() if held else "no block summary"
+            found.fail(f"{cache.svc}: {said} after every range, not all")
     elif cache.kind == "v2":
-        if common.wait_for(functools.partial(holds_all, test, cache, rel), 10, interval=1):
+        if test.wait_held(cache, rel, 10):
             found.note(f"{cache.svc}: Age")
         else:
             found.fail(f"{cache.svc}: no Age after every range, so it does not hold it all")
@@ -1220,15 +1200,9 @@ def cache_assemble(test: Test) -> tuple[str, str]:
     leaves the result unsure; an XRootD cache whose .cinfo could be read
     then must still have one, showing every block, after the last.
     """
-    base = f"{test.base}/assemble"
-    objects = {c.svc: os.urandom(blocks.ASSEMBLE_SIZE) for c in test.caches}
-    errors = upload_each(test, base, objects)
-    if errors:
-        return FAIL, errors[0]
-    found = Findings()
-    for cache in test.caches:
-        assemble(test, cache, f"{base}/{cache.svc}", objects[cache.svc], found)
-    return found.verdict()
+    return each_cache(
+        test, "assemble", blocks.ASSEMBLE_SIZE, test.caches, functools.partial(assemble, test)
+    )
 
 
 # coalescing's object, and how many clients read it at once.
@@ -1278,12 +1252,10 @@ def risen(
 
 
 def read_at_once(test: Test, cache: common.Cache, rel: str, data: bytes) -> str | None:
-    """Make COALESCE_READERS whole reads of rel through cache, all at once.
-
-    rel is in /protected-a, and holds data.
+    """Read rel, holding data, whole through cache, COALESCE_READERS at once.
 
     Returns:
-        The first thing wrong, or None if nothing is.
+        The first thing wrong, or None.
     """
     found = at_once(
         [functools.partial(test.get, cache.url, rel, data, None) for _ in range(COALESCE_READERS)]
@@ -1373,15 +1345,7 @@ def coalescing(test: Test) -> tuple[str, str]:
     caches = test.fed.federated_caches
     if not caches:
         return SKIP, "this shape has no federated cache"
-    base = f"{test.base}/coalescing"
-    objects = {c.svc: os.urandom(COALESCE_SIZE) for c in caches}
-    errors = upload_each(test, base, objects)
-    if errors:
-        return FAIL, errors[0]
-    found = Findings()
-    for cache in caches:
-        coalesced(test, cache, f"{base}/{cache.svc}", objects[cache.svc], found)
-    return found.verdict()
+    return each_cache(test, "coalescing", COALESCE_SIZE, caches, functools.partial(coalesced, test))
 
 
 # How much of an object cache-abandoned reads before it gives up: part of
@@ -1398,16 +1362,15 @@ def cache_abandoned(test: Test) -> tuple[str, str]:
     come back intact, however far the cache had fetched it. A V2 cache's
     introspection says how far that was (abandoned_blocks()).
     """
-    base = f"{test.base}/abandoned"
+    base = test.rel("abandoned")
     objects = {c.svc: os.urandom(blocks.OVERLAP_SIZE) for c in test.caches}
-    errors = upload_each(test, base, objects)
-    if errors:
-        return FAIL, errors[0]
+    if why := put_under(test, base, objects):
+        return FAIL, why
     problems: list[str] = []
     notes: list[str] = []
     for cache in test.caches:
         rel, data = f"{base}/{cache.svc}", objects[cache.svc]
-        answer = web.read_part(f"{cache.url}/protected-a/{rel}", test.token, ABANDON_AFTER)
+        answer = web.read_part(test.url(cache.url, rel), test.token, ABANDON_AFTER)
         if answer.status != 200:
             problems.append(f"{cache.svc}: the read given up on: {answer.describe()}, not 200")
             continue
@@ -1432,12 +1395,17 @@ def cache_abandoned(test: Test) -> tuple[str, str]:
 def abandoned_blocks(test: Test, cache: common.Cache, rel: str, notes: list[str]) -> str | None:
     """Check what a V2 cache holds of rel once its client has given up.
 
-    Add to notes what its introspection says it holds: the cache may go
-    on fetching the object, or not, so either is accepted, but a summary
-    that contradicts itself is not.
+    The cache may go on fetching the object, or not, so either is
+    accepted, but a summary that contradicts itself is not.
+
+    Args:
+        test: The test.
+        cache: The cache.
+        rel: The object.
+        notes: Gets what its introspection says it holds.
 
     Returns:
-        What is wrong with the summary, or None if nothing is.
+        What is wrong with the summary, or None.
     """
     held, why = summary(test, cache, rel)
     if held is None:
@@ -1459,29 +1427,22 @@ class NoChaos(Exception):
     """The cache has no chaos API."""
 
 
-def spoil(test: Test, cache: common.Cache, token: str, rel: str, op: str, **params: str) -> None:
-    """Have cache spoil its copy of rel in /protected-a.
-
-    It asks the cache's chaos API (Cache.EnableChaosAPI, which
-    config.d/cache/v2 turns on), one of its introspection routes
-    (cacheapi.introspect()), naming the object as the cache keys it
-    (cacheapi.object_url()).
+def spoil(test: Test, cache: common.Cache, rel: str, op: str, **params: str) -> None:
+    """Have cache spoil its copy of rel, through its chaos API.
 
     Args:
         test: The test.
         cache: The V2 cache.
-        token: Its admin's token.
-        rel: The object, in /protected-a.
-        op: Either `corrupt` (a block, with `block` and `bytes`) or
-            `truncate` (a chunk file, with `chunk` and `drop-bytes`).
-        **params: The parameters of op.
+        rel: The object.
+        op: As for cacheapi.chaos().
+        **params: As for cacheapi.chaos().
 
     Raises:
-        NoChaos: The cache has no such API.
+        NoChaos: The cache has no chaos API.
         ValueError: The cache refused.
     """
-    url = cacheapi.object_url(test.fed, f"/protected-a/{rel}")
-    answer = cacheapi.introspect(cache, token, "POST", "chaos", op=op, url=url, **params)
+    url = cacheapi.object_url(test.fed, test.path(rel))
+    answer = cacheapi.chaos(cache, test.admin_token(cache), url, op, **params)
     if answer.status == 404:
         raise NoChaos(f"{cache.svc} has no chaos API ({answer.describe()})")
     if answer.status in (401, 403):
@@ -1491,25 +1452,35 @@ def spoil(test: Test, cache: common.Cache, token: str, rel: str, op: str, **para
         raise ValueError(f"{cache.svc} did not {op}: {answer.describe()}: {said}")
 
 
-def holds_all(test: Test, cache: common.Cache, rel: str) -> bool:
-    """Return whether a V2 cache says, with Age, it holds all of rel."""
-    return bool(has_age(test, cache, rel))
+def read_held(test: Test, cache: common.Cache, rel: str, data: bytes) -> str | None:
+    """Read rel, which holds data, whole through a V2 cache, to hold it.
+
+    The cache must then say that it holds it all within 10 seconds
+    (Test.wait_held()).
+
+    Returns:
+        What went wrong, or None.
+    """
+    why = test.get(cache.url, rel, data, None)
+    if why:
+        return f"a whole read: {why}"
+    if not test.wait_held(cache, rel, 10):
+        return "no Age after a whole read, so it does not hold it all"
+    return None
 
 
 def never_spoiled(
     test: Test, cache: common.Cache, rel: str, data: bytes, request: blocks.Request
 ) -> str | None:
-    """Read request of rel through cache, then the whole object.
+    """Read request of rel, which holds data, through cache, then the whole.
 
-    rel is in /protected-a, and holds data. Each read must be the object's
-    bytes or fail, never other bytes. Within REPAIR_WAIT seconds the
-    whole object must come back intact: a V2 cache fetches again a block
-    that fails its authentication tag.
+    Each read must be the object's bytes or fail, never other bytes.
+    Within REPAIR_WAIT seconds the whole object must come back intact: a
+    V2 cache fetches again a block that fails its authentication tag.
 
     Returns:
-        What went wrong, or None if nothing did.
+        What went wrong, or None.
     """
-    url = f"{cache.url}/protected-a/{rel}"
     first_byte, last_byte = blocks.resolve(len(data), request[0])
     for what, headers, want in (
         (
@@ -1519,7 +1490,7 @@ def never_spoiled(
         ),
         ("the whole object", {}, data),
     ):
-        answer = web.request("GET", url, token=test.token, headers=headers, timeout=120)
+        answer = test.ask("GET", cache.url, rel, headers)
         if answer.status in (200, 206) and answer.body != want and answer.body != data:
             return (
                 f"{what}, once spoiled: {answer.describe()} with {len(answer.body)} bytes"
@@ -1527,8 +1498,7 @@ def never_spoiled(
             )
 
     def intact() -> bool:
-        answer = web.request("GET", url, token=test.token, timeout=120)
-        return answer.status == 200 and answer.body == data
+        return web.served(test.ask("GET", cache.url, rel), data) is None
 
     if not common.wait_for(intact, REPAIR_WAIT, interval=2):
         return f"the whole object is not served intact within {REPAIR_WAIT}s of being spoiled"
@@ -1548,7 +1518,7 @@ def cache_corrupted(test: Test) -> tuple[str, str]:
     caches = [c for c in test.caches if c.kind == "v2"]
     if not caches:
         return SKIP, "no V2 cache, whose chaos API alone can spoil a block"
-    base = f"{test.base}/corrupted"
+    base = test.rel("corrupted")
     size = blocks.OVERLAP_SIZE
     # Each spoiling: its op and parameters (see spoil()), and the range it
     # spoils.
@@ -1557,23 +1527,18 @@ def cache_corrupted(test: Test) -> tuple[str, str]:
         ("truncate", {"chunk": "-1", "drop-bytes": str(blocks.BLOCK)}, ((size - 100, size - 1),)),
     ]
     objects = {f"{c.svc}-{op}": os.urandom(size) for c in caches for op, _, _ in trials}
-    errors = upload_each(test, base, objects)
-    if errors:
-        return FAIL, errors[0]
+    if why := put_under(test, base, objects):
+        return FAIL, why
     problems: list[str] = []
     for cache in caches:
-        token = cache_admin(test, cache)
         for op, params, request in trials:
             rel, data = f"{base}/{cache.svc}-{op}", objects[f"{cache.svc}-{op}"]
-            why = test.get(cache.url, rel, data, None)
+            why = read_held(test, cache, rel, data)
             if why:
                 problems.append(f"{cache.svc}: {op}, before spoiling: {why}")
                 continue
-            if not common.wait_for(functools.partial(holds_all, test, cache, rel), 10, interval=1):
-                problems.append(f"{cache.svc}: {op}: no Age after a whole read, so it does not hold it all")
-                continue
             try:
-                spoil(test, cache, token, rel, op, **params)
+                spoil(test, cache, rel, op, **params)
             except NoChaos as e:
                 return SKIP, f"{e}; it needs Cache.EnableChaosAPI"
             except ValueError as e:
@@ -1610,9 +1575,9 @@ FAILED_BLOCK = 3
 
 
 def status_failed(said: str) -> bool:
-    """Return whether an X-Transfer-Status trailer reports a failure.
+    """Return whether X-Transfer-Status trailer said reports a failure.
 
-    said is the trailer; a failure is a status other than 2xx.
+    A failure is a status other than 2xx.
     """
     found = re.match(r"\s*(\d{3})\b", said)
     return found is not None and not found.group(1).startswith("2")
@@ -1620,25 +1585,32 @@ def status_failed(said: str) -> bool:
 
 def read_status(
     test: Test,
-    url: str,
+    server_url: str,
     rel: str,
     data: bytes,
     request: blocks.Request | None,
     ask: bool = True,
 ) -> str | None:
-    """GET rel in /protected-a (or a range of it) at url's server.
+    """GET rel, or a range of it, at the server at server_url.
 
-    rel holds data. Ask for the transfer's status if ask (ASK_STATUS). So
-    asked, the answer must announce the trailer and end with it,
-    STATUS_OK; unasked, no trailer may come.
+    So asked (ASK_STATUS), the answer must announce the trailer and end
+    with it, STATUS_OK; unasked, no trailer may come.
+
+    Args:
+        test: The test.
+        server_url: The server's URL.
+        rel: The object.
+        data: Its bytes.
+        request: The ranges to ask for, or None for the whole object.
+        ask: Whether to ask for the transfer's status.
 
     Returns:
-        What is wrong, or None if nothing is.
+        What is wrong, or None.
     """
     headers = dict(ASK_STATUS) if ask else {}
     if request:
         headers["Range"] = blocks.header(request)
-    answer = web.request("GET", f"{url}/protected-a/{rel}", token=test.token, headers=headers, timeout=120)
+    answer = test.ask("GET", server_url, rel, headers)
     why = test.judge(answer, data, request)
     if why:
         return why
@@ -1664,20 +1636,19 @@ def transfer_status(test: Test) -> tuple[str, str]:
     Unasked, a GET of the whole object must come with no trailer. A HEAD
     so asked has no body, and so no trailer, but must answer 200, with
     the object's length if it gives one. A site-local cache reads
-    through another cache, and is passed over. Each V2 cache's introspection must then say that it
-    holds the small object inline, the path that read is for; if not,
-    the row is inconclusive.
+    through another cache, and is passed over. Each V2 cache's
+    introspection must then say that it holds the small object inline,
+    the path that read is for; if not, the row is inconclusive.
     """
     caches = test.fed.federated_caches
     if not caches:
         return SKIP, "this shape has no federated cache"
-    base = f"{test.base}/transfer-status"
+    base = test.rel("transfer-status")
     objects = {
         f"{c.svc}-{name}": os.urandom(size) for c in caches for name, (size, _) in STATUS_READS.items()
     }
-    errors = upload_each(test, base, objects)
-    if errors:
-        return FAIL, errors[0]
+    if why := put_under(test, base, objects):
+        return FAIL, why
     problems: list[str] = []
     for cache in caches:
         for when in ("cold", "warm"):
@@ -1691,10 +1662,7 @@ def transfer_status(test: Test) -> tuple[str, str]:
         if why:
             problems.append(f"{cache.svc}: a GET that did not ask: {why}")
         answer = web.request(
-            "HEAD",
-            f"{cache.url}/protected-a/{base}/{key}",
-            token=test.token,
-            headers=ASK_STATUS,
+            "HEAD", test.url(cache.url, f"{base}/{key}"), token=test.token, headers=ASK_STATUS
         )
         length = answer.header("Content-Length")
         if answer.status != 200:
@@ -1707,8 +1675,8 @@ def transfer_status(test: Test) -> tuple[str, str]:
     doubts: list[str] = []
     inline_at: list[str] = []
     for cache in (c for c in caches if c.kind == "v2"):
-        url = cacheapi.object_url(test.fed, f"/protected-a/{base}/{cache.svc}-small")
-        inline, why = cacheapi.held_inline(cache, cache_admin(test, cache), url)
+        url = cacheapi.object_url(test.fed, test.path(f"{base}/{cache.svc}-small"))
+        inline, why = cacheapi.held_inline(cache, test.admin_token(cache), url)
         if inline is None:
             note += f"; {cache.svc} did not say how it holds the small object ({why})"
         elif not inline:
@@ -1731,42 +1699,56 @@ def origin_transfer_status(test: Test) -> tuple[str, str]:
     they take direct clients.
     """
     if not test.direct:
-        return SKIP, "/protected-a takes no direct clients"
-    base = f"{test.base}/origin-transfer-status"
+        return SKIP, NO_DIRECT
+    rel = test.rel("origin-transfer-status", "object")
     data = os.urandom(STATUS_SIZE)
-    errors = upload_each(test, base, {"object": data})
-    if errors:
-        return FAIL, errors[0]
+    if why := test.put({rel: data}):
+        return FAIL, why
     problems: list[str] = []
     for origin in test.origins:
-        why = read_status(test, origin.url, f"{base}/object", data, None)
+        why = read_status(test, origin.url, rel, data, None)
         if why:
             problems.append(f"{origin.svc}: {why}")
     return outcome(problems, f"{len(test.origins)} origin(s): '{STATUS_OK}'")
 
 
-def client_failed(test: Test, cache: common.Cache, rel: str, name: str) -> tuple[str | None, str]:
-    """Check that `pelican object get --cache` of rel through cache fails.
+def get_from(test: Test, cache: common.Cache, rel: str, target: str, *flags: str) -> tuple[int, str, str]:
+    """Run `pelican object get` of rel through cache alone (--cache).
 
-    The client reads rel in /protected-a through cache alone, into a
-    directory of its own, name: it must fail, by something other than a
-    refusal, and leave nothing.
+    Args:
+        test: The test.
+        cache: The cache.
+        rel: The object.
+        target: The file to write.
+        *flags: More of the client's flags.
 
     Returns:
-        What is wrong, or None if nothing is; and how it failed.
+        The client's exit status, and what it wrote to stdout and stderr.
     """
-    directory = os.path.join(test.tmp, name)
-    os.makedirs(directory)
-    code, out, err = test.session.pelican_cmd(
+    return test.session.pelican_cmd(
         "object",
         "get",
         "--cache",
         cache.url,
         "--token",
         test.token_file,
-        f"{test.fed.url}/protected-a/{rel}",
-        os.path.join(directory, "object"),
+        *flags,
+        test.pelican_url(rel),
+        target,
     )
+
+
+def client_failed(test: Test, cache: common.Cache, rel: str, name: str) -> tuple[str | None, str]:
+    """Check that `pelican object get` of rel through cache alone fails.
+
+    It reads into a directory of its own, name, and must fail, by
+    something other than a refusal, and leave nothing.
+
+    Returns:
+        What is wrong, or None; and how it failed.
+    """
+    directory = test.directory(name)
+    code, out, err = get_from(test, cache, rel, os.path.join(directory, "object"))
     said = out + err
     if code == 0:
         return "`pelican object get` succeeded", ""
@@ -1779,20 +1761,19 @@ def client_failed(test: Test, cache: common.Cache, rel: str, name: str) -> tuple
 
 
 def plugin_failed(test: Test, cache: common.Cache, rel: str, name: str) -> tuple[str | None, str]:
-    """Check that stash_plugin's download of rel through cache fails.
+    """Check that stash_plugin's download of rel through cache alone fails.
 
-    The plugin reads rel in /protected-a through cache alone, into a
-    directory of its own, name. It must say that the transfer failed,
-    and leave nothing. Its ad must say that the failure may be retried,
-    since it came after the transfer began, unless the plugin found no
-    such object (as where the director, asking every origin, found none).
+    It reads into a directory of its own, name, and must say that the
+    transfer failed, and leave nothing. Its ad must say that the failure
+    may be retried, since it came after the transfer began, unless the
+    plugin found no such object (as where the director, asking every
+    origin, found none).
 
     Returns:
-        What is wrong, or None if nothing is; and how it failed.
+        What is wrong, or None; and how it failed.
     """
-    directory = os.path.join(test.tmp, name)
-    os.makedirs(directory)
-    url = f"{test.fed.url}/protected-a/{rel}"
+    directory = test.directory(name)
+    url = test.pelican_url(rel)
     passed, said = plugin(test, name, [url], directory, upload=False, cache=cache.url)
     if passed:
         return "stash_plugin succeeded", ""
@@ -1808,40 +1789,27 @@ def plugin_failed(test: Test, cache: common.Cache, rel: str, name: str) -> tuple
     return None, "retryable"
 
 
-def unrepairable(
-    test: Test, cache: common.Cache, rel: str, data: bytes, token: str, found: Findings
-) -> None:
-    """Run transfer_status_failure at one V2 cache, of rel.
-
-    rel holds data, and token is the cache's admin's.
+def unrepairable(test: Test, cache: common.Cache, rel: str, data: bytes, found: Findings) -> None:
+    """Run transfer_status_failure at one V2 cache, of rel, holding data.
 
     Raises:
         NoChaos: The cache has no chaos API.
     """
-    why = test.get(cache.url, rel, data, None)
+    why = read_held(test, cache, rel, data)
     if why:
         found.fail(f"{cache.svc}: before spoiling: {why}")
         return
-    if not common.wait_for(functools.partial(holds_all, test, cache, rel), 10, interval=1):
-        found.fail(f"{cache.svc}: no Age after a whole read, so it does not hold it all")
-        return
     try:
-        spoil(test, cache, token, rel, "corrupt", block=str(FAILED_BLOCK), bytes=str(blocks.TAG))
+        spoil(test, cache, rel, "corrupt", block=str(FAILED_BLOCK), bytes=str(blocks.TAG))
     except ValueError as e:
         found.fail(str(e))
         return
     for origin in test.origins:
-        error = stores.delete(origin, "protected-a", rel, test.setup)
+        error = stores.delete(origin, test.namespace, rel, test.setup)
         if error:
             found.fail(error)
             return
-    answer = web.request(
-        "GET",
-        f"{cache.url}/protected-a/{rel}",
-        token=test.token,
-        headers=ASK_STATUS,
-        timeout=120,
-    )
+    answer = test.ask("GET", cache.url, rel, ASK_STATUS)
     said = answer.trailer("X-Transfer-Status")
     intact = answer.body == data
     if answer.status == 200 and status_failed(said):
@@ -1888,28 +1856,13 @@ def transfer_status_failure(test: Test) -> tuple[str, str]:
     intact never read the block, as where it holds it in memory, and
     leaves the row inconclusive.
     """
-    caches = [c for c in test.fed.federated_caches if c.kind == "v2"]
-    if not caches:
+    if not test.federated_v2:
         return SKIP, "no federated V2 cache, whose chaos API alone can spoil a block"
-    base = f"{test.base}/transfer-failure"
-    objects = {c.svc: os.urandom(STATUS_SIZE) for c in caches}
-    errors = upload_each(test, base, objects)
-    if errors:
-        return FAIL, errors[0]
-    found = Findings()
-    for cache in caches:
-        try:
-            unrepairable(
-                test,
-                cache,
-                f"{base}/{cache.svc}",
-                objects[cache.svc],
-                cache_admin(test, cache),
-                found,
-            )
-        except NoChaos as e:
-            return SKIP, f"{e}; it needs Cache.EnableChaosAPI"
-    return found.verdict()
+    check = functools.partial(unrepairable, test)
+    try:
+        return each_cache(test, "transfer-failure", STATUS_SIZE, test.federated_v2, check)
+    except NoChaos as e:
+        return SKIP, f"{e}; it needs Cache.EnableChaosAPI"
 
 
 # The sizes whose digests `digests` asks each server for: empty, within a
@@ -1924,13 +1877,32 @@ DIGEST_SIZES = (
 )
 
 
-def reported(
-    test: Test, url: str, rel: str, data: bytes, algorithms: tuple[str, ...]
-) -> tuple[list[str], set[str]]:
-    """Ask url's server for rel's digest by each of algorithms in turn.
+def send_head(test: Test, server_url: str, rel: str, want: str | None = None) -> web.Response:
+    """Send a HEAD of rel to the server at server_url, with the token.
 
-    rel is in /protected-a, and holds data; each ask is a HEAD with
-    Want-Digest.
+    Args:
+        test: The test.
+        server_url: The server's URL.
+        rel: The object.
+        want: The Want-Digest to send, if any.
+    """
+    headers = {"Want-Digest": want} if want else None
+    return web.request("HEAD", test.url(server_url, rel), token=test.token, headers=headers)
+
+
+def reported(
+    test: Test, server_url: str, rel: str, data: bytes, algorithms: tuple[str, ...]
+) -> tuple[list[str], set[str]]:
+    """Ask a server for rel's digest by each of algorithms in turn.
+
+    Each ask is a HEAD with Want-Digest.
+
+    Args:
+        test: The test.
+        server_url: The server's URL.
+        rel: The object.
+        data: Its bytes.
+        algorithms: The algorithms.
 
     Returns:
         What is wrong with what it reports, and the algorithms it reports
@@ -1939,12 +1911,7 @@ def reported(
     problems: list[str] = []
     right: set[str] = set()
     for algorithm in algorithms:
-        answer = web.request(
-            "HEAD",
-            f"{url}/protected-a/{rel}",
-            token=test.token,
-            headers={"Want-Digest": algorithm},
-        )
+        answer = send_head(test, server_url, rel, algorithm)
         if answer.status != 200:
             problems.append(f"HEAD, for {algorithm}: {answer.describe()}")
             continue
@@ -1954,8 +1921,10 @@ def reported(
     return problems, right
 
 
-def server_digests(test: Test, url: str, origin: bool, relays: bool = False) -> tuple[list[str], set[str]]:
-    """Check the digests that url's server reports of the sets' objects.
+def server_digests(
+    test: Test, server_url: str, origin: bool, relays: bool = False
+) -> tuple[list[str], set[str]]:
+    """Check the digests that a server reports of the sets' objects.
 
     The objects are those of DIGEST_SIZES in the `whole` and `ranged`
     sets. The server is asked by HEAD for each of digests.ALGORITHMS in
@@ -1966,7 +1935,7 @@ def server_digests(test: Test, url: str, origin: bool, relays: bool = False) -> 
 
     Args:
         test: The test.
-        url: The server's URL.
+        server_url: The server's URL.
         origin: Whether the server is an origin.
         relays: Whether it relays the origins' digests.
 
@@ -1977,8 +1946,8 @@ def server_digests(test: Test, url: str, origin: bool, relays: bool = False) -> 
     given: set[str] = set()
     for set_name in ("whole", "ranged"):
         for size in DIGEST_SIZES:
-            rel, data = test.rel(set_name, size), test.data[(set_name, size)]
-            wrong, right = reported(test, url, rel, data, digests.ALGORITHMS)
+            rel, data = test.set_rel(set_name, size), test.data[(set_name, size)]
+            wrong, right = reported(test, server_url, rel, data, digests.ALGORITHMS)
             problems += [f"{set_name}/{size}: {w}" for w in wrong]
             given |= right
             lacking = sorted(set(test.digests) - right)
@@ -1987,15 +1956,10 @@ def server_digests(test: Test, url: str, origin: bool, relays: bool = False) -> 
             )
             if must and lacking:
                 problems.append(f"{set_name}/{size}: reports no {', '.join(lacking)}")
-            answer = web.request(
-                "GET",
-                f"{url}/protected-a/{rel}",
-                token=test.token,
-                headers={"Want-Digest": "crc32c"},
-                timeout=120,
-            )
-            if answer.status != 200 or answer.body != data:
-                problems.append(f"{set_name}/{size}: GET: {answer.describe()}, or not the object")
+            answer = test.ask("GET", server_url, rel, {"Want-Digest": "crc32c"})
+            why = web.served(answer, data)
+            if why:
+                problems.append(f"{set_name}/{size}: GET: {why}")
                 continue
             wrong, found = digests.check(answer.header("Digest"), data)
             problems += [f"{set_name}/{size}: GET: {w}" for w in wrong]
@@ -2019,16 +1983,16 @@ def digests_scenario(test: Test) -> tuple[str, str]:
     """
     if why := test.not_uploaded(True, False):
         return FAIL, why
-    servers = [(o.svc, o.url, True, False) for o in test.origins] if test.direct else []
-    servers += [(c.svc, c.url, False, c.kind == "v2" and not c.site_local) for c in test.caches]
+    asked = [(o.svc, o.url, True, False) for o in test.origins] if test.direct else []
+    asked += [(c.svc, c.url, False, c.kind == "v2" and not c.site_local) for c in test.caches]
     problems: list[str] = []
     silent: list[str] = []
-    for svc, url, origin, relays in servers:
+    for svc, url, origin, relays in asked:
         wrong, given = server_digests(test, url, origin, relays)
         problems += [f"{svc}: {w}" for w in wrong]
         if not given:
             silent.append(svc)
-    notes = [f"{len(servers)} server(s)"]
+    notes = [f"{len(asked)} server(s)"]
     if silent:
         notes.append(f"no digest from {', '.join(silent)}")
     if test.no_digests:
@@ -2037,36 +2001,36 @@ def digests_scenario(test: Test) -> tuple[str, str]:
 
 
 def write_version(test: Test, origin: common.Origin, rel: str, how: str, data: bytes) -> str | None:
-    """Put data at rel in /protected-a at origin, as how says.
+    """Put data at rel at origin, as how says.
 
     Args:
         test: The test.
         origin: The origin.
-        rel: The object, in /protected-a.
+        rel: The object.
         how: Whether to `seed` it (see stores.seed()), `put` it, or write
             it in the store's `file` a second after the last write.
         data: The version to put.
 
     Returns:
-        Why that failed, or None if nothing did.
+        Why that failed, or None.
     """
     if how == "file":
         time.sleep(1.1)
-        return stores.write_file(origin.store_of("protected-a"), rel, data)
+        return stores.write_file(origin.store_of(test.namespace), rel, data)
     if how == "put":
-        return stores.put(origin, "protected-a", rel, data, test.setup)
-    return stores.seed(origin, "protected-a", rel, data, test.setup, test.caps)
+        return stores.put(origin, test.namespace, rel, data, test.setup)
+    return stores.seed(origin, test.namespace, rel, data, test.setup, test.caps)
 
 
-def digests_after_writes(test: Test, origin: common.Origin, rel: str) -> tuple[list[str], int]:
-    """Write versions of rel in /protected-a at origin, checking each.
+def digests_after_writes(test: Test, origin: common.Origin, rel: str) -> tuple[list[str], str]:
+    """Write versions of rel at origin, checking each.
 
     Write them as digest_overwrite says, and after each, check that origin
     serves it, and reports each digest its storage can (test.digests) of
     it.
 
     Returns:
-        What was wrong, and how many versions there were.
+        What was wrong, and a note of how many versions there were.
     """
     steps = [("the first version", "seed")]
     if test.writes:
@@ -2075,14 +2039,15 @@ def digests_after_writes(test: Test, origin: common.Origin, rel: str) -> tuple[l
         steps.append(("a write in the store a second later", "file"))
     problems: list[str] = []
     etags: list[str] = []
+    note = f"{len(steps)} versions"
     for what, how in steps:
         data = os.urandom(3 * blocks.BLOCK + 5)
         error = write_version(test, origin, rel, how, data)
         if error:
-            return problems + [f"{what}: {error}"], len(steps)
-        served = web.request("GET", stores.url(origin, "protected-a", rel), token=test.token)
+            return problems + [f"{what}: {error}"], note
+        served = web.request("GET", test.url(origin.url, rel), token=test.token)
         if served.status != 200 or served.body != data:
-            return problems + [f"after {what}, it serves another version"], len(steps)
+            return problems + [f"after {what}, it serves another version"], note
         etag = served.header("ETag")
         if etag and etag in etags:
             problems.append(f"after {what}, its ETag is still an earlier version's, {etag}")
@@ -2091,7 +2056,7 @@ def digests_after_writes(test: Test, origin: common.Origin, rel: str) -> tuple[l
         problems += [f"after {what}: {w}" for w in wrong]
         if right != set(test.digests):
             problems.append(f"after {what}, it reports only {sorted(right)}")
-    return problems, len(steps)
+    return problems, note
 
 
 def digest_overwrite(test: Test) -> tuple[str, str]:
@@ -2106,20 +2071,10 @@ def digest_overwrite(test: Test) -> tuple[str, str]:
     cache tells that an object has changed.
     """
     if not test.direct:
-        return SKIP, "/protected-a takes no direct clients"
-    if not test.digests:
-        return SKIP, test.no_digests or "the origins report no digest"
-    base = f"{test.base}/digest-overwrite"
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
-    if errors:
-        return FAIL, errors[0]
-    problems: list[str] = []
-    notes: list[str] = []
-    for origin in test.origins:
-        wrong, versions = digests_after_writes(test, origin, f"{base}/{origin.svc}")
-        problems += [f"{origin.svc}: {w}" for w in wrong]
-        notes.append(f"{origin.svc}: {versions} versions")
-    return outcome(problems, ", ".join(notes))
+        return SKIP, NO_DIRECT
+    if why := test.digestless():
+        return SKIP, why
+    return each_origin(test, "digest-overwrite", functools.partial(digests_after_writes, test))
 
 
 # The algorithms the client knows (ChecksumType in client/handle_http.go).
@@ -2133,9 +2088,13 @@ DIGEST_WAIT = 10
 def relayed(answer: web.Response, data: bytes, want: tuple[str, ...]) -> str | None:
     """Return what is wrong with the digests in answer, or None.
 
-    answer is to a HEAD or GET of an object holding data: it must succeed;
-    every digest it reports must be the object's; and it must report each
-    of want.
+    It must succeed; every digest it reports must be the object's; and it
+    must report each of want.
+
+    Args:
+        answer: The answer to a HEAD or GET of an object.
+        data: The object's bytes.
+        want: The algorithms it must report.
     """
     if answer.status != 200:
         return f"{answer.describe()}, not 200"
@@ -2149,16 +2108,22 @@ def relayed(answer: web.Response, data: bytes, want: tuple[str, ...]) -> str | N
     return None
 
 
-def relay_problem(test: Test, url: str, data: bytes, method: str) -> str | None:
-    """Return what is wrong with the digests url's server reports, or None.
+def relay_problem(test: Test, server_url: str, rel: str, data: bytes, method: str) -> str | None:
+    """Return what is wrong with the digests a server reports, or None.
 
-    They are of the object there, which holds data, to method (HEAD or
-    GET), asked by Want-Digest for each of stores.ORIGIN_DIGESTS in turn:
+    It is asked by Want-Digest for each of stores.ORIGIN_DIGESTS in turn:
     it must report those the origins' storage does (test.digests; see
     relayed()), and a GET must bring the object.
+
+    Args:
+        test: The test.
+        server_url: The server's URL.
+        rel: The object.
+        data: Its bytes.
+        method: HEAD or GET.
     """
     for algorithm in stores.ORIGIN_DIGESTS:
-        answer = web.request(method, url, token=test.token, headers={"Want-Digest": algorithm}, timeout=120)
+        answer = test.ask(method, server_url, rel, {"Want-Digest": algorithm})
         why = relayed(answer, data, test.digests)
         if not why and method == "GET" and answer.body != data:
             why = f"{len(answer.body)} bytes, not the object"
@@ -2167,19 +2132,14 @@ def relay_problem(test: Test, url: str, data: bytes, method: str) -> str | None:
     return None
 
 
-def relayed_soon(test: Test, url: str, data: bytes) -> str | None:
+def relayed_soon(test: Test, server_url: str, rel: str, data: bytes) -> str | None:
     """Return relay_problem() for HEAD, asked again while it finds one.
 
     Give up after DIGEST_WAIT seconds.
     """
-    last: list[str | None] = [None]
-
-    def right() -> bool:
-        last[0] = relay_problem(test, url, data, "HEAD")
-        return last[0] is None
-
-    common.wait_for(right, DIGEST_WAIT, interval=1)
-    return last[0]
+    return wait_last(
+        lambda: relay_problem(test, server_url, rel, data, "HEAD"), lambda why: why is None, DIGEST_WAIT, 1
+    )
 
 
 def stats_checksums(path: str) -> tuple[list[bytes], str]:
@@ -2209,32 +2169,19 @@ def stats_checksums(path: str) -> tuple[list[bytes], str]:
 
 
 def client_digests(test: Test, cache: common.Cache, rel: str, data: bytes) -> str | None:
-    """Check the digests that `pelican object get --cache` gets from cache.
+    """Check the digests that `pelican object get` gets from cache alone.
 
-    The client reads rel in /protected-a, which holds data, through cache
-    alone: it must bring the object, and its transfer statistics show the
-    digests that it then asked the cache for, which must be the object's,
-    and include each of test.digests.
+    The client reads rel, which holds data: it must bring the object, and
+    its transfer statistics show the digests that it then asked the cache
+    for, which must be the object's, and include each of test.digests.
 
     Returns:
-        What is wrong, or None if nothing is.
+        What is wrong, or None.
     """
     name = f"relay-get-{cache.svc}"
-    directory = os.path.join(test.tmp, name)
-    os.makedirs(directory)
-    target, stats = os.path.join(directory, "object"), os.path.join(test.tmp, f"{name}.json")
-    code, out, err = test.session.pelican_cmd(
-        "object",
-        "get",
-        "--cache",
-        cache.url,
-        "--token",
-        test.token_file,
-        "--transfer-stats",
-        stats,
-        f"{test.fed.url}/protected-a/{rel}",
-        target,
-    )
+    target = os.path.join(test.directory(name), "object")
+    stats = os.path.join(test.tmp, f"{name}.json")
+    code, out, err = get_from(test, cache, rel, target, "--transfer-stats", stats)
     if code != 0:
         return f"`pelican object get`: exit {code}: {last_line(err or out)}"
     if common.sha256(target) != common.digest(data):
@@ -2257,29 +2204,34 @@ def client_digests(test: Test, cache: common.Cache, rel: str, data: bytes) -> st
     return None
 
 
+def no_relay(test: Test) -> str | None:
+    """Return why no cache here need relay the origins' digests, or None."""
+    if not test.federated_v2:
+        return "no federated V2 cache; an XRootD cache need relay no digest"
+    return test.digestless()
+
+
 def relayed_at(test: Test, cache: common.Cache, rel: str, data: bytes) -> tuple[str | None, str]:
     """Run digest_relay at one V2 cache, of rel, which holds data.
 
     Returns:
-        What is wrong, or None if nothing is; and a note.
+        What is wrong, or None; and a note.
     """
-    url = f"{cache.url}/protected-a/{rel}"
-    why = relay_problem(test, url, data, "HEAD")
+    why = relay_problem(test, cache.url, rel, data, "HEAD")
     if why:
         return f"cold, {why}", ""
-    answer = web.request(
-        "GET", url, token=test.token, headers={"Want-Digest": test.digests[0]}, timeout=120
-    )
-    if answer.status != 200 or answer.body != data:
-        return f"a cold GET: {answer.describe()}, or not the object", ""
+    answer = test.ask("GET", cache.url, rel, {"Want-Digest": test.digests[0]})
+    why = web.served(answer, data)
+    if why:
+        return f"a cold GET: {why}", ""
     wrong, _ = digests.check(answer.header("Digest"), data)
     if wrong:
         return f"a cold GET: {wrong[0]}", ""
     note = "a cold GET with a Digest" if answer.header("Digest") else "a cold GET without one"
-    why = relayed_soon(test, url, data)
+    why = relayed_soon(test, cache.url, rel, data)
     if why:
         return f"warm, {why}", note
-    why = relay_problem(test, url, data, "GET")
+    why = relay_problem(test, cache.url, rel, data, "GET")
     if why:
         return f"warm, {why}", note
     return client_digests(test, cache, rel, data), note
@@ -2299,16 +2251,13 @@ def digest_relay(test: Test) -> tuple[str, str]:
     (client_digests()). A site-local cache reads through another cache,
     and is passed over.
     """
-    caches = [c for c in test.fed.federated_caches if c.kind == "v2"]
-    if not caches:
-        return SKIP, "no federated V2 cache; an XRootD cache need relay no digest"
-    if not test.digests:
-        return SKIP, test.no_digests or "the origins report no digest"
-    base = f"{test.base}/digest-relay"
+    if why := no_relay(test):
+        return SKIP, why
+    caches = test.federated_v2
+    base = test.rel("digest-relay")
     objects = {c.svc: os.urandom(STATUS_SIZE) for c in caches}
-    errors = upload_each(test, base, objects)
-    if errors:
-        return FAIL, errors[0]
+    if why := put_under(test, base, objects):
+        return FAIL, why
     problems: list[str] = []
     notes: list[str] = []
     for cache in caches:
@@ -2328,36 +2277,29 @@ def digest_range_first(test: Test) -> tuple[str, str]:
     digests (relay_problem()), and again once the cache has read the
     object whole and holds it all (it sends Age).
     """
-    caches = [c for c in test.fed.federated_caches if c.kind == "v2"]
-    if not caches:
-        return SKIP, "no federated V2 cache; an XRootD cache need relay no digest"
-    if not test.digests:
-        return SKIP, test.no_digests or "the origins report no digest"
-    base = f"{test.base}/digest-range-first"
+    if why := no_relay(test):
+        return SKIP, why
+    caches = test.federated_v2
+    base = test.rel("digest-range-first")
     objects = {c.svc: os.urandom(STATUS_SIZE) for c in caches}
-    errors = upload_each(test, base, objects)
-    if errors:
-        return FAIL, errors[0]
+    if why := put_under(test, base, objects):
+        return FAIL, why
     problems: list[str] = []
     for cache in caches:
         rel, data = f"{base}/{cache.svc}", objects[cache.svc]
-        url = f"{cache.url}/protected-a/{rel}"
         request = ((blocks.BLOCK, 2 * blocks.BLOCK - 1),)
         why = test.get(cache.url, rel, data, request)
         if why:
             problems.append(f"{cache.svc}: the range: {why}")
             continue
-        why = relay_problem(test, url, data, "HEAD")
+        why = relay_problem(test, cache.url, rel, data, "HEAD")
         if why:
             problems.append(f"{cache.svc}: after the range, {why}")
-        why = test.get(cache.url, rel, data, None)
+        why = read_held(test, cache, rel, data)
         if why:
-            problems.append(f"{cache.svc}: the whole object: {why}")
+            problems.append(f"{cache.svc}: {why}")
             continue
-        if not common.wait_for(functools.partial(holds_all, test, cache, rel), 10, interval=1):
-            problems.append(f"{cache.svc}: no Age after a whole read, so it does not hold it all")
-            continue
-        why = relayed_soon(test, url, data)
+        why = relayed_soon(test, cache.url, rel, data)
         if why:
             problems.append(f"{cache.svc}: once it held it all, {why}")
     return outcome(problems, f"{len(caches)} V2 cache(s): {', '.join(test.digests)} relayed")
@@ -2377,36 +2319,42 @@ CHECKSUM_XATTRS = (
 EVERY_DIGEST = "md5,crc32c,crc32,sha"
 
 
-def lacks_xattrs(path: str) -> list[str] | None:
-    """Return which of CHECKSUM_XATTRS the file at path lacks.
+def store_path(test: Test, origin: common.Origin, rel: str) -> str:
+    """Return the path of rel's file in origin's store on disk."""
+    return f"{origin.store_of(test.namespace)}/{rel}"
+
+
+def xattrs(path: str, names: Iterable[str]) -> dict[str, bytes | None] | None:
+    """Return the extended attributes names of the file at path.
 
     Returns:
-        Those it lacks, or None if nothing here can read extended
-        attributes (os.getxattr is Linux's alone).
+        Each one's value, by name, or None for one it lacks; or None if
+        nothing here can read extended attributes (os.getxattr is
+        Linux's alone).
     """
     getxattr = vars(os).get("getxattr")
     if getxattr is None:
         return None
-    lacking: list[str] = []
-    for name in CHECKSUM_XATTRS:
+    found: dict[str, bytes | None] = {}
+    for name in names:
         try:
-            getxattr(path, name)
+            found[name] = getxattr(path, name)
         except OSError:
-            lacking.append(name)
-    return lacking
+            found[name] = None
+    return found
 
 
-def rewrite_keeping_time(origin: common.Origin, rel: str, data: bytes) -> str | None:
-    """Overwrite rel in /protected-a in origin's store, keeping its times.
+def rewrite_keeping_time(test: Test, origin: common.Origin, rel: str, data: bytes) -> str | None:
+    """Overwrite rel in origin's store with data, keeping its times.
 
-    rel's file gets data, then back its access and modification times, so
-    that an origin that keeps digests by the latter cannot tell.
+    The file gets back its access and modification times, so that an
+    origin that keeps digests by the latter cannot tell.
 
     Returns:
         Why that failed, or None.
     """
-    store = origin.store_of("protected-a")
-    path = f"{store}/{rel}"
+    store = origin.store_of(test.namespace)
+    path = store_path(test, origin, rel)
     was = os.stat(path)
     error = stores.write_file(store, rel, data)
     if error:
@@ -2421,7 +2369,7 @@ def rewrite_keeping_time(origin: common.Origin, rel: str, data: bytes) -> str | 
 def stale_trap(
     test: Test, origin: common.Origin, rel: str, a: bytes, b: bytes
 ) -> tuple[str | None, str | None]:
-    """Make origin serve b at rel in /protected-a but report a's digests.
+    """Make origin serve b at rel but report a's digests.
 
     origin holds a at rel. Have it record a's digests (a HEAD with
     Want-Digest of EVERY_DIGEST), then write b over a in its store, and
@@ -2431,23 +2379,23 @@ def stale_trap(
         What went wrong, and why the trap could not be set (where the
         origin keeps no digest in the store, or noticed), each or None.
     """
-    target = stores.url(origin, "protected-a", rel)
-    answer = web.request("HEAD", target, token=test.token, headers={"Want-Digest": EVERY_DIGEST})
+    answer = send_head(test, origin.url, rel, EVERY_DIGEST)
     if answer.status != 200:
         return f"{origin.svc}: a HEAD with Want-Digest: {answer.describe()}", None
-    path = f"{origin.store_of('protected-a')}/{rel}"
-    lacking = lacks_xattrs(path)
-    if lacking is None:
+    path = store_path(test, origin, rel)
+    kept = xattrs(path, CHECKSUM_XATTRS)
+    if kept is None:
         return None, "nothing here can read extended attributes"
+    lacking = [name for name, value in kept.items() if value is None]
     if lacking:
         return None, (
             f"{origin.svc} kept no {lacking[0]} on framework/var/{path}, as where its"
             + " filesystem has no extended attributes, so it computes digests afresh"
         )
-    error = rewrite_keeping_time(origin, rel, b)
+    error = rewrite_keeping_time(test, origin, rel, b)
     if error:
         return error, None
-    answer = web.request("HEAD", target, token=test.token, headers={"Want-Digest": EVERY_DIGEST})
+    answer = send_head(test, origin.url, rel, EVERY_DIGEST)
     _, stale = digests.check(answer.header("Digest"), a)
     if not stale:
         return None, (
@@ -2458,10 +2406,7 @@ def stale_trap(
 
 
 def stale_digest(test: Test, cache: common.Cache, rel: str, a: bytes, found: Findings) -> None:
-    """Run stale_origin_digest at one V2 cache, of rel.
-
-    Every origin holds rel as a.
-    """
+    """Run stale_origin_digest at one V2 cache, of rel, which holds a."""
     b = bytes(x ^ 0xFF for x in a)
     for origin in test.origins:
         why, doubt = stale_trap(test, origin, rel, a, b)
@@ -2471,8 +2416,7 @@ def stale_digest(test: Test, cache: common.Cache, rel: str, a: bytes, found: Fin
         if doubt:
             found.doubt(doubt)
             return
-    url = f"{cache.url}/protected-a/{rel}"
-    answer = web.request("GET", url, token=test.token, headers=ASK_STATUS, timeout=120)
+    answer = test.ask("GET", cache.url, rel, ASK_STATUS)
     said = answer.trailer("X-Transfer-Status")
     if not answer.ok:
         how = f"{answer.describe()} before the body"
@@ -2485,15 +2429,15 @@ def stale_digest(test: Test, cache: common.Cache, rel: str, a: bytes, found: Fin
             + " though they fail the digests the origins report"
         )
         return
-    last: list[int | None] = [None]
-
-    def dropped() -> bool:
-        probe = web.request("GET", url, token=test.token, headers={"Cache-Control": "only-if-cached"})
-        last[0] = probe.status
-        return probe.status == 504
-
-    if not common.wait_for(dropped, 10, interval=1):
-        got = "no response" if last[0] is None else f"HTTP {last[0]}"
+    url = test.url(cache.url, rel)
+    status = wait_last(
+        lambda: web.request("GET", url, token=test.token, headers=web.ONLY_IF_CACHED).status,
+        lambda got: got == 504,
+        10,
+        1,
+    )
+    if status != 504:
+        got = "no response" if status is None else f"HTTP {status}"
         found.fail(f"{cache.svc}: then, only-if-cached got {got}, not 504: it kept the object")
         return
     why, client = client_failed(test, cache, rel, f"stale-get-{cache.svc}")
@@ -2527,20 +2471,12 @@ def stale_origin_digest(test: Test) -> tuple[str, str]:
             "only a posixv2 origin keeps digests by modification time in its store,"
             + f" not {test.fed.origin_variant}"
         )
-    caches = [c for c in test.fed.federated_caches if c.kind == "v2"]
-    if not caches:
+    if not test.federated_v2:
         return SKIP, "no federated V2 cache, which alone checks the origins' digests"
     if not test.direct:
-        return SKIP, "/protected-a takes no direct clients, so no origin can be asked first"
-    base = f"{test.base}/stale-digest"
-    objects = {c.svc: os.urandom(STATUS_SIZE) for c in caches}
-    errors = upload_each(test, base, objects)
-    if errors:
-        return FAIL, errors[0]
-    found = Findings()
-    for cache in caches:
-        stale_digest(test, cache, f"{base}/{cache.svc}", objects[cache.svc], found)
-    return found.verdict()
+        return SKIP, f"{NO_DIRECT}, so no origin can be asked first"
+    check = functools.partial(stale_digest, test)
+    return each_cache(test, "stale-digest", STATUS_SIZE, test.federated_v2, check)
 
 
 # What digest-defaults asks for in one Want-Digest: two algorithms, and the
@@ -2560,17 +2496,15 @@ def xattr_digests(path: str) -> dict[str, bytes | None] | None:
 
     Returns:
         Each digest, by algorithm, or None for one it lacks; or None if
-        nothing here can read extended attributes (os.getxattr is Linux's
-        alone).
+        nothing here can read extended attributes (see xattrs()).
     """
-    getxattr = vars(os).get("getxattr")
-    if getxattr is None:
+    kept = xattrs(path, DIGEST_XATTRS.values())
+    if kept is None:
         return None
     found: dict[str, bytes | None] = {}
     for algorithm, name in DIGEST_XATTRS.items():
-        try:
-            raw: bytes = getxattr(path, name)
-        except OSError:
+        raw = kept[name]
+        if raw is None:
             found[algorithm] = None
             continue
         length = raw[XRDCKS_LENGTH] if len(raw) > XRDCKS_LENGTH else 0
@@ -2584,10 +2518,10 @@ def digest_fields(answer: web.Response) -> list[str]:
 
 
 def defaults_at(test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings) -> None:
-    """Send digest_defaults's HEADs of rel in /protected-a at origin.
+    """Send digest_defaults's HEADs of rel, which holds data, at origin.
 
-    rel holds data. Each HEAD asks for digests in its own way: with no
-    Want-Digest, with WANT_BOTH, and with WANT_WEIGHTED. Every digest it
+    Each HEAD asks for digests in its own way: with no Want-Digest, with
+    WANT_BOTH, and with WANT_WEIGHTED. Every digest it
     reports must be the object's, in one Digest field, which is all the
     Pelican client reads. Unasked, a native origin must report crc32c, the
     first of Origin.DefaultChecksumTypes, which the framework leaves at
@@ -2602,11 +2536,9 @@ def defaults_at(test: Test, origin: common.Origin, rel: str, data: bytes, found:
         ("asked for both", WANT_BOTH, test.digests if native else (), not native),
         ("weighed", WANT_WEIGHTED, (), True),
     )
-    target = stores.url(origin, "protected-a", rel)
     said: list[str] = []
     for label, want, must, some in asks:
-        headers = {"Want-Digest": want} if want else None
-        answer = web.request("HEAD", target, token=test.token, headers=headers)
+        answer = send_head(test, origin.url, rel, want)
         what = f"{origin.svc}: a HEAD with {'Want-Digest: ' + want if want else 'none asked'}"
         if answer.status != 200:
             found.fail(f"{what}: {answer.describe()}")
@@ -2629,15 +2561,14 @@ def defaults_at(test: Test, origin: common.Origin, rel: str, data: bytes, found:
 def kept_digests(test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings) -> bool:
     """Check that a posixv2 origin keeps rel's digests in its xattrs.
 
-    rel is in /protected-a, and holds data. Once the origin has reported
-    its digests, its file's extended attributes must hold each, the
-    object's. Where they cannot be read, record a doubt; where one is
-    wrong or missing, a problem.
+    rel holds data. Once the origin has reported its digests, its file's
+    extended attributes must hold each, the object's. Where they cannot
+    be read, record a doubt; where one is wrong or missing, a problem.
 
     Returns:
         Whether it found any there to check.
     """
-    path = f"{origin.store_of('protected-a')}/{rel}"
+    path = store_path(test, origin, rel)
     kept = xattr_digests(path)
     if kept is None:
         found.doubt("nothing here can read extended attributes")
@@ -2663,20 +2594,19 @@ def kept_digests(test: Test, origin: common.Origin, rel: str, data: bytes, found
 def digests_rewritten(test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings) -> None:
     """Overwrite rel in a posixv2 origin's store, and check its digests.
 
-    rel is in /protected-a, holds data, and the origin has recorded its
-    digests. Write bytes of the same length over it in the store, and give
+    rel holds data, and the origin has recorded its digests. Write bytes
+    of the same length over it in the store, and give
     the file back its modification time. An origin that keeps digests by
     that time, to the second, cannot see such a rewrite, so it may report
     the old version's digests, or the new bytes' if it noticed. Any other
     digest, or none, is a problem. The note says which.
     """
-    target = stores.url(origin, "protected-a", rel)
     rewrite = os.urandom(len(data))
-    error = rewrite_keeping_time(origin, rel, rewrite)
+    error = rewrite_keeping_time(test, origin, rel, rewrite)
     if error:
         found.fail(f"{origin.svc}: {error}")
         return
-    answer = web.request("HEAD", target, token=test.token, headers={"Want-Digest": WANT_BOTH})
+    answer = send_head(test, origin.url, rel, WANT_BOTH)
     what = f"{origin.svc}: after a rewrite in the store with its modification time kept"
     if answer.status != 200:
         found.fail(f"{what}, a HEAD: {answer.describe()}")
@@ -2697,8 +2627,8 @@ def digests_rewritten(test: Test, origin: common.Origin, rel: str, data: bytes, 
 def xattrs_at(test: Test, origin: common.Origin, rel: str, data: bytes, found: Findings) -> None:
     """Check the extended attributes of rel at a posixv2 origin.
 
-    For digest_defaults, rel is in /protected-a, holds data, and the
-    origin has just reported its digests: its file's extended attributes
+    For digest_defaults, rel holds data, and the origin has just reported
+    its digests: its file's extended attributes
     must hold them (kept_digests()). A PUT of another version must clear
     them, or replace them with its digests, which the origin must then
     report. Last, digests_rewritten().
@@ -2707,11 +2637,11 @@ def xattrs_at(test: Test, origin: common.Origin, rel: str, data: bytes, found: F
         return
     if test.writes:
         new = os.urandom(len(data) + 7)
-        error = stores.put(origin, "protected-a", rel, new, test.setup)
+        error = stores.put(origin, test.namespace, rel, new, test.setup)
         if error:
             found.fail(f"{origin.svc}: {error}")
             return
-        path = f"{origin.store_of('protected-a')}/{rel}"
+        path = store_path(test, origin, rel)
         for algorithm, value in (xattr_digests(path) or {}).items():
             if value is not None and value != digests.compute(algorithm, new):
                 found.fail(
@@ -2719,12 +2649,7 @@ def xattrs_at(test: Test, origin: common.Origin, rel: str, data: bytes, found: F
                     + f" {DIGEST_XATTRS[algorithm]} is still the old version's"
                 )
         data = new
-        answer = web.request(
-            "HEAD",
-            stores.url(origin, "protected-a", rel),
-            token=test.token,
-            headers={"Want-Digest": WANT_BOTH},
-        )
+        answer = send_head(test, origin.url, rel, WANT_BOTH)
         wrong, right = digests.check(answer.header("Digest"), data)
         if answer.status != 200 or wrong or set(right) != set(test.digests):
             found.fail(
@@ -2748,17 +2673,16 @@ def digest_defaults(test: Test) -> tuple[str, str]:
     direct clients.
     """
     if not test.direct:
-        return SKIP, "/protected-a takes no direct clients"
-    if not test.digests:
-        return SKIP, test.no_digests or "the origins report no digest"
-    base = f"{test.base}/digest-defaults"
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
-    if errors:
-        return FAIL, errors[0]
+        return SKIP, NO_DIRECT
+    if why := test.digestless():
+        return SKIP, why
+    base = test.rel("digest-defaults")
+    if why := test.make(base):
+        return FAIL, why
     found = Findings()
     for origin in test.origins:
         rel, data = f"{base}/{origin.svc}", os.urandom(3 * blocks.BLOCK + 5)
-        error = stores.seed(origin, "protected-a", rel, data, test.setup, test.caps)
+        error = stores.seed(origin, test.namespace, rel, data, test.setup, test.caps)
         if error:
             found.fail(f"{origin.svc}: {error}")
             continue
@@ -2786,21 +2710,16 @@ def past_end(test: Test) -> tuple[str, str]:
     """
     if why := test.not_uploaded(True, False):
         return FAIL, why
-    servers = [(o.svc, o.url) for o in test.origins] if test.direct else []
-    servers += [(c.svc, c.url) for c in test.caches]
+    asked = servers(test)
     problems: list[str] = []
-    for svc, url in servers:
+    for svc, url in asked:
         for set_name in ("whole", "ranged"):
             for size in PAST_END_SIZES:
                 data = test.data[(set_name, size)]
+                target = test.url(url, test.set_rel(set_name, size))
                 for request in blocks.past_end(size):
                     range_header = blocks.header(request)
-                    answer = web.request(
-                        "GET",
-                        f"{url}/protected-a/{test.rel(set_name, size)}",
-                        token=test.token,
-                        headers={"Range": range_header},
-                    )
+                    answer = web.request("GET", target, token=test.token, headers={"Range": range_header})
                     what = f"{svc}: {set_name}/{size} {range_header}"
                     said = answer.header("Content-Range")
                     if answer.status == 200 and answer.body == data:
@@ -2809,7 +2728,7 @@ def past_end(test: Test) -> tuple[str, str]:
                         problems.append(f"{what}: {answer.describe()}, not 416")
                     elif said and said.replace(" ", "") != f"bytes*/{size}":
                         problems.append(f"{what}: Content-Range '{said}', not 'bytes */{size}'")
-    return outcome(problems, f"{len(servers)} server(s)")
+    return outcome(problems, f"{len(asked)} server(s)")
 
 
 def empty(test: Test) -> tuple[str, str]:
@@ -2821,21 +2740,16 @@ def empty(test: Test) -> tuple[str, str]:
     """
     if why := test.not_uploaded(True, False):
         return FAIL, why
-    servers = [(o.svc, o.url) for o in test.origins] if test.direct else []
-    servers += [(c.svc, c.url) for c in test.caches]
     notes: list[str] = []
-    for svc, url in servers:
+    for svc, url in servers(test):
         for set_name in ("whole", "ranged"):
-            target = f"{url}/protected-a/{test.rel(set_name, 0)}"
+            target = test.url(url, test.set_rel(set_name, 0))
             answer = web.request("GET", target, token=test.token)
             if answer.status != 200 or answer.body:
-                return (
-                    FAIL,
-                    f"{svc}: {set_name}/0: {answer.describe()}, {len(answer.body)} bytes",
-                )
+                return FAIL, f"{svc}: {set_name}/0: {answer.describe()}, {len(answer.body)} bytes"
             answer = web.request("GET", target, token=test.token, headers={"Range": "bytes=0-0"})
             if answer.status not in (200, 416):
-                return FAIL, (f"{svc}: a range of {set_name}/0 got {answer.describe()}, not 200 or 416")
+                return FAIL, f"{svc}: a range of {set_name}/0 got {answer.describe()}, not 200 or 416"
             # A 416's body explains it; a success's must be empty.
             if answer.status == 200 and answer.body:
                 return FAIL, (
@@ -3008,9 +2922,9 @@ def huge_propfind(target: str, token: str) -> tuple[int | None, str]:
     return sizes[0], f"PROPFIND said getcontentlength {sizes[0]}"
 
 
-def huge_server(test: Test, svc: str, url: str, rel: str) -> list[str]:
+def huge_server(test: Test, svc: str, server_url: str, rel: str) -> list[str]:
     """Return huge_at() for a server, asked straight."""
-    target = f"{url}/protected-a/{rel}"
+    target = test.url(server_url, rel)
     return huge_at(
         test,
         svc,
@@ -3029,7 +2943,7 @@ def huge_through_director(test: Test, director_url: str, rel: str) -> list[str]:
     then again to wherever the redirect leads, with the token, as a client
     does.
     """
-    route = f"{director_url}/api/v1.0/director/object/protected-a/{rel}"
+    route = test.object_route(director_url, rel)
     name = f"{director.host(director_url)} (object route)"
 
     def follow(method: str, headers: dict[str, str]) -> web.Response:
@@ -3057,7 +2971,7 @@ def huge_client_sizes(test: Test, rel: str) -> list[str]:
     collection.
     """
     problems: list[str] = []
-    url = f"{test.fed.url}/protected-a/{rel}"
+    url = test.pelican_url(rel)
     code, out, err = test.session.pelican_cmd("object", "stat", "--json", "--token", test.token_file, url)
     if code != 0:
         problems.append(f"`object stat`: exit {code}: {last_line(err or out)}")
@@ -3092,12 +3006,11 @@ def huge_evict(test: Test, rel: str) -> list[str]:
 
     A V2 cache may have charged its store the whole of it.
     """
-    path = f"/protected-a/{rel}"
     problems: list[str] = []
     for cache in test.caches:
         if cache.kind != "v2":
             continue
-        query = urlencode({"path": path, "immediate": "true"})
+        query = urlencode({"path": test.path(rel), "immediate": "true"})
         answer = web.request("DELETE", f"{cache.web_url}{cacheapi.EVICT}?{query}", token=test.setup)
         if answer.status != 200:
             problems.append(f"evicting it from {cache.svc}: {answer.describe()}")
@@ -3121,13 +3034,12 @@ def huge_ranges(test: Test) -> tuple[str, str]:
             SKIP,
             "a pstore origin's store is encrypted: the object would go over HTTPS whole",
         )
-    collection = f"{test.base}/huge"
+    collection = test.rel("huge")
     rel = f"{collection}/{HUGE_SIZE}"
-    errors = stores.make_dirs(test.origins, "protected-a", collection, test.setup)
-    if errors:
-        return FAIL, first(errors)
+    if why := test.make(collection):
+        return FAIL, why
     for origin in test.origins:
-        path = f"{origin.store_of('protected-a')}/{rel}"
+        path = store_path(test, origin, rel)
         why, sparse = huge_file(test.run, path)
         if why:
             return FAIL, why
@@ -3200,20 +3112,19 @@ def conditions(etag: str, modified: str) -> list[tuple[str, str, bool]]:
 
 
 def conditional_problems(
-    test: Test, svc: str, url: str, rel: str, data: bytes
+    test: Test, svc: str, server_url: str, rel: str, data: bytes
 ) -> tuple[list[str], set[str], set[str]]:
-    """Send each of conditions() for rel in /protected-a to url's server.
-
-    rel holds data.
+    """Send each of conditions() for rel, which holds data, to a server.
 
     Returns:
         What is wrong, the headers it honored (304), and those of ETag and
         Last-Modified it never sent.
     """
-    target = f"{url}/protected-a/{rel}"
+    target = test.url(server_url, rel)
     answer = web.request("GET", target, token=test.token)
-    if answer.status != 200 or answer.body != data:
-        return [f"{svc}: {rel}: {answer.describe()}, or not the object"], set(), set()
+    why = web.served(answer, data)
+    if why:
+        return [f"{svc}: {rel}: {why}"], set(), set()
     etag, modified = answer.header("ETag"), answer.header("Last-Modified")
     unsent = {name for name, value in (("ETag", etag), ("Last-Modified", modified)) if not value}
     problems: list[str] = []
@@ -3248,16 +3159,14 @@ def conditional(test: Test) -> tuple[str, str]:
     """
     if why := test.not_uploaded(True):
         return FAIL, why
-    servers = [(o.svc, o.url) for o in test.origins] if test.direct else []
-    servers += [(c.svc, c.url) for c in test.caches]
     problems: list[str] = []
     notes: list[str] = []
-    for svc, url in servers:
+    for svc, url in servers(test):
         honored: set[str] = set()
         unsent: set[str] = set()
         for size in CONDITIONAL_SIZES:
             wrong, right, missing = conditional_problems(
-                test, svc, url, test.rel("whole", size), test.data[("whole", size)]
+                test, svc, url, test.set_rel("whole", size), test.data[("whole", size)]
             )
             problems += wrong
             honored |= right
@@ -3272,16 +3181,9 @@ def conditional(test: Test) -> tuple[str, str]:
 def cas_put(
     test: Test, origin: common.Origin, rel: str, data: bytes, header: str, value: str
 ) -> web.Response:
-    """PUT data to rel in /protected-a at origin, on a condition.
-
-    The condition is header: value.
-    """
+    """PUT data to rel at origin, on condition header: value."""
     return web.request(
-        "PUT",
-        stores.url(origin, "protected-a", rel),
-        token=test.token,
-        upload=data,
-        headers={header: value},
+        "PUT", test.url(origin.url, rel), token=test.token, upload=data, headers={header: value}
     )
 
 
@@ -3303,7 +3205,7 @@ def cas_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str]
             problems.append(f"{what}: {answer.describe()}")
         elif not allowed and answer.status != 412:
             problems.append(f"{what}: {answer.describe()}, not 412")
-        have = stores.held(origin, "protected-a", where, test.setup)
+        have = stores.held(origin, test.namespace, where, test.setup)
         if want is None and have is not None:
             problems.append(f"after {what}, the store holds an object")
         elif want is not None and have != common.digest(want):
@@ -3326,7 +3228,7 @@ def cas_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str]
         v1,
     )
     current = v1
-    etag = web.request("HEAD", stores.url(origin, "protected-a", rel), token=test.token).header("ETag")
+    etag = send_head(test, origin.url, rel).header("ETag")
     if etag:
         replaced = cas_put(test, origin, rel, v2, "If-Match", etag)
         check("a PUT with If-Match naming its ETag", replaced, True, rel, v2)
@@ -3370,20 +3272,10 @@ def conditional_put(test: Test) -> tuple[str, str]:
     overwrite each other unawares.
     """
     if not test.direct:
-        return SKIP, "/protected-a takes no direct clients"
+        return SKIP, NO_DIRECT
     if not test.writes:
         return SKIP, NO_WRITES
-    base = f"{test.base}/conditional-put"
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
-    if errors:
-        return FAIL, errors[0]
-    problems: list[str] = []
-    notes: list[str] = []
-    for origin in test.origins:
-        wrong, note = cas_problems(test, origin, f"{base}/{origin.svc}")
-        problems += [f"{origin.svc}: {w}" for w in wrong]
-        notes.append(f"{origin.svc} {note}")
-    return outcome(problems, "; ".join(notes))
+    return each_origin(test, "conditional-put", functools.partial(cas_problems, test))
 
 
 # etag-agreement's object, and the range it asks for with If-Range.
@@ -3402,16 +3294,22 @@ def unweakened(etag: str) -> str:
 def method_etags(test: Test, target: str, data: bytes, problems: list[str]) -> dict[str, str]:
     """Return the ETag that each method reports of target, by method.
 
-    The methods are GET, HEAD, and PROPFIND (Depth 0, its getetag); target
-    holds data. What goes wrong goes in problems.
+    The methods are GET, HEAD, and PROPFIND (Depth 0, its getetag).
+
+    Args:
+        test: The test.
+        target: The object's URL.
+        data: Its bytes.
+        problems: Gets what goes wrong.
 
     Returns:
         Each method's ETag, or "" for one that reports none.
     """
     found: dict[str, str] = {}
     answer = web.request("GET", target, token=test.token)
-    if answer.status != 200 or answer.body != data:
-        problems.append(f"a GET: {answer.describe()}, or not the object")
+    why = web.served(answer, data)
+    if why:
+        problems.append(f"a GET: {why}")
     found["GET"] = answer.header("ETag")
     answer = web.request("HEAD", target, token=test.token)
     if answer.status != 200:
@@ -3440,19 +3338,27 @@ def etag_conditions(
     source: str,
     problems: list[str],
 ) -> tuple[bytes, str | None]:
-    """Check conditions that name etag on rel in /protected-a at origin.
+    """Check conditions that name etag on rel at origin.
 
-    rel holds data and has etag, a strong one, which source reported. Send
-    a GET with If-Match, which must serve the object; a GET of IF_RANGE
-    with If-Range, which must serve the range (206); and, where
+    Send a GET with If-Match, which must serve the object; a GET of
+    IF_RANGE with If-Range, which must serve the range (206); and, where
     /protected-a takes writes, a PUT of another version with If-Match,
-    which must replace it. What goes wrong goes in problems.
+    which must replace it.
+
+    Args:
+        test: The test.
+        origin: The origin.
+        rel: The object.
+        data: Its bytes.
+        etag: Its ETag, a strong one.
+        source: The method that reported etag.
+        problems: Gets what goes wrong.
 
     Returns:
         What the object holds afterward, and the ETag of the PUT's answer,
         if it replaced it, or None.
     """
-    target = stores.url(origin, "protected-a", rel)
+    target = test.url(origin.url, rel)
     what = f"with If-Match: {etag} ({source}'s)"
     answer = web.request("GET", target, token=test.token, headers={"If-Match": etag})
     if answer.status != 200 or answer.body != data:
@@ -3476,7 +3382,7 @@ def etag_conditions(
     answer = cas_put(test, origin, rel, new, "If-Match", etag)
     if not answer.ok:
         problems.append(f"a PUT {what}: {answer.describe()}")
-    held = stores.held(origin, "protected-a", rel, test.setup)
+    held = stores.held(origin, test.namespace, rel, test.setup)
     now = new if answer.ok else data
     if held != common.digest(now):
         problems.append(f"after a PUT {what}, the store does not hold what it should")
@@ -3489,7 +3395,7 @@ def etag_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str
     Returns:
         What is wrong, and a note.
     """
-    target = stores.url(origin, "protected-a", rel)
+    target = test.url(origin.url, rel)
     data = os.urandom(ETAG_SIZE)
     problems: list[str] = []
     tags: dict[str, str] = {}
@@ -3498,7 +3404,7 @@ def etag_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str
         if not answer.ok:
             return [f"a PUT: {answer.describe()}"], ""
         tags["PUT"] = answer.header("ETag")
-    elif error := stores.seed(origin, "protected-a", rel, data, test.setup, test.caps):
+    elif error := stores.seed(origin, test.namespace, rel, data, test.setup, test.caps):
         return [error], ""
     tags.update(method_etags(test, target, data, problems))
     sent = {method: tag for method, tag in tags.items() if tag}
@@ -3533,18 +3439,8 @@ def etag_agreement(test: Test) -> tuple[str, str]:
     which methods reported none.
     """
     if not test.direct:
-        return SKIP, "/protected-a takes no direct clients"
-    base = f"{test.base}/etag-agreement"
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
-    if errors:
-        return FAIL, errors[0]
-    problems: list[str] = []
-    notes: list[str] = []
-    for origin in test.origins:
-        wrong, note = etag_problems(test, origin, f"{base}/{origin.svc}")
-        problems += [f"{origin.svc}: {w}" for w in wrong]
-        notes.append(f"{origin.svc}: {note}")
-    return outcome(problems, "; ".join(notes))
+        return SKIP, NO_DIRECT
+    return each_origin(test, "etag-agreement", functools.partial(etag_problems, test))
 
 
 # How many PUTs conditional-edges races to create one object.
@@ -3552,7 +3448,7 @@ RACERS = 8
 
 
 def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
-    """Race RACERS PUTs that create rel in /protected-a at origin.
+    """Race RACERS PUTs that create rel at origin.
 
     Each has If-None-Match: * and bytes of its own, and rel does not
     exist: exactly one must succeed, and the rest be refused, with 412,
@@ -3562,7 +3458,7 @@ def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
     well; and the store must then hold the winner's bytes.
 
     Returns:
-        What is wrong; empty if nothing is.
+        What is wrong.
     """
     bodies = [os.urandom(1 << 16) for _ in range(RACERS)]
     answers = [web.Response(None) for _ in range(RACERS)]
@@ -3587,7 +3483,7 @@ def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
     other = [a for a in answers if not a.ok and a.status not in (412, 423)]
     if other:
         problems.append(f"a racing PUT that lost: {other[0].describe()}, not 412 or 423")
-    held = stores.held(origin, "protected-a", rel, test.setup)
+    held = stores.held(origin, test.namespace, rel, test.setup)
     if not any(held == common.digest(bodies[n]) for n in won):
         problems.append("after the racing PUTs, the store holds no winner's bytes")
     return problems
@@ -3601,18 +3497,14 @@ def edge_problems(test: Test, origin: common.Origin, base: str) -> tuple[list[st
     """
     rel = f"{base}/object"
     data = os.urandom(blocks.BLOCK + 1)
-    error = stores.seed(origin, "protected-a", rel, data, test.setup, test.caps)
+    error = stores.seed(origin, test.namespace, rel, data, test.setup, test.caps)
     if error:
         return [error], ""
-    target = stores.url(origin, "protected-a", rel)
+    target = test.url(origin.url, rel)
     problems: list[str] = []
     for value in ('"nope"', "*"):
-        answer = web.request(
-            "GET",
-            stores.url(origin, "protected-a", f"{base}/missing"),
-            token=test.token,
-            headers={"If-None-Match": value},
-        )
+        missing = test.url(origin.url, f"{base}/missing")
+        answer = web.request("GET", missing, token=test.token, headers={"If-None-Match": value})
         if answer.status != 404:
             problems.append(
                 f"a GET of an object that does not exist, with If-None-Match: {value}:"
@@ -3640,7 +3532,7 @@ def edge_problems(test: Test, origin: common.Origin, base: str) -> tuple[list[st
     answer = cas_put(test, origin, rel, os.urandom(4096), "If-None-Match", junk)
     if answer.status != 412:
         problems.append(f"a PUT with If-None-Match: {junk} over it: {answer.describe()}, not 412")
-    if stores.held(origin, "protected-a", rel, test.setup) != common.digest(data):
+    if stores.held(origin, test.namespace, rel, test.setup) != common.digest(data):
         problems.append(f"after a PUT with If-None-Match: {junk}, the store holds another object")
     problems += race(test, origin, f"{base}/raced")
     return problems, "GETs and PUTs"
@@ -3663,12 +3555,12 @@ def conditional_edges(test: Test) -> tuple[str, str]:
     asked only if they take direct clients.
     """
     if not test.direct:
-        return SKIP, "/protected-a takes no direct clients"
-    base = f"{test.base}/conditional-edges"
+        return SKIP, NO_DIRECT
+    base = test.rel("conditional-edges")
     problems: list[str] = []
     notes: list[str] = []
     for origin in test.origins:
-        errors = stores.make_dirs([origin], "protected-a", f"{base}/{origin.svc}", test.setup)
+        errors = stores.make_dirs([origin], test.namespace, f"{base}/{origin.svc}", test.setup)
         if errors:
             return FAIL, errors[0]
         wrong, note = edge_problems(test, origin, f"{base}/{origin.svc}")
@@ -3694,34 +3586,21 @@ def mixed_version(test: Test) -> tuple[str, str]:
     version, and the same one.
     """
     size = MIXED_SIZE
-    rel = f"{test.base}/mixed"
+    rel = test.rel("mixed")
     v1, v2 = os.urandom(size), os.urandom(size)
-    errors = stores.make_dirs(test.origins, "protected-a", test.base, test.setup)
-    errors += stores.seed_everywhere(test.origins, "protected-a", rel, v1, test.setup, test.caps)
-    if errors:
-        return FAIL, "; ".join(errors)
+    if why := test.put({rel: v1}):
+        return FAIL, why
 
     def get(cache: common.Cache, request: str | None) -> web.Response:
-        headers = {"Range": request} if request else {}
-        return web.request(
-            "GET",
-            f"{cache.url}/protected-a/{rel}",
-            token=test.token,
-            headers=headers,
-            timeout=120,
-        )
+        return test.ask("GET", cache.url, rel, {"Range": request} if request else {})
 
     block = blocks.BLOCK
     for cache in test.caches:
         answer = get(cache, f"bytes=0-{block - 1}")
         if answer.status != 206 or answer.body != v1[:block]:
-            return (
-                FAIL,
-                f"{cache.svc}: the first block of v1 came back wrong ({answer.describe()})",
-            )
-    errors = stores.seed_everywhere(test.origins, "protected-a", rel, v2, test.setup, test.caps)
-    if errors:
-        return FAIL, "; ".join(errors)
+            return FAIL, f"{cache.svc}: the first block of v1 came back wrong ({answer.describe()})"
+    if why := test.put({rel: v2}):
+        return FAIL, why
     start, end = MIXED_LATER, MIXED_LATER + block
     later = f"bytes {start}-{end - 1}"
     notes: list[str] = []
@@ -3748,23 +3627,12 @@ def mixed_version(test: Test) -> tuple[str, str]:
                 )
                 for i in range(0, size, block)
             )
-            return (
-                FAIL,
-                f"{cache.svc}: the whole object mixes versions, block by block: {which}",
-            )
+            return FAIL, f"{cache.svc}: the whole object mixes versions, block by block: {which}"
         range_version = "v1" if part == v1[start:end] else "v2"
         if range_version != version:
-            return FAIL, (
-                f"{cache.svc}: {later} came back as {range_version}," f" the whole object as {version}"
-            )
+            return FAIL, f"{cache.svc}: {later} came back as {range_version}, the whole object as {version}"
         notes.append(f"{cache.svc} served {version}")
     return PASS, ", ".join(notes)
-
-
-# How long past an object's freshness a cache may take to serve the new
-# version: requests are 3 seconds apart, and it revalidates by fetching
-# the object again.
-REVALIDATION_MARGIN = 45
 
 
 class Versions:
@@ -3776,7 +3644,7 @@ class Versions:
     Attributes:
         CHANGES: How much longer v2 is than v1, by kind of change.
         NAMES: The kinds of change.
-        base: Where the objects are, in /protected-a.
+        base: The objects' collection.
         v1: Each object's first version, by name (<cache>-<kind>).
         v2: Each object's second version, by name: as long as v1, longer,
             or shorter.
@@ -3810,17 +3678,13 @@ class Versions:
             The version, or None; and why it is none.
         """
         headers = {"Range": blocks.header(request)} if request else {"Want-Digest": "crc32c"}
-        url = f"{cache.url}/protected-a/{self.base}/{key}"
-        answer = web.request("GET", url, token=self.test.token, headers=headers, timeout=120)
+        answer = self.test.ask("GET", cache.url, f"{self.base}/{key}", headers)
         versions = {"v1": self.v1[key], "v2": self.v2[key]}
         version, why = blocks.which_version(versions, request, answer)
         if version and request is None:
             wrong, _ = digests.check(answer.header("Digest"), versions[version])
             if wrong:
-                return (
-                    None,
-                    f"served {version}, but with a Digest that is not its ({first(wrong)})",
-                )
+                return None, f"served {version}, but with a Digest that is not its ({first(wrong)})"
         return version, why
 
     def now(self, cache: common.Cache) -> list[str | None]:
@@ -3858,14 +3722,12 @@ class Versions:
 def cache_control_problem(test: Test, rel: str, control: str) -> str | None:
     """Return why an origin does not send Cache-Control control for rel.
 
-    rel is in /protected-a. None if every origin sends it.
+    Returns:
+        Why, or None if every origin sends it.
     """
     for origin in test.origins:
         answer = web.request(
-            "GET",
-            f"{origin.url}/protected-a/{rel}",
-            token=test.token,
-            headers={"Range": "bytes=0-0"},
+            "GET", test.url(origin.url, rel), token=test.token, headers={"Range": "bytes=0-0"}
         )
         sent = answer.header("Cache-Control")
         if sent != control:
@@ -3891,10 +3753,9 @@ def overwrite(test: Test, range_first: bool) -> tuple[str, str]:
             whole, rather than the whole twice.
     """
     kind = "range-first" if range_first else "cached"
-    versions = Versions(test, f"{test.base}/overwrite-{kind}")
-    errors = upload_each(test, versions.base, versions.v1)
-    if errors:
-        return FAIL, errors[0]
+    versions = Versions(test, test.rel(f"overwrite-{kind}"))
+    if why := put_under(test, versions.base, versions.v1):
+        return FAIL, why
     control = test.fed.sent_cache_control
     if control and test.direct:
         why = cache_control_problem(test, f"{versions.base}/{next(iter(versions.v1))}", control)
@@ -3910,11 +3771,8 @@ def overwrite(test: Test, range_first: bool) -> tuple[str, str]:
                 why = test.get(cache.url, f"{versions.base}/{key}", versions.v1[key], request)
                 if why:
                     return FAIL, f"{cache.svc}: {n} before the overwrite: {why}"
-    for key, data in versions.v2.items():
-        rel = f"{versions.base}/{key}"
-        errors = stores.seed_everywhere(test.origins, "protected-a", rel, data, test.setup, test.caps)
-        if errors:
-            return FAIL, errors[0]
+    if why := put_under(test, versions.base, versions.v2):
+        return FAIL, why
 
     fresh = blocks.freshness(control) if control else None
     problems: list[str] = []
@@ -3926,7 +3784,7 @@ def overwrite(test: Test, range_first: bool) -> tuple[str, str]:
         if fresh is None:
             notes.append(f"{cache.svc} served {served}")
             continue
-        deadline = cached_at[cache.svc] + fresh + REVALIDATION_MARGIN
+        deadline = cached_at[cache.svc] + fresh + blocks.REVALIDATION_MARGIN
         now = versions.now(cache)
         while not all(v == "v2" for v in now) and time.time() <= deadline:
             time.sleep(3)
@@ -3958,25 +3816,22 @@ def overwrite_range_first(test: Test) -> tuple[str, str]:
 
 
 def held_everywhere(test: Test, rel: str, data: bytes) -> bool:
-    """Return whether every origin holds data at rel in /protected-a."""
-    held = stores.held_anywhere(test.origins, "protected-a", rel, {"protected-a": test.setup})
-    return all(h == common.digest(data) for h in held)
+    """Return whether every origin holds data at rel."""
+    return all(h == common.digest(data) for h in holdings(test, rel))
 
 
 def put_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> str | None:
-    """Send write_through()'s PUTs through cache of rel in /protected-a.
-
-    Every origin holds rel as v1.
+    """Send write_through()'s PUTs of rel, which every origin holds as v1.
 
     Returns:
-        What went wrong, or None if nothing did.
+        What went wrong, or None.
     """
-    url = f"{cache.url}/protected-a/{rel}"
+    url = test.url(cache.url, rel)
     v2 = os.urandom(len(v1) - blocks.OVERWRITE_CHANGE)
     why = test.get(cache.url, rel, v1, None)
     if why:
         return f"before the writes: {why}"
-    read_only = test.session.token("protected-a", credentials.R)
+    read_only = test.session.token(test.namespace, credentials.R)
     answer = web.request("PUT", url, token=read_only, upload=v2)
     if answer.status not in (401, 403):
         return f"a PUT with a read-only token: {answer.describe()}, not 401 or 403"
@@ -3991,13 +3846,12 @@ def put_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> str | N
         return None
     if not answer.ok:
         return f"a PUT: {answer.describe()}"
-    held = stores.held_anywhere(test.origins, "protected-a", rel, {"protected-a": test.setup})
-    if common.digest(v2) not in held:
+    if common.digest(v2) not in holdings(test, rel):
         return "a PUT succeeded, but no origin holds what it wrote"
     # Then only the cache's own copy could still be v1.
-    errors = stores.seed_everywhere(test.origins, "protected-a", rel, v2, test.setup, test.caps)
-    if errors:
-        return errors[0]
+    why = test.put({rel: v2})
+    if why:
+        return why
     why = test.get(cache.url, rel, v2, None)
     if why:
         return f"after the PUT: {why}"
@@ -4005,23 +3859,20 @@ def put_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> str | N
 
 
 def delete_through(test: Test, cache: common.Cache, rel: str) -> str | None:
-    """Send write_through()'s DELETE through cache of rel in /protected-a.
-
-    Every origin holds rel.
+    """Send write_through()'s DELETE of rel, which every origin holds.
 
     Returns:
-        What went wrong, or None if nothing did.
+        What went wrong, or None.
     """
-    url = f"{cache.url}/protected-a/{rel}"
+    url = test.url(cache.url, rel)
     answer = web.request("DELETE", url, token=test.token)
     if not answer.ok:
         return f"a DELETE: {answer.describe()}"
-    held = stores.held_anywhere(test.origins, "protected-a", rel, {"protected-a": test.setup})
-    if None not in held:
+    if None not in holdings(test, rel):
         return "a DELETE succeeded, but every origin holds the object"
     # Then only the cache's own copy could still be served.
     for origin in test.origins:
-        error = stores.delete(origin, "protected-a", rel, test.setup)
+        error = stores.delete(origin, test.namespace, rel, test.setup)
         if error:
             return error
     answer = web.request("GET", url, token=test.token)
@@ -4033,15 +3884,13 @@ def delete_through(test: Test, cache: common.Cache, rel: str) -> str | None:
 def refused_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> str | None:
     """Check that an XRootD cache refuses write_through()'s PUT of rel.
 
-    rel is in /protected-a, and every origin holds it as v1. The PUT must
-    be refused, and change no origin.
+    Every origin holds rel as v1. The PUT must be refused, and change no
+    origin.
 
     Returns:
-        What went wrong, or None if nothing did.
+        What went wrong, or None.
     """
-    answer = web.request(
-        "PUT", f"{cache.url}/protected-a/{rel}", token=test.token, upload=os.urandom(len(v1))
-    )
+    answer = web.request("PUT", test.url(cache.url, rel), token=test.token, upload=os.urandom(len(v1)))
     if answer.status is None or not 400 <= answer.status < 500:
         return f"a PUT: {answer.describe()}, not a refusal, though an XRootD cache takes no writes"
     if not held_everywhere(test, rel, v1):
@@ -4062,11 +3911,10 @@ def write_through(test: Test) -> tuple[str, str]:
     be refused. An XRootD cache takes no writes, so its PUT must be
     refused, and change no origin.
     """
-    base = f"{test.base}/write-through"
+    base = test.rel("write-through")
     v1 = {c.svc: os.urandom(blocks.OVERWRITE_SIZE) for c in test.caches}
-    errors = upload_each(test, base, v1)
-    if errors:
-        return FAIL, errors[0]
+    if why := put_under(test, base, v1):
+        return FAIL, why
     cannot_delete = stores.cannot(test.fed, "delete")
     deletes = test.writes and not cannot_delete
     problems: list[str] = []
@@ -4124,21 +3972,16 @@ def cached(test: Test, cache: common.Cache, rel: str) -> bool | None:
     """Return whether a cache holds all of rel.
 
     At a V2 cache, a HEAD with only-if-cached says (504 if not). It is
-    asked with the setup token, as has_age() asks: this is a check of the
-    cache's state, not of the pass's tokens. At an XRootD cache, its
-    .cinfo says (blocks.xrootd_holds()).
+    asked with setup, as Test.age() asks: this is a check of the cache's
+    state, not of the pass's tokens. At an XRootD cache, its .cinfo says
+    (blocks.xrootd_holds()).
 
     Returns:
         Whether it does, or None if neither says.
     """
     if cache.kind == "xrootd":
         return blocks.xrootd_holds(cache, rel)
-    answer = web.request(
-        "HEAD",
-        f"{cache.url}/protected-a/{rel}",
-        token=test.setup,
-        headers={"Cache-Control": "only-if-cached"},
-    )
+    answer = web.request("HEAD", test.url(cache.url, rel), token=test.setup, headers=web.ONLY_IF_CACHED)
     return {200: True, 504: False}.get(answer.status or 0)
 
 
@@ -4171,8 +4014,7 @@ def lru_order(
     every one, so its order does not follow reads a second apart.
 
     Returns:
-        What is wrong, or None if nothing is; and a note of what the cache
-        held.
+        What is wrong, or None; and a note of what the cache held.
     """
     found = {n: cached(test, cache, f"{base}/{n}") for n in range(count)}
     unsure = [n for n, held in found.items() if held is None]
@@ -4206,8 +4048,8 @@ def evicted(test: Test, cache: common.Cache, base: str, count: int) -> tuple[str
     Its bounds are in test.fed.eviction.
 
     Returns:
-        What went wrong, or None if nothing did; and a note of what it
-        held (see lru_order()).
+        What went wrong, or None; and a note of what it held (see
+        lru_order()).
     """
     high, low = test.fed.eviction[cache.svc]
     again = reread_at(cache, high, count)
@@ -4235,10 +4077,7 @@ def evicted(test: Test, cache: common.Cache, base: str, count: int) -> tuple[str
         ), ""
     held = blocks.store_bytes(cache) or 0
     if held < low - EVICT_OBJECT:
-        return (
-            f"holds {held} bytes, below its low water mark of {low}, so it evicted too much",
-            "",
-        )
+        return f"holds {held} bytes, below its low water mark of {low}, so it evicted too much", ""
     why, note = lru_order(test, cache, base, count, again, was_held)
     if why:
         return why, note
@@ -4250,21 +4089,9 @@ def evicted(test: Test, cache: common.Cache, base: str, count: int) -> tuple[str
                 what = blocks.header(request) if request else "whole"
                 return f"object {n}, {what}, after the evictions: {why}", note
     target = os.path.join(test.tmp, f"evicted-{cache.svc}")
-    code, out, err = test.session.pelican_cmd(
-        "object",
-        "get",
-        "--cache",
-        cache.url,
-        "--token",
-        test.token_file,
-        f"{test.fed.url}/protected-a/{base}/0",
-        target,
-    )
+    code, out, err = get_from(test, cache, f"{base}/0", target)
     if code != 0:
-        return (
-            f"`pelican object get` of object 0 after the evictions: {last_line(err or out)}",
-            note,
-        )
+        return f"`pelican object get` of object 0 after the evictions: {last_line(err or out)}", note
     if common.sha256(target) != common.digest(evict_object(test.run, 0)):
         return "`pelican object get` of object 0 after the evictions: not the object", note
     return None, note
@@ -4291,21 +4118,11 @@ def cache_evicted(test: Test) -> tuple[str, str]:
         return SKIP, "no cache has a bounded store ('-p cache-small')"
     high = max(test.fed.eviction[c.svc][0] for c in caches)
     count = -(-3 * high // (2 * EVICT_OBJECT))
-    base = f"{test.base}/evicted"
-    errors = stores.make_dirs(test.origins, "protected-a", base, test.setup)
+    base = test.rel("evicted")
+    # One at a time, so as not to hold them all (see evict_object()).
     for n in range(count):
-        if errors:
-            break
-        errors += stores.seed_everywhere(
-            test.origins,
-            "protected-a",
-            f"{base}/{n}",
-            evict_object(test.run, n),
-            test.setup,
-            test.caps,
-        )
-    if errors:
-        return FAIL, errors[0]
+        if why := test.put({f"{base}/{n}": evict_object(test.run, n)}):
+            return FAIL, why
     problems: list[str] = []
     notes: list[str] = []
     for cache in caches:
@@ -4366,36 +4183,24 @@ RUN = {
 
 def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test (no /protected-a), or None."""
-    if "protected-a" not in fed.exports:
-        return "this shape does not export /protected-a"
-    return None
+    return suite.unexported(fed)
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, and remove the run's objects."""
     fed = session.fed
     stores.require_dirs(fed.origins, ["protected-a"], "data/blocks")
-    tokens = session.setup_tokens()
-
-    def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/blocks", tokens)
-        if errors:
-            warn(f"emptying data/blocks {when}: {first(errors)}")
-
-    # Earlier runs' objects come out first.
-    clean("before the run")
     test = Test(session)
+    # Earlier runs' objects come out first.
+    test.clean("before the run")
     print(f"Block test against {fed.url}, objects under /protected-a/{test.base}/\n")
     try:
         for name in selected:
             if name in CACHE_SCENARIOS and not test.caches:
                 results.add(name, SKIP, "this shape has no cache")
                 continue
-            status, note = common.guarded(
-                functools.partial(RUN[name], test), lambda note: (FAIL, note), (stores.Unreadable,)
-            )
-            results.add(name, status, note)
+            results.add(name, *suite.attempt(functools.partial(RUN[name], test), (stores.Unreadable,)))
     finally:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach.
-        clean("after the run")
+        test.clean("after the run")

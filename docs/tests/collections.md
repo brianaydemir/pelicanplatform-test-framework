@@ -2,19 +2,24 @@
 
 Part of [What the tests check](README.md).
 
-A collection is a prefix of a namespace with access control of its own
-(Pelican's `docs/collections-design.md`). The `collections` suite checks the
+A collection is a prefix of a [namespace](../glossary.md#namespace) with
+access control of its own ([Pelican](https://pelicanplatform.org/)'s
+[`docs/collections-design.md`](https://github.com/PelicanPlatform/pelican/blob/main/docs/collections-design.md)).
+The [`collections`](../../framework/suites/collections.py) suite checks the
 origin's collection API, and the storage scopes its issuer grants for
-collections. It skips under `-p auth-no-issuer` and
-`-p auth-external-issuer` ([presets](../../README.md#presets)), and runs in
-the WLCG pass only ([token profiles](README.md#token-profiles)). A row per
-scenario.
+collections. It skips under
+[`-p auth-no-issuer`](../../framework/presets/auth-no-issuer.sh) and
+[`-p auth-external-issuer`](../../framework/presets/auth-external-issuer.sh),
+and runs in the [WLCG pass](../glossary.md#pass) only
+([token profiles](README.md#token-profiles)). A row per
+[scenario](../glossary.md#scenario).
 
 Its users, `test-<role>`, get only what collections grant; `test-curator` is
-a collection administrator (`Server.CollectionAdminUsers`). Each run makes
-`alpha`, private, with sharing on, readers (`test-reader`, `test-sharer`),
-writers (`test-writer`), and an admin group; `beta`, public; both
-`test-owner`'s; and `decoy/obj` beside them.
+a collection administrator (`Server.CollectionAdminUsers`, in
+[`framework/config.d/base/40-origin.yaml`](../../framework/config.d/base/40-origin.yaml)).
+Each run makes `alpha`, private, with sharing on, readers (`test-reader`,
+`test-sharer`), writers (`test-writer`), and an admin group; `beta`, public;
+both `test-owner`'s; and `decoy/obj` beside them.
 
 - `users`: The admin lists the suite's users; an ordinary user may not
   create one (403), nor join a group they do not own.
@@ -44,7 +49,8 @@ writers (`test-writer`), and an admin group; `beta`, public; both
 - `share-confinement`: A share must lie within its collection. One that
   climbs out (`<alpha>/../decoy`), lies beside it (`decoy`), begins like it
   (`alphax`), or lies outside every export is 400, and grants nothing. Skips
-  under `-p origin-multiuser`.
+  under
+  [`-p origin-multiuser`](../../framework/presets/origin-multiuser.sh).
 - `shares`: A share of `alpha/shared` gives `test-guest`
   `share.access:/<share>` and its `storage.read`, and the lesser of the
   share's access and `test-sharer`'s: no write until `test-sharer` may

@@ -2,18 +2,24 @@
 
 Part of [What the tests check](README.md).
 
-The `issuer` suite checks the origins' embedded OAuth2 issuer: what it
+The [`issuer`](../../framework/suites/issuer.py) suite checks the origins'
+embedded [OAuth 2.0](https://www.rfc-editor.org/rfc/rfc6749) issuer: what it
 grants through each flow, its refresh tokens, and the boundaries between
 users, clients, and namespaces. A user gets what the
 `Issuer.AuthorizationTemplates`, their [collections](collections.md), and
 shares allow, narrowed to what the client asks for and may carry. The suite
-skips under `-p auth-no-issuer` and `-p auth-external-issuer`
-([presets](../../README.md#presets)), and runs in the WLCG pass only
+skips under [`-p auth-no-issuer`](../../framework/presets/auth-no-issuer.sh)
+and
+[`-p auth-external-issuer`](../../framework/presets/auth-external-issuer.sh),
+and runs in the [WLCG pass](../glossary.md#pass) only
 ([token profiles](README.md#token-profiles)).
 
-The templates (`framework/config.d/base/40-origin.yaml`), the run's
-collection `gamma`, and `test-stranger`'s share of `gamma/shared` (not under
-`-p origin-multiuser`) allow, under `/data/issuer/`:
+The templates
+([`framework/config.d/base/40-origin.yaml`](../../framework/config.d/base/40-origin.yaml)),
+the run's collection `gamma`, and `test-stranger`'s share of `gamma/shared`
+(not under
+[`-p origin-multiuser`](../../framework/presets/origin-multiuser.sh)) allow,
+under `/data/issuer/`:
 
 | User            | May                                                                                                   |
 | --------------- | ----------------------------------------------------------------------------------------------------- |
@@ -26,10 +32,12 @@ The projects are `projects/<group>` for `test-member`'s groups,
 group; `test-stranger`'s rogue group, `test-project-rogue-<run>`, matches
 only while the admin has made it eligible.
 
-The admin creates a device flow client and a code flow client (refresh
-grant, every scope but `pelican.transfer`), a read-only client, and an
-exchange client. The public client (`Issuer.PublicClientID`) has no secret
-and uses PKCE. A row per scenario:
+The admin creates a [device flow](https://www.rfc-editor.org/rfc/rfc8628)
+client and a code flow client (refresh grant, every scope but
+`pelican.transfer`), a read-only client, and an exchange client. The public
+client (`Issuer.PublicClientID`) has no secret and uses
+[PKCE](https://www.rfc-editor.org/rfc/rfc7636). A row per
+[scenario](../glossary.md#scenario):
 
 - `discovery`: Each namespace issuer's discovery document names itself, its
   endpoints, and the authorization code, refresh, device code, and token
@@ -40,7 +48,8 @@ and uses PKCE. A row per scenario:
   exactly what the table allows (with `share.access:/<share>` for
   `test-analyst`), and the right issuer, subject, `any` audience, and
   `wlcg.groups` (the groups that earned something). The rogue group grants
-  `archive` only while eligible. Under `-p origin-export-templates`,
+  `archive` only while eligible. Under
+  [`-p origin-export-templates`](../../framework/presets/origin-export-templates.sh),
   `/protected-b`'s own templates grant `test-stranger` read on `export`
   alone, and `test-member` nothing.
 
@@ -92,18 +101,22 @@ and uses PKCE. A row per scenario:
   client without the grant.
 
 - `revoked`: Once `test-curator` revokes `test-stranger`'s read on `gamma`,
-  a refresh must not restore it (Pelican's `docs/collections-design.md`). A
-  revoked refresh token (RFC 7009) is `invalid_grant`, and its access token
-  introspects as inactive and is refused by `userinfo`. Under
-  `-p origin-short-tokens`, a refresh token reused past its grace period is
-  `invalid_grant`, and so is its successor.
+  a refresh must not restore it ([Pelican](https://pelicanplatform.org/)'s
+  [`docs/collections-design.md`](https://github.com/PelicanPlatform/pelican/blob/main/docs/collections-design.md)).
+  A revoked refresh token
+  ([RFC 7009](https://www.rfc-editor.org/rfc/rfc7009)) is `invalid_grant`,
+  and its access token introspects as inactive and is refused by `userinfo`.
+  Under
+  [`-p origin-short-tokens`](../../framework/presets/origin-short-tokens.sh),
+  a refresh token reused past its grace period is `invalid_grant`, and so is
+  its successor.
 
-- `exchange` (RFC 8693): Exchanging a token of `test-member`'s, the exchange
-  client gets `archive`'s read alone if it asks for that; no scope for
-  `storage.modify`; the token's reads, `offline_access`, and a refresh token
-  for no scope in particular; and `invalid_target` for another audience. The
-  device client is `unauthorized_client`, and an unknown subject token
-  `invalid_grant`.
+- `exchange` ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)):
+  Exchanging a token of `test-member`'s, the exchange client gets
+  `archive`'s read alone if it asks for that; no scope for `storage.modify`;
+  the token's reads, `offline_access`, and a refresh token for no scope in
+  particular; and `invalid_target` for another audience. The device client
+  is `unauthorized_client`, and an unknown subject token `invalid_grant`.
 
 - `expiry`: Needs `-p origin-short-tokens` (access tokens last a minute,
   refresh tokens four). An expired token introspects as inactive, `userinfo`
@@ -149,13 +162,15 @@ and uses PKCE. A row per scenario:
   authorization code `invalid_grant`. An expired device code may not be
   approved (400).
 
-- `registration`: A client registering itself (`<issuer>/oidc-cm`, RFC 7591)
-  and asking for `authorization_code` gets the device code and refresh
-  grants alone (201). A redirect URI off this host is 403
-  (`invalid_redirect_uri`), and a name over 128 bytes 400
-  (`invalid_client_metadata`). The client is bound to its first approving
-  user; another's approval is 403. Its configuration
-  (`<issuer>/oidc-cm/<id>`, RFC 7592) needs its registration access token
-  (401); with it, a GET shows no secret, a PUT keeps its grants, and a
-  DELETE removes it (204). Runs last, since the issuer allows an address
-  five registrations, then one a minute; waits once if refused (429).
+- `registration`: A client registering itself (`<issuer>/oidc-cm`,
+  [RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)) and asking for
+  `authorization_code` gets the device code and refresh grants alone (201).
+  A redirect URI off this host is 403 (`invalid_redirect_uri`), and a name
+  over 128 bytes 400 (`invalid_client_metadata`). The client is bound to its
+  first approving user; another's approval is 403. Its configuration
+  (`<issuer>/oidc-cm/<id>`,
+  [RFC 7592](https://www.rfc-editor.org/rfc/rfc7592)) needs its registration
+  access token (401); with it, a GET shows no secret, a PUT keeps its
+  grants, and a DELETE removes it (204). Runs last, since the issuer allows
+  an address five registrations, then one a minute; waits once if refused
+  (429).

@@ -3,8 +3,7 @@
 #
 # Have the V2 origin publish an event for every object it commits,
 # overwrites, or deletes, and accept uploaders' metadata (`pelican object
-# put --metadata-file`, `--metadata-body`). The metadata suite tests it
-# (./fed.sh test metadata).
+# put --metadata-file`, `--metadata-body`). The metadata suite tests it.
 #
 # Events go to the `metadata` recorder, which saves each request in
 # framework/var/data/metadata/ and passes it to `metadata-verifier`,
@@ -12,8 +11,8 @@
 # The verifier checks each event's token against the registry. The
 # endpoint and retry settings are in config.d/base/40-origin.yaml.
 #
-# Only the `posixv2` origin publishes; fed.sh refuses other variants.
-# Mode is `eventual`; see origin-metadata-tx for `transactional`. Each
+# Only the `posixv2` origin publishes; fed.sh refuses other variants. The
+# mode is `eventual`; `origin-metadata-tx` is `transactional`. Each
 # chooses the mode, so fed.sh refuses the two together.
 
 ORIGIN_METADATA=true

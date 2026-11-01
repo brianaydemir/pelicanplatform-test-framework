@@ -8,39 +8,6 @@ checkCopyMoveDestination in origin_serve/handlers.go). `symlink-writes` and
 `stored-html` ask every origin, so that an XRootD origin is a control; the
 other scenarios that ask origins skip XRootD ones.
 
-  post-create-only       POST, which x/net serves as GET, with a token
-                         of storage.create or storage.read alone:
-                         refused, with no object's bytes
-  copy-move-destination  COPY and MOVE within /protected-a move the
-                         bytes; to a Destination in another export,
-                         however its `..` is spelled, or outside the
-                         token's scope, refused (403); with none (400) or
-                         on another server (502), nothing done
-  copy-move-scopes       storage.create may COPY to a new path, but not
-                         MOVE, nor COPY over an object; with
-                         `Overwrite: F`, neither replaces one (412)
-  mkcol                  MKCOL makes a collection (201), but not with a
-                         read token, nor where one is (405), nor with a
-                         body (415)
-  lock                   a LOCK with no Timeout is refused, or bounded,
-                         and makes no file
-  symlink-writes         writes through a symbolic link that leads out of
-                         a store change nothing outside, and those under
-                         a linked directory are refused; a HEAD reports
-                         no digest of what it leads to
-  stored-html            an HTML or SVG object is served with
-                         `X-Content-Type-Options: nosniff`, and typed so
-                         that a browser does not render it, or as an
-                         attachment
-  webdav-semantics       OPTIONS of the server's root names the WebDAV
-                         verbs; PUT onto a collection and DELETE of the
-                         export's root are refused; PROPPATCH sets no
-                         property
-  cache-methods          at each cache, the methods a cache serves for
-                         no one (POST, MKCOL, COPY, MOVE, PROPPATCH,
-                         and LOCK): a V2 cache answers 405, an XRootD
-                         cache refuses, and no origin's store changes
-
 Everything goes under /protected-a/data/webdav/<run>/<origin>/, and what
 `cache-methods` sends the caches under .../caches/. The suite removes
 it afterward, with whatever a Destination could have reached in
@@ -50,20 +17,24 @@ profile. In SciTokens, the storage.create token is one of `write`, which
 may replace and remove too, so `copy-move-scopes` checks what
 storage.create alone may not do in the WLCG pass alone. The objects are
 put in place, and the stores read, with WLCG tokens either way.
+
+See docs/tests/webdav-methods.md.
 """
 
 import os
 import re
 import shutil
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
+from typing import override
 
-from testlib import common, credentials, digests, stores, web, webdav
-from testlib.common import first, warn
+from testlib import common, credentials, digests, stores, suite, web, webdav
+from testlib.common import die, first, warn
 from testlib.credentials import R
-from testlib.report import FAIL, SKIP
+from testlib.report import SKIP
 from testlib.session import Session
+from testlib.suite import Row
 from testlib.webdav import copy_or_move, root_url
 
 SCENARIOS = {
@@ -166,9 +137,10 @@ def skip(fed: common.Federation) -> str | None:
     There is nothing without /protected-a, or with one that takes no
     writes or no direct clients.
     """
-    caps = fed.exports.get(NAMESPACE)
-    if caps is None:
-        return f"this shape does not export /{NAMESPACE}"
+    why = suite.unexported(fed)
+    if why:
+        return why
+    caps = fed.exports[NAMESPACE]
     if "DirectReads" not in caps:
         return "the origins take no direct clients"
     if "Writes" not in caps:
@@ -176,61 +148,46 @@ def skip(fed: common.Federation) -> str | None:
     return None
 
 
-def no_landings() -> list[tuple[common.Origin, str, str]]:
-    """Return Test.landings, to begin with."""
-    return []
+class Test(suite.Test):
+    """The run's collections in /protected-a, and the tokens.
 
-
-@dataclass
-class Test:
-    """What every scenario needs: the federation, tokens, and landings.
+    The base's token is the `server` token: read, create, and modify.
 
     Attributes:
-        token: The `server` token for /protected-a: read, create, and
-            modify.
         create_token: A token for /protected-a of storage.create alone
             (in SciTokens' profile, of write).
         read_token: A token for /protected-a of storage.read alone (in
             SciTokens' profile, of read).
-        setup: The `server` token for /protected-a, of the WLCG profile,
-            for putting objects in place and reading the stores; the
-            other tokens are of the session's profile.
         landings: The paths outside the run's collection that a
             scenario's requests could have written, to remove afterward:
             each origin, namespace, and path within it.
     """
 
-    session: Session
-    token: str
-    create_token: str
-    read_token: str
-    setup: str
-    landings: list[tuple[common.Origin, str, str]] = field(default_factory=no_landings)
+    def __init__(self, session: Session):
+        super().__init__(session, "webdav", NAMESPACE)
+        self.create_token = session.token(NAMESPACE, ("write",))
+        self.read_token = session.token(NAMESPACE, R)
+        self.landings: list[tuple[common.Origin, str, str]] = []
 
-    @property
-    def fed(self) -> common.Federation:
-        """The federation."""
-        return self.session.fed
-
-    def base(self, origin: common.Origin) -> str:
+    def origin_base(self, origin: common.Origin) -> str:
         """Return origin's collection of the run, in /protected-a."""
-        return f"data/webdav/{self.session.run}/{origin.svc}"
+        return self.rel(origin.svc)
 
-    def native(self) -> str | None:
-        """Return why the origins are not Pelican's native ones, or None."""
-        if self.fed.native_origins:
-            return None
-        return f"XRootD serves the origins ({self.fed.origin_variant}), not Pelican"
+    def seed(self, origin: common.Origin, rel: str, data: bytes | None = None) -> bytes:
+        """Put data at rel in /protected-a at origin, with setup.
 
-    def seed(self, origin: common.Origin, rel: str) -> bytes:
-        """Put new bytes at rel in /protected-a at origin, and return them.
+        Args:
+            origin: The origin.
+            rel: Where to put it.
+            data: The object; new bytes if not given.
 
-        Put them with the setup token.
+        Returns:
+            The object.
 
         Raises:
-            SetupError: They could not be put in place.
+            SetupError: It could not be put in place.
         """
-        data = os.urandom(4096)
+        data = os.urandom(4096) if data is None else data
         error = stores.put(origin, NAMESPACE, rel, data, self.setup)
         if error:
             raise SetupError(f"{origin.svc}: could not put {rel} in place ({error})")
@@ -239,7 +196,8 @@ class Test:
     def storage_token(self, origin: common.Origin, namespace: str) -> str | None:
         """Return a setup token that reads namespace's storage at origin.
 
-        Return None for /public, which has no issuer.
+        Returns:
+            The token, or None for /public, which has no issuer.
         """
         storage = origin.storage_namespace(namespace)
         return None if storage == "public" else self.session.setup_token(storage)
@@ -266,7 +224,7 @@ class Test:
     def collection(self, origin: common.Origin, rel: str) -> bool | None:
         """Return whether rel in /protected-a at origin is a collection.
 
-        Ask by a PROPFIND of Depth 0, with the setup token.
+        Ask by a PROPFIND of Depth 0, with setup.
 
         Returns:
             True for a collection, False for an object, or None if nothing
@@ -289,7 +247,7 @@ class Test:
             raise stores.Unreadable(f"PROPFIND {url}: {e}") from None
         return entries[0].collection
 
-    def made(self, origin: common.Origin, rel: str, want: bool, what: str) -> str | None:
+    def made_problem(self, origin: common.Origin, rel: str, want: bool, what: str) -> str | None:
         """Return what is wrong with what origin holds at rel.
 
         What it holds at rel in /protected-a should be a collection if
@@ -318,6 +276,19 @@ class Test:
             if errors:
                 raise SetupError(f"{origin.svc}: could not make {rel} ({errors[0]})")
 
+    @override
+    def clean(self, when: str, fatal: bool = False) -> None:
+        """Empty the area at every origin, and remove the landings."""
+        super().clean(when, fatal)
+        errors: list[str] = []
+        for origin, namespace, rel in self.landings:
+            storage = origin.storage_namespace(namespace)
+            error = stores.delete(origin, storage, rel, self.storage_token(origin, namespace) or "")
+            if error:
+                errors.append(error)
+        if errors:
+            warn(f"removing what a Destination reached {when}: {first(errors)}")
+
 
 def at(origin: common.Origin, rel: str) -> str:
     """Return the URL of rel in /protected-a at origin."""
@@ -345,7 +316,7 @@ class Findings(common.Findings):
 # post-create-only
 
 
-def post_create_only(test: Test) -> tuple[str, str]:
+def post_create_only(test: Test) -> Row:
     """Check that POST with storage.create or storage.read alone is refused.
 
     POST an object straight to each native origin, with a token of
@@ -355,13 +326,13 @@ def post_create_only(test: Test) -> tuple[str, str]:
     write anyone asked for. In SciTokens, the tokens are of write and
     read alone.
     """
-    why = test.native()
+    why = stores.not_native(test.fed)
     if why:
         return SKIP, why
     found = Findings()
     scopes = credentials.SCOPES[test.session.profile]
     for origin in test.fed.origins:
-        rel = f"{test.base(origin)}/post"
+        rel = f"{test.origin_base(origin)}/post"
         data = test.seed(origin, rel)
         url = at(origin, rel)
         for name, token in (
@@ -381,7 +352,7 @@ def post_create_only(test: Test) -> tuple[str, str]:
 # copy-move-destination
 
 
-def copy_move_destination(test: Test) -> tuple[str, str]:
+def copy_move_destination(test: Test) -> Row:
     """Check COPY and MOVE to each kind of Destination.
 
     At each native origin, COPY and MOVE an object in /protected-a,
@@ -399,14 +370,13 @@ def copy_move_destination(test: Test) -> tuple[str, str]:
 
     The last two are RFC 4918's (sections 9.8 and 9.9).
     """
-    why = test.native()
+    why = stores.not_native(test.fed)
     if why:
         return SKIP, why
     found = Findings()
     fed = test.fed
-    stamp = test.session.run
     for origin in fed.origins:
-        base = test.base(origin)
+        base = test.origin_base(origin)
         narrow = credentials.mint_server(
             fed,
             test.session.path(f"tokens/webdav-narrow-{origin.svc}"),
@@ -433,7 +403,7 @@ def copy_move_destination(test: Test) -> tuple[str, str]:
             for n, (name, pattern, namespace) in enumerate(ESCAPES):
                 src = f"{base}/{m}-escape-{n}"
                 data = test.seed(origin, src)
-                rel = f"data/webdav-{stamp}-{origin.svc}-{m}-{n}"
+                rel = f"data/webdav-{test.run}-{origin.svc}-{m}-{n}"
                 test.landings.append((origin, namespace, rel))
                 what = f"{method} to {name}"
                 destination = origin.url + pattern.format(rel=rel)
@@ -485,7 +455,7 @@ def copy_move_destination(test: Test) -> tuple[str, str]:
 # copy-move-scopes
 
 
-def copy_move_scopes(test: Test) -> tuple[str, str]:
+def copy_move_scopes(test: Test) -> Row:
     """Check COPY and MOVE with storage.create, and with `Overwrite: F`.
 
     At each native origin, in /protected-a: with a storage.create
@@ -497,13 +467,13 @@ def copy_move_scopes(test: Test) -> tuple[str, str]:
     4918, section 10.6). SciTokens has no storage.create alone, so its
     pass checks only `Overwrite: F`.
     """
-    why = test.native()
+    why = stores.not_native(test.fed)
     if why:
         return SKIP, why
     found = Findings()
     create_only = test.session.profile == credentials.WLCG
     for origin in test.fed.origins:
-        base = test.base(origin)
+        base = test.origin_base(origin)
         if create_only:
             create_alone(test, origin, base, found)
 
@@ -565,7 +535,7 @@ def create_alone(test: Test, origin: common.Origin, base: str, found: Findings) 
 # mkcol
 
 
-def mkcol(test: Test) -> tuple[str, str]:
+def mkcol(test: Test) -> Row:
     """Check when MKCOL makes a collection, and when it may not.
 
     At each native origin, MKCOL in /protected-a: with a storage.read
@@ -575,29 +545,29 @@ def mkcol(test: Test) -> tuple[str, str]:
     section 9.3.1). The note says what each origin answered where a
     collection exists.
     """
-    why = test.native()
+    why = stores.not_native(test.fed)
     if why:
         return SKIP, why
     found = Findings()
     for origin in test.fed.origins:
-        base = test.base(origin)
+        base = test.origin_base(origin)
         rel = f"{base}/mkcol-read"
         answer = web.request("MKCOL", at(origin, rel), token=test.read_token)
         if answer.status not in REFUSED:
             found.add(origin, f"MKCOL with storage.read alone got {answer.describe()}, not 401 or 403")
-        found.add(origin, test.made(origin, rel, False, "MKCOL with storage.read alone"))
+        found.add(origin, test.made_problem(origin, rel, False, "MKCOL with storage.read alone"))
 
         rel = f"{base}/mkcol-new"
         url = at(origin, rel)
         answer = web.request("MKCOL", url, token=test.token)
         if answer.status != 201:
             found.add(origin, f"MKCOL of a new collection got {answer.describe()}, not 201")
-        found.add(origin, test.made(origin, rel, True, "MKCOL of a new collection"))
+        found.add(origin, test.made_problem(origin, rel, True, "MKCOL of a new collection"))
         answer = web.request("MKCOL", url, token=test.token)
         if answer.status != 405:
             found.add(origin, f"MKCOL where a collection is got {answer.describe()}, not 405")
         found.note(origin, f"MKCOL where a collection is: {answer.describe()}")
-        found.add(origin, test.made(origin, rel, True, "MKCOL where a collection is"))
+        found.add(origin, test.made_problem(origin, rel, True, "MKCOL where a collection is"))
 
         rel = f"{base}/mkcol-body"
         answer = web.request(
@@ -609,7 +579,7 @@ def mkcol(test: Test) -> tuple[str, str]:
         )
         if answer.status != 415:
             found.add(origin, f"MKCOL with a body got {answer.describe()}, not 415")
-        found.add(origin, test.made(origin, rel, False, "MKCOL with a body"))
+        found.add(origin, test.made_problem(origin, rel, False, "MKCOL with a body"))
     return found.row(f"{len(test.fed.origins)} origin(s)")
 
 
@@ -620,7 +590,8 @@ def mkcol(test: Test) -> tuple[str, str]:
 def lock_timeout(body: bytes) -> str | None:
     """Return the timeout of the lock that a LOCK's answer describes.
 
-    That is None if the answer names none.
+    Returns:
+        The timeout, or None if the answer names none.
     """
     try:
         root = ET.fromstring(body)
@@ -639,7 +610,7 @@ def bounded(timeout: str | None) -> bool:
     return match is not None and int(match.group(1)) > 0
 
 
-def lock(test: Test) -> tuple[str, str]:
+def lock(test: Test) -> Row:
     """Check that a LOCK with no Timeout is refused or bounded.
 
     At each native origin, with a storage.create token (in SciTokens, a
@@ -651,13 +622,13 @@ def lock(test: Test) -> tuple[str, str]:
     what each got), and UNLOCK each lock granted, which must succeed:
     otherwise the path stays locked until the origin restarts.
     """
-    why = test.native()
+    why = stores.not_native(test.fed)
     if why:
         return SKIP, why
     found = Findings()
     headers = {"Content-Type": "application/xml; charset=utf-8"}
     for origin in test.fed.origins:
-        base = test.base(origin)
+        base = test.origin_base(origin)
         new, old = f"{base}/lock-new", f"{base}/lock-old"
         test.seed(origin, old)
         granted: list[tuple[str, str]] = []  # each lock granted: its URL, and its token
@@ -745,7 +716,7 @@ def make_decoys(test: Test, origin: common.Origin) -> tuple[Decoys, str]:
     Returns:
         The decoys, and the directory of the links.
     """
-    stamp = test.session.run
+    stamp = test.run
     decoys = Decoys(
         f"{origin.store}/webdav-{stamp}-decoy",
         f"{origin.store}/webdav-{stamp}-decoy-dir",
@@ -760,7 +731,7 @@ def make_decoys(test: Test, origin: common.Origin) -> tuple[Decoys, str]:
         with open(path, "wb") as f:
             f.write(data)
         os.chmod(path, 0o666)
-    links = f"{origin.store_of(NAMESPACE)}/{test.base(origin)}/links"
+    links = f"{origin.store_of(NAMESPACE)}/{test.origin_base(origin)}/links"
     shutil.rmtree(links, ignore_errors=True)
     os.makedirs(links)
     os.chmod(links, 0o777)
@@ -805,7 +776,7 @@ def decoys_problems(decoys: Decoys, store: str, entries: frozenset[str]) -> list
     return problems
 
 
-def symlink_writes(test: Test) -> tuple[str, str]:
+def symlink_writes(test: Test) -> Row:
     """Check that a write through a link out of a store changes nothing.
 
     At each origin whose store is on disk, through links in
@@ -822,7 +793,7 @@ def symlink_writes(test: Test) -> tuple[str, str]:
         return SKIP, "a pstore origin's store is encrypted, and holds no links"
     found = Findings()
     for origin in origins:
-        base = test.base(origin)
+        base = test.origin_base(origin)
         entries = listing(origin.store)
         decoys, links = make_decoys(test, origin)
         try:
@@ -866,7 +837,7 @@ def symlink_writes(test: Test) -> tuple[str, str]:
 # stored-html
 
 
-def stored_html(test: Test) -> tuple[str, str]:
+def stored_html(test: Test) -> Row:
     """Check that a browser would not render a stored HTML or SVG object.
 
     PUT an HTML page and an SVG image, each with a script, to each
@@ -880,10 +851,8 @@ def stored_html(test: Test) -> tuple[str, str]:
     found = Findings()
     for origin in test.fed.origins:
         for name, data in PAGES.items():
-            rel = f"{test.base(origin)}/{name}"
-            error = stores.put(origin, NAMESPACE, rel, data, test.setup)
-            if error:
-                raise SetupError(f"{origin.svc}: could not put {rel} in place ({error})")
+            rel = f"{test.origin_base(origin)}/{name}"
+            test.seed(origin, rel, data)
             answer = web.request("GET", at(origin, rel), token=test.token)
             kind = answer.header("Content-Type")
             disposition = answer.header("Content-Disposition")
@@ -934,7 +903,7 @@ def propstat_problems(body: bytes) -> list[str]:
     return problems
 
 
-def webdav_semantics(test: Test) -> tuple[str, str]:
+def webdav_semantics(test: Test) -> Row:
     """Check how native origins answer OPTIONS, PUT, PROPPATCH, and DELETE.
 
     At each native origin:
@@ -951,13 +920,13 @@ def webdav_semantics(test: Test) -> tuple[str, str]:
     else, with the `server` token: one honored would take /protected-a's
     storage with it.
     """
-    why = test.native()
+    why = stores.not_native(test.fed)
     if why:
         return SKIP, why
     found = Findings()
     sentinels: dict[str, bytes] = {}
     for origin in test.fed.origins:
-        base = test.base(origin)
+        base = test.origin_base(origin)
         sentinels[origin.svc] = test.seed(origin, f"{base}/root-sentinel")
 
         answer = web.request("OPTIONS", root_url(origin))
@@ -1001,7 +970,7 @@ def webdav_semantics(test: Test) -> tuple[str, str]:
         found.note(origin, f"PROPPATCH: {answer.describe()}")
 
     for origin in test.fed.origins:
-        rel = f"{test.base(origin)}/root-sentinel"
+        rel = f"{test.origin_base(origin)}/root-sentinel"
         answer = web.request("DELETE", f"{origin.url}/{NAMESPACE}/", token=test.token)
         if answer.status not in (403, 405):
             found.add(origin, f"DELETE of /{NAMESPACE}'s root got {answer.describe()}, not 403 or 405")
@@ -1042,7 +1011,7 @@ def cache_request(method: str, url: str, token: str, destination: str) -> web.Re
     return web.request(method, url, token=token)
 
 
-def cache_methods(test: Test) -> tuple[str, str]:
+def cache_methods(test: Test) -> Row:
     """Check that each cache refuses the methods it serves for no one.
 
     At each cache, each of CACHE_METHODS, with the `server` token: of an
@@ -1057,18 +1026,14 @@ def cache_methods(test: Test) -> tuple[str, str]:
     caches = test.fed.caches
     if not caches:
         return SKIP, "this shape has no cache"
-    fed = test.fed
-    base = f"data/webdav/{test.session.run}/caches"
-    errors = stores.make_dirs(fed.origins, NAMESPACE, base, test.setup)
-    if errors:
-        raise SetupError(f"could not make {base} ({errors[0]})")
+    base = test.rel("caches")
     found = Findings()
     for cache in caches:
         rel = f"{base}/{cache.svc}-obj"
         data = os.urandom(4096)
-        errors = stores.put_everywhere(fed.origins, NAMESPACE, rel, data, test.setup)
-        if errors:
-            raise SetupError(f"could not put {rel} at every origin ({errors[0]})")
+        why = test.put({rel: data})
+        if why:
+            raise SetupError(f"could not put {rel} at every origin ({why})")
         new = f"{base}/{cache.svc}-mkcol"
         destination = f"{base}/{cache.svc}-dest"
         answered: list[str] = []
@@ -1080,14 +1045,14 @@ def cache_methods(test: Test) -> tuple[str, str]:
                 found.add(cache, f"{method} got {answer.describe()}, not 405")
             elif answer.status is None or not 400 <= answer.status < 600:
                 found.add(cache, f"{method} got {answer.describe()}, not a refusal")
-            for origin in stores.unique(fed.origins):
+            for origin in stores.unique(test.fed.origins):
                 what = f"after {method} at {cache.svc}"
                 found.add(origin, test.stored(origin, NAMESPACE, rel, data, f"{what}: the object"))
                 found.add(
                     origin,
                     test.stored(origin, NAMESPACE, destination, None, f"{what}: the Destination"),
                 )
-                found.add(origin, test.made(origin, new, False, f"{what}: the new path"))
+                found.add(origin, test.made_problem(origin, new, False, f"{what}: the new path"))
         found.note(cache, ", ".join(answered))
     return found.row(f"{len(caches)} cache(s)")
 
@@ -1107,47 +1072,20 @@ RUN = {
 }
 
 
-def clean(test: Test, when: str) -> None:
-    """Empty data/webdav in /protected-a at every store.
-
-    Also remove what a Destination could have reached outside it.
-    """
-    fed = test.fed
-    errors = stores.empty_tree_everywhere(
-        fed.origins, {NAMESPACE: fed.exports[NAMESPACE]}, "data/webdav", {NAMESPACE: test.setup}
-    )
-    for origin, namespace, rel in test.landings:
-        storage = origin.storage_namespace(namespace)
-        error = stores.delete(origin, storage, rel, test.storage_token(origin, namespace) or "")
-        if error:
-            errors.append(error)
-    if errors:
-        warn(f"cleaning up {when}: {first(errors)}")
-
-
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, and remove what they wrote.
 
     Make the run's collection at every origin first.
     """
-    fed = session.fed
-    test = Test(
-        session,
-        session.token(NAMESPACE),
-        session.token(NAMESPACE, ("write",)),
-        session.token(NAMESPACE, R),
-        session.setup_token(NAMESPACE),
-    )
-    clean(test, "before the run")
+    test = Test(session)
+    test.clean("before the run")
     try:
-        for origin in fed.origins:
-            errors = stores.make_dirs([origin], NAMESPACE, test.base(origin), test.setup)
+        for origin in session.fed.origins:
+            errors = stores.make_dirs([origin], NAMESPACE, test.origin_base(origin), test.setup)
             if errors:
-                common.die(f"could not make the run's collection: {errors[0]}")
+                die(f"could not make the run's collection: {errors[0]}")
         for name in selected:
             print(f"  {name} ...")
-            results.add(
-                name, *common.guarded(partial(RUN[name], test), lambda note: (FAIL, note), (SetupError,))
-            )
+            results.add(name, *suite.attempt(partial(RUN[name], test), (SetupError,)))
     finally:
-        clean(test, "after the run")
+        test.clean("after the run")

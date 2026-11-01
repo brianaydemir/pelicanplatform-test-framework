@@ -15,6 +15,7 @@ set -eu
 cd -- "$(dirname -- "$0")" || exit 1
 progname=$(basename -- "$0")
 
+die()       { printf '%s: %s\n' "${progname}" "$*" >&2; exit 1; }
 die_usage() { printf '%s: %s\n' "${progname}" "$*" >&2; exit 2; }
 
 usage() {
@@ -40,10 +41,8 @@ printf 'Stopping the federation ...\n'
 
 # A teardown that failed would leave containers that the next `up` keeps,
 # still bound to what is discarded below.
-left=$(docker ps --all --quiet --filter label=com.docker.compose.project=pelican) || {
-  printf '%s: cannot list the containers left behind\n' "${progname}" >&2
-  exit 1
-}
+left=$(docker ps --all --quiet --filter label=com.docker.compose.project=pelican) \
+    || die "cannot list the containers left behind"
 if [ -n "${left}" ]; then
   {
     printf '%s: the federation did not stop; these containers remain:\n' "${progname}"
@@ -63,6 +62,7 @@ for path in framework/var/* framework/var/.[!.]*; do
   set -- "$@" "${path}"
 done
 
+# True if none of paths $@ exists.
 all_gone() {
   for path in "$@"; do
     [ ! -e "${path}" ] || return 1

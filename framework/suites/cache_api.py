@@ -1,28 +1,7 @@
 """A V2 cache's own HTTP APIs, beside the objects it serves.
 
-Who may call each API (local_cache/persistent_cache_api.go and
-prestage_evict_api.go in Pelican), and what each does:
-
-  prestage             each cache fetches an object whole for whoever may
-                       read it, and for no one else; `pelican object
-                       prestage` of an object, a collection, and a
-                       missing object
-  evict                each V2 cache evicts, or marks for eviction, what a
-                       storage.modify token names, by whole path
-                       segments, and nothing for anyone else; `pelican
-                       object evict`
-  admin-authz          each V2 cache's purge and introspection routes
-                       answer its admin alone, and purging takes
-                       localcache.purge too
-  purge                each V2 cache purges to a target, and an object
-                       marked purge-first goes first
-  allowed-federations  each V2 cache serves its data routes for its own
-                       federation alone, however spelled
-  usage                each V2 cache's usage grows by what it stores, as
-                       its store on disk and its introspection agree
-  consistency          each V2 cache's verify finds an object corrupted
-                       in its store, its scan drops it, and a stray file
-                       in its store goes
+Pelican serves them in local_cache/persistent_cache_api.go and
+prestage_evict_api.go. See docs/tests/cache-apis.md.
 
 The caches asked are the federated ones; a site-local cache serves the
 same APIs, but no suite asks it for them. XRootD caches serve none of
@@ -52,9 +31,9 @@ from functools import partial
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
-from testlib import blocks, cacheapi, common, credentials, jwt, metrics, stores, web
+from testlib import accounts, blocks, cacheapi, common, credentials, jwt, metrics, stores, suite, web
 from testlib.blocks import cache_dir, read_cinfo, store_bytes
-from testlib.common import Findings, first, outcome, warn
+from testlib.common import Findings, first, outcome
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -77,9 +56,6 @@ ONE_PROFILE = ("purge", "usage")
 # inline in its database (InlineThreshold, 4096 bytes), and which spans
 # several of its blocks and of an XRootD cache's.
 OBJECT_SIZE = 3 * blocks.XROOTD_BLOCK + 7
-# How long a cache may take to say that it holds an object it has read or
-# prestaged whole.
-HELD_WAIT = 30
 # usage's objects: K of S bytes each, stored in S plus a tag per block.
 USAGE_COUNT = 3
 USAGE_SIZE = 100000
@@ -87,119 +63,46 @@ USAGE_SIZE = 100000
 # apart: the cache's own self-test objects come and go.
 USAGE_SLACK = 64 << 10
 
-ONLY_IF_CACHED = {"Cache-Control": "only-if-cached"}
-
 # The answers that refuse a request for want of credentials.
 REFUSED = (401, 403)
 
-# A row: its status, and its note.
-Row = tuple[str, str]
 
-
-class Test:
+class Test(suite.Test):
     """The run's objects in /protected-a, the tokens, and the shape.
 
     Attributes:
-        base: Where the run's objects are in /protected-a.
-        token: The `server` token for /protected-a, of the session's
-            profile.
-        token_file: The file that holds token.
         read_token: A read-only token for /protected-a, of the session's
             profile.
-        setup: The `server` token for /protected-a, of the WLCG profile,
-            for putting objects in place, filling the caches, and asking
-            what they hold.
-        caps: The capabilities of /protected-a.
         caches: The federated caches.
         v2: The federated V2 caches.
-        made: The collections made so far, by rel.
         corrupted: The rows of `consistency` that corrupted() decides,
             once it has.
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.base = f"data/cache-api/{session.run}"
-        self.token = session.token(NAMESPACE)
-        self.token_file = session.token_file(NAMESPACE)
+        super().__init__(session, "cache-api", NAMESPACE)
         self.read_token = session.token(NAMESPACE, credentials.R)
-        self.setup = session.setup_token(NAMESPACE)
-        self.caps = self.fed.exports[NAMESPACE]
-        self.origins = self.fed.origins
         self.caches = self.fed.federated_caches
         self.v2 = [c for c in self.caches if c.kind == "v2"]
-        self.made: set[str] = set()
+        self.corrupted: dict[str, suite.Row] | None = None
         self._admin: dict[tuple[str, tuple[str, ...]], str] = {}
         self._elsewhere: str | None = None
-        self.corrupted: dict[str, Row] | None = None
 
-    def rel(self, *parts: str) -> str:
-        """Return where parts are, under the run's collection."""
-        return "/".join([self.base, *parts])
+    def fill_cached(self, cache: common.Cache, rel: str, data: bytes) -> str | None:
+        """Read rel whole through a V2 cache, which must serve data.
 
-    def path(self, rel: str) -> str:
-        """Return rel's path in the federation."""
-        return f"/{NAMESPACE}/{rel}"
-
-    def url(self, server_url: str, rel: str) -> str:
-        """Return rel's URL in /protected-a at the server at server_url."""
-        return f"{server_url}/{NAMESPACE}/{quote(rel)}"
-
-    def put(self, objects: Mapping[str, bytes]) -> str | None:
-        """Put objects, by rel, at every origin.
-
-        Their collections are made first.
+        The read is with setup. The cache must then hold it all
+        (wait_cached()).
 
         Returns:
-            What went wrong, or None if nothing did.
-        """
-        for rel, data in objects.items():
-            parent = rel.rsplit("/", 1)[0]
-            if parent not in self.made:
-                errors = stores.make_dirs(self.origins, NAMESPACE, parent, self.setup)
-                if errors:
-                    return errors[0]
-                self.made.add(parent)
-            errors = stores.seed_everywhere(self.origins, NAMESPACE, rel, data, self.setup, self.caps)
-            if errors:
-                return errors[0]
-        return None
-
-    def get(self, cache: common.Cache, rel: str) -> web.Response:
-        """GET rel through cache, with the token."""
-        return web.request("GET", self.url(cache.url, rel), token=self.token, timeout=120)
-
-    def held(self, cache: common.Cache, rel: str) -> bool | None:
-        """Return whether a V2 cache holds all of rel.
-
-        It asks with a HEAD with only-if-cached, which gets 504 if not,
-        and the setup token.
-
-        Returns:
-            Whether it does, or None if the HEAD says neither.
-        """
-        answer = web.request("HEAD", self.url(cache.url, rel), token=self.setup, headers=ONLY_IF_CACHED)
-        if answer.status == 200:
-            return True
-        if answer.status == 504:
-            return False
-        return None
-
-    def fill(self, cache: common.Cache, rel: str, data: bytes) -> str | None:
-        """Read rel whole through a V2 cache until it says it holds it all.
-
-        The cache must serve data. The reads are setup, with the setup
-        token.
-
-        Returns:
-            What went wrong, or None if nothing did.
+            What went wrong, or None.
         """
         answer = web.request("GET", self.url(cache.url, rel), token=self.setup, timeout=120)
-        if answer.status != 200 or answer.body != data:
-            return f"{cache.svc}: a GET of {leaf(rel)} got {served(answer, data)}"
-        if not common.wait_for(partial(holds, self, cache, rel), HELD_WAIT, interval=1):
-            return f"{cache.svc} does not hold {leaf(rel)} {HELD_WAIT}s after reading it whole"
+        why = web.served(answer, data)
+        if why:
+            return f"{cache.svc}: a GET of {suite.leaf(rel)} got {why}"
+        if not self.wait_cached(cache, rel):
+            return f"{cache.svc} does not hold {suite.leaf(rel)} {suite.HELD_WAIT}s after reading it whole"
         return None
 
     def admin(self, cache: common.Cache, extra_scopes: tuple[str, ...] = ()) -> str:
@@ -236,30 +139,13 @@ class Test:
         return cacheapi.object_url(self.fed, self.path(rel))
 
 
-def holds(test: Test, cache: common.Cache, rel: str) -> bool:
-    """Return whether a V2 cache holds all of rel (see Test.held())."""
-    return test.held(cache, rel) is True
-
-
-def leaf(rel: str) -> str:
-    """Return rel's last segment, for a message."""
-    return rel.rsplit("/", 1)[-1]
-
-
-def served(answer: web.Response, data: bytes) -> str:
-    """Return what answer was, briefly, given it should have held data."""
-    if answer.status != 200:
-        return answer.describe()
-    return "the object" if answer.body == data else f"{len(answer.body)} bytes, not the object"
-
-
 def text(answer: web.Response) -> str:
     """Return answer's body, decoded, briefly."""
     return answer.body[:300].decode(errors="replace").strip()
 
 
 def held_word(found: bool | None) -> str:
-    """Return what Test.held() found, for a message."""
+    """Return what Test.cached() found, for a message."""
     if found is None:
         return "neither held nor not (only-if-cached got no 200 or 504)"
     return "held" if found else "not held"
@@ -276,8 +162,7 @@ def prestage(cache: common.Cache, path: str | None, token: str | None) -> web.Re
 
     Args:
         cache: The cache to ask.
-        path: The object's path in the federation; None for no `path` at
-            all.
+        path: The object's path in the federation; None for no `path`.
         token: The token to present, if any.
     """
     query = "" if path is None else "?" + urlencode({"path": path})
@@ -313,7 +198,7 @@ def progress_problem(answer: web.Response) -> str | None:
     return None
 
 
-def prestage_probe(test: Test) -> Row:
+def prestage_probe(test: Test) -> suite.Row:
     """Check that each V2 cache's prestage takes only an absolute path.
 
     No `path` (how the client asks whether a cache has the API) and a
@@ -328,7 +213,7 @@ def prestage_probe(test: Test) -> Row:
     return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
-def prestage_refused(test: Test) -> Row:
+def prestage_refused(test: Test) -> suite.Row:
     """Check that each V2 cache refuses a prestage by one who cannot read.
 
     At each V2 cache, an object it lacks: a prestage with no token, and
@@ -347,13 +232,13 @@ def prestage_refused(test: Test) -> Row:
             if answer.status != 403:
                 problems.append(f"{cache.svc}, {what}: {answer.describe()}, not 403")
         time.sleep(2)
-        found = test.held(cache, rel)
+        found = test.cached(cache, rel)
         if found is not False:
             problems.append(f"{cache.svc}: the object is {held_word(found)} afterward")
     return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
-def prestage_object(test: Test) -> Row:
+def prestage_object(test: Test) -> suite.Row:
     """Check that each V2 cache prestages an object for a read token.
 
     At each V2 cache, an object it lacks (only-if-cached: 504): a
@@ -369,7 +254,7 @@ def prestage_object(test: Test) -> Row:
     problems: list[str] = []
     for cache in test.v2:
         rel, data = rels[cache.svc], objects[rels[cache.svc]]
-        found = test.held(cache, rel)
+        found = test.cached(cache, rel)
         if found is not False:
             problems.append(f"{cache.svc}: the object is {held_word(found)} before its prestage")
             continue
@@ -377,18 +262,18 @@ def prestage_object(test: Test) -> Row:
         if why:
             problems.append(f"{cache.svc}: the prestage: {why}")
             continue
-        if not common.wait_for(partial(holds, test, cache, rel), HELD_WAIT, interval=1):
+        if not test.wait_cached(cache, rel):
             problems.append(f"{cache.svc} does not hold the object after its prestage")
-        answer = test.get(cache, rel)
-        if answer.status != 200 or answer.body != data:
-            problems.append(f"{cache.svc}: a GET afterward got {served(answer, data)}")
+        why = web.served(test.ask("GET", cache.url, rel), data)
+        if why:
+            problems.append(f"{cache.svc}: a GET afterward got {why}")
         why = progress_problem(prestage(cache, test.path(rel), test.read_token))
         if why:
             problems.append(f"{cache.svc}: a second prestage: {why}")
     return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
-def prestage_missing(test: Test) -> Row:
+def prestage_missing(test: Test) -> suite.Row:
     """Check that each V2 cache's prestage of a missing object ends in 404.
 
     At each V2 cache, a prestage of an object that no origin holds: it
@@ -408,7 +293,7 @@ def prestage_missing(test: Test) -> Row:
     return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
-def prestage_name(test: Test) -> Row:
+def prestage_name(test: Test) -> suite.Row:
     """Check that each V2 cache prestages an object with a `+` in its name.
 
     At each V2 cache, an object named with a `+` beside a decoy named
@@ -431,11 +316,11 @@ def prestage_name(test: Test) -> Row:
         if answer.status != 200:
             problems.append(f"{cache.svc}: the prestage got {answer.describe()}: {text(answer)}")
             continue
-        common.wait_for(partial(holds, test, cache, wanted), 10, interval=1)
+        test.wait_cached(cache, wanted, 10)
         for rel, want in ((wanted, True), (decoy, False)):
-            found = test.held(cache, rel)
+            found = test.cached(cache, rel)
             if found is not want:
-                problems.append(f"{cache.svc}: '{leaf(rel)}' is {held_word(found)} afterward")
+                problems.append(f"{cache.svc}: '{suite.leaf(rel)}' is {held_word(found)} afterward")
     return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
@@ -446,7 +331,7 @@ def whole_at(test: Test, cache: common.Cache, rel: str) -> bool:
     .cinfo (blocks.read_cinfo()).
     """
     if cache.kind == "v2":
-        return test.held(cache, rel) is True
+        return test.cached(cache, rel) is True
     cinfo, _ = read_cinfo(cache, rel)
     return cinfo is not None and cinfo.complete
 
@@ -464,12 +349,12 @@ def client_prestage(test: Test, cache: common.Cache, rel: str) -> tuple[int, str
         cache.url,
         "--token",
         test.token_file,
-        f"{test.fed.url}/{NAMESPACE}/{rel}",
+        test.fed.url + test.path(rel),
     )
     return code, last_line(err or out)
 
 
-def prestage_client(test: Test) -> Row:
+def prestage_client(test: Test) -> suite.Row:
     """Check that `pelican object prestage` fills each cache, V2 or XRootD.
 
     At each cache, `pelican object prestage` of an object must exit 0,
@@ -499,12 +384,12 @@ def prestage_client(test: Test) -> Row:
             code, said = client_prestage(test, cache, target)
             if code != 0:
                 problems.append(
-                    f"{cache.svc}: prestage of {leaf(target.rstrip('/'))} exited {code}: {said}"
+                    f"{cache.svc}: prestage of {suite.leaf(target.rstrip('/'))} exited {code}: {said}"
                 )
                 continue
             for rel in wanted:
-                if not common.wait_for(partial(whole_at, test, cache, rel), HELD_WAIT):
-                    problems.append(f"{cache.svc} does not hold {leaf(rel)} after the prestage")
+                if not common.wait_for(partial(whole_at, test, cache, rel), suite.HELD_WAIT):
+                    problems.append(f"{cache.svc} does not hold {suite.leaf(rel)} after the prestage")
         code, said = client_prestage(test, cache, test.rel("prestage", f"absent-{cache.svc}"))
         if code == 0:
             problems.append(f"{cache.svc}: prestage of a missing object exited 0: {said}")
@@ -548,13 +433,13 @@ def fill_all(test: Test, objects: Mapping[str, bytes], caches: Sequence[common.C
         return why
     for cache in caches:
         for rel, data in objects.items():
-            why = test.fill(cache, rel, data)
+            why = test.fill_cached(cache, rel, data)
             if why:
                 return why
     return None
 
 
-def evict_refused(test: Test) -> Row:
+def evict_refused(test: Test) -> suite.Row:
     """Check that each V2 cache refuses an unauthorized eviction.
 
     At each V2 cache, an object it holds: an immediate eviction with no
@@ -581,20 +466,20 @@ def evict_refused(test: Test) -> Row:
             answer = evict(cache, test.path(rel), token)
             if answer.status != 403:
                 problems.append(f"{cache.svc}, {what}: {answer.describe()}, not 403")
-        found = test.held(cache, rel)
+        found = test.cached(cache, rel)
         if found is not True:
             problems.append(f"{cache.svc}: the object is {held_word(found)} afterward")
         if public:
             path, data = public
-            answer = web.request("GET", f"{cache.url}{quote(path)}", timeout=120)
-            if answer.status != 200 or answer.body != data:
-                problems.append(f"{cache.svc}: a GET of {path} got {served(answer, data)}")
+            why = web.served(web.request("GET", f"{cache.url}{quote(path)}", timeout=120), data)
+            if why:
+                problems.append(f"{cache.svc}: a GET of {path} got {why}")
                 continue
             for what, token in (("no token", None), ("/protected-a's token", test.token)):
                 answer = evict(cache, path, token)
                 if answer.status != 403:
                     problems.append(f"{cache.svc}, {path} with {what}: {answer.describe()}, not 403")
-            answer = web.request("HEAD", f"{cache.url}{quote(path)}", headers=ONLY_IF_CACHED)
+            answer = web.request("HEAD", f"{cache.url}{quote(path)}", headers=web.ONLY_IF_CACHED)
             if answer.status != 200:
                 problems.append(f"{cache.svc}: only-if-cached of {path} got {answer.describe()}")
     return outcome(
@@ -614,19 +499,20 @@ def public_object(test: Test) -> tuple[tuple[str, bytes] | None, str]:
     caps = test.fed.exports.get("public")
     if caps is None:
         return None, "/public is not exported"
-    if any(o.pstore for o in test.origins):
+    origins = test.fed.origins
+    if any(o.pstore for o in origins):
         return None, "/public takes no writes, and a pstore origin's store is encrypted"
     rel = test.rel("public-object")
     data = os.urandom(OBJECT_SIZE)
     token = test.session.setup_token("public")
-    errors = stores.make_dirs(test.origins, "public", rel.rsplit("/", 1)[0], token)
-    errors += stores.seed_everywhere(test.origins, "public", rel, data, token, caps)
+    errors = stores.make_dirs(origins, "public", rel.rsplit("/", 1)[0], token)
+    errors += stores.seed_everywhere(origins, "public", rel, data, token, caps)
     if errors:
         return None, f"could not put an object in /public: {errors[0]}"
     return (f"/public/{rel}", data), ""
 
 
-def evict_immediate(test: Test) -> Row:
+def evict_immediate(test: Test) -> suite.Row:
     """Check that each V2 cache evicts an object at once, by any method.
 
     At each V2 cache, three objects it holds: an immediate eviction of
@@ -651,18 +537,16 @@ def evict_immediate(test: Test) -> Row:
                 problems.append(
                     f"{cache.svc}, {method}: {answer.describe()} '{text(answer)}', not 200 '{want}'"
                 )
-            found = test.held(cache, rel)
+            found = test.cached(cache, rel)
             if found is not False:
                 problems.append(f"{cache.svc}, {method}: the object is {held_word(found)} afterward")
-            answer = test.get(cache, rel)
-            if answer.status != 200 or answer.body != objects[rel]:
-                problems.append(
-                    f"{cache.svc}, {method}: a GET afterward got {served(answer, objects[rel])}"
-                )
+            why = web.served(test.ask("GET", cache.url, rel), objects[rel])
+            if why:
+                problems.append(f"{cache.svc}, {method}: a GET afterward got {why}")
     return outcome(problems, f"{len(test.v2)} V2 cache(s), by {', '.join(methods)}")
 
 
-def evict_marked(test: Test) -> Row:
+def evict_marked(test: Test) -> suite.Row:
     """Check that each V2 cache marks an object for eviction, and keeps it.
 
     At each V2 cache, an object it holds: an eviction without
@@ -681,7 +565,7 @@ def evict_marked(test: Test) -> Row:
         want = evicted_message(test.path(rel), 1, False)
         if answer.status != 200 or text(answer) != want:
             problems.append(f"{cache.svc}: {answer.describe()} '{text(answer)}', not 200 '{want}'")
-        found = test.held(cache, rel)
+        found = test.cached(cache, rel)
         if found is not True:
             problems.append(f"{cache.svc}: the object is {held_word(found)} afterward")
         unmark(test, rel)
@@ -698,7 +582,7 @@ def unmark(test: Test, rel: str) -> None:
         evict(cache, test.path(rel), test.token)
 
 
-def evict_prefix(test: Test) -> Row:
+def evict_prefix(test: Test) -> suite.Row:
     """Check that each V2 cache evicts a prefix by whole path segments.
 
     At each V2 cache, objects foo/a, foo/b, and foobar that it holds: an
@@ -718,13 +602,13 @@ def evict_prefix(test: Test) -> Row:
         if answer.status != 200 or text(answer) != want:
             problems.append(f"{cache.svc}: {answer.describe()} '{text(answer)}', not 200 '{want}'")
         for name, want_held in (("foo/a", False), ("foo/b", False), ("foobar", True)):
-            found = test.held(cache, f"{base}/{name}")
+            found = test.cached(cache, f"{base}/{name}")
             if found is not want_held:
                 problems.append(f"{cache.svc}: {name} is {held_word(found)} afterward")
     return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
-def evict_name(test: Test) -> Row:
+def evict_name(test: Test) -> suite.Row:
     """Check that each V2 cache evicts an object with a `+` in its name.
 
     At each V2 cache, an object named with a `+` and a decoy named with
@@ -742,10 +626,10 @@ def evict_name(test: Test) -> Row:
         if answer.status != 200:
             problems.append(f"{cache.svc}: {answer.describe()} '{text(answer)}', not 200")
         for rel, want_held in ((wanted, False), (decoy, True)):
-            found = test.held(cache, rel)
+            found = test.cached(cache, rel)
             if found is not want_held:
                 problems.append(
-                    f"{cache.svc}: '{leaf(rel)}' is {held_word(found)} afterward ('{text(answer)}')"
+                    f"{cache.svc}: '{suite.leaf(rel)}' is {held_word(found)} afterward ('{text(answer)}')"
                 )
     return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
@@ -761,11 +645,11 @@ def client_evict(test: Test, rel: str, immediate: bool) -> tuple[int, str]:
     args = ["object", "evict", "--token", test.token_file]
     if immediate:
         args.append("--immediate")
-    code, out, err = test.session.pelican_cmd(*args, f"{test.fed.url}/{NAMESPACE}/{rel}")
+    code, out, err = test.session.pelican_cmd(*args, test.fed.url + test.path(rel))
     return code, last_line(out if code == 0 else err or out)
 
 
-def evict_client(test: Test) -> Row:
+def evict_client(test: Test) -> suite.Row:
     """Check that `pelican object evict` evicts, or marks, an object.
 
     `pelican object evict --immediate` of an object that every V2 cache
@@ -788,7 +672,7 @@ def evict_client(test: Test) -> Row:
         if code != 0 or said != want:
             problems.append(f"{flag}: exited {code}, saying '{said}', not '{want}'")
             continue
-        gone = [c.svc for c in test.v2 if test.held(c, rel) is False]
+        gone = [c.svc for c in test.v2 if test.cached(c, rel) is False]
         if immediate and len(gone) != 1:
             problems.append(f"{flag}: {len(gone)} cache(s) lack it afterward ({', '.join(gone)}), not 1")
         elif not immediate and gone:
@@ -811,16 +695,17 @@ def other_admin(test: Test, cache: common.Cache) -> tuple[str, str]:
     by test-keys/unknown.pem.
     """
     own = jwt.public_jwk(common.signing_key(f"issuer-keys/{cache.svc}"))
-    for origin in test.origins:
+    for origin in test.fed.origins:
         key = common.signing_key(f"issuer-keys/{origin.svc}")
         if origin.web_url != cache.web_url and jwt.public_jwk(key) != own:
-            issuer = credentials.local_issuer(test.fed, origin.web_url)
             out = test.session.path(f"tokens/cache-api.other.{cache.svc}")
-            return credentials.mint_user(test.fed, out, issuer, key, "admin"), f"{origin.svc}'s"
-    issuer = credentials.local_issuer(test.fed, cache.web_url)
+            return (
+                credentials.mint_web_user(test.fed, out, origin.web_url, "admin", key=key),
+                f"{origin.svc}'s",
+            )
     out = test.session.path(f"tokens/cache-api.unknown.{cache.svc}")
     key = credentials.keys(test.fed)["unknown"]
-    return credentials.mint_user(test.fed, out, issuer, key, "admin"), "unknown.pem's"
+    return credentials.mint_web_user(test.fed, out, cache.web_url, "admin", key=key), "unknown.pem's"
 
 
 # Each admin route, by row: its method, its path and query (given the URL
@@ -860,7 +745,7 @@ ADMIN_ROUTES: tuple[AdminRoute, ...] = (
 def send(route: AdminRoute, url: str, token: str | None) -> web.Response:
     """Send route's request to url, with token."""
     _, method, _, body, _, _ = route
-    return web.request(method, url, token=token, upload=body, headers=cacheapi.JSON if body else None)
+    return web.request(method, url, token=token, upload=body, headers=accounts.JSON if body else None)
 
 
 def admin_authz(test: Test, results: common.Results) -> None:
@@ -876,7 +761,6 @@ def admin_authz(test: Test, results: common.Results) -> None:
     route, as where Cache.EnableChaosAPI is off.
 
     Args:
-        test: The test, as a case takes it.
         results: Where to record a row per cache and route.
     """
     nowhere = quote(test.object_url(test.rel("admin-authz", "nowhere")), safe="")
@@ -986,7 +870,7 @@ def purge_request(test: Test, cache: common.Cache, path: str, body: Any) -> web.
             cache.web_url + path,
             token=test.purger(cache),
             upload=data,
-            headers=cacheapi.JSON if data is not None else None,
+            headers=accounts.JSON if data is not None else None,
             timeout=300,
         )
         if answer.status != 500:
@@ -994,7 +878,7 @@ def purge_request(test: Test, cache: common.Cache, path: str, body: Any) -> web.
     return answer
 
 
-def purge_to_target(test: Test) -> Row:
+def purge_to_target(test: Test) -> suite.Row:
     """Check that each V2 cache purges to a target.
 
     At each V2 cache, holding three objects of the run's, read in turn:
@@ -1024,7 +908,7 @@ def purge_to_target(test: Test) -> Row:
             continue
         target = usage - 1
         answer = purge_request(test, cache, cacheapi.PURGE_TO_TARGET, {"target_bytes": target})
-        said = common.as_object(answer.json()) or {}
+        said = answer.object()
         freed = said.get("freed_bytes")
         if answer.status != 200 or not isinstance(freed, int) or freed <= 0:
             problems.append(f"{cache.svc}, a target of {target}: {answer.describe()} {text(answer)}")
@@ -1039,17 +923,17 @@ def purge_to_target(test: Test) -> Row:
         if after is None or after > target:
             problems.append(f"{cache.svc} holds {after} bytes after a purge to {target}")
         last = list(objects)[-1]
-        found = test.held(cache, last)
+        found = test.cached(cache, last)
         if found is not True:
             problems.append(
-                f"{cache.svc}: {leaf(last)}, read last, is {held_word(found)} after a purge"
+                f"{cache.svc}: {suite.leaf(last)}, read last, is {held_word(found)} after a purge"
                 + f" to a byte below its usage (freed {freed} of {usage} bytes)"
             )
         notes.append(f"{cache.svc} freed {freed} of {usage} bytes")
     return outcome(problems, "; ".join(notes))
 
 
-def purge_first(test: Test) -> Row:
+def purge_first(test: Test) -> suite.Row:
     """Check that an object marked purge-first goes first at each V2 cache.
 
     At each V2 cache, holding three objects of the run's, read in turn:
@@ -1078,9 +962,9 @@ def purge_first(test: Test) -> Row:
         if purges > 1:
             notes.append(f"{cache.svc} took {purges} purges, another object being marked too")
         for rel in rels:
-            found = test.held(cache, rel)
+            found = test.cached(cache, rel)
             if found is not (rel != marked):
-                problems.append(f"{cache.svc}: {leaf(rel)} is {held_word(found)} afterward")
+                problems.append(f"{cache.svc}: {suite.leaf(rel)} is {held_word(found)} afterward")
     return outcome(problems, "; ".join([f"{len(test.v2)} V2 cache(s)"] + notes))
 
 
@@ -1101,12 +985,12 @@ def purge_marked(test: Test, cache: common.Cache, marked: str) -> tuple[str | No
         answer = purge_request(test, cache, cacheapi.PURGE_TO_TARGET, {"target_bytes": usage - 1})
         if answer.status != 200:
             return f"the purge got {answer.describe()} {text(answer)}", n
-        if test.held(cache, marked) is not True:
+        if test.cached(cache, marked) is not True:
             return None, n
     return None, MARKED_PURGES
 
 
-def purge_all(test: Test) -> Row:
+def purge_all(test: Test) -> suite.Row:
     """Check that each V2 cache purges, to its low water mark if bounded.
 
     At each V2 cache, a purge (POST /api/v1.0/cache/purge) must get 200;
@@ -1143,7 +1027,7 @@ def data_route(cache: common.Cache, discovery: str, path: str) -> str:
     return f"{cache.web_url}/api/v1.0/cache/data/{discovery}{quote(path)}"
 
 
-def foreign_federation(test: Test) -> Row:
+def foreign_federation(test: Test) -> suite.Row:
     """Check that each V2 cache serves no object for another federation.
 
     At each V2 cache, an object it lacks, asked for under a federation
@@ -1163,19 +1047,19 @@ def foreign_federation(test: Test) -> Row:
         answer = web.request(
             "GET", data_route(cache, "evil.invalid%3A443", test.path(rel)), token=test.token
         )
-        said = common.as_object(answer.json()) or {}
+        said = answer.object()
         if answer.status != 403 or said.get("error") != "federation_not_allowed":
             problems.append(f"{cache.svc}: {answer.describe()} '{text(answer)[:120]}'")
         if objects[rel] in answer.body:
             problems.append(f"{cache.svc} served the object for another federation")
         time.sleep(1)
-        found = test.held(cache, rel)
+        found = test.cached(cache, rel)
         if found is not False:
             problems.append(f"{cache.svc}: the object is {held_word(found)} afterward")
     return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 
-def own_federation(test: Test) -> Row:
+def own_federation(test: Test) -> suite.Row:
     """Check that each V2 cache serves its own federation, however spelled.
 
     At each V2 cache, an object asked for under its own federation's
@@ -1200,8 +1084,9 @@ def own_federation(test: Test) -> Row:
                 token=test.token,
                 timeout=120,
             )
-            if answer.status != 200 or answer.body != objects[rel]:
-                problems.append(f"{cache.svc}, as {spelling}: {served(answer, objects[rel])}")
+            why = web.served(answer, objects[rel])
+            if why:
+                problems.append(f"{cache.svc}, as {spelling}: {why}")
     return outcome(problems, f"{len(test.v2)} V2 cache(s): {', '.join(spellings)}")
 
 
@@ -1223,7 +1108,7 @@ def namespace_usage(test: Test, cache: common.Cache) -> tuple[int | None, str]:
     if found is None:
         return None, "its stats answered no JSON object"
     answer = cacheapi.introspect(cache, test.admin(cache), "GET", "stats")
-    names = common.as_object((common.as_object(answer.json()) or {}).get("namespace_names"))
+    names = common.as_object(answer.object().get("namespace_names"))
     if answer.status != 200 or names is None:
         return None, f"introspect/stats answered {answer.describe()}, with no namespace_names"
     ids = {str(n) for n, prefix in names.items() if prefix == f"/{NAMESPACE}"}
@@ -1242,12 +1127,11 @@ def disk_usage(test: Test, cache: common.Cache) -> int | None:
     None, if it gives none.
     """
     answer = cacheapi.introspect(cache, test.admin(cache), "POST", "disk-usage")
-    found = common.as_object(answer.json()) or {}
-    value = found.get("total_bytes_on_disk")
+    value = answer.object().get("total_bytes_on_disk")
     return value if answer.status == 200 and isinstance(value, int) else None
 
 
-def usage_accounting(test: Test) -> Row:
+def usage_accounting(test: Test) -> suite.Row:
     """Check that each V2 cache's usage grows by what it stores.
 
     At each V2 cache, USAGE_COUNT cold whole reads of objects of
@@ -1281,7 +1165,7 @@ def usage_accounting(test: Test) -> Row:
             problems.append(f"{cache.svc}: {why or 'its stats give no TotalUsage'}")
             continue
         for rel, data in objects.items():
-            why = test.fill(cache, rel, data)
+            why = test.fill_cached(cache, rel, data)
             if why:
                 return FAIL, why
         ns_after, why = namespace_usage(test, cache)
@@ -1310,7 +1194,7 @@ def usage_accounting(test: Test) -> Row:
     return outcome(problems, "; ".join([f"{len(test.v2)} V2 cache(s), {want} bytes each"] + notes))
 
 
-def water_marks(test: Test) -> Row:
+def water_marks(test: Test) -> suite.Row:
     """Check that each bounded V2 cache's stats give its water marks.
 
     At each V2 cache whose store is bounded (`-p cache-small`), its
@@ -1383,7 +1267,7 @@ def scan_metric(cache: common.Cache) -> float | None:
 CORRUPTED_CASES = ("verify", "scan-counts", "scan-drops")
 
 
-def corrupted(test: Test) -> dict[str, Row]:
+def corrupted(test: Test) -> dict[str, suite.Row]:
     """Check that each V2 cache catches an object corrupted in its store.
 
     At each V2 cache, an object it holds whole, whose block 1 its chaos
@@ -1421,16 +1305,7 @@ def corrupted(test: Test) -> dict[str, Row]:
             continue
         url = test.object_url(rel)
         admin = test.admin(cache)
-        answer = cacheapi.introspect(
-            cache,
-            admin,
-            "POST",
-            "chaos",
-            op="corrupt",
-            url=url,
-            block="1",
-            bytes=str(blocks.TAG),
-        )
+        answer = cacheapi.corrupt(cache, admin, url, 1)
         if answer.status == 404:
             why = f"{cache.svc} has no chaos API (Cache.EnableChaosAPI)"
             return {case: (SKIP, why) for case in CORRUPTED_CASES}
@@ -1438,7 +1313,7 @@ def corrupted(test: Test) -> dict[str, Row]:
             everywhere(f"{cache.svc}: the chaos API got {answer.describe()} {text(answer)}")
             continue
         answer = cacheapi.introspect(cache, admin, "POST", "verify", url=url)
-        said = common.as_object(answer.json()) or {}
+        said = answer.object()
         if answer.status != 200 or not isinstance(said.get("valid"), bool):
             verify.problems.append(f"{cache.svc}: {answer.describe()} {text(answer)}")
         elif said["valid"]:
@@ -1462,19 +1337,19 @@ def corrupted(test: Test) -> dict[str, Row]:
             counts.notes.append(f"{cache.svc}: no {INCONSISTENT} to read")
         elif after <= metric:
             counts.problems.append(f"{cache.svc}: {INCONSISTENT} stayed at {after}")
-        held = test.held(cache, rel)
+        held = test.cached(cache, rel)
         if held is not False:
             drops.problems.append(f"{cache.svc}: the object is {held_word(held)} after the scan")
-        answer = test.get(cache, rel)
-        if answer.status != 200 or answer.body != data:
-            drops.problems.append(f"{cache.svc}: a GET after the scan got {served(answer, data)}")
+        why = web.served(test.ask("GET", cache.url, rel), data)
+        if why:
+            drops.problems.append(f"{cache.svc}: a GET after the scan got {why}")
     return {case: found[case].row(f"{len(test.v2)} V2 cache(s)") for case in CORRUPTED_CASES}
 
 
-def corrupted_case(case: str) -> Callable[[Test], Row]:
+def corrupted_case(case: str) -> Callable[[Test], suite.Row]:
     """Return the `consistency` case named case, among CORRUPTED_CASES."""
 
-    def run_it(test: Test) -> Row:
+    def run_it(test: Test) -> suite.Row:
         if test.corrupted is None:
             test.corrupted = corrupted(test)
         return test.corrupted[case]
@@ -1529,7 +1404,7 @@ def plant_stray(cache: common.Cache) -> tuple[str | None, str]:
     return path, ""
 
 
-def orphan(test: Test) -> Row:
+def orphan(test: Test) -> suite.Row:
     """Check that each V2 cache's metadata scan removes a stray file.
 
     At each V2 cache, a stray file planted in its store of object files
@@ -1572,7 +1447,7 @@ def orphan(test: Test) -> Row:
 
 # Each scenario's cases: its row's name after the scenario's, and what
 # runs it. admin-authz records its own rows.
-CASES: dict[str, tuple[tuple[str, Callable[[Test], Row]], ...]] = {
+CASES: dict[str, tuple[tuple[str, Callable[[Test], suite.Row]], ...]] = {
     "prestage": (
         ("probe", prestage_probe),
         ("refused", prestage_refused),
@@ -1607,20 +1482,21 @@ ANY_CACHE = {("prestage", "client")}
 
 
 def run_case(
-    test: Test, scenario: str, name: str, case: Callable[[Test], Row], results: common.Results
+    test: Test, scenario: str, name: str, case: Callable[[Test], suite.Row], results: common.Results
 ) -> None:
     """Run a case, and record its row."""
     row = f"{scenario} {name}"
     if (scenario, name) not in ANY_CACHE and not test.v2:
         results.add(row, SKIP, "this shape has no federated V2 cache")
         return
-    results.add(row, *common.guarded(partial(case, test), lambda note: (FAIL, note), (stores.Unreadable,)))
+    results.add(row, *suite.attempt(partial(case, test), (stores.Unreadable,)))
 
 
 def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test: no /protected-a, or no cache."""
-    if NAMESPACE not in fed.exports:
-        return "this shape does not export /protected-a"
+    why = suite.unexported(fed)
+    if why:
+        return why
     if not fed.federated_caches:
         return "this shape has no federated cache"
     return None
@@ -1630,15 +1506,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, and remove the run's objects."""
     fed = session.fed
     stores.require_dirs(fed.origins, fed.exports, "data/cache-api")
-    tokens = session.setup_tokens()
-
-    def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/cache-api", tokens)
-        if errors:
-            warn(f"emptying data/cache-api {when}: {first(errors)}")
-
-    clean("before the run")
     test = Test(session)
+    test.clean("before the run")
     print(f"Cache API test against {fed.url}, objects under /{NAMESPACE}/{test.base}/")
     try:
         for scenario in selected:
@@ -1651,4 +1520,4 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             for name, case in CASES[scenario]:
                 run_case(test, scenario, name, case, results)
     finally:
-        clean("after the run")
+        test.clean("after the run")

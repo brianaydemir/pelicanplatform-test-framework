@@ -14,11 +14,14 @@ import ssl
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
-from urllib.parse import urlsplit
+from typing import Any, cast
+from urllib.parse import SplitResult, urlsplit
 
 # The federation's CA, in the dev container.
 CA_FILE = "/certs/ca.crt"
+
+# What asks a cache to answer only from what it holds, and otherwise 504.
+ONLY_IF_CACHED = {"Cache-Control": "only-if-cached"}
 
 
 @functools.lru_cache(maxsize=None)
@@ -77,11 +80,31 @@ class Response:
         except ValueError:
             return None
 
+    def object(self) -> dict[str, Any]:
+        """Return the body, as a JSON object; {} if it is not one."""
+        found = self.json()
+        return cast(dict[str, Any], found) if isinstance(found, dict) else {}
+
 
 def _last(fields: tuple[tuple[str, str], ...], name: str) -> str:
     """Return the last value of field name in fields, or ""."""
     values = [v for k, v in fields if k.lower() == name.lower()]
     return values[-1] if values else ""
+
+
+def served(answer: Response, data: bytes) -> str | None:
+    """Return why answer is not a 200 holding data, or None."""
+    if answer.status != 200:
+        return answer.describe()
+    if answer.body != data:
+        return f"{len(answer.body)} bytes, not the object"
+    return None
+
+
+def age(answer: Response) -> int | None:
+    """Return answer's Age, in seconds, or None if it has none."""
+    value = answer.header("Age").strip()
+    return int(value) if value.isdigit() else None
 
 
 def save(path: str, answer: Response) -> None:
@@ -107,6 +130,7 @@ class _Answer(http.client.HTTPResponse):
     trailers: tuple[tuple[str, str], ...] = ()
 
     def _read_and_discard_trailer(self) -> None:
+        """Read the trailers, and keep them."""
         found: list[tuple[str, str]] = []
         while True:
             line = self.fp.readline(1 << 16)
@@ -118,10 +142,14 @@ class _Answer(http.client.HTTPResponse):
 
 
 class _HTTPConnection(http.client.HTTPConnection):
+    """An HTTPConnection whose answers keep their trailers."""
+
     response_class = _Answer
 
 
 class _HTTPSConnection(http.client.HTTPSConnection):
+    """An HTTPSConnection whose answers keep their trailers."""
+
     response_class = _Answer
 
 
@@ -134,7 +162,9 @@ def _pieces(data: bytes, size: int = 1 << 16) -> Iterator[bytes]:
 def _failure(status: int | None, error: Exception) -> str:
     """Return what went wrong, for a Response's error.
 
-    status is the one that came before error, if one did.
+    Args:
+        status: The status that came before error, if one did.
+        error: What went wrong.
     """
     return repr(error) if status is None else f"HTTP {status}, then {error!r}"
 
@@ -147,6 +177,11 @@ def _with_token(headers: Mapping[str, str] | None, token: str | None) -> dict[st
     return sent
 
 
+def _target(parts: SplitResult) -> str:
+    """Return the request target of a URL: its path and query."""
+    return (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+
+
 def _connect(url: str, timeout: float) -> tuple[http.client.HTTPConnection, str]:
     """Return a connection to url's server, and the target to ask it for."""
     parts = urlsplit(url)
@@ -156,7 +191,7 @@ def _connect(url: str, timeout: float) -> tuple[http.client.HTTPConnection, str]
         )
     else:
         conn = _HTTPConnection(parts.hostname or "", parts.port, timeout=timeout)
-    return conn, (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    return conn, _target(parts)
 
 
 def request(
@@ -168,9 +203,7 @@ def request(
     timeout: float = 60,
     chunked: bool = False,
 ) -> Response:
-    """Send method to url, and return the answer.
-
-    A chunked answer's trailers are in the response's trailers.
+    """Send method to url, and return the answer, trailers and all.
 
     Args:
         method: The HTTP method (e.g. `GET`).
@@ -229,10 +262,17 @@ def timed_get(
     headers: Mapping[str, str] | None = None,
     timeout: float = 60,
 ) -> Timed:
-    """GET url, as request() does, timing the first `first` bytes, then all.
+    """GET url, as request() does, timing the first bytes, then all.
 
     The times are as a client that reads a body as it streams in sees
     them.
+
+    Args:
+        url: Where to send it.
+        token: A bearer token to present, if any.
+        first: How many bytes to time first.
+        headers: More headers to send.
+        timeout: As for request().
     """
     conn, target = _connect(url, timeout)
     sent = _with_token(headers, token)
@@ -278,8 +318,7 @@ def statuses_before_body(
     parts = urlsplit(url)
     host = parts.hostname or ""
     port = parts.port or (443 if parts.scheme == "https" else 80)
-    target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
-    lines = [f"{method} {target} HTTP/1.1", f"Host: {parts.netloc}", "Connection: close"]
+    lines = [f"{method} {_target(parts)} HTTP/1.1", f"Host: {parts.netloc}", "Connection: close"]
     if token is not None:
         lines.append(f"Authorization: Bearer {token}")
     lines += [f"{name}: {value}" for name, value in (headers or {}).items()]
@@ -325,7 +364,7 @@ def read_part(
     ignore Range and send it all.
 
     Returns:
-        The response, with those bytes.
+        The answer, with those bytes of its body.
     """
     conn, target = _connect(url, timeout)
     sent = _with_token(headers, token)

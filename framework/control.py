@@ -1,15 +1,15 @@
 #!/usr/bin/env -S uv run --quiet --frozen --no-dev
 """Control the federation's services for the tests in the dev container.
 
-The dev container has no Docker.
-
   framework/control.py serve   serve the tests' requests until stopped,
                                or until the process that started it ends
 
-Run it through fed.sh, whose environment Docker Compose needs.
-`./fed.sh test` runs one beside the tests; `./fed.sh control` runs one
-in the foreground, for a test.py run by hand in the dev container. One
-serves at a time: another that finds it serving leaves the tests to it.
+The dev container has no Docker, so this helper on the host acts for
+the tests. Run it through fed.sh, whose environment Docker Compose
+needs: `./fed.sh test` runs one beside the tests; `./fed.sh control`
+runs one in the foreground, for a test.py run by hand in the dev
+container. One serves at a time: another that finds it serving leaves
+the tests to it.
 
 The requests come through files under framework/var/control/ (see
 framework/testlib/control.py). The helper does each, one at a time, on
@@ -51,7 +51,6 @@ from testlib import common, control
 
 # pylint: enable=wrong-import-position
 
-PROG = "control.py"
 # Where Compose finds COMPOSE_FILE, as fed.sh names it.
 TOP = os.path.dirname(common.FRAMEWORK)
 # How often it looks for requests, in seconds.
@@ -60,13 +59,7 @@ POLL = 0.2
 
 def say(message: str) -> None:
     """Print message, as the helper's."""
-    print(f"{PROG}: {message}", file=sys.stderr, flush=True)
-
-
-def die(message: str, status: int = 1) -> NoReturn:
-    """Print message, and exit."""
-    say(message)
-    sys.exit(status)
+    print(f"{common.PROG}: {message}", file=sys.stderr, flush=True)
 
 
 def compose(*args: str) -> tuple[bool, str]:
@@ -117,7 +110,7 @@ class Helper:
     def __init__(self) -> None:
         ok, output = compose("config", "--services")
         if not ok:
-            die(f"cannot list the shape's services: {output}")
+            common.die(f"cannot list the shape's services: {output}")
         self.services = sorted(set(output.split()) - {"dev"})
         self.undo: dict[str, str] = {}
 
@@ -160,7 +153,7 @@ class Helper:
     def exited(self) -> tuple[bool, str]:
         """Say which services exited on their own, each with its exit code.
 
-        Those the tests stopped or killed, which put_back() would start,
+        Those the tests stopped or killed, which the helper starts again,
         are passed over.
 
         Returns:
@@ -214,10 +207,10 @@ class Helper:
 
 def answer(path: str, ok: bool, output: str) -> None:
     """Answer request path, and remove it."""
-    found = path[: -len(".req")] + ".res"
-    with open(f"{found}.tmp", "w", encoding="utf-8") as f:
+    response = path[: -len(".req")] + ".res"
+    with open(f"{response}.tmp", "w", encoding="utf-8") as f:
         json.dump({"ok": ok, "output": output}, f)
-    os.rename(f"{found}.tmp", found)
+    os.rename(f"{response}.tmp", response)
     with contextlib.suppress(FileNotFoundError):
         os.remove(path)
 
@@ -250,14 +243,14 @@ def serve_requests(helper: Helper, parent: int) -> None:
 
 
 def stopped(_signum: int, _frame: FrameType | None) -> NoReturn:
-    """Stop serving, putting back what the tests left (see serve())."""
+    """Exit, so that serving ends, and what the tests left is put back."""
     sys.exit(0)
 
 
 def serve() -> None:
     """Serve the tests' requests, unless another helper does."""
     if "COMPOSE_FILE" not in os.environ:
-        die("run it through fed.sh: ./fed.sh control", 2)
+        common.die_usage("run it through fed.sh: ./fed.sh control")
     os.makedirs(control.REQUESTS, exist_ok=True)
     os.makedirs(control.CONFIG, exist_ok=True)
     # pylint: disable-next=consider-using-with  # held while serving
@@ -292,7 +285,7 @@ def main() -> None:
         print((__doc__ or "").strip("\n"))
         return
     if args != ["serve"]:
-        die("usage: framework/control.py serve (see --help)", 2)
+        common.die_usage("usage: framework/control.py serve (see --help)")
     try:
         serve()
     except KeyboardInterrupt:

@@ -1,0 +1,323 @@
+"""What a suite's Test class builds on.
+
+A suite's objects go in its area, data/<area>/ in each namespace, which
+`./fed.sh init` makes (init-data.py's SUITE_DIRS); each pass's go in
+its own collection there, data/<area>/<run> (Test.base).
+"""
+
+import os
+from collections.abc import Callable, Iterable, Mapping
+from functools import cached_property
+from urllib.parse import quote
+
+from . import common, control, director, report, stores, web
+from .session import Session
+
+# How long, after a restart, every director may take to name the origins,
+# and every cache to reach them.
+SETTLE_WAIT = 150
+# How long a V2 cache may take to say, with Age, that it holds an object
+# it has served whole.
+HELD_WAIT = 30
+
+# A row's status and note.
+Row = tuple[str, str]
+
+
+def unexported(fed: common.Federation, namespace: str = "protected-a") -> str | None:
+    """Return why the shape has no namespace to test, or None if it does."""
+    if namespace in fed.exports:
+        return None
+    return f"this shape does not export /{namespace}"
+
+
+def attempt(check: Callable[[], Row], expected: tuple[type[Exception], ...] = ()) -> Row:
+    """Return check()'s row, or a FAIL if it raised (common.guarded()).
+
+    Args:
+        check: What returns the row.
+        expected: The exceptions by which check() reports a problem.
+    """
+    return common.guarded(check, lambda note: (report.FAIL, note), expected)
+
+
+def attempt_all(
+    rows: Iterable[str],
+    check: Callable[[], dict[str, Row]],
+    expected: tuple[type[Exception], ...] = (),
+) -> dict[str, Row]:
+    """Return check()'s rows, by name, each a FAIL if check() raised.
+
+    Args:
+        rows: The names of the rows that check() returns.
+        check: What returns the rows.
+        expected: As for attempt().
+    """
+    return common.guarded(check, lambda note: {row: (report.FAIL, note) for row in rows}, expected)
+
+
+def clean(
+    session: Session,
+    area: str,
+    when: str,
+    origins: Iterable[common.Origin] | None = None,
+    fatal: bool = False,
+) -> None:
+    """Empty data/<area> in every namespace at every origin.
+
+    Args:
+        session: The pass, whose setup tokens a pstore origin needs.
+        area: The suite's area.
+        when: When this is, for the message, e.g. "before the run".
+        origins: The origins, if not every one.
+        fatal: Whether a failure ends the suite, not just warns.
+    """
+    fed = session.fed
+    rel = f"data/{area}"
+    origins = fed.origins if origins is None else list(origins)
+    tokens = session.setup_tokens() if any(o.pstore for o in origins) else {}
+    errors = stores.empty_tree_everywhere(origins, fed.exports, rel, tokens)
+    if errors:
+        message = f"emptying {rel} {when}: {common.first(errors)}"
+        if fatal:
+            common.die(message)
+        else:
+            common.warn(message)
+
+
+def leaf(rel: str) -> str:
+    """Return rel's last segment, for a message."""
+    return rel.rsplit("/", 1)[-1]
+
+
+class Test:
+    """The pass, and the run's collection in one namespace.
+
+    Attributes:
+        session: The pass.
+        fed: The federation.
+        run: The pass's ID (Session.run).
+        area: The suite's area.
+        base: The run's collection: data/<area>/<run>.
+        namespace: The namespace of the suite's objects.
+        made: The collections that put() has made at every origin.
+    """
+
+    _runs = 0
+
+    def __init__(self, session: Session, area: str, namespace: str = "protected-a"):
+        self.session = session
+        self.fed = session.fed
+        self.run = session.run
+        self.area = area
+        self.base = f"data/{area}/{session.run}"
+        self.namespace = namespace
+        self.made: set[str] = set()
+        if namespace in self.fed.exports:
+            # Minting asks the federation: mint now, not mid-scenario.
+            session.token_file(namespace)
+            session.setup_token_file(namespace)
+
+    @cached_property
+    def tmp(self) -> str:
+        """The run's scratch directory, for the clients' files."""
+        path = self.session.path(self.area)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    @cached_property
+    def token(self) -> str:
+        """A `server` token for the namespace, of the session's profile."""
+        return self.session.token(self.namespace)
+
+    @cached_property
+    def token_file(self) -> str:
+        """The file of token."""
+        return self.session.token_file(self.namespace)
+
+    @cached_property
+    def setup(self) -> str:
+        """A `server` token for the namespace, of the WLCG profile.
+
+        It is for putting objects in place and checking the shape, not
+        for what a scenario presents.
+        """
+        return self.session.setup_token(self.namespace)
+
+    @property
+    def caps(self) -> frozenset[str]:
+        """The namespace's capabilities."""
+        return self.fed.exports[self.namespace]
+
+    @property
+    def direct(self) -> bool:
+        """Whether the namespace takes direct clients."""
+        return "DirectReads" in self.caps
+
+    @property
+    def writes(self) -> bool:
+        """Whether the namespace takes writes."""
+        return "Writes" in self.caps
+
+    def directory(self, name: str) -> str:
+        """Return a new directory in tmp, for one client run."""
+        self._runs += 1
+        path = os.path.join(self.tmp, f"{self._runs:03d}-{name}")
+        os.makedirs(path)
+        return path
+
+    def local(self, name: str, data: bytes) -> str:
+        """Write data to file name in tmp, and return its path."""
+        path = os.path.join(self.tmp, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def rel(self, *parts: str) -> str:
+        """Return the path of parts, within the run's collection."""
+        return "/".join([self.base, *parts])
+
+    def path(self, rel: str) -> str:
+        """Return rel's path in the federation."""
+        return f"/{self.namespace}/{rel}"
+
+    def url(self, server_url: str, rel: str) -> str:
+        """Return rel's URL at the server at server_url."""
+        return f"{server_url}/{self.namespace}/{quote(rel)}"
+
+    def pelican_url(self, rel: str, query: str = "") -> str:
+        """Return rel's pelican:// URL, unencoded, with query if any."""
+        return f"{self.fed.url}{self.path(rel)}" + (f"?{query}" if query else "")
+
+    def put(self, objects: Mapping[str, bytes]) -> str | None:
+        """Put objects, by rel, and their collections, in every store.
+
+        Returns:
+            What went wrong, or None.
+        """
+        origins = stores.unique(self.fed.origins)
+        for rel, data in objects.items():
+            parent = rel.rsplit("/", 1)[0]
+            if parent not in self.made:
+                errors = stores.make_dirs(origins, self.namespace, parent, self.setup)
+                if errors:
+                    return errors[0]
+                self.made.add(parent)
+            errors = stores.seed_everywhere(origins, self.namespace, rel, data, self.setup, self.caps)
+            if errors:
+                return errors[0]
+        return None
+
+    def ask(
+        self,
+        method: str,
+        server_url: str,
+        rel: str,
+        headers: Mapping[str, str] | None = None,
+        timeout: float = 120,
+    ) -> web.Response:
+        """Send method for rel to the server at server_url, with token."""
+        return web.request(
+            method, self.url(server_url, rel), token=self.token, headers=headers, timeout=timeout
+        )
+
+    def age(self, cache: common.Cache, rel: str) -> int | None:
+        """Return the Age with which a V2 cache says it holds all of rel.
+
+        It is asked with setup. A cache's Age starts at 0 once it holds
+        the whole object.
+
+        Returns:
+            The Age, or None if it gives none, or does not answer 200.
+        """
+        answer = web.request("HEAD", self.url(cache.url, rel), token=self.setup)
+        return web.age(answer) if answer.status == 200 else None
+
+    def held(self, cache: common.Cache, rel: str) -> bool:
+        """Return whether a V2 cache says it holds all of rel (see age())."""
+        return self.age(cache, rel) is not None
+
+    def wait_held(self, cache: common.Cache, rel: str, seconds: float = HELD_WAIT) -> bool:
+        """Return whether a V2 cache says it holds all of rel within seconds."""
+        return common.wait_for(lambda: self.held(cache, rel), seconds, interval=1)
+
+    def cached(self, cache: common.Cache, rel: str) -> bool | None:
+        """Return whether a V2 cache holds all of rel, by only-if-cached.
+
+        A HEAD with only-if-cached, which fetches nothing, gets 200 if it
+        does, and 504 if not. It is asked with setup.
+
+        Returns:
+            Whether it does, or None if the HEAD got neither.
+        """
+        answer = web.request("HEAD", self.url(cache.url, rel), token=self.setup, headers=web.ONLY_IF_CACHED)
+        if answer.status == 200:
+            return True
+        if answer.status == 504:
+            return False
+        return None
+
+    def wait_cached(self, cache: common.Cache, rel: str, seconds: float = HELD_WAIT) -> bool:
+        """Return whether a V2 cache holds all of rel within seconds (cached())."""
+        return common.wait_for(lambda: self.cached(cache, rel) is True, seconds, interval=1)
+
+    def fill(self, cache: common.Cache, rel: str, data: bytes) -> str | None:
+        """Read rel whole through cache, which must serve data.
+
+        A V2 cache must then say it holds it all (wait_held()). The read
+        is with setup.
+
+        Returns:
+            What went wrong, or None.
+        """
+        name = leaf(rel)
+        answer = web.request("GET", self.url(cache.url, rel), token=self.setup, timeout=120)
+        why = web.served(answer, data)
+        if why:
+            return f"{cache.svc}: a GET of {name} got {why}"
+        if cache.kind == "v2" and not self.wait_held(cache, rel):
+            return f"{cache.svc} does not hold {name} {HELD_WAIT}s after reading it whole"
+        return None
+
+    def serving(self, probe: str, size: int | None = None) -> str | None:
+        """Return why the federation does not serve probe, or None.
+
+        Every origin must answer a HEAD of it, if the namespace takes
+        direct clients; every director must name every origin for it; and
+        every federated cache must answer a HEAD of it, of size bytes if
+        given. Each is asked with setup: this checks the shape, not the
+        pass's tokens.
+
+        Args:
+            probe: The rel of an object at every origin.
+            size: Its size.
+        """
+        for origin in self.fed.origins if self.direct else []:
+            answer = web.request("HEAD", stores.url(origin, self.namespace, probe), token=self.setup)
+            if answer.status != 200:
+                return f"{origin.svc}: HEAD of the probe got {answer.describe()}"
+        for url in self.fed.directors:
+            where = director.ask(url, "origin", self.path(probe), token=self.setup)
+            for origin in self.fed.origins:
+                if not where.names(director.host(origin.url)):
+                    return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
+        for cache in self.fed.federated_caches:
+            answer = web.request("HEAD", self.url(cache.url, probe), token=self.setup)
+            if answer.status != 200 or (size is not None and answer.header("Content-Length") != str(size)):
+                return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
+        return None
+
+    def settle(self, probe: str, size: int | None = None, seconds: float = SETTLE_WAIT) -> str | None:
+        """Wait until the federation serves probe (see serving()).
+
+        A server that exits on its own ends the wait (control.settle()).
+
+        Returns:
+            Why it doesn't within seconds, or None.
+        """
+        return control.settle(lambda: self.serving(probe, size), seconds)
+
+    def clean(self, when: str, fatal: bool = False) -> None:
+        """Empty the area at every origin (see clean())."""
+        clean(self.session, self.area, when, fatal=fatal)

@@ -1,37 +1,12 @@
 """How the servers, and the clients, behave when an origin is slow.
 
-A V2 cache fills a range far ahead of a download under way by a fetch
-of its own; sheds what it has no room for, with 429 and Retry-After;
-answers by the time a client's X-Pelican-Timeout says; and streams the
-first bytes of a cold object before it has all of it. The clients
-classify a throttled attempt, and a transfer too slow to finish, by
-error code.
+See docs/tests/throttling.md.
 
-  range-ahead      each V2 cache, while a cold whole read of an object
-                   streams in, serves a range near its end, which the
-                   read will not reach for many seconds, at once, by a
-                   fill of its own; and both, and a warm read after,
-                   come back intact
-  shed-429         each V2 cache, sent a burst of cold reads, sheds some
-                   with 429, Retry-After, and a reason; a missing object
-                   is still 404
-  client-throttled `pelican object get` and stash_plugin through a V2
-                   cache that sheds them: a retryable error, then the
-                   object
-  timeout-header   each V2 cache answers 504 by the X-Pelican-Timeout of
-                   a cold read, and goes on filling; it serves what it
-                   holds, and ignores a malformed value
-  streaming        each V2 cache sends the first bytes of a cold object
-                   long before the last
-  slow-transfer    the clients give up on a transfer slower than
-                   Client.MinimumDownloadSpeed, with error 6002, direct
-                   and through a cache
-
-Nothing is slow as the shape is, so the suite makes it so for as long as
-it runs: it restarts every origin with Origin.TransferRateLimit, as the
-last of their configuration layers (control.restart_with()), runs
-range-ahead, which needs the caches' scheduler as it is, then restarts
-every federated V2 cache with a small fair scheduler (Cache.WorkerCount,
+Nothing is slow as the shape is, so the suite makes it so while it runs:
+it restarts every origin with Origin.TransferRateLimit, as the last of
+their configuration layers (control.restart_all_with()), runs range-ahead,
+which needs the caches' scheduler as it is, then restarts every
+federated V2 cache with a small fair scheduler (Cache.WorkerCount,
 Cache.Throttle.*) for the rest, and afterward restores them all. The
 rate limit slows only a posixv2 origin (origin_serve/rate_limited_fs.go
 in Pelican), so the suite needs posixv2 origins, a federated V2 cache, a
@@ -49,17 +24,15 @@ every fetch there, and a cache's fetches share one scheduler queue (a
 tag per origin host; deriveSchedulerTag in client/handle_http.go).
 """
 
-import contextlib
 import os
 import re
 import time
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
-from urllib.parse import quote
 
-from testlib import common, control, director, stores, transfers, web
-from testlib.common import Findings, die, first, outcome, warn
+from testlib import common, control, stores, suite, transfers, web
+from testlib.common import Findings, die, outcome, warn
 from testlib.report import FAIL, SKIP
 from testlib.session import Session, last_line
 
@@ -105,9 +78,6 @@ CACHE_CONFIG = (
 ORIGIN_CONFIG = f"Origin:\n  TransferRateLimit: {RATE_LIMIT}\n"
 CONFIG_FILE = "90-throttling.yaml"
 
-# How long, after the restarts, every director may take to name every
-# origin, and every cache to reach them.
-SETTLE_WAIT = 150
 # How long a fetch from a slow origin may take to finish: several times
 # what the largest object takes at the rate.
 FILL_WAIT = 120
@@ -166,133 +136,42 @@ AHEAD_DELAY = 2.0
 AHEAD_ANSWER = 5.0
 AHEAD_SLOWEST = 0.5 * (AHEAD_SIZE - RATE) / RATE
 
-ONLY_IF_CACHED = {"Cache-Control": "only-if-cached"}
 
-# A row: its status, and its note.
-Row = tuple[str, str]
-
-
-class Test:
-    """The run's objects in /protected-a, the token, and the shape.
+class Test(suite.Test):
+    """The run's objects in /protected-a, and the shape.
 
     Attributes:
-        base: The run's collection, within /protected-a.
-        caps: /protected-a's capabilities.
-        direct: Whether /protected-a takes direct clients.
+        origins: The origins.
         holder: The origin that holds the run's objects.
         v2: The federated V2 caches.
-        tmp: A directory of the run's own, for the clients' files.
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.base = f"data/throttling/{session.run}"
-        self.token = session.token(NAMESPACE)
-        self.token_file = session.token_file(NAMESPACE)
-        self.setup = session.setup_token(NAMESPACE)
-        self.caps = self.fed.exports[NAMESPACE]
-        self.direct = "DirectReads" in self.caps
+        super().__init__(session, "throttling", NAMESPACE)
         self.origins = self.fed.origins
         self.holder = self.origins[0]
         self.v2 = [c for c in self.fed.federated_caches if c.kind == "v2"]
-        self.tmp = session.path("throttling")
-        os.makedirs(self.tmp, exist_ok=True)
 
-    def rel(self, *parts: str) -> str:
-        """Return where parts are, under the run's collection."""
-        return "/".join([self.base, *parts])
-
-    def url(self, server_url: str, rel: str) -> str:
-        """Return rel's URL in /protected-a at the server at server_url."""
-        return f"{server_url}/{NAMESPACE}/{quote(rel)}"
-
-    def path(self, rel: str) -> str:
-        """Return rel's path in the federation."""
-        return f"/{NAMESPACE}/{rel}"
-
-    def object_url(self, rel: str) -> str:
-        """Return rel's pelican:// URL."""
-        return f"{self.fed.url}{self.path(rel)}"
-
-    def put(self, objects: Mapping[str, bytes], everywhere: bool = False) -> str | None:
+    def write(self, objects: Mapping[str, bytes], everywhere: bool = False) -> str | None:
         """Write objects, by rel, straight into origins' stores on disk.
 
-        They go into the first origin's store, or with everywhere into
-        every origin's.
+        They go into the holder's store, or with everywhere into every
+        origin's.
 
         Returns:
             What went wrong, or None.
         """
-        targets = stores.unique(self.origins) if everywhere else [self.holder]
-        for origin in targets:
-            for rel, data in objects.items():
-                why = stores.write_file(origin.store_of(NAMESPACE), rel, data)
-                if why:
-                    return why
+        origins = self.origins if everywhere else [self.holder]
+        for rel, data in objects.items():
+            why = stores.write_file_everywhere(origins, self.namespace, rel, data)
+            if why:
+                return why
         return None
-
-    def ask(
-        self,
-        method: str,
-        server_url: str,
-        rel: str,
-        headers: Mapping[str, str] | None = None,
-        timeout: float = 120,
-    ) -> web.Response:
-        """Send method to rel at server_url's server, with the token."""
-        return web.request(
-            method,
-            self.url(server_url, rel),
-            token=self.token,
-            headers=headers,
-            timeout=timeout,
-        )
-
-    def holds(self, cache: common.Cache, rel: str) -> bool:
-        """Return whether cache holds all of rel.
-
-        It does if a HEAD with only-if-cached, which fetches nothing,
-        gets 200. It is asked with the setup token: this is a check of
-        the cache's state, not of the pass's tokens.
-        """
-        answer = web.request("HEAD", self.url(cache.url, rel), token=self.setup, headers=ONLY_IF_CACHED)
-        return answer.status == 200
-
-    def wait_held(self, cache: common.Cache, rels: Sequence[str], seconds: float) -> list[str]:
-        """Wait up to seconds for cache to hold each of rels.
-
-        Returns:
-            Those of rels that cache does not hold within seconds.
-        """
-        deadline = time.time() + seconds
-        pending = list(rels)
-        while pending:
-            pending = [rel for rel in pending if not self.holds(cache, rel)]
-            if not pending or time.time() >= deadline:
-                break
-            time.sleep(1)
-        return pending
-
-
-def leaf(rel: str) -> str:
-    """Return rel's last segment, for a message."""
-    return rel.rsplit("/", 1)[-1]
-
-
-def served(answer: web.Response, data: bytes) -> str | None:
-    """Return why answer is not a whole object holding data, or None."""
-    if answer.status != 200:
-        return answer.describe()
-    if answer.body != data:
-        return f"{len(answer.body)} bytes, not the object"
-    return None
 
 
 def shed_reason(answer: web.Response) -> str | None:
     """Return the `error` of a 429's JSON body, or None if it has none."""
-    found = common.as_object(answer.json()) or {}
-    reason = found.get("error")
+    reason = answer.object().get("error")
     return reason if isinstance(reason, str) else None
 
 
@@ -315,52 +194,9 @@ def shed_problem(answer: web.Response) -> str | None:
 # The federation, slowed.
 
 
-def serving(test: Test) -> str | None:
-    """Return why /protected-a is not served as before, or None.
-
-    Every director must name every origin for the probe, and every cache
-    answer a HEAD of it, which fetches nothing. Each is asked with the
-    setup token, since this is a check of the shape, not of the pass's
-    tokens.
-    """
-    path = test.path(test.rel(PROBE))
-    for url in test.fed.directors:
-        where = director.ask(url, "origin", path, token=test.setup)
-        for origin in test.origins:
-            if not where.names(director.host(origin.url)):
-                return f"{director.host(url)} does not name {origin.svc}: {where.describe()}"
-    for cache in test.fed.federated_caches:
-        answer = web.request("HEAD", test.url(cache.url, test.rel(PROBE)), token=test.setup)
-        if answer.status != 200 or answer.header("Content-Length") != str(PROBE_SIZE):
-            return f"{cache.svc}: HEAD of the probe got {answer.describe()}"
-    return None
-
-
 def settle(test: Test) -> str | None:
-    """Wait until the federation serves /protected-a as before.
-
-    See serving(). A server that exited on its own ends the wait at once
-    (control.settle()).
-
-    Returns:
-        Why it doesn't within SETTLE_WAIT seconds, or None.
-    """
-    return control.settle(lambda: serving(test), SETTLE_WAIT)
-
-
-@contextlib.contextmanager
-def slowed(services: Sequence[str], config: str) -> Generator[None, None, None]:
-    """Restart services with config, for the with block.
-
-    Afterward, each is restarted as it was.
-
-    Raises:
-        control.ControlError: Restarting, or restoring, failed.
-    """
-    with contextlib.ExitStack() as stack:
-        for svc in services:
-            stack.enter_context(control.restart_with(svc, {CONFIG_FILE: config}))
-        yield
+    """Wait until the federation serves the probe (suite.Test.settle())."""
+    return test.settle(test.rel(PROBE), PROBE_SIZE)
 
 
 # --------------------------------------------------------------------------
@@ -372,7 +208,7 @@ def burst(test: Test, cache: common.Cache, found: Findings) -> None:
     rels = [test.rel("shed-429", cache.svc, f"burst-{n}") for n in range(BURST)]
     missing = test.rel("shed-429", cache.svc, "missing")
     objects = {rel: os.urandom(BURST_SIZE) for rel in rels}
-    why = test.put(objects)
+    why = test.write(objects)
     if why:
         found.problems.append(why)
         return
@@ -394,13 +230,13 @@ def burst(test: Test, cache: common.Cache, found: Findings) -> None:
         if answer.status == 429:
             problem = shed_problem(answer)
             if problem:
-                found.problems.append(f"{cache.svc}: {leaf(rel)}: {problem}")
+                found.problems.append(f"{cache.svc}: {suite.leaf(rel)}: {problem}")
             reason = shed_reason(answer) or "none"
             reasons[reason] = reasons.get(reason, 0) + 1
             continue
-        why = served(answer, objects[rel])
+        why = web.served(answer, objects[rel])
         if why:
-            found.problems.append(f"{cache.svc}: {leaf(rel)}: {why}, neither the object nor 429")
+            found.problems.append(f"{cache.svc}: {suite.leaf(rel)}: {why}, neither the object nor 429")
     counts = ", ".join(f"{n} {s}" for s, n in sorted(statuses.items()))
     if absent.status != 404:
         what = f"429 ({shed_reason(absent)})" if absent.status == 429 else absent.describe()
@@ -412,7 +248,7 @@ def burst(test: Test, cache: common.Cache, found: Findings) -> None:
     found.notes.append(f"{cache.svc}: {counts} ({said})")
 
 
-def shed_429(test: Test) -> Row:
+def shed_429(test: Test) -> suite.Row:
     """Check that each V2 cache sheds some of a burst of cold reads.
 
     Each gets BURST reads at once of cold objects that take seconds each
@@ -432,9 +268,13 @@ def shed_429(test: Test) -> Row:
 
 
 def answered_in(answer: web.Response, took: float, status: int, within: float) -> str | None:
-    """Return why answer is not status within within seconds, or None.
+    """Return why answer is not status within `within` seconds, or None.
 
-    took is how many seconds answer took.
+    Args:
+        answer: The answer.
+        took: How many seconds it took.
+        status: The status it must be.
+        within: How many seconds it may take.
     """
     if answer.status != status:
         return f"{answer.describe()}, not {status}"
@@ -461,22 +301,22 @@ def timeouts(test: Test, cache: common.Cache, found: dict[str, Findings]) -> Non
     )
     objects = {slow: os.urandom(SLOW_SIZE)}
     objects.update({rel: os.urandom(SMALL_SIZE) for rel in (queued, held, odd)})
-    why = test.put(objects)
+    why = test.write(objects)
     if why:
         for each in found.values():
             each.problems.append(why)
         return
 
-    why = served(test.ask("GET", cache.url, held), objects[held])
+    why = web.served(test.ask("GET", cache.url, held), objects[held])
     if why:
         found["held"].problems.append(f"{cache.svc}: a plain GET, to fill it, got {why}")
-    elif test.wait_held(cache, [held], FILL_WAIT):
+    elif not test.wait_cached(cache, held, FILL_WAIT):
         found["held"].problems.append(
             f"{cache.svc}: did not hold an object within {FILL_WAIT}s of a whole read"
         )
     else:
         answer, took = timed(test, cache, held, HELD_TIMEOUT)
-        why = served(answer, objects[held])
+        why = web.served(answer, objects[held])
         if why:
             found["held"].problems.append(
                 f"{cache.svc}: with X-Pelican-Timeout: {HELD_TIMEOUT}, what it holds got {why}"
@@ -519,18 +359,18 @@ def timeouts(test: Test, cache: common.Cache, found: dict[str, Findings]) -> Non
     for case, rel in (("short", slow), ("queued", queued)):
         if case not in timed_out:
             continue
-        if test.wait_held(cache, [rel], FILL_WAIT):
+        if not test.wait_cached(cache, rel, FILL_WAIT):
             found[case].problems.append(
                 f"{cache.svc}: after the 504, the cache did not hold the object within"
                 + f" {FILL_WAIT}s: it gave up the fetch"
             )
         else:
-            why = served(test.ask("GET", cache.url, rel), objects[rel])
+            why = web.served(test.ask("GET", cache.url, rel), objects[rel])
             if why:
                 found[case].problems.append(f"{cache.svc}: once held, a GET got {why}")
 
     answer, _ = timed(test, cache, odd, MALFORMED_TIMEOUT)
-    why = served(answer, objects[odd])
+    why = web.served(answer, objects[odd])
     if why:
         found["malformed"].problems.append(
             f"{cache.svc}: with X-Pelican-Timeout: {MALFORMED_TIMEOUT}, a cold read got {why}"
@@ -541,7 +381,7 @@ def timeouts(test: Test, cache: common.Cache, found: dict[str, Findings]) -> Non
 TIMEOUT_CASES = ("short", "queued", "held", "malformed")
 
 
-def timeout_header(test: Test) -> dict[str, Row]:
+def timeout_header(test: Test) -> dict[str, suite.Row]:
     """Check that each V2 cache heeds X-Pelican-Timeout.
 
     The header says how long a client will wait (serveObject in
@@ -565,7 +405,7 @@ def timeout_header(test: Test) -> dict[str, Row]:
     return {case: found[case].row(f"{len(test.v2)} cache(s)") for case in TIMEOUT_CASES}
 
 
-def streaming(test: Test) -> Row:
+def streaming(test: Test) -> suite.Row:
     """Check that each V2 cache streams a cold object as it fetches it.
 
     At each, a cold read of an object that takes seconds to fetch: its
@@ -579,12 +419,12 @@ def streaming(test: Test) -> Row:
     for cache in test.v2:
         rel = test.rel("streaming", cache.svc)
         data = os.urandom(STREAM_SIZE)
-        why = test.put({rel: data})
+        why = test.write({rel: data})
         if why:
             found.problems.append(why)
             continue
         read = web.timed_get(test.url(cache.url, rel), test.token, STREAM_HEAD, timeout=120)
-        why = served(read.response, data)
+        why = web.served(read.response, data)
         if why or read.first is None or read.whole is None:
             found.problems.append(f"{cache.svc}: a cold read got {why or 'no body'}")
             continue
@@ -598,7 +438,7 @@ def streaming(test: Test) -> Row:
     return found.row(f"{len(test.v2)} cache(s)")
 
 
-def range_ahead(test: Test) -> Row:
+def range_ahead(test: Test) -> suite.Row:
     """Check that each V2 cache serves a range ahead of a read under way.
 
     At each, a cold whole read of an object that takes many seconds to
@@ -614,7 +454,7 @@ def range_ahead(test: Test) -> Row:
     for cache in test.v2:
         rel = test.rel("range-ahead", cache.svc)
         data = os.urandom(AHEAD_SIZE)
-        why = test.put({rel: data})
+        why = test.write({rel: data})
         if why:
             found.problems.append(why)
             continue
@@ -633,11 +473,11 @@ def range_ahead(test: Test) -> Row:
             )
         elif ranged.body != data[AHEAD_START:]:
             found.problems.append(f"{cache.svc}: the range's bytes are not the object's")
-        why = served(read.response, data)
+        why = web.served(read.response, data)
         if why or read.whole is None:
             found.problems.append(f"{cache.svc}: the read under way got {why or 'no body'}")
             continue
-        why = served(test.ask("GET", cache.url, rel), data)
+        why = web.served(test.ask("GET", cache.url, rel), data)
         if why:
             found.problems.append(f"{cache.svc}: a warm read after both got {why}")
         times = f"the range in {took:.1f}s, the whole read in {read.whole:.1f}s"
@@ -752,19 +592,23 @@ def get_pelican(
     direct: bool = False,
     cache: common.Cache | None = None,
 ) -> Fetched:
-    """Run `pelican object get` of rel into a directory of its own, name.
+    """Run `pelican object get` of rel into a directory of its own.
 
-    It runs with SLOW_ENV if slow; and reads from an origin if direct,
-    or through cache alone (--cache), if one is named.
+    Args:
+        test: The run.
+        name: The directory's name.
+        rel: The object.
+        slow: Whether to run with SLOW_ENV.
+        direct: Whether to read from an origin.
+        cache: The cache to read through alone (--cache), if any.
     """
-    directory = os.path.join(test.tmp, name)
-    os.makedirs(directory)
+    directory = test.directory(name)
     args = ["object", "get", "--token", test.token_file]
     if direct:
         args.append("--direct")
     if cache:
         args += ["--cache", cache.url]
-    args += [test.object_url(rel), os.path.join(directory, "object")]
+    args += [test.pelican_url(rel), os.path.join(directory, "object")]
     status, out, err = test.session.pelican_cmd(*args, env=client_env(test, slow), cwd=directory)
     return fetched(directory, status, out + err)
 
@@ -777,16 +621,15 @@ def get_plugin(
     direct: bool = False,
     cache: common.Cache | None = None,
 ) -> Fetched:
-    """Run stash_plugin on rel, into a directory of its own, name.
+    """Run stash_plugin on rel, into a directory of its own.
 
     It takes what get_pelican() takes; a direct read adds ?directread to
     the URL, and a cache is named by Client.PreferredCaches.
     """
-    directory = os.path.join(test.tmp, name)
-    os.makedirs(directory)
-    url = test.object_url(rel) + (transfers.DIRECT_QUERY if direct else "")
+    directory = test.directory(name)
+    url = test.pelican_url(rel) + (transfers.DIRECT_QUERY if direct else "")
     status, out, err, ads = test.session.plugin_run(
-        f"throttling/{name}",
+        f"{test.area}/{name}",
         [(url, "object")],
         creds={"server.use": test.token_file},
         cache=cache.url if cache else None,
@@ -879,7 +722,7 @@ def shed_client(test: Test, cache: common.Cache, found: dict[str, Findings]) -> 
     rels = {c: test.rel("client-throttled", cache.svc, c) for c in CLIENTS}
     objects = {slot: os.urandom(OCCUPY_SIZE), queue: os.urandom(SLOW_SIZE)}
     objects.update({rel: os.urandom(SMALL_SIZE) for rel in rels.values()})
-    why = test.put(objects)
+    why = test.write(objects)
     if why:
         for each in found.values():
             each.problems.append(why)
@@ -895,10 +738,10 @@ def shed_client(test: Test, cache: common.Cache, found: dict[str, Findings]) -> 
             shed[client] = get(test, f"shed-{client}-{cache.svc}", rels[client], False, cache=cache)
         occupied = [(slot, first_read.result()), (queue, second_read.result())]
     for rel, answer in occupied:
-        why = served(answer, objects[rel])
+        why = web.served(answer, objects[rel])
         if why:
             for each in found.values():
-                each.doubts.append(f"{cache.svc}: the read to fill its queue, {leaf(rel)}, got {why}")
+                each.doubts.append(f"{cache.svc}: the read to fill its queue, {suite.leaf(rel)}, got {why}")
 
     for client, fetch in shed.items():
         if fetch.status == 0:
@@ -930,7 +773,7 @@ def shed_client(test: Test, cache: common.Cache, found: dict[str, Findings]) -> 
             )
 
 
-def client_throttled(test: Test) -> dict[str, Row]:
+def client_throttled(test: Test) -> dict[str, suite.Row]:
     """Check that the clients, shed by a V2 cache, report a retryable error.
 
     At each V2 cache, a cold read holds the origin's one slot, and
@@ -951,7 +794,7 @@ def client_throttled(test: Test) -> dict[str, Row]:
     return {client: found[client].row(f"{len(test.v2)} cache(s)") for client in CLIENTS}
 
 
-def slow_transfer(test: Test) -> dict[str, Row]:
+def slow_transfer(test: Test) -> dict[str, suite.Row]:
     """Check that the clients give up on transfers too slow, and only those.
 
     The transfers are of objects of SLOW_TRANSFER_SIZE:
@@ -967,14 +810,14 @@ def slow_transfer(test: Test) -> dict[str, Row]:
     cache          `pelican object get` through each V2 cache, cold,
                    with SLOW_ENV, must fail as `direct` does
     """
-    rows: dict[str, Row] = {}
+    rows: dict[str, suite.Row] = {}
     slow = test.rel("slow-transfer", "direct")
     data = os.urandom(SLOW_TRANSFER_SIZE)
     via = {c.svc: test.rel("slow-transfer", c.svc) for c in test.v2}
     defaults = {c: test.rel("slow-transfer", f"default-{c}") for c in CLIENTS}
     objects = {slow: data}
     objects.update({rel: os.urandom(SLOW_TRANSFER_SIZE) for rel in [*via.values(), *defaults.values()]})
-    why = test.put(objects)
+    why = test.write(objects)
     if why:
         return {"": (FAIL, why)}
 
@@ -1019,14 +862,14 @@ def slow_transfer(test: Test) -> dict[str, Row]:
 # Running the cases.
 
 
-def single(case: Callable[[Test], Row]) -> Callable[[Test], dict[str, Row]]:
+def single(case: Callable[[Test], suite.Row]) -> Callable[[Test], dict[str, suite.Row]]:
     """Return case, of a scenario with one row, as CASES takes it."""
     return lambda test: {"": case(test)}
 
 
 # What runs each scenario: its rows, each by its name after the
 # scenario's ("" for the scenario's only row).
-CASES: dict[str, Callable[[Test], dict[str, Row]]] = {
+CASES: dict[str, Callable[[Test], dict[str, suite.Row]]] = {
     "shed-429": single(shed_429),
     "client-throttled": client_throttled,
     "timeout-header": timeout_header,
@@ -1043,7 +886,7 @@ def row_name(scenario: str, name: str) -> str:
 
 def run_scenario(test: Test, scenario: str, results: common.Results) -> None:
     """Run scenario, and record its rows."""
-    rows = common.guarded(partial(CASES[scenario], test), lambda note: {"": (FAIL, note)})
+    rows = suite.attempt_all([""], partial(CASES[scenario], test))
     for name, (status, note) in rows.items():
         results.add(row_name(scenario, name), status, note)
 
@@ -1051,7 +894,7 @@ def run_scenario(test: Test, scenario: str, results: common.Results) -> None:
 def run_phase(test: Test, scenarios: list[str], results: common.Results, done: set[str]) -> None:
     """Run scenarios, once the federation serves again, and note each done.
 
-    Each fails where it does not serve within SETTLE_WAIT seconds.
+    Each fails where it does not serve within suite.SETTLE_WAIT seconds.
     """
     if not scenarios:
         return
@@ -1074,8 +917,9 @@ def skip(fed: common.Federation) -> str | None:
         return "Origin.TransferRateLimit slows only a posixv2 origin"
     if fed.tiny:
         return "the tiny topology's servers are one process, which slowing the origin would slow"
-    if NAMESPACE not in fed.exports:
-        return "this shape does not export /protected-a"
+    why = suite.unexported(fed)
+    if why:
+        return why
     if not any(c.kind == "v2" for c in fed.federated_caches):
         return "this shape has no federated V2 cache"
     return None
@@ -1093,30 +937,23 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
             results.add(scenario, SKIP, why)
         return
     stores.require_dirs(fed.origins, [NAMESPACE], "data/throttling")
-    tokens = session.setup_tokens()
-
-    def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/throttling", tokens)
-        if errors:
-            warn(f"emptying data/throttling {when}: {first(errors)}")
-
-    clean("before the run")
     test = Test(session)
+    test.clean("before the run")
     print(f"Throttling test against {fed.url}, objects under /{NAMESPACE}/{test.base}/")
     done: set[str] = set()
     try:
-        why = test.put({test.rel(PROBE): os.urandom(PROBE_SIZE)}, everywhere=True)
+        why = test.write({test.rel(PROBE): os.urandom(PROBE_SIZE)}, everywhere=True)
         if why:
             die(f"could not put the probe in place: {why}")
         first_phase = [s for s in selected if s in SCHEDULER_AS_IS]
         rest = [s for s in selected if s not in SCHEDULER_AS_IS]
         print(f"\nRestarting the origins limited to {RATE_LIMIT}")
         try:
-            with slowed([o.svc for o in test.origins], ORIGIN_CONFIG):
+            with control.restart_all_with({o.svc: {CONFIG_FILE: ORIGIN_CONFIG} for o in test.origins}):
                 run_phase(test, first_phase, results, done)
                 if rest:
                     print("\nRestarting the V2 caches throttled")
-                    with slowed([c.svc for c in test.v2], CACHE_CONFIG):
+                    with control.restart_all_with({c.svc: {CONFIG_FILE: CACHE_CONFIG} for c in test.v2}):
                         run_phase(test, rest, results, done)
         except control.ControlError as e:
             # Restarting, or restoring, failed: what is left unrun fails.
@@ -1128,4 +965,4 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         if why:
             warn(f"with the servers restored, {why}")
     finally:
-        clean("after the run")
+        test.clean("after the run")

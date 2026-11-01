@@ -10,7 +10,9 @@ the client names. Every byte moved is compared with the origins' stores,
 and no batch may leave anything else in its directory, nor a failed get
 any file. Outside the tiny topology, only caches may serve the
 downloads meant for one, only an origin the direct ones, and only the
-named cache the named ones.
+named cache the named ones. The gets read the test objects that
+`./fed.sh init` makes; each put scenario uploads to its own collection,
+data/put/<scenario> (Scenario.store_dir), emptied first.
 
 What each scenario expects, how many batches it runs, and how a batch
 is judged, is in framework/testlib/transfers.py. Results go to
@@ -22,11 +24,9 @@ files/ (what each batch downloaded or uploaded), and verify/problems
 (every unexpected result).
 
 Each credential's token is of the session's profile, and must fare as
-its twin of the other profile does; the scenarios that present no token
-(`exist` and those of the `none` credential) run in the WLCG pass alone.
-The SciTokens pass keeps its results in data/transfers-scitokens/. The
-test objects are seeded, and the stores read, with WLCG tokens either
-way.
+its twin of the other profile does. The SciTokens pass keeps its results
+in data/transfers-scitokens/. The test objects are seeded, and the
+stores read, with WLCG tokens either way. See docs/tests/test-data.md.
 """
 
 import collections
@@ -66,7 +66,7 @@ ROUTE_SERVERS = {"cache": "cache", "direct": "origin", "named": "named-cache"}
 
 
 def skip(_fed: common.Federation) -> str | None:
-    """Return None, as there is always something to test.
+    """Return None: there is always something to test.
 
     Every shape exports a namespace that some scenario uses.
     """
@@ -388,11 +388,8 @@ def http_transfer(session: Session, plan: Plan, batch: Batch) -> None:
     """
     s = batch.scenario
     fed = session.fed
-    token: str | None = None
     token_file = plan.token_files[s.name]
-    if token_file:
-        with open(token_file, encoding="utf-8") as f:
-            token = f.read().strip()
+    token = common.read_text(token_file) if token_file else None
     cache = named_cache(fed).url if fed.federated_caches else ""
     directory = f"{plan.out}/files/{batch.id}"
     failures: list[str] = []

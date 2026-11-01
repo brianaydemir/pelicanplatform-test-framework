@@ -1,9 +1,8 @@
 """Logging in to a Pelican server through the identity provider.
 
 The tests log in as a browser would, through the provider
-(`-p auth-oidc-local`; framework/idp/idp.py). Here too is what else the
-provider offers the tests: its users, and approving a device flow
-there.
+(`-p auth-oidc-local`; framework/idp/idp.py). Here too are the
+provider's users, its log, and approving a device flow there.
 
 A login goes in three steps (handleOAuthLogin and handleOAuthCallback
 in Pelican's web_ui/oauth2_client.go):
@@ -46,7 +45,6 @@ LOGIN = "/api/v1.0/auth/oauth/login"
 CALLBACK = "/api/v1.0/auth/oauth/callback"
 # The cookie in which a server keeps the state of a login it began.
 SESSION_COOKIE = "pelican-session"
-FORM = {"Content-Type": "application/x-www-form-urlencoded"}
 
 
 class LoginError(Exception):
@@ -74,7 +72,8 @@ class IdpUser:
 def users(issuer: str) -> dict[str, IdpUser]:
     """Return the provider's users, by username, given its issuer URL.
 
-    Fill in what USERS_FILE leaves out as the provider does (idp.py).
+    What USERS_FILE leaves out is filled in as the provider fills it in
+    (idp.py).
     """
     with open(USERS_FILE, encoding="utf-8") as f:
         parsed = common.as_object(json.load(f)) or {}
@@ -95,8 +94,7 @@ def users(issuer: str) -> dict[str, IdpUser]:
 
 def client_id() -> str:
     """Return the client ID that the servers present to the provider."""
-    with open(CLIENT_ID_FILE, encoding="utf-8") as f:
-        return f.read().strip()
+    return common.read_text(CLIENT_ID_FILE)
 
 
 @dataclass(frozen=True)
@@ -132,8 +130,8 @@ def begin(web_url: str, next_url: str = "/") -> Started:
 def authorize(authorize_url: str, user: IdpUser) -> web.Response:
     """Log user in at the provider's authorization endpoint.
 
-    Do so as its login form does, with the request the server put in
-    authorize_url.
+    The user logs in as its login form does, with the request the
+    server put in authorize_url.
 
     Returns:
         The provider's answer, a redirect (302) to the callback with the
@@ -146,7 +144,7 @@ def authorize(authorize_url: str, user: IdpUser) -> web.Response:
         "POST",
         urlunsplit(parts._replace(query="")),
         upload=urlencode(form).encode(),
-        headers=FORM,
+        headers=accounts.FORM,
     )
 
 
@@ -207,20 +205,25 @@ def whoami(web_url: str, cookie: str) -> dict[str, Any]:
 def approve_device(issuer: str, user_code: str, user: IdpUser) -> web.Response:
     """Approve the device flow with user_code at the provider.
 
-    Do so as user, logging in at its verification page.
+    It is approved as user, logging in at its verification page.
 
     Returns:
         The provider's answer.
     """
     form = {"user_code": user_code, "username": user.username, "password": user.password}
-    return web.request("POST", f"{issuer}/device", upload=urlencode(form).encode(), headers=FORM)
+    return web.request("POST", f"{issuer}/device", upload=urlencode(form).encode(), headers=accounts.FORM)
 
 
 def user_code_in(line: str) -> str | None:
     """Return the user code of the provider's verification URL in line.
 
-    The URL is <issuer>/device?user_code=..., and line is one of a
-    client's output. Return None if the line names none.
+    The URL is <issuer>/device?user_code=....
+
+    Args:
+        line: A line of a client's output.
+
+    Returns:
+        The code, or None if line names no such URL.
     """
     for word in line.split():
         parts = urlsplit(word)

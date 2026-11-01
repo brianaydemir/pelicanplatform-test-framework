@@ -2,21 +2,21 @@
 
 That is the federation, the client and its environment, tokens, and a
 scratch directory. test.py makes a Session for each token profile
-(credentials.PROFILES), in framework/var, and runs each suite once with
-each in turn: the tests' tokens are of the session's profile.
+(credentials.PROFILES), and runs each suite once with each in turn: the
+tests' tokens are of the session's profile.
 
 Tokens are minted once and kept: the server's own, for a suite's
 checks, and those of the credential table (credentials.CREDENTIALS),
 which the auth and transfers suites both present. A suite's setup, and
 its checks of what the stores hold, use the server's own WLCG tokens
-whatever the session's profile (setup_token()), so that each scenario's
-twin tests only the token it presents. The expired tokens are minted as
-the session starts, so that they are long expired by the time those
-suites, which run late, present them.
+whatever the session's profile (setup_token()), so that a scenario's
+twin in the other pass differs only in the token it presents. The
+expired tokens are minted as the session starts, so that they are long
+expired by the time those suites, which run late, present them.
 
-pelican_cmd() and plugin_cmd() log each client command, with all it
-printed, in the pass's commands_log. last_line() and the json_*
-functions read what a client printed.
+Each client command, with all it printed, goes in the pass's
+commands_log. last_line() and the json_* functions read what a client
+printed.
 """
 
 import json
@@ -44,6 +44,7 @@ def timed_out(seconds: float) -> str:
 
 
 def _text(output: str | bytes | None) -> str:
+    """Return what a killed run printed, as text."""
     if output is None:
         return ""
     return output.decode(errors="replace") if isinstance(output, bytes) else output
@@ -62,6 +63,7 @@ class Session:
     """What every suite shares in one pass of test.py.
 
     Attributes:
+        fed: The federation.
         profile: The profile of the tests' tokens (see
             credentials.PROFILES).
         pelican: The pelican client's absolute path.
@@ -77,8 +79,8 @@ class Session:
         sync_env: The same, for `object sync`, which wants overwrites off.
         namespaces: The namespaces that the federation exports.
         stale_at: When the last expired token expired.
-        commands_log: Where pelican_cmd() and plugin_cmd() log each
-            client command, under framework/var: data/commands.log, or
+        commands_log: Where each client command is logged, under
+            framework/var: data/commands.log, or
             data/commands-<profile>.log in another profile's pass.
     """
 
@@ -96,8 +98,7 @@ class Session:
                 its profile.
             profile: The profile of the tests' tokens.
             fed: The federation, if another pass already read it.
-            run: When the run started, as YYYYMMDD-HHMMSS; now unless
-                given.
+            run: When the run started, as YYYYMMDD-HHMMSS, if not now.
         """
         self.fed = fed or common.Federation()
         self.profile = profile
@@ -119,6 +120,8 @@ class Session:
         with open(self.commands_log, "w", encoding="utf-8"):
             pass
         self._log_lock = threading.Lock()
+        # Suites ask for tokens from worker threads.
+        self._mint_lock = threading.Lock()
         for cred in credentials.CREDENTIALS:
             if cred.expired and not credentials.moot(self.fed, cred):
                 for namespace in self.namespaces:
@@ -133,10 +136,12 @@ class Session:
     def var_dir(self, name: str) -> str:
         """Return where the pass keeps what it would keep in name.
 
-        name is a directory under framework/var, e.g. data/auth-test,
-        which a suite empties as it starts: it is the WLCG pass's, and
-        <name>-<profile> another's, so that one pass keeps what the other
-        leaves.
+        That is name in the WLCG pass, and <name>-<profile> in another,
+        so that neither pass empties what the other keeps.
+
+        Args:
+            name: A directory under framework/var that a suite empties as
+                it starts, e.g. data/auth-test.
         """
         return name if self.profile == WLCG else f"{name}-{self.profile}"
 
@@ -149,16 +154,16 @@ class Session:
         """
         profile = profile or self.profile
         key = (profile, namespace, scopes)
-        if key not in self._server:
-            path = self.path(f"tokens/server.{profile}.{namespace}.{'-'.join(scopes)}")
-            credentials.mint_server(self.fed, path, namespace, scopes, profile=profile)
-            self._server[key] = path
-        return self._server[key]
+        with self._mint_lock:
+            if key not in self._server:
+                path = self.path(f"tokens/server.{profile}.{namespace}.{'-'.join(scopes)}")
+                credentials.mint_server(self.fed, path, namespace, scopes, profile=profile)
+                self._server[key] = path
+            return self._server[key]
 
     def token(self, namespace: str, scopes: tuple[str, ...] = RWM, profile: str | None = None) -> str:
-        """Return the same token itself."""
-        with open(self.token_file(namespace, scopes, profile), encoding="utf-8") as f:
-            return f.read().strip()
+        """Return token_file()'s token itself."""
+        return common.read_text(self.token_file(namespace, scopes, profile))
 
     def setup_token_file(self, namespace: str, scopes: tuple[str, ...] = RWM) -> str:
         """Return the file of a `server` token of the WLCG profile.
@@ -169,7 +174,7 @@ class Session:
         return self.token_file(namespace, scopes, WLCG)
 
     def setup_token(self, namespace: str, scopes: tuple[str, ...] = RWM) -> str:
-        """Return the same token itself."""
+        """Return setup_token_file()'s token itself."""
         return self.token(namespace, scopes, WLCG)
 
     def setup_tokens(self) -> dict[str, str]:
@@ -181,32 +186,35 @@ class Session:
     def credential_file(self, cred: Credential, namespace: str, op: str) -> str | None:
         """Return the file of cred's token for op in namespace.
 
-        op is `get` or `put`. The token is of the session's profile.
+        The token is of the session's profile.
+
+        Args:
+            cred: The credential.
+            namespace: The namespace, e.g. `protected-a`.
+            op: `get` or `put`.
 
         Returns:
             The file; None for `none`, which has no token.
         """
         key = (cred.name, namespace, op)
-        if key not in self._credential:
-            path = self.path(f"tokens/{cred.name}.{namespace}.{op}")
-            expiry = credentials.mint_credential(self.fed, cred, namespace, op, path, self.profile)
-            self._credential[key] = None if expiry is None else path
-            if cred.expired and expiry is not None:
-                self.stale_at = max(self.stale_at or expiry, expiry)
-        return self._credential[key]
+        with self._mint_lock:
+            if key not in self._credential:
+                path = self.path(f"tokens/{cred.name}.{namespace}.{op}")
+                expiry = credentials.mint_credential(self.fed, cred, namespace, op, path, self.profile)
+                self._credential[key] = None if expiry is None else path
+                if cred.expired and expiry is not None:
+                    self.stale_at = max(self.stale_at or expiry, expiry)
+            return self._credential[key]
 
     def credential_token(self, cred: Credential, namespace: str, op: str) -> str | None:
-        """Return the same token itself, or None."""
+        """Return credential_file()'s token itself, or None."""
         path = self.credential_file(cred, namespace, op)
-        if path is None:
-            return None
-        with open(path, encoding="utf-8") as f:
-            return f.read().strip()
+        return None if path is None else common.read_text(path)
 
     def wait_until_stale(self) -> None:
         """Wait, if need be, until no server may accept the expired tokens.
 
-        See credentials.wait_until_stale.
+        See credentials.wait_until_stale().
         """
         credentials.wait_until_stale(self.stale_at)
 
@@ -292,7 +300,8 @@ class Session:
         Args:
             name: The name of its files, e.g. `<suite>/<transfer>`, under a
                 suite's own directory (path()).
-            ads: Each transfer's URL and local file (transfers.transfer_ad()).
+            ads: Each transfer's URL and local file
+                (transfers.transfer_ad()).
             creds: The token files to put in its credentials directory, by
                 the name each is to have there, e.g. scitokens.use.
             upload: Whether it uploads rather than downloads.
@@ -351,11 +360,19 @@ class Session:
         err: str,
         files: Mapping[str, str] | None = None,
     ) -> None:
-        """Append a command, its exit status, and its output to commands_log.
+        """Append a command, its exit status, and output to commands_log.
 
-        files are the texts of files it read or wrote, by name, which go
-        after its output. Each token's signature is cut out
-        (report.redact()).
+        Each token's signature is cut out (report.redact()).
+
+        Args:
+            args: The command.
+            cwd: Its working directory.
+            seconds: How long it ran.
+            status: Its exit status.
+            out: Its stdout.
+            err: Its stderr.
+            files: The texts of files it read or wrote, by name, to log
+                after its output.
         """
         sections = [("stdout", out), ("stderr", err), *(files or {}).items()]
         said = "".join(f"--- {name}\n{text.rstrip()}\n" for name, text in sections if text.strip())
@@ -372,8 +389,10 @@ def last_line(text: str) -> str:
 
     Passed over are blank lines; the client's "Errors are retryable",
     which it logs after the error itself; and everything from a `Usage:`
-    line on, which the client and server print after an error. The line
-    is cut to 300 characters; "(no output)" if there is none.
+    line on, which the client and server print after an error.
+
+    Returns:
+        The line, cut to 300 characters; "(no output)" if there is none.
     """
     lines = [line for line in text.strip().splitlines() if line.strip()]
     usage = next((i for i, line in enumerate(lines) if line.strip() == "Usage:"), len(lines))

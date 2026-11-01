@@ -8,7 +8,7 @@ they are tested. Each command is checked against the origins' stores,
 or the local files.
 
 The read-only commands run against a tree put straight at every origin,
-/<namespace>/data/cmd/<run>/tree/, so that they agree whichever origin
+/<namespace>/data/commands/<run>/tree/, so that they agree whichever origin
 the director picks: the same paths and sizes in each namespace, but
 bytes of its own. The rest go through the director like any client.
 Under `topo-multi-origin`, a write lands on one origin, so a success
@@ -27,6 +27,8 @@ tree is put in place, and the stores read, with WLCG tokens.
 The commands' exit status says little about what went wrong, so
 failures are judged by what they print (testlib/transfers.py's
 FAILURE_RULES).
+
+See docs/tests/client-commands.md.
 """
 
 import binascii
@@ -40,8 +42,8 @@ from functools import partial
 from typing import Any
 from urllib.parse import urlsplit
 
-from testlib import blocks, common, credentials, stores, transfers
-from testlib.common import die
+from testlib import blocks, common, credentials, stores, suite, transfers
+from testlib.common import die, first
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, json_object, json_objects, last_line
 
@@ -156,7 +158,7 @@ def uses_public(name: str) -> bool:
 # The scenarios that need the origins' storage to delete an object.
 DELETES = ("delete-object", "delete-recursive", "delete-nonempty", "delete-missing")
 
-# The tree the read-only commands work on, under data/cmd/<run>/tree/.
+# The tree the read-only commands work on, under data/commands/<run>/tree/.
 TREE = {"a": 1000, "b": 5000, "sub/c": 300, "sub/deeper/d": 7000}
 
 
@@ -225,18 +227,20 @@ def no_token_refusal(code: int, out: str, err: str, standalone: bool) -> str | N
     )
 
 
-class Test:
+class Test(suite.Test):
     """What every scenario needs: tokens, the stores, and the trees.
 
+    The base's namespace is /protected-a.
+
     Attributes:
-        base: Where the run's objects are, in each namespace.
+        origins: The origins.
         namespaces: The namespaces the scenarios use.
         lacks: The capabilities that the running scenario needs, and its
             namespace lacks (see NEEDS).
         token_files: A `server` token file for each namespace, of the
             session's profile.
-        tokens: A `server` token for each namespace, of the WLCG profile,
-            for putting objects in place and reading the stores.
+        setup_tokens: A `server` token for each namespace, of the WLCG
+            profile, for putting objects in place and reading the stores.
         read_only: A read-only `server` token file for /protected-a, of
             the session's profile.
         sync_env: The client's environment, with overwrites off.
@@ -245,19 +249,13 @@ class Test:
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.origins = session.fed.origins
-        self.tmp = os.path.join(session.tmp, "commands")
-        os.makedirs(self.tmp)
-        self.run = session.run
-        self.base = f"data/cmd/{self.run}"
-        self.namespaces: list[str] = [ns for ns in ("public", "protected-a") if ns in session.fed.exports]
+        super().__init__(session, "commands")
+        self.origins = self.fed.origins
+        self.namespaces: list[str] = [ns for ns in ("public", "protected-a") if ns in self.fed.exports]
         self.lacks: frozenset[str] = frozenset()
         self.token_files = {ns: session.token_file(ns) for ns in self.namespaces}
-        self.tokens = {ns: session.setup_token(ns) for ns in self.namespaces}
+        self.setup_tokens = {ns: session.setup_token(ns) for ns in self.namespaces}
         self.read_only = session.token_file("protected-a", credentials.R)
-        self.env = session.env
         self.sync_env = session.sync_env
         # On a pstore origin, /public's tree is /protected-a's, whose
         # storage it reads.
@@ -269,66 +267,53 @@ class Test:
 
     # URLs, paths, and stores.
 
-    def url(self, namespace: str, rel: str) -> str:
+    def federation_url(self, namespace: str, rel: str) -> str:
         """Return the federation URL of rel in namespace."""
         return f"{self.fed.url}/{namespace}/{rel}"
 
-    def local(self, name: str, data: bytes) -> str:
-        """Write data to local file name, and return its path."""
-        path = os.path.join(self.tmp, name)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            f.write(data)
-        return path
-
-    def held(self, namespace: str, rel: str) -> list[str | None]:
+    def holdings(self, namespace: str, rel: str) -> list[str | None]:
         """Return what each store holds at rel in namespace.
 
         See stores.held_anywhere().
         """
-        return stores.held_anywhere(self.origins, namespace, rel, self.tokens)
+        return stores.held_anywhere(self.origins, namespace, rel, self.setup_tokens)
 
     def somewhere(self, namespace: str, rel: str, data: bytes) -> bool:
         """Return whether some store holds data at rel in namespace."""
-        return hashlib.sha256(data).hexdigest() in self.held(namespace, rel)
+        return common.digest(data) in self.holdings(namespace, rel)
 
     def nowhere(self, namespace: str, rel: str) -> bool:
         """Return whether no store holds anything at rel in namespace."""
-        return all(h is None for h in self.held(namespace, rel))
+        return all(h is None for h in self.holdings(namespace, rel))
 
     def everywhere(self, namespace: str, rel: str, data: bytes) -> bool:
         """Return whether every store holds data at rel in namespace."""
-        return all(h == hashlib.sha256(data).hexdigest() for h in self.held(namespace, rel))
+        return all(h == common.digest(data) for h in self.holdings(namespace, rel))
 
     def gone_somewhere(self, namespace: str, rel: str) -> bool:
         """Return whether some store holds nothing at rel in namespace."""
-        return any(h is None for h in self.held(namespace, rel))
+        return any(h is None for h in self.holdings(namespace, rel))
 
     def seed(self, namespace: str, rel: str, data: bytes) -> None:
         """Put data at rel in namespace's storage at every origin.
 
-        On a pstore origin, /public's storage is /protected-a's (see
-        stores.seed()).
+        On a pstore origin, /public's storage is /protected-a's.
         """
-        target = self.fed.storage_namespace(namespace)
-        token = self.tokens[target]
-        parent = rel.rsplit("/", 1)[0]
-        errors = stores.make_dirs(self.origins, target, parent, token)
-        errors += stores.seed_everywhere(self.origins, target, rel, data, token, self.fed.exports[target])
+        errors = stores.put_in_place(self.session, self.origins, namespace, rel, data)
         if errors:
-            die("could not put the test objects in place: " + "; ".join(errors))
+            die(f"could not put {rel} in place: {first(errors)}")
 
     def make_dirs(self, rel: str) -> None:
         """Make collection rel in /protected-a at every origin."""
-        errors = stores.make_dirs(self.origins, "protected-a", rel, self.tokens["protected-a"])
+        errors = stores.make_dirs(self.origins, "protected-a", rel, self.setup)
         if errors:
-            die("could not make the test collections: " + "; ".join(errors))
+            die(f"could not make {rel}: {first(errors)}")
 
     def seed_tree(self) -> None:
         """Put each namespace's tree in place at every origin."""
         for namespace in dict.fromkeys(self.fed.storage_namespace(ns) for ns in self.namespaces):
             for path, data in self.trees[namespace].items():
-                self.seed(namespace, f"{self.base}/tree/{path}", data)
+                self.seed(namespace, self.rel("tree", path), data)
 
     # Running the client.
 
@@ -336,7 +321,7 @@ class Test:
         self, *args: str, env: dict[str, str] | None = None, cwd: str | None = None
     ) -> tuple[int, str, str]:
         """Return `pelican <args>`'s exit status, stdout, and stderr."""
-        return self.session.pelican_cmd(*args, env=env or self.env, cwd=cwd or self.tmp)
+        return self.session.pelican_cmd(*args, env=env or self.session.env, cwd=cwd or self.tmp)
 
     def token_args(self, namespace: str) -> list[str]:
         """Return the client's arguments for namespace's token."""
@@ -457,7 +442,7 @@ def ls_tree(test: Test, namespace: str) -> tuple[str, str]:
     args = ["object", "ls", "-l", "--json"]
     if namespace == "protected-a":
         args += test.token_args(namespace)
-    code, out, err = test.pelican_cmd(*args, test.url(namespace, f"{test.base}/tree"))
+    code, out, err = test.pelican_cmd(*args, test.federation_url(namespace, test.rel("tree")))
 
     def passed() -> tuple[str, str]:
         try:
@@ -493,7 +478,7 @@ def ls_recursive(test: Test) -> tuple[str, str]:
 
     Each must be listed once, by its path in the tree.
     """
-    url = test.url("protected-a", f"{test.base}/tree")
+    url = test.federation_url("protected-a", test.rel("tree"))
     code, out, err = test.pelican_cmd(
         "object", "ls", "-r", "-l", "--json", *test.token_args("protected-a"), url
     )
@@ -517,7 +502,7 @@ def ls_missing(test: Test) -> tuple[str, str]:
         "object",
         "ls",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/tree/nope"),
+        test.federation_url("protected-a", test.rel("tree/nope")),
     )
     why = test.expect_not_found(code, out, err)
     if why:
@@ -527,7 +512,7 @@ def ls_missing(test: Test) -> tuple[str, str]:
 
 def ls_no_token(test: Test) -> tuple[str, str]:
     """Check that `ls` of /protected-a with no token is refused."""
-    code, out, err = test.pelican_cmd("object", "ls", test.url("protected-a", f"{test.base}/tree"))
+    code, out, err = test.pelican_cmd("object", "ls", test.federation_url("protected-a", test.rel("tree")))
     why = no_token_refusal(code, out, err, test.fed.standalone)
     if why:
         return FAIL, why
@@ -552,7 +537,7 @@ def modified_problem(test: Test, namespace: str, info: dict[str, Any]) -> str | 
     when = common.parse_rfc3339(str(info.get("ModTime", "")))
     if when is None:
         return f"ModTime {info.get('ModTime')!r} is not a time"
-    rel = f"{test.base}/tree/b"
+    rel = test.rel("tree/b")
     times: list[float] = []
     for origin in stores.unique(test.origins):
         found, why = stores.written_at(test.session, origin, namespace, rel)
@@ -579,7 +564,7 @@ def stat_object(test: Test, namespace: str) -> tuple[str, str]:
         args += ["--checksums", kind]
     if namespace == "protected-a":
         args += test.token_args(namespace)
-    code, out, err = test.pelican_cmd(*args, test.url(namespace, f"{test.base}/tree/b"))
+    code, out, err = test.pelican_cmd(*args, test.federation_url(namespace, test.rel("tree/b")))
     if code != 0:
         return FAIL, f"exit {code}: {last_line(err)}"
     try:
@@ -621,7 +606,7 @@ def stat_collection(test: Test) -> tuple[str, str]:
         "stat",
         "--json",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/tree/sub"),
+        test.federation_url("protected-a", test.rel("tree/sub")),
     )
     if code != 0:
         return FAIL, f"exit {code}: {last_line(err)}"
@@ -640,7 +625,7 @@ def stat_missing(test: Test) -> tuple[str, str]:
         "object",
         "stat",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/tree/nope"),
+        test.federation_url("protected-a", test.rel("tree/nope")),
     )
     why = test.expect_not_found(code, out, err)
     if why:
@@ -654,11 +639,11 @@ def stat_missing(test: Test) -> tuple[str, str]:
 
 def delete_object(test: Test) -> tuple[str, str]:
     """Check that `delete` removes an object."""
-    rel = f"{test.base}/del/object"
+    rel = test.rel("del/object")
     data = os.urandom(2000)
     test.seed("protected-a", rel, data)
     code, out, err = test.pelican_cmd(
-        "object", "delete", *test.token_args("protected-a"), test.url("protected-a", rel)
+        "object", "delete", *test.token_args("protected-a"), test.federation_url("protected-a", rel)
     )
 
     def passed() -> tuple[str, str]:
@@ -671,7 +656,7 @@ def delete_object(test: Test) -> tuple[str, str]:
 
 def delete_recursive(test: Test) -> tuple[str, str]:
     """Check that `delete -r` removes a collection and what it holds."""
-    rels = [f"{test.base}/del/tree/1", f"{test.base}/del/tree/sub/2"]
+    rels = [test.rel("del/tree/1"), test.rel("del/tree/sub/2")]
     data = {rel: os.urandom(1000) for rel in rels}
     for rel in rels:
         test.seed("protected-a", rel, data[rel])
@@ -680,11 +665,11 @@ def delete_recursive(test: Test) -> tuple[str, str]:
         "delete",
         "-r",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/del/tree"),
+        test.federation_url("protected-a", test.rel("del/tree")),
     )
 
     def passed() -> tuple[str, str]:
-        held = [test.held("protected-a", rel) for rel in rels]
+        held = [test.holdings("protected-a", rel) for rel in rels]
         # Some origin (the one the director chose) must hold none of them.
         if not any(all(h[i] is None for h in held) for i in range(len(held[0]))):
             return FAIL, "no origin is rid of the whole collection"
@@ -695,14 +680,14 @@ def delete_recursive(test: Test) -> tuple[str, str]:
 
 def delete_nonempty(test: Test) -> tuple[str, str]:
     """Check that `delete` refuses a non-empty collection without -r."""
-    rel = f"{test.base}/del/full/1"
+    rel = test.rel("del/full/1")
     data = os.urandom(1000)
     test.seed("protected-a", rel, data)
     code, out, err = test.pelican_cmd(
         "object",
         "delete",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/del/full"),
+        test.federation_url("protected-a", test.rel("del/full")),
     )
     if test.lacks:
         return test.outcome(code, out, err, lambda: (PASS, ""), lambda: unchanged(test, {rel: data}))
@@ -717,12 +702,12 @@ def delete_nonempty(test: Test) -> tuple[str, str]:
 
 def delete_missing(test: Test) -> tuple[str, str]:
     """Check that `delete` of a missing object fails as not found."""
-    test.make_dirs(f"{test.base}/del")
+    test.make_dirs(test.rel("del"))
     code, out, err = test.pelican_cmd(
         "object",
         "delete",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/del/nope"),
+        test.federation_url("protected-a", test.rel("del/nope")),
     )
     why = test.expect_not_found(code, out, err)
     if why:
@@ -736,10 +721,10 @@ def delete_refused(test: Test, name: str, args: list[str]) -> tuple[str, str]:
     The object deleted is del/<name>, put in place first. If args name no
     token, the client itself must refuse.
     """
-    rel = f"{test.base}/del/{name}"
+    rel = test.rel("del", name)
     data = os.urandom(1000)
     test.seed("protected-a", rel, data)
-    code, out, err = test.pelican_cmd("object", "delete", *args, test.url("protected-a", rel))
+    code, out, err = test.pelican_cmd("object", "delete", *args, test.federation_url("protected-a", rel))
     if args:
         why = test.expect_refusal(code, out, err)
     else:
@@ -767,11 +752,11 @@ def delete_public(test: Test) -> tuple[str, str]:
     /public takes no writes; where it does (`-p origin-public-writes`),
     the object must instead be removed, as in /protected-a.
     """
-    rel = f"{test.base}/del/public"
+    rel = test.rel("del/public")
     data = os.urandom(1000)
     test.seed("public", rel, data)
     code, out, err = test.pelican_cmd(
-        "object", "delete", *test.token_args("public"), test.url("public", rel)
+        "object", "delete", *test.token_args("public"), test.federation_url("public", rel)
     )
     if "Writes" in test.fed.exports["public"]:
         if code != 0:
@@ -830,7 +815,7 @@ def get_existing_file(test: Test) -> tuple[str, str]:
         "object",
         "get",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/tree/a"),
+        test.federation_url("protected-a", test.rel("tree/a")),
         target,
     )
     if code != 0:
@@ -841,7 +826,7 @@ def get_existing_file(test: Test) -> tuple[str, str]:
         "object",
         "get",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/tree/nope"),
+        test.federation_url("protected-a", test.rel("tree/nope")),
         target,
     )
     if code == 0:
@@ -867,13 +852,12 @@ def get_collection(test: Test) -> tuple[str, str]:
     namespace cannot be listed, the client cannot tell, and must fail
     anyway. Either way, nothing may be written in the directory.
     """
-    target = os.path.join(test.tmp, "get-collection")
-    os.makedirs(target)
+    target = test.directory("get-collection")
     code, out, err = test.pelican_cmd(
         "object",
         "get",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/tree/sub"),
+        test.federation_url("protected-a", test.rel("tree/sub")),
         target,
     )
     if code == 0:
@@ -905,7 +889,7 @@ def get_recursive(test: Test) -> tuple[str, str]:
             "get",
             "-r",
             *test.token_args("protected-a"),
-            test.url("protected-a", f"{test.base}/tree"),
+            test.federation_url("protected-a", test.rel("tree")),
             target,
         )
         if test.lacks:
@@ -933,7 +917,7 @@ def put_exists(test: Test) -> tuple[str, str]:
     Overwrites are off, as by default, and the object must be left
     intact.
     """
-    rel = f"{test.base}/put/exists"
+    rel = test.rel("put/exists")
     old = os.urandom(2000)
     test.seed("protected-a", rel, old)
     source = test.local("put-exists", os.urandom(1000))
@@ -942,7 +926,7 @@ def put_exists(test: Test) -> tuple[str, str]:
         "put",
         *test.token_args("protected-a"),
         source,
-        test.url("protected-a", rel),
+        test.federation_url("protected-a", rel),
         env=test.sync_env,
     )
     if code == 0:
@@ -961,12 +945,12 @@ def put_overwrite(test: Test) -> tuple[str, str]:
     The file is a fifth the object's size, and the origin that takes it
     must then hold the new bytes alone.
     """
-    rel = f"{test.base}/put/overwrite"
+    rel = test.rel("put/overwrite")
     old, new = os.urandom(5000), os.urandom(1000)
     test.seed("protected-a", rel, old)
     source = test.local("put-overwrite", new)
     code, out, err = test.pelican_cmd(
-        "object", "put", *test.token_args("protected-a"), source, test.url("protected-a", rel)
+        "object", "put", *test.token_args("protected-a"), source, test.federation_url("protected-a", rel)
     )
 
     def passed() -> tuple[str, str]:
@@ -982,7 +966,7 @@ def put_into_collection(test: Test) -> tuple[str, str]:
 
     The collection exists, and the object must be named as the file is.
     """
-    collection = f"{test.base}/put/into"
+    collection = test.rel("put/into")
     test.make_dirs(collection)
     data = os.urandom(1500)
     source = test.local("into-me", data)
@@ -991,7 +975,7 @@ def put_into_collection(test: Test) -> tuple[str, str]:
         "put",
         *test.token_args("protected-a"),
         source,
-        test.url("protected-a", collection),
+        test.federation_url("protected-a", collection),
     )
     rel = f"{collection}/into-me"
 
@@ -1008,15 +992,15 @@ def put_directory(test: Test) -> tuple[str, str]:
 
     Nothing may be uploaded.
     """
-    test.make_dirs(f"{test.base}/put")
+    test.make_dirs(test.rel("put"))
     source, files = local_tree(test, "put-directory")
-    remote = f"{test.base}/put/directory"
+    remote = test.rel("put/directory")
     code, out, err = test.pelican_cmd(
         "object",
         "put",
         *test.token_args("protected-a"),
         source,
-        test.url("protected-a", remote),
+        test.federation_url("protected-a", remote),
     )
     if code == 0:
         return FAIL, "succeeded, though the source is a directory and -r was not given"
@@ -1036,13 +1020,13 @@ def put_recursive(test: Test) -> tuple[str, str]:
     must land flat under it, as the tree holds them, and not under the
     local directory's name.
     """
-    test.make_dirs(f"{test.base}/put")
+    test.make_dirs(test.rel("put"))
     files = {path: os.urandom(size) for path, size in PUT_TREE.items()}
     for path, data in files.items():
         test.local(f"put-recursive/{path}", data)
     source = os.path.join(test.tmp, "put-recursive")
     for label, exists in (("a new collection", False), ("an existing one", True)):
-        remote = f"{test.base}/put/recursive-{'old' if exists else 'new'}"
+        remote = test.rel(f"put/recursive-{'old' if exists else 'new'}")
         if exists:
             test.make_dirs(remote)
         code, out, err = test.pelican_cmd(
@@ -1051,7 +1035,7 @@ def put_recursive(test: Test) -> tuple[str, str]:
             "-r",
             *test.token_args("protected-a"),
             source,
-            test.url("protected-a", remote),
+            test.federation_url("protected-a", remote),
         )
         rels = [f"{remote}/{p}" for p in files]
         if test.lacks:
@@ -1075,12 +1059,12 @@ def put_recursive(test: Test) -> tuple[str, str]:
 
 def copy_upload(test: Test) -> tuple[str, str]:
     """Check `copy` of a local file to /protected-a."""
-    test.make_dirs(f"{test.base}/copy")
+    test.make_dirs(test.rel("copy"))
     data = os.urandom(4321)
     source = test.local("copy-up", data)
-    rel = f"{test.base}/copy/up"
+    rel = test.rel("copy/up")
     code, out, err = test.pelican_cmd(
-        "object", "copy", *test.token_args("protected-a"), source, test.url("protected-a", rel)
+        "object", "copy", *test.token_args("protected-a"), source, test.federation_url("protected-a", rel)
     )
 
     def passed() -> tuple[str, str]:
@@ -1098,12 +1082,12 @@ def copy_download(test: Test) -> tuple[str, str]:
         "object",
         "copy",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/tree/b"),
+        test.federation_url("protected-a", test.rel("tree/b")),
         target,
     )
     if code != 0:
         return FAIL, f"exit {code}: {last_line(err or out)}"
-    if common.sha256(target) != hashlib.sha256(test.trees["protected-a"]["b"]).hexdigest():
+    if common.sha256(target) != common.digest(test.trees["protected-a"]["b"]):
         return FAIL, "the local file differs from the object"
     return PASS, ""
 
@@ -1118,15 +1102,17 @@ def copy_tpc(test: Test, name: str, source_ns: str, path: str, direct: bool = Fa
         path: The source's path in the tree.
         direct: Whether to pass --direct, to copy from an origin.
     """
-    test.make_dirs(f"{test.base}/copy")
-    rel = f"{test.base}/copy/{name}"
-    args = ["object", "copy", "--dest-token", test.token_files["protected-a"]]
+    test.make_dirs(test.rel("copy"))
+    rel = test.rel("copy", name)
+    args = ["object", "copy", "--dest-token", test.token_file]
     if source_ns == "protected-a":
-        args += ["--source-token", test.token_files["protected-a"]]
+        args += ["--source-token", test.token_file]
     if direct:
         args.append("--direct")
     code, out, err = test.pelican_cmd(
-        *args, test.url(source_ns, f"{test.base}/tree/{path}"), test.url("protected-a", rel)
+        *args,
+        test.federation_url(source_ns, test.rel("tree", path)),
+        test.federation_url("protected-a", rel),
     )
 
     def passed() -> tuple[str, str]:
@@ -1159,12 +1145,12 @@ def copy_to_public(test: Test) -> tuple[str, str]:
     the local file must instead be stored at an origin, as in
     /protected-a.
     """
-    test.make_dirs(f"{test.base}/copy")
+    test.make_dirs(test.rel("copy"))
     data = os.urandom(1234)
     source = test.local("copy-public", data)
-    rel = f"{test.base}/copy/public"
+    rel = test.rel("copy/public")
     code, out, err = test.pelican_cmd(
-        "object", "copy", *test.token_args("public"), source, test.url("public", rel)
+        "object", "copy", *test.token_args("public"), source, test.federation_url("public", rel)
     )
     if "Writes" in test.fed.exports["public"]:
         if code != 0:
@@ -1205,15 +1191,15 @@ def upload_lines(text: str) -> list[str]:
 
 def sync_upload(test: Test) -> tuple[str, str]:
     """Check `sync` of a local tree to a new collection."""
-    test.make_dirs(f"{test.base}/sync")
+    test.make_dirs(test.rel("sync"))
     source, files = local_tree(test, "sync-up")
-    remote = f"{test.base}/sync/up"
+    remote = test.rel("sync/up")
     code, out, err = test.pelican_cmd(
         "object",
         "sync",
         *test.token_args("protected-a"),
         source,
-        test.url("protected-a", remote),
+        test.federation_url("protected-a", remote),
         env=test.sync_env,
     )
 
@@ -1234,7 +1220,7 @@ def sync_unchanged(test: Test) -> tuple[str, str]:
     The origins already hold the tree.
     """
     source, files = local_tree(test, "sync-pre")
-    remote = f"{test.base}/sync/pre"
+    remote = test.rel("sync/pre")
     for path, data in files.items():
         test.seed("protected-a", f"{remote}/{path}", data)
     code, out, err = test.pelican_cmd(
@@ -1243,7 +1229,7 @@ def sync_unchanged(test: Test) -> tuple[str, str]:
         "--dry-run",
         *test.token_args("protected-a"),
         source,
-        test.url("protected-a", remote),
+        test.federation_url("protected-a", remote),
         env=test.sync_env,
     )
 
@@ -1258,7 +1244,7 @@ def sync_unchanged(test: Test) -> tuple[str, str]:
 def sync_changed(test: Test) -> tuple[str, str]:
     """Check that `sync` uploads only the local file whose size changed."""
     source, files = local_tree(test, "sync-changed")
-    remote = f"{test.base}/sync/changed"
+    remote = test.rel("sync/changed")
     for path, data in files.items():
         test.seed("protected-a", f"{remote}/{path}", data)
     changed = os.urandom(len(files["x"]) + 50)
@@ -1269,7 +1255,7 @@ def sync_changed(test: Test) -> tuple[str, str]:
             "sync",
             *test.token_args("protected-a"),
             source,
-            test.url("protected-a", remote),
+            test.federation_url("protected-a", remote),
             env=test.sync_env,
         )
         return test.outcome(
@@ -1285,7 +1271,7 @@ def sync_changed(test: Test) -> tuple[str, str]:
         "--dry-run",
         *test.token_args("protected-a"),
         source,
-        test.url("protected-a", remote),
+        test.federation_url("protected-a", remote),
         env=test.sync_env,
     )
     if code != 0:
@@ -1298,7 +1284,7 @@ def sync_changed(test: Test) -> tuple[str, str]:
         "sync",
         *test.token_args("protected-a"),
         source,
-        test.url("protected-a", remote),
+        test.federation_url("protected-a", remote),
         env=test.sync_env,
     )
     if code != 0:
@@ -1315,7 +1301,7 @@ def sync_download(test: Test) -> tuple[str, str]:
         "object",
         "sync",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/tree"),
+        test.federation_url("protected-a", test.rel("tree")),
         target,
         env=test.sync_env,
     )
@@ -1324,7 +1310,7 @@ def sync_download(test: Test) -> tuple[str, str]:
         wrong = [
             p
             for p, data in test.trees["protected-a"].items()
-            if common.sha256(os.path.join(target, p)) != hashlib.sha256(data).hexdigest()
+            if common.sha256(os.path.join(target, p)) != common.digest(data)
         ]
         if wrong:
             return FAIL, f"missing or different locally: {', '.join(wrong)}"
@@ -1335,14 +1321,14 @@ def sync_download(test: Test) -> tuple[str, str]:
 
 def sync_tpc(test: Test) -> tuple[str, str]:
     """Check `sync` of a collection to another: third-party copies."""
-    test.make_dirs(f"{test.base}/sync")
-    remote = f"{test.base}/sync/tpc"
+    test.make_dirs(test.rel("sync"))
+    remote = test.rel("sync/tpc")
     code, out, err = test.pelican_cmd(
         "object",
         "sync",
         *test.token_args("protected-a"),
-        test.url("protected-a", f"{test.base}/tree"),
-        test.url("protected-a", remote),
+        test.federation_url("protected-a", test.rel("tree")),
+        test.federation_url("protected-a", remote),
         env=test.sync_env,
     )
 
@@ -1435,7 +1421,7 @@ def du_run(
 
     check takes the rows and the argument given to du.
     """
-    arg = test.url(namespace, f"{test.base}/tree")
+    arg = test.federation_url(namespace, test.rel("tree"))
     args = ["object", "du", "--json", *flags]
     if namespace == "protected-a":
         args += test.token_args(namespace)
@@ -1481,7 +1467,7 @@ def du_tree(test: Test, namespace: str) -> tuple[str, str]:
     status, note = du_run(test, namespace, check)
     if status != PASS or test.lacks:
         return status, note
-    arg = test.url(namespace, f"{test.base}/tree")
+    arg = test.federation_url(namespace, test.rel("tree"))
     args = ["object", "du", "--count"]
     if namespace == "protected-a":
         args += test.token_args(namespace)
@@ -1520,7 +1506,7 @@ def du_summarize(test: Test) -> tuple[str, str]:
 
 def du_no_token(test: Test) -> tuple[str, str]:
     """Check that `du` of /protected-a with no token is refused."""
-    code, out, err = test.pelican_cmd("object", "du", test.url("protected-a", f"{test.base}/tree"))
+    code, out, err = test.pelican_cmd("object", "du", test.federation_url("protected-a", test.rel("tree")))
     why = no_token_refusal(code, out, err, test.fed.standalone)
     if why:
         return FAIL, why
@@ -1574,9 +1560,7 @@ RUN = {
 
 def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test (no /protected-a), or None."""
-    if "protected-a" not in fed.exports:
-        return "this shape does not export /protected-a"
-    return None
+    return suite.unexported(fed)
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
@@ -1585,22 +1569,17 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     The tree is put in place first.
     """
     fed = session.fed
-    stores.require_dirs(fed.origins, fed.exports, "data/cmd")
-    # A pstore origin's store, which only it can change, is emptied
-    # through it, with a token for each namespace with storage of its own.
-    tokens = session.setup_tokens() if any(o.pstore for o in fed.origins) else {}
-    # Earlier runs' trees come out first.
-    errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/cmd", tokens)
-    if errors:
-        die(f"could not remove earlier runs' objects: {common.first(errors)}")
-
+    stores.require_dirs(fed.origins, fed.exports, "data/commands")
     test = Test(session)
+    # Earlier runs' trees come out first.
+    test.clean("before the run", fatal=True)
     print(f"Command test against {fed.url}, objects under /<namespace>/{test.base}/\n")
     try:
         test.seed_tree()
         for name in selected:
-            if uses_public(name) and "public" not in fed.exports:
-                results.add(name, SKIP, "this shape does not export /public")
+            why = suite.unexported(fed, "public") if uses_public(name) else None
+            if why:
+                results.add(name, SKIP, why)
                 continue
             cannot_delete = stores.cannot(fed, "delete")
             if cannot_delete and name in DELETES:
@@ -1608,13 +1587,8 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 continue
             namespace, needs = needs_of(name)
             test.lacks = needs - fed.exports[namespace]
-            status, note = common.guarded(
-                partial(RUN[name], test), lambda note: (FAIL, note), (stores.Unreadable,)
-            )
-            results.add(name, status, note)
+            results.add(name, *suite.attempt(partial(RUN[name], test), (stores.Unreadable,)))
     finally:
         # Some of the tree's collections are the origins' making, so on a
         # Linux host they are root's, and beyond init-data.py's reach.
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/cmd", tokens)
-        if errors:
-            common.warn(f"could not remove the run's objects: {common.first(errors)}")
+        test.clean("after the run")

@@ -59,10 +59,10 @@ def format_table(columns: Sequence[str], rows: Sequence[dict[str, str]]) -> str:
 
 
 def parse_table(text: str) -> list[dict[str, str]]:
-    """Return the rows of a table that format_table wrote, by column name.
+    """Return the rows of a table that format_table() wrote, by column name.
 
-    format_table ends each row with a newline, and escapes any other, so
-    rows are split at newlines alone (not at the other line boundaries
+    format_table() ends each row with a newline, and escapes any other,
+    so rows are split at newlines alone (not at the other line boundaries
     that str.splitlines() knows).
 
     Raises:
@@ -139,9 +139,17 @@ class Report:
     def add(self, case: str, status: str, note: str = "", seconds: float | None = -1.0) -> None:
         """Record a case.
 
-        By default its duration is the time since the previous case;
-        pass None for no duration. Any token in the note loses its
-        signature (see redact()).
+        Any token in the note loses its signature (redact()).
+
+        Args:
+            case: The case.
+            status: One of STATUSES.
+            note: What to say of it.
+            seconds: Its duration; None for none; by default, the time
+                since the previous case.
+
+        Raises:
+            ValueError: status is not one of STATUSES.
         """
         if status not in STATUSES:
             raise ValueError(f"unknown status: {status}")
@@ -177,9 +185,10 @@ class Report:
     def write(self, error: str | None = None) -> None:
         """Write the file.
 
-        error is why the suite stopped early, if it did: it is recorded
-        as a FAIL row named `setup` if the suite recorded no case, or
-        else `aborted`.
+        Args:
+            error: Why the suite stopped early, if it did, to record as a
+                FAIL row named `setup` if the suite recorded no case, or
+                else `aborted`.
         """
         if error:
             self.add("aborted" if self.rows else "setup", FAIL, error)
@@ -199,8 +208,13 @@ def label(svc: str, role: str) -> str:
 def record(report: Report, heading: str, case: str, answer: web.Response, why: str, note: str = "") -> None:
     """Print heading and answer's status as a row, and record case.
 
-    It failed because of why, if there is one, or else passed, with
-    note.
+    Args:
+        report: Where to record it.
+        heading: What the row starts with.
+        case: The case.
+        answer: The answer whose status the row shows.
+        why: Why the case failed; "" if it passed.
+        note: What to say of it if it passed.
     """
     code = "000" if answer.status is None else str(answer.status)
     line = f"{heading} {code:>4}"

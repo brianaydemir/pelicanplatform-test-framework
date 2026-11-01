@@ -10,8 +10,8 @@
 OIDC:
   ClientRedirectHostname: localhost:8445
 
-# Where this server says it is (Madison), which the directors sort by
-# rather than by GeoIP, of which the framework has no database. The
+# Where this server says it is (Madison), by which the directors sort
+# servers in place of GeoIP, for which the framework has no database. The
 # routing suite's distance scenario depends on it (GEO in
 # framework/suites/routing.py).
 GeoLocation: "43.07,-89.38"

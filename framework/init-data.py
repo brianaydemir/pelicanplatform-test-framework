@@ -28,8 +28,8 @@ from testlib import common, credentials, transfers
 
 # pylint: enable=wrong-import-position
 
-origin_variant = os.environ.get("ORIGIN_VARIANT") or "posixv2"
-profiles = (os.environ.get("COMPOSE_PROFILES") or "").split(",")
+ORIGIN_VARIANT = os.environ.get("ORIGIN_VARIANT") or "posixv2"
+COMPOSE_PROFILES = (os.environ.get("COMPOSE_PROFILES") or "").split(",")
 
 # How many objects each origin holds in each namespace (see transfers.LOAD).
 OBJECTS = transfers.LOAD.objects
@@ -37,15 +37,16 @@ OBJECTS = transfers.LOAD.objects
 # mirror /protected-a and /public; and /public/secret, a protected prefix
 # inside /public (fed_owner_exports in fed.sh).
 OWNER_NAMESPACES = ("other", "public/other", "public/secret")
-# The collections that init makes, under each store's data/, for the
-# suites that write in them; the others make their own.
+# The collections that init makes under each namespace's data/: the
+# areas of the suites that write there (testlib/suite.py), and `put`,
+# the transfers suite's. Other suites make their own.
 SUITE_DIRS = (
     "put",
     "auth",
     "posc",
     "metadata",
     "selftest",
-    "cmd",
+    "commands",
     "blocks",
     "routing",
     "freshness",
@@ -60,7 +61,7 @@ SUITE_DIRS = (
     "owners",
     "sitelocal",
     "tiering",
-    "xfer",
+    "transfer-api",
     "client",
     "restart",
     "keys",
@@ -82,7 +83,7 @@ def shape(exports: transfers.Exports) -> str:
     That includes the code that decides it. Other profiles, e.g.
     `multi-cache` and `monitoring`, do not change it.
     """
-    used = ",".join(p for p in ("lab", "multi-origin", "multi-owner") if p in profiles) or "none"
+    used = ",".join(p for p in ("lab", "multi-origin", "multi-owner") if p in COMPOSE_PROFILES) or "none"
     lib = os.path.join(common.FRAMEWORK, "testlib")
     code = b""
     for path in (
@@ -95,18 +96,18 @@ def shape(exports: transfers.Exports) -> str:
             code += f.read()
     exported = ";".join(f"{ns}:{','.join(sorted(caps))}" for ns, caps in sorted(exports.items()))
     return (
-        f"origin={origin_variant} profiles={used} federation={federation_url()}"
+        f"origin={ORIGIN_VARIANT} profiles={used} federation={federation_url()}"
         f" exports={exported} objects={OBJECTS} script={zlib.crc32(code)}"
     )
 
 
 # --------------------------------------------------------------------------
 # Objects, named <origin>.<n>, in each namespace's storage: a directory of
-# the store (see common.storage_dir()), of which only the data/
-# subdirectory is replaced, so that a pstore store beside them survives,
-# and the s3 service's mount of each as a bucket. An object's bytes are
-# its path in the federation and a newline, so a store or cache left
-# over from an earlier `init` still agrees, and no two objects are alike.
+# the store (common.storage_dir()), which the s3 service mounts as a
+# bucket. Only its data/ is replaced, so that the mount, and a pstore
+# store beside it, survive. An object's bytes are its path in the
+# federation and a newline, so that no two objects are alike, and a
+# store or cache left from an earlier `init` still agrees.
 
 
 def make_dir(path: str) -> None:
@@ -187,12 +188,12 @@ def main() -> None:
     # objects go beside the store as a plain copy, which the transfers
     # suite uploads; and there, /public reads /protected-a's storage.
     # origin-2, another owner (`topo-multi-owner`), has objects of its own.
-    pstore = origin_variant == "pstore"
+    pstore = ORIGIN_VARIANT == "pstore"
     namespaces = list(dict.fromkeys(common.storage_namespace(ns, pstore) for ns in credentials.NAMESPACES))
-    prime_origin_0 = origin_variant != "ssh"
-    prime_origin_1 = prime_origin_0 and "multi-origin" in profiles
-    prime_origin_2 = prime_origin_0 and "multi-owner" in profiles
-    prime_lab = origin_variant == "ssh" or "lab" in profiles
+    prime_origin_0 = ORIGIN_VARIANT != "ssh"
+    prime_origin_1 = prime_origin_0 and "multi-origin" in COMPOSE_PROFILES
+    prime_origin_2 = prime_origin_0 and "multi-owner" in COMPOSE_PROFILES
+    prime_lab = ORIGIN_VARIANT == "ssh" or "lab" in COMPOSE_PROFILES
     skip_reason = "an 'ssh' origin reads the lab server"
 
     if prime_origin_0:
@@ -209,7 +210,7 @@ def main() -> None:
         for namespace in namespaces:
             directory = f"{common.storage_dir(namespace)}/data"
             shutil.copytree(f"data/origin/0/{directory}", f"data/origin/1/{directory}", dirs_exist_ok=True)
-    elif "multi-origin" in profiles:
+    elif "multi-origin" in COMPOSE_PROFILES:
         print(f"Skipping origin-1: {skip_reason}.")
 
     if prime_origin_2:

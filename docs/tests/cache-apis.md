@@ -2,15 +2,17 @@
 
 Part of [What the tests check](README.md).
 
-The `cache-api` suite checks each federated V2 cache's own APIs: prestage
-and evict, which `pelican object prestage` and `evict` call; usage
-(`/api/v1.0/cache/stats`); and the admin's purge and introspection routes,
-among them a chaos API (`Cache.EnableChaosAPI`). Whether a cache holds an
-object is asked with `Cache-Control: only-if-cached`
-([cache freshness](cache-freshness.md)). XRootD caches serve only prestage,
-which `prestage client` alone asks of them. `purge` and `usage` run in the
-WLCG pass only ([token profiles](README.md#token-profiles)). A case's row is
-named `<scenario> <case>`.
+The [`cache-api`](../../framework/suites/cache_api.py) suite checks each
+federated [V2 cache](../glossary.md#native-and-xrootd)'s own APIs: prestage
+and evict, which [`pelican object prestage`](../glossary.md#pelican-client)
+and `evict` call; usage (`/api/v1.0/cache/stats`); and the admin's purge and
+introspection routes, among them a chaos API (`Cache.EnableChaosAPI`).
+Whether a cache holds an object is asked with
+`Cache-Control: only-if-cached` ([cache freshness](cache-freshness.md)).
+XRootD caches serve only prestage, which `prestage client` alone asks of
+them. `purge` and `usage` run in the WLCG [pass](../glossary.md#pass) only
+([token profiles](README.md#token-profiles)). A
+[case](../glossary.md#case)'s row is named `<scenario> <case>`.
 
 - `prestage`: `GET /pelican/api/v1.0/prestage?path=<path>` fetches an object
   whole, streaming its progress, and ends with `success: ok` or
@@ -63,7 +65,7 @@ named `<scenario> <case>`.
   - at a purge route, 403 without `localcache.purge`, and 400 with it (not
     asked of `purge`).
 
-  `chaos` skips where the cache has no such route.
+  `chaos` [skips](../glossary.md#skip) where the cache has no such route.
 
 - `purge`, with `localcache.purge`, after reading three objects:
 
@@ -74,8 +76,9 @@ named `<scenario> <case>`.
     `evicted_objects` must be 1.
   - `first`: `purge_first` of the object read last: 200. A purge to a byte
     below what the cache holds must then evict that object alone.
-  - `all`: `purge`: 200. Under `-p cache-small`, the cache must then hold no
-    more than its low water mark.
+  - `all`: `purge`: 200. Under
+    [`-p cache-small`](../../framework/presets/cache-small.sh), the cache
+    must then hold no more than its low water mark.
 
 - `allowed-federations`: A V2 cache must serve
   `/api/v1.0/cache/data/<discovery host>/<path>` only for the federations in
@@ -83,8 +86,8 @@ named `<scenario> <case>`.
 
   - `foreign`: Under `evil.invalid%3A443`: 403, a JSON `error` of
     `federation_not_allowed`, and nothing served or cached.
-  - `own`: Under its own discovery host, as is, with its colon escaped, and
-    in upper case: the object.
+  - `own`: Under its own [discovery host](../glossary.md#discovery-host), as
+    is, with its colon escaped, and in upper case: the object.
 
 - `usage`:
 
@@ -104,7 +107,8 @@ named `<scenario> <case>`.
     checksum mismatches and raise
     `pelican_cache_data_scan_inconsistent_objects_total` (`scan-counts`),
     and drop the object, so a GET fetches it intact (`scan-drops`).
-    Inconclusive where verify finds the object valid, as under
-    `-p cache-memory`; skipped without a chaos API.
+    [Inconclusive](../ci.md#results) where verify finds the object valid, as
+    under [`-p cache-memory`](../../framework/presets/cache-memory.sh);
+    skipped without a chaos API.
   - `orphan`: The metadata scan must remove, and count, an hour-old stray
     file in the store. Skips where the suite cannot write it.

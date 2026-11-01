@@ -1,45 +1,11 @@
 """The federation itself: it serves, and its servers know of each other.
 
-The suite puts a probe at every origin, in each exported namespace,
-under /<namespace>/data/federation/<run>/, and removes the run's objects
-afterward. test.py runs `ready` and `caches` before any other suite,
-whatever it is asked for, and stops the run if `ready` never passes, or
-`caches` finds no cache that serves.
+See docs/tests/federation.md, redirects.md, and downtime.md.
 
-  ready      the probe comes back through the federation by `pelican
-             object get`, within 20 tries, 15 seconds apart, since
-             servers just started take a while to find each other
-  caches     each cache serves the probe, asked straight with the
-             `server` token, within 20 tries, 15 seconds apart, since a
-             new cache refuses a namespace's tokens (403) until it has
-             learned the namespace's issuers from the director
-  approval   under `-p registry-approval`, `ready` approves every
-             pending registration before each try; no director named a
-             server whose registration was pending
-  directors  each director names every federated cache, no site-local
-             one, and every origin; for a direct read (?directread),
-             every origin where the namespace takes direct clients, and
-             otherwise none (405); with no cache, an origin in a
-             cache's place
-  discovery  a Pelican server's discovery document names the
-             federation's servers as fed.sh does, and its jwks_uri
-             serves the server's own keys
-  broker     under `-p origin-broker`, each director names origin-0's
-             connection broker, and no cache's; behind a firewall
-             (`-p origin-firewalled`), the origin counts what came
-             through it
-  hints      each director's redirect tells the client the namespace,
-             whether it takes a token, and its issuer
-  redirects  a plain HTTP client that follows each director's
-             redirects, as curl does, lands where the namespace allows
-             and is served there; a bare-path PUT is stored only where
-             the namespace takes writes
-  presence   an object that one origin alone holds: each director sends
-             an origin's reads of it there, and each cache and both of
-             the client's routes serve it
-  downtime   a server that its admin declares down is named by no
-             director within 150 seconds, and by every one again once
-             it is up
+The suite puts a probe at every origin, in each exported namespace.
+test.py runs `ready` and `caches` before any other suite, whatever it is
+asked for, and stops the run if `ready` never passes, or `caches` finds
+no cache that serves.
 
 The SciTokens pass presents SciTokens where the WLCG pass presents WLCG
 tokens; the probes are put in place with WLCG tokens either way. Once
@@ -65,6 +31,7 @@ from testlib import (
     metrics,
     owners,
     stores,
+    suite,
     transfers,
     web,
 )
@@ -105,7 +72,8 @@ REQUIRED = ("ready", "caches")
 # none at all, or a server admin's (see suites/__init__.py).
 ONE_PROFILE = ("approval", "directors", "discovery", "broker", "hints", "downtime")
 
-# How long `ready` and `caches` wait: tries, and seconds between them.
+# How long `ready` and `caches` wait for servers just started to find
+# each other: tries, and seconds between them.
 TRIES, INTERVAL = 20, 15
 # Those of them that passed in an earlier pass of the run, and so try once.
 SETTLED: set[str] = set()
@@ -144,7 +112,7 @@ def skip(_fed: common.Federation) -> str | None:
 
 @dataclass
 class Approval:
-    """What approving the registrations found (see approve_pending()).
+    """What `ready` found as it approved the pending registrations.
 
     Attributes:
         approved: The prefixes approved.
@@ -158,18 +126,16 @@ class Approval:
     problems: list[str] = field(default_factory=list[str])
 
 
-class Probe:
-    """An object at every origin, in each namespace.
+class Test(suite.Test):
+    """The probe, an object at every origin in each namespace.
 
-    It also holds what every scenario needs to read the object.
+    The namespace that caches and directors are asked about is the first
+    protected one, or /public where the origins export only that
+    (`-p origin-public`).
 
     Attributes:
-        base: The collection of the run's objects, in each namespace.
-        rel: The object's path, in each namespace.
+        probe: The probe's path, in each namespace.
         data: Each namespace's probe, by namespace.
-        namespace: The namespace that caches and directors are asked
-            about: the first protected one, or /public where the origins
-            export only that (`-p origin-public`).
         read_ns: The namespace that `ready` reads: /public, with no token,
             where there is one.
         uploaded: Whether upload() has put the probes in place.
@@ -177,15 +143,12 @@ class Probe:
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
-        self.base = f"data/federation/{session.run}"
-        self.rel = f"{self.base}/probe"
+        super().__init__(session, "federation", credentials.probe_namespace(session.fed))
+        self.probe = self.rel("probe")
         # On a pstore origin, /public's is /protected-a's, whose storage
         # it reads.
         own = {ns: os.urandom(4096) for ns in session.namespaces}
         self.data = {ns: own[self.fed.storage_namespace(ns)] for ns in own}
-        self.namespace = credentials.probe_namespace(self.fed)
         self.read_ns = session.namespaces[0]
         self.uploaded = False
         self.approval = Approval()
@@ -193,22 +156,21 @@ class Probe:
     def admin(self, web_url: str, key_dir: str) -> accounts.Api:
         """Return the web API of the server at web_url, as its admin.
 
-        The admin's token (see credentials.mint_admin()) is signed with the
-        server's key in key_dir.
+        The admin's token (see credentials.mint_web_user()) is signed with
+        the server's key in key_dir.
         """
         host = director.host(web_url)
-        token = credentials.mint_admin(
+        token = credentials.mint_web_user(
             self.fed,
             self.session.path(f"tokens/admin.{host}"),
-            credentials.local_issuer(self.fed, web_url),
-            common.signing_key(key_dir),
+            web_url,
+            "admin",
+            key=common.signing_key(key_dir),
         )
         return accounts.Api(web_url, token)
 
     def upload(self) -> str | None:
-        """Put each namespace's probe at every origin, once.
-
-        See stores.seed() for how.
+        """Put each namespace's probe at every origin, once (stores.seed()).
 
         Returns:
             Why that failed, or None if nothing did.
@@ -221,7 +183,7 @@ class Probe:
                 errors = stores.make_dirs([origin], ns, self.base, token)
                 if errors:
                     return errors[0]
-                error = stores.seed(origin, ns, self.rel, self.data[ns], token, self.fed.exports[ns])
+                error = stores.seed(origin, ns, self.probe, self.data[ns], token, self.fed.exports[ns])
                 if error:
                     return error
         self.uploaded = True
@@ -244,7 +206,7 @@ class Probe:
         )
         token = [] if self.read_ns == "public" else ["--token", token_file]
         code, out, err = self.session.pelican_cmd(
-            "object", "get", *token, f"{self.fed.url}/{self.read_ns}/{self.rel}", target
+            "object", "get", *token, f"{self.fed.url}/{self.read_ns}/{self.probe}", target
         )
         if code != 0:
             return f"`pelican object get`: exit {code}: {last_line(err or out)}"
@@ -274,18 +236,18 @@ def pending_registrations(api: accounts.Api) -> list[tuple[str, str]]:
     return found
 
 
-def approve_pending(probe: Probe) -> None:
+def approve_pending(test: Test) -> None:
     """Approve every pending registration, as the registry's admin.
 
-    Record in probe.approval what was approved, what went wrong, and,
+    Record in test.approval what was approved, what went wrong, and,
     from before approving, which of the pending servers a director already
     names for the object, which none should, since the directors refuse
     the advertisements of a server whose registration is pending.
     """
-    fed, found = probe.fed, probe.approval
+    fed, found = test.fed, test.approval
     try:
         host = director.host(fed.registry_url)
-        api = probe.admin(fed.registry_url, f"issuer-keys/{host}")
+        api = test.admin(fed.registry_url, f"issuer-keys/{host}")
         pending = pending_registrations(api)
         if not pending:
             return
@@ -295,7 +257,7 @@ def approve_pending(probe: Probe) -> None:
             for start in SERVER_PREFIXES
             if prefix.startswith(start)
         )
-        path = f"/{probe.namespace}/{probe.rel}"
+        path = test.path(test.probe)
         for url in fed.directors:
             for route in ("object", "origin"):
                 answer = director.ask(url, route, path)
@@ -315,7 +277,7 @@ def approve_pending(probe: Probe) -> None:
         found.problems.append(str(e))
 
 
-def ready(probe: Probe) -> tuple[str, str]:
+def ready(test: Test) -> tuple[str, str]:
     """Check that the object comes back through the federation.
 
     Where the registry requires approval, each try first approves what is
@@ -331,41 +293,39 @@ def ready(probe: Probe) -> tuple[str, str]:
     why: str | None = None
     tries = 1 if "ready" in SETTLED else TRIES
     for n in range(1, tries + 1):
-        if probe.fed.registry_approval:
-            approve_pending(probe)
-        why = probe.upload() or probe.get()
+        if test.fed.registry_approval:
+            approve_pending(test)
+        why = test.upload() or test.get()
         if why is None:
             SETTLED.add("ready")
-            return PASS, f"{probe.read_ns}, after {n} tries" if n > 1 else probe.read_ns
-        if probe.uploaded and probe.session.profile != WLCG and probe.get(setup=True) is None:
-            return FAIL, f"{probe.read_ns}: {why} (served with a WLCG token)"
+            return PASS, f"{test.read_ns}, after {n} tries" if n > 1 else test.read_ns
+        if test.uploaded and test.session.profile != WLCG and test.get(setup=True) is None:
+            return FAIL, f"{test.read_ns}: {why} (served with a WLCG token)"
         if n == 1 and tries > 1:
-            print(
-                f"Waiting for the federation to serve {probe.fed.url}/{probe.read_ns}/" + f"{probe.rel} ..."
-            )
+            print(f"Waiting for the federation to serve {test.fed.url}/{test.read_ns}/{test.probe} ...")
         if n < tries:
             time.sleep(INTERVAL)
     if tries == 1:
         # It served an earlier pass, so the rest can still pass.
-        return FAIL, f"{probe.read_ns}: {why}"
+        return FAIL, f"{test.read_ns}: {why}"
     die(
         f"gave up waiting for the federation after {TRIES} tries, {INTERVAL}s apart ({why})."
         + " Is it up (./fed.sh status)? Was it initialized (./fed.sh init) for this shape?"
     )
 
 
-def cache_problem(probe: Probe, cache: common.Cache, answer: web.Response) -> str | None:
+def cache_problem(test: Test, cache: common.Cache, answer: web.Response) -> str | None:
     """Return what is wrong with answer, cache's to a GET of the object."""
     if answer.status != 200:
         # The cache's own account of its failure tells why.
         said = last_line(answer.body.decode(errors="replace"))[:200]
         return f"{cache.svc}: {answer.describe()}" + (f" ({said})" if said else "")
-    if answer.body != probe.data[probe.namespace]:
+    if answer.body != test.data[test.namespace]:
         return f"{cache.svc}: the body is not the object"
     return None
 
 
-def serves_setup(probe: Probe, cache: common.Cache) -> bool:
+def serves_setup(test: Test, cache: common.Cache) -> bool:
     """Return whether cache serves the object with the setup token, WLCG's.
 
     In a pass of another profile alone, a cache that refuses the
@@ -373,14 +333,14 @@ def serves_setup(probe: Probe, cache: common.Cache) -> bool:
     verdict on the profile: no waiting for it, and no stopping the run
     over it. In the WLCG pass the two tokens are one, so it is False.
     """
-    if probe.session.profile == WLCG:
+    if test.session.profile == WLCG:
         return False
-    url = f"{cache.url}/{probe.namespace}/{probe.rel}"
-    answer = web.request("GET", url, token=probe.session.setup_token(probe.namespace))
-    return cache_problem(probe, cache, answer) is None
+    url = test.url(cache.url, test.probe)
+    answer = web.request("GET", url, token=test.setup)
+    return cache_problem(test, cache, answer) is None
 
 
-def caches(probe: Probe) -> tuple[str, str]:
+def caches(test: Test) -> tuple[str, str]:
     """Check that each cache serves the object with the server's token.
 
     Raises:
@@ -388,17 +348,17 @@ def caches(probe: Probe) -> tuple[str, str]:
             token or (see serves_setup()) with WLCG's: nothing that reads
             through a cache could pass.
     """
-    if not probe.fed.caches:
+    if not test.fed.caches:
         return SKIP, "this shape has no cache"
-    token = probe.session.token(probe.namespace)
+    token = test.token
     tries = 1 if "caches" in SETTLED else TRIES
     problems: list[str] = []
     serving = 0
-    for cache in probe.fed.caches:
-        url = f"{cache.url}/{probe.namespace}/{probe.rel}"
+    for cache in test.fed.caches:
+        url = test.url(cache.url, test.probe)
         answer = web.request("GET", url, token=token)
-        why = cache_problem(probe, cache, answer)
-        up = why is None or serves_setup(probe, cache)
+        why = cache_problem(test, cache, answer)
+        up = why is None or serves_setup(test, cache)
         # A new cache refuses the token (403) until it has learned the
         # namespace's issuers, and may fail otherwise, or not answer,
         # while it finds the origins.
@@ -409,8 +369,8 @@ def caches(probe: Probe) -> tuple[str, str]:
                 print(f"Waiting for {cache.svc} to serve the object ({answer.describe()}) ...")
             time.sleep(INTERVAL)
             answer = web.request("GET", url, token=token)
-            why = cache_problem(probe, cache, answer)
-            up = why is None or serves_setup(probe, cache)
+            why = cache_problem(test, cache, answer)
+            up = why is None or serves_setup(test, cache)
         if why:
             problems.append(why)
         if up:
@@ -423,18 +383,18 @@ def caches(probe: Probe) -> tuple[str, str]:
             die(f"no cache serves the object: {'; '.join(problems)}")
         return FAIL, common.first(problems)
     SETTLED.add("caches")
-    return PASS, f"{len(probe.fed.caches)} cache(s)"
+    return PASS, f"{len(test.fed.caches)} cache(s)"
 
 
-def approval(probe: Probe) -> tuple[str, str]:
+def approval(test: Test) -> tuple[str, str]:
     """Check that no director named a server whose registration was pending.
 
     `ready` found which did as it approved the registrations (see
     approve_pending()). Where it found nothing pending, as on a rerun,
     after an earlier run approved everything, there is nothing to judge.
     """
-    found = probe.approval
-    if not probe.fed.registry_approval:
+    found = test.approval
+    if not test.fed.registry_approval:
         return SKIP, "the registry requires no approval ('-p registry-approval')"
     if found.problems:
         return FAIL, common.first(found.problems)
@@ -445,7 +405,7 @@ def approval(probe: Probe) -> tuple[str, str]:
     return PASS, f"approved {len(found.approved)}: {', '.join(found.approved)}"
 
 
-def directors(probe: Probe) -> tuple[str, str]:
+def directors(test: Test) -> tuple[str, str]:
     """Check where each director would send a GET of the object.
 
     Its answers for a cache (`object`) and for an origin must name every
@@ -457,15 +417,15 @@ def directors(probe: Probe) -> tuple[str, str]:
     route must fall back to an origin where the namespace takes direct
     clients, and otherwise find none (404).
     """
-    fed = probe.fed
+    fed = test.fed
     if fed.standalone:
         return SKIP, "a standalone origin has no director"
     if fed.tiny:
         return SKIP, "the tiny topology's director, cache, and origin are one server"
-    path = f"/{probe.namespace}/{probe.rel}"
+    path = test.path(test.probe)
     origin_hosts = [director.host(o.url) for o in fed.origins]
     site_local = [director.host(c.url) for c in fed.caches if c.site_local]
-    direct = "DirectReads" in fed.exports[probe.namespace]
+    direct = test.direct
     cacheless = not fed.federated_caches
     # Each ask: its route, its query, and whom it must name.
     asks = [
@@ -522,7 +482,7 @@ def directors(probe: Probe) -> tuple[str, str]:
     )
 
 
-def discovery(probe: Probe) -> tuple[str, str]:
+def discovery(test: Test) -> tuple[str, str]:
     """Check the discovery document, where a Pelican server serves it.
 
     A Pelican server is the discovery host as director-0 under
@@ -533,7 +493,7 @@ def discovery(probe: Probe) -> tuple[str, str]:
     missing), and the jwks_uri must serve the server's own keys.
     Elsewhere, the discovery host serves fed.sh's own document.
     """
-    fed = probe.fed
+    fed = test.fed
     host = director.host(str(fed.discovery["discovery_endpoint"]))
     if host == "discovery":
         return SKIP, "the discovery host serves fed.sh's own document"
@@ -646,7 +606,7 @@ def brokered(origin: common.Origin) -> tuple[str | None, str]:
     return None, carried
 
 
-def broker(probe: Probe) -> tuple[str, str]:
+def broker(test: Test) -> tuple[str, str]:
     """Check that each director names origin-0's connection broker.
 
     This holds under `-p origin-broker`, within DIRECTORS_WAIT seconds (see
@@ -654,14 +614,14 @@ def broker(probe: Probe) -> tuple[str, str]:
     origin must then have counted what came through the broker (see
     brokered()).
     """
-    fed = probe.fed
+    fed = test.fed
     if not fed.broker:
         return SKIP, "the origins use no connection broker ('-p origin-broker')"
-    path = f"/{probe.namespace}/{probe.rel}"
+    path = test.path(test.probe)
     found: list[str] = []
 
     def named() -> bool:
-        found[:] = broker_problems(fed, path, probe.namespace)
+        found[:] = broker_problems(fed, path, test.namespace)
         return not found
 
     if not common.wait_for(named, DIRECTORS_WAIT, interval=5):
@@ -675,7 +635,7 @@ def broker(probe: Probe) -> tuple[str, str]:
     return PASS, note
 
 
-def hints(probe: Probe) -> tuple[str, str]:
+def hints(test: Test) -> tuple[str, str]:
     """Check the token hints in each director's redirect of the object.
 
     Each director's redirect of a GET of the object, for a cache
@@ -686,16 +646,16 @@ def hints(probe: Probe) -> tuple[str, str]:
     X-Pelican-Token-Generation, if sent, must name it too). The client
     chooses its token by these (see director.hints()).
     """
-    fed = probe.fed
+    fed = test.fed
     if fed.standalone:
         return SKIP, "a standalone origin has no director"
     problems: list[str] = []
     for url in fed.directors:
-        for ns in probe.session.namespaces:
+        for ns in test.session.namespaces:
             caps = fed.exports[ns]
             issuer = fed.issuer_of(ns) if credentials.has_issuer(caps) else ""
             for route in ("object", "origin"):
-                answer = web.request("GET", f"{url}/api/v1.0/director/{route}/{ns}/{probe.rel}")
+                answer = web.request("GET", f"{url}/api/v1.0/director/{route}/{ns}/{test.probe}")
                 what = f"{director.host(url)} ({route}, /{ns})"
                 if answer.status != 307:
                     problems.append(f"{what}: {answer.describe()}, not 307")
@@ -718,7 +678,7 @@ def hints(probe: Probe) -> tuple[str, str]:
                 if found.generation_issuer and found.generation_issuer != issuer:
                     problems.append(f"{what}: X-Pelican-Token-Generation names {found.generation_issuer}")
     return common.outcome(
-        problems, f"{len(fed.directors)} director(s), {len(probe.session.namespaces)} namespace(s)"
+        problems, f"{len(fed.directors)} director(s), {len(test.session.namespaces)} namespace(s)"
     )
 
 
@@ -746,18 +706,18 @@ def landed(answer: web.Response, servers: Sequence[tuple[str, str]]) -> str | No
     return next((name for name, url in servers if location.startswith(url + "/")), None)
 
 
-def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[str]:
+def redirect_problems(test: Test, director_url: str, namespace: str) -> list[str]:
     """Return what is wrong with where a director sends a plain HTTP client.
 
     The director is at director_url, and the client's requests are for the
     object in namespace; what the client gets there is checked too (see
     redirects()).
     """
-    fed = probe.fed
+    fed = test.fed
     caps = fed.exports[namespace]
-    token = None if namespace == "public" else probe.session.token(namespace)
-    path = f"/{namespace}/{probe.rel}"
-    data = probe.data[namespace]
+    token = None if namespace == "public" else test.session.token(namespace)
+    path = f"/{namespace}/{test.probe}"
+    data = test.data[namespace]
     name = director.host(director_url)
     at_caches = [(c.svc, c.url) for c in fed.federated_caches]
     at_origins = [(o.svc, o.url) for o in fed.origins]
@@ -824,10 +784,10 @@ def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[s
     # A bare-path PUT goes to an origin, where the namespace takes writes,
     # with the namespace's token: a write takes one even where reads do
     # not (`-p origin-public-writes`).
-    rel = f"{probe.rel}-put-{name}"
+    rel = f"{test.probe}-put-{name}"
     payload = os.urandom(4096)
     writes = "Writes" in caps
-    put_token = probe.session.token(namespace) if writes else token
+    put_token = test.session.token(namespace) if writes else token
     answer = web.request("PUT", f"{director_url}/{namespace}/{rel}", token=put_token, upload=payload)
     what = f"{name}: PUT /{namespace}/{rel}"
     if writes and answer.status != 307:
@@ -842,7 +802,7 @@ def redirect_problems(probe: Probe, director_url: str, namespace: str) -> list[s
             problems.append(f"{what}: succeeded, though /{namespace} takes no writes")
     elif answer.status is None or not 400 <= answer.status < 500:
         problems.append(f"{what}: {answer.describe()}, not a refusal")
-    held = stores.held_anywhere(fed.origins, namespace, rel, probe.session.setup_tokens())
+    held = stores.held_anywhere(fed.origins, namespace, rel, test.session.setup_tokens())
     if writes and common.digest(payload) not in held:
         problems.append(f"{what}: no origin holds what was put")
     elif not writes and any(held):
@@ -863,20 +823,20 @@ def client_directors(fed: common.Federation) -> list[str]:
     return found
 
 
-def redirects(probe: Probe) -> tuple[str, str]:
+def redirects(test: Test) -> tuple[str, str]:
     """Check each director's redirects, as a plain HTTP client follows them.
 
     It checks them in each exported namespace (see redirect_problems());
     under `-p director-ha`, the load balancer's too.
     """
-    fed = probe.fed
+    fed = test.fed
     if fed.standalone:
         return SKIP, "a standalone origin has no director"
     problems: list[str] = []
     asked = client_directors(fed)
     for url in asked:
-        for namespace in probe.session.namespaces:
-            problems += redirect_problems(probe, url, namespace)
+        for namespace in test.session.namespaces:
+            problems += redirect_problems(test, url, namespace)
     where = "a cache"
     if fed.director_default_response == "origin":
         where = "an origin"
@@ -885,13 +845,13 @@ def redirects(probe: Probe) -> tuple[str, str]:
     balanced = " (the load balancer among them)" if len(asked) > len(fed.directors) else ""
     return common.outcome(
         problems,
-        f"{len(asked)} director(s){balanced}, {len(probe.session.namespaces)}"
+        f"{len(asked)} director(s){balanced}, {len(test.session.namespaces)}"
         f" namespace(s): bare paths to {where}",
     )
 
 
 def presence_problems(
-    probe: Probe, holder: common.Origin, namespace: str, rel: str, data: bytes
+    test: Test, holder: common.Origin, namespace: str, rel: str, data: bytes
 ) -> list[str]:
     """Return what is wrong with how the federation serves rel in namespace.
 
@@ -902,8 +862,8 @@ def presence_problems(
     must serve the object. The director asks the origins which has it only
     when it has the namespace's token, so each ask presents it.
     """
-    fed = probe.fed
-    token = None if namespace == "public" else probe.session.token(namespace)
+    fed = test.fed
+    token = None if namespace == "public" else test.session.token(namespace)
     direct = "DirectReads" in fed.exports[namespace]
     others = [director.host(o.url) for o in fed.origins if o.svc != holder.svc]
     path = f"/{namespace}/{rel}"
@@ -929,7 +889,7 @@ def presence_problems(
     return problems
 
 
-def presence(probe: Probe) -> tuple[str, str]:
+def presence(test: Test) -> tuple[str, str]:
     """Check that reads of an object that one origin alone holds go there.
 
     The object is put in one origin's store alone, in each exported
@@ -938,17 +898,17 @@ def presence(probe: Probe) -> tuple[str, str]:
     object get` fetch it through a cache, and direct where the namespace
     allows it.
     """
-    fed = probe.fed
+    fed = test.fed
     origins = stores.unique(fed.origins)
     if len(origins) < 2:
         return SKIP, "one origin, or origins sharing a store: no object is one origin's alone"
     holder = origins[-1]
-    namespaces = [ns for ns in probe.session.namespaces if holder.storage_namespace(ns) == ns]
+    namespaces = [ns for ns in test.session.namespaces if holder.storage_namespace(ns) == ns]
     objects = {ns: os.urandom(8192) for ns in namespaces}
-    rel = f"{probe.base}/only-{holder.svc}"
+    rel = test.rel(f"only-{holder.svc}")
     for ns, data in objects.items():
-        token, caps = probe.session.setup_token(ns), fed.exports[ns]
-        errors = stores.make_dirs([holder], ns, probe.base, token)
+        token, caps = test.session.setup_token(ns), fed.exports[ns]
+        errors = stores.make_dirs([holder], ns, test.base, token)
         error = errors[0] if errors else stores.seed(holder, ns, rel, data, token, caps)
         if error:
             return FAIL, f"could not put the object at {holder.svc} alone: {error}"
@@ -956,22 +916,22 @@ def presence(probe: Probe) -> tuple[str, str]:
 
     def routed() -> bool:
         found[:] = [
-            p for ns, data in objects.items() for p in presence_problems(probe, holder, ns, rel, data)
+            p for ns, data in objects.items() for p in presence_problems(test, holder, ns, rel, data)
         ]
         return not found
 
     if not common.wait_for(routed, DIRECTORS_WAIT, interval=5):
         return FAIL, f"after {DIRECTORS_WAIT}s, {common.first(found)}"
     for ns, data in objects.items():
-        token_args = [] if ns == "public" else ["--token", probe.session.token_file(ns)]
+        token_args = [] if ns == "public" else ["--token", test.session.token_file(ns)]
         routes: list[tuple[str, list[str]]] = [("through a cache", [])]
         if "DirectReads" in fed.exports[ns]:
             routes.append(("direct", ["--direct"]))
         for how, flags in routes:
-            target = probe.session.path(f"federation-presence-{ns}")
+            target = test.session.path(f"federation-presence-{ns}")
             if os.path.exists(target):
                 os.remove(target)
-            code, out, err = probe.session.pelican_cmd(
+            code, out, err = test.session.pelican_cmd(
                 "object", "get", *token_args, *flags, f"{fed.url}/{ns}/{rel}", target
             )
             if code != 0:
@@ -987,12 +947,7 @@ def presence(probe: Probe) -> tuple[str, str]:
     )
 
 
-def routed_to(fed: common.Federation, route: str, path: str, host: str) -> list[str]:
-    """Return the directors that send a GET of path, for route, to host."""
-    return director.naming(fed.directors, route, path, host)
-
-
-def down(probe: Probe, svc: str, web_url: str, route: str) -> str | None:
+def down(test: Test, svc: str, web_url: str, route: str) -> str | None:
     """Declare server svc down, then up, and check what the directors name.
 
     As its admin, through its web API at web_url, declare it down for the
@@ -1003,13 +958,17 @@ def down(probe: Probe, svc: str, web_url: str, route: str) -> str | None:
     Returns:
         What went wrong, or None if nothing did.
     """
-    fed = probe.fed
-    path = f"/{probe.namespace}/{probe.rel}"
+    fed = test.fed
+    path = test.path(test.probe)
     host = director.host(web_url)
-    before = routed_to(fed, route, path, host)
+
+    def named() -> list[str]:
+        return director.naming(fed.directors, route, path, host)
+
+    before = named()
     if len(before) != len(fed.directors):
         return f"before its downtime, only {before} named it"
-    api = probe.admin(web_url, f"issuer-keys/{svc}")
+    api = test.admin(web_url, f"issuer-keys/{svc}")
     headers = accounts.csrf(api)
     # A downtime's times are in milliseconds since the epoch: a server
     # refuses seconds (isValidTimeRange in web_ui/server_api.go).
@@ -1026,30 +985,25 @@ def down(probe: Probe, svc: str, web_url: str, route: str) -> str | None:
     if not answer.ok:
         return f"declaring the downtime: {answer.describe()}"
     why = None
-    if not common.wait_for(lambda: not routed_to(fed, route, path, host), DOWNTIME_WAIT, 5):
-        why = f"{routed_to(fed, route, path, host)} still named it {DOWNTIME_WAIT}s into its downtime"
+    if not common.wait_for(lambda: not named(), DOWNTIME_WAIT, 5):
+        why = f"{named()} still named it {DOWNTIME_WAIT}s into its downtime"
     ended = api.call("DELETE", f"{DOWNTIME}/{downtime_id}", headers=headers)
     if why:
         return why
     if not ended.ok:
         return f"ending the downtime: {ended.describe()}"
-    if not common.wait_for(
-        lambda: len(routed_to(fed, route, path, host)) == len(fed.directors), DOWNTIME_WAIT, 5
-    ):
-        return (
-            f"{DOWNTIME_WAIT}s after its downtime ended, only {routed_to(fed, route, path, host)}"
-            " named it"
-        )
+    if not common.wait_for(lambda: len(named()) == len(fed.directors), DOWNTIME_WAIT, 5):
+        return f"{DOWNTIME_WAIT}s after its downtime ended, only {named()} named it"
     return None
 
 
-def downtime(probe: Probe) -> tuple[str, str]:
+def downtime(test: Test) -> tuple[str, str]:
     """Check that no director names a server declared down, until it is up.
 
     The servers are the last federated cache, and with several origins,
     the last origin (see down()).
     """
-    fed = probe.fed
+    fed = test.fed
     if fed.standalone:
         return SKIP, "a standalone origin has no director"
     if fed.tiny:
@@ -1063,7 +1017,7 @@ def downtime(probe: Probe) -> tuple[str, str]:
     if not targets:
         return SKIP, "no federated cache, and one origin, which nothing else could serve for"
     for svc, web_url, route in targets:
-        why = down(probe, svc, web_url, route)
+        why = down(test, svc, web_url, route)
         if why:
             return FAIL, f"{svc}: {why}"
     return PASS, (
@@ -1072,7 +1026,7 @@ def downtime(probe: Probe) -> tuple[str, str]:
     )
 
 
-# Each scenario, by name: it takes the Probe, and returns its result and
+# Each scenario, by name: it takes the Test, and returns its result and
 # a note.
 RUN = {
     "ready": ready,
@@ -1094,24 +1048,19 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     stores.require_dirs(fed.origins, fed.exports, "data/federation")
     # Earlier runs' objects come out first: the disk stores' only, since a
     # pstore origin may not serve yet (that is what `ready` waits for).
-    disk = [o for o in stores.unique(fed.origins) if not o.pstore]
-    errors = stores.empty_tree_everywhere(disk, fed.exports, "data/federation", {})
-    if errors:
-        die(f"could not remove earlier runs' objects: {common.first(errors)}")
-    probe = Probe(session)
-    print(f"Probing {fed.url} with /<namespace>/{probe.rel}\n")
+    disk = [o for o in fed.origins if not o.pstore]
+    suite.clean(session, "federation", "before the run", origins=disk, fatal=True)
+    test = Test(session)
+    print(f"Probing {fed.url} with /<namespace>/{test.probe}\n")
     try:
         for name in selected:
             if name in REQUIRED:
                 # Nothing else can pass if one of these cannot finish.
-                results.add(name, *RUN[name](probe))
+                results.add(name, *RUN[name](test))
                 continue
-            results.add(name, *common.guarded(functools.partial(RUN[name], probe), lambda why: (FAIL, why)))
+            results.add(name, *suite.attempt(functools.partial(RUN[name], test)))
     finally:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach; a
         # pstore origin's only it can remove.
-        tokens = session.setup_tokens() if any(o.pstore for o in fed.origins) else {}
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/federation", tokens)
-        if errors:
-            common.warn(f"could not remove the run's objects: {common.first(errors)}")
+        test.clean("after the run")

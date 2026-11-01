@@ -12,32 +12,13 @@ letters, digits, and `-._~` percent-encoded (stores.url()), and so does
 what the client is given. A listing's hrefs are decoded before they are
 compared.
 
-  origin-put   a PUT of each name lands in each store under that name:
-               on disk as a file, and in a pstore origin's catalog as an
-               entry (where /protected-a takes writes)
-  origin-get   each origin serves each object by its name
-  cache-get    each cache does, cold
-  director-get each director's redirect, followed as a plain HTTP client
-               follows it, leads to each object by its name
-  origin-list  each origin lists every name, once, with its size
-  cache-list   each federated cache does, as it relays the listing
-  client-get   `pelican object get` of each object, in a command of its
-               own, into a directory writes a file of its name, with
-               its bytes: through a cache, direct, and from each
-               federated cache, named
-  client-put   `pelican object put` of a file of each name, in a
-               command of its own, lands as the object of that name
-  plugin-get   the same as client-get, through stash_plugin, which
-               reads each object's URL and file from a ClassAd, as
-               HTCondor writes it, with the name's quotes escaped
-  plugin-put   the same as client-put, through stash_plugin
-  client-ls    `pelican object ls` lists every name
-
 The client commands, and the plugin's runs, move one object each: the
 client reuses the director's answer for the rest of a namespace's
 objects in a command (cachedDirectorInfo in Pelican's
 client/director.go), which would hide a name that it mishandles in that
 answer.
+
+See docs/tests/names.md.
 """
 
 import os
@@ -46,7 +27,7 @@ from functools import partial
 from typing import Any
 from urllib.parse import quote
 
-from testlib import common, digests, director, stores, transfers, web, webdav
+from testlib import common, digests, director, stores, suite, transfers, web, webdav
 from testlib.common import die, first, outcome
 from testlib.names import NAMES
 from testlib.report import FAIL, PASS, SKIP
@@ -76,47 +57,24 @@ SCENARIOS = {
 }
 
 
-class Test:
-    """The objects, by name, where they are, and the token.
+class Test(suite.Test):
+    """The objects, by name, in /protected-a.
 
     Attributes:
         origins: The origins, each store once.
-        base: Where the objects are in /protected-a.
         put_base: Where the put scenarios upload, each to a collection of
             its own, beside the objects.
-        tmp: The test's scratch directory.
-        token_file: The file that holds token.
-        token: A token for /protected-a, of the session's profile.
-        setup: A token for /protected-a, of the WLCG profile, for making
-            collections and reading the stores.
-        caps: The capabilities of /protected-a.
         objects: Each object's bytes, by name.
         unseeded: What went wrong putting the objects in place.
     """
 
     def __init__(self, session: Session):
-        self.session = session
-        self.fed = session.fed
+        super().__init__(session, "names")
         self.origins = stores.unique(self.fed.origins)
-        self.base = f"data/names/{session.run}"
         self.put_base = f"{self.base}-put"
-        self.tmp = session.path("names")
-        os.makedirs(self.tmp)
-        self.token_file = session.token_file("protected-a")
-        self.token = session.token("protected-a")
-        self.setup = session.setup_token("protected-a")
-        self.caps = self.fed.exports["protected-a"]
         # Each a size of its own, so that a listing shows which is which.
         self.objects = {name: os.urandom(1000 + 37 * n) for n, name in enumerate(NAMES)}
         self.unseeded: list[str] = []
-
-    def rel(self, name: str) -> str:
-        """Return where object name is in /protected-a."""
-        return f"{self.base}/{name}"
-
-    def url(self, server: str, name: str) -> str:
-        """Return the URL of object name at a server's data URL."""
-        return f"{server}/protected-a/{quote(self.rel(name))}"
 
     def which(self, data: bytes) -> str:
         """Return the name of the object whose bytes data are, or ""."""
@@ -217,7 +175,7 @@ def origin_put(test: Test) -> tuple[str, str]:
     pstore origin's catalog, as an entry of that name, whose recorded
     checksums are its bytes' (catalogued()).
     """
-    if "Writes" not in test.caps:
+    if not test.writes:
         return SKIP, "/protected-a takes no writes, so the objects were written straight to each store"
     problems = list(test.unseeded)
     for origin in test.origins:
@@ -253,7 +211,7 @@ def served(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
     problems: list[str] = []
     for svc, server in servers:
         for name in NAMES:
-            answer = web.request("GET", test.url(server, name), token=test.token)
+            answer = web.request("GET", test.url(server, test.rel(name)), token=test.token)
             if answer.status != 200:
                 problems.append(f"{svc}: {name!r}: {answer.describe()}")
                 continue
@@ -265,7 +223,7 @@ def served(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
 
 def origin_get(test: Test) -> tuple[str, str]:
     """Check that each origin serves each object by its name."""
-    if "DirectReads" not in test.caps:
+    if not test.direct:
         return SKIP, "/protected-a takes no direct clients"
     return served(test, [(o.svc, o.url) for o in test.origins])
 
@@ -296,7 +254,7 @@ def director_get(test: Test) -> tuple[str, str]:
     for url in test.fed.directors:
         svc = director.host(url)
         for name in NAMES:
-            route = test.url(f"{url}/api/v1.0/director/object", name)
+            route = test.url(f"{url}/api/v1.0/director/object", test.rel(name))
             answer = web.request("GET", route, token=test.token)
             where = answer.header("Location")
             if answer.status != 307 or not where:
@@ -327,7 +285,7 @@ def listed(test: Test, servers: list[tuple[str, str]]) -> tuple[str, str]:
     Returns:
         The status and note, as a scenario returns them.
     """
-    path = f"/protected-a/{test.base}"
+    path = test.path(test.base)
     want: dict[str, int | None] = {n: len(data) for n, data in test.objects.items()}
     problems: list[str] = []
     for svc, server in servers:
@@ -403,7 +361,7 @@ def ways(test: Test) -> tuple[list[tuple[str, common.Cache | None]], list[str]]:
     """
     found: list[tuple[str, common.Cache | None]] = [("cache", None)]
     notes: list[str] = []
-    if "DirectReads" in test.caps:
+    if test.direct:
         found.append(("direct", None))
     else:
         notes.append("direct: skipped, /protected-a takes no direct clients")
@@ -438,8 +396,7 @@ def get_by(
     done: dict[str, list[str]] = {}
     problems: list[str] = []
     for key, cache in found:
-        target = os.path.join(test.tmp, f"{label}-{key}")
-        os.makedirs(target)
+        target = test.directory(f"{label}-{key}")
         got: list[str] = []
         for n, name in enumerate(NAMES):
             why, hosts = get(key, cache, name, target, f"{label}-{key}-{n}")
@@ -479,7 +436,7 @@ def client_get(test: Test) -> tuple[str, str]:
             "--transfer-stats",
             stats,
             *flags,
-            f"{test.fed.url}/protected-a/{quote(test.rel(name))}",
+            test.url(test.fed.url, test.rel(name)),
             target,
         )
         if code != 0:
@@ -535,7 +492,7 @@ def plugin_get(test: Test) -> tuple[str, str]:
         key: str, cache: common.Cache | None, name: str, target: str, label: str
     ) -> tuple[str | None, list[str]]:
         query = transfers.DIRECT_QUERY if key == "direct" else ""
-        url = f"{test.fed.url}/protected-a/{quote(test.rel(name))}{query}"
+        url = f"{test.url(test.fed.url, test.rel(name))}{query}"
         passed, said = plugin_one(test, label, url, os.path.join(target, name), False, cache)
         if not passed:
             return f"failed: {transfers.plugin_error(said) or last_line(said)}", []
@@ -559,14 +516,13 @@ def put_by(test: Test, label: str, put: Callable[[str, str], str | None]) -> tup
         put: What puts one file: called with the file's path and the
             object's URL, it returns why the put failed, or None.
     """
-    if "Writes" not in test.caps:
+    if not test.writes:
         return SKIP, "/protected-a takes no writes"
     collection = f"{test.put_base}/{label}"
     errors = stores.make_dirs(test.origins, "protected-a", collection, test.setup)
     if errors:
         return FAIL, errors[0]
-    directory = os.path.join(test.tmp, label)
-    os.makedirs(directory)
+    directory = test.directory(label)
     files = {name: os.urandom(len(data)) for name, data in test.objects.items()}
     for name, data in files.items():
         with open(os.path.join(directory, name), "wb") as f:
@@ -574,7 +530,7 @@ def put_by(test: Test, label: str, put: Callable[[str, str], str | None]) -> tup
     problems: list[str] = []
     put_names: list[str] = []
     for name in NAMES:
-        url = f"{test.fed.url}/protected-a/{quote(collection)}/{quote(name)}"
+        url = test.url(test.fed.url, f"{collection}/{name}")
         why = put(os.path.join(directory, name), url)
         if why:
             problems.append(f"{name!r}: {why}")
@@ -644,7 +600,7 @@ def client_ls(test: Test) -> tuple[str, str]:
         "--json",
         "--token",
         test.token_file,
-        f"{test.fed.url}/protected-a/{quote(test.base)}",
+        test.pelican_url(test.base),
     )
     if code != 0:
         return FAIL, f"exit {code}: {last_line(err or out)}"
@@ -681,36 +637,24 @@ RUN = {
 
 def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test: no /protected-a."""
-    if "protected-a" not in fed.exports:
-        return "this shape does not export /protected-a"
-    return None
+    return suite.unexported(fed)
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Seed the objects, run the selected scenarios, then remove them."""
     fed = session.fed
     stores.require_dirs(fed.origins, ["protected-a"], "data/names")
-    tokens = session.setup_tokens()
-
-    def clean(when: str) -> None:
-        errors = stores.empty_tree_everywhere(fed.origins, fed.exports, "data/names", tokens)
-        if errors:
-            common.warn(f"emptying data/names {when}: {first(errors)}")
-
-    # Earlier runs' objects come out first.
-    clean("before the run")
     test = Test(session)
+    # Earlier runs' objects come out first.
+    test.clean("before the run")
     print(f"Names test against {fed.url}, objects under /protected-a/{test.base}/\n")
     try:
         test.seed()
         for error in test.unseeded:
             common.warn(error)
         for name in selected:
-            status, note = common.guarded(
-                partial(RUN[name], test), lambda note: (FAIL, note), (stores.Unreadable,)
-            )
-            results.add(name, status, note)
+            results.add(name, *suite.attempt(partial(RUN[name], test), (stores.Unreadable,)))
     finally:
         # The run's collections are made from the dev container, so on a
         # Linux host they are root's, and beyond init-data.py's reach.
-        clean("after the run")
+        test.clean("after the run")

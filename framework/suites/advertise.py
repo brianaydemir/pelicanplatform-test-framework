@@ -5,25 +5,7 @@ what it serves; the federation tokens they mint for a server that proves
 it is one; their service discovery; and the connection broker. Each must
 turn away a caller who lies, and serve the real thing.
 
-  forged-ads           an ad is taken only with its server's own key,
-                       the advertise scope, a server's registry prefix of
-                       its kind, and, for an origin, its namespaces' keys;
-                       and only with a token for this director, from the
-                       server, that expires
-  bad-broker-url       an origin's ad whose broker URL does not parse gets
-                       400, and the directors serve on
-  spoofed-status       a cache's own key may take it out of routing, by
-                       its status; another cache's key may not, by its
-                       name or by its URL
-  fed-token            a director mints a federation token only for a
-                       server's own advertise token
-  fed-token-at-origin  under `-p origin-no-direct`, an origin serves a
-                       user only beside a federation token
-  discover-servers     the directors' service discovery: refused without
-                       a token of its scope, and otherwise every server,
-                       once
-  broker               under `-p origin-broker`, the broker gives a caller
-                       only its own origin's requests
+See docs/tests/advertisements.md.
 
 A server signs its advertise token with its own key, which the registry
 holds for its prefix (/origins/<host> or /caches/<host>), and the
@@ -36,13 +18,11 @@ own: built from what the director says of the server
 (/api/v1.0/director_ui/servers/<name>), it lasts 90 seconds, and the
 server's next ad replaces it within Server.AdvertisementInterval (30
 seconds here). After a scenario that posts such ads, every director
-must name each server touched again within 150 seconds, or a row of the
-scenario fails.
+must name each server touched again within RESTORE_WAIT seconds, or a
+row of the scenario fails.
 
-The suite puts a probe object at every origin, at
-data/advertise/<run>-probe in the first protected namespace, or in
-/public where the origins export only that (`-p origin-public`); asks
-the directors about it; and removes it afterward.
+The suite puts a probe at every origin, in the probe namespace
+(credentials.probe_namespace()), and asks the directors about it.
 """
 
 import glob
@@ -55,7 +35,7 @@ from functools import partial
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
-from testlib import accounts, ads, common, credentials, director, jwt, metrics, registry, stores, web
+from testlib import accounts, ads, common, credentials, director, jwt, metrics, registry, stores, suite, web
 from testlib.ads import (
     ADVERTISE,
     SERVERS,
@@ -119,25 +99,21 @@ DROP_WAIT = 10
 FED_TOKEN_LIFETIME = 900
 
 
-class Test(Servers):
-    """The servers, keys, and tokens (ads.Servers), and the probe.
+class Test(suite.Test, Servers):
+    """The probe, and the servers, keys, and tokens (ads.Servers).
+
+    The probe's namespace is the first protected one, or /public where
+    the origins export only that (`-p origin-public`).
 
     Attributes:
-        namespace: The probe's namespace: the first protected namespace,
-            or /public where the origins export only that
-            (`-p origin-public`).
-        rel: The probe's path in namespace.
-        path: The probe's path in the federation.
+        probe: The probe's path in the namespace.
         data: The probe's content.
     """
 
     def __init__(self, session: Session):
-        super().__init__(session.fed)
-        self.session = session
-        self.run = session.run
-        self.namespace = credentials.probe_namespace(self.fed)
-        self.rel = f"data/advertise/{self.run}-probe"
-        self.path = f"/{self.namespace}/{self.rel}"
+        suite.Test.__init__(self, session, "advertise", credentials.probe_namespace(session.fed))
+        Servers.__init__(self, session.fed)
+        self.probe = self.rel("probe")
         self.data = os.urandom(4096)
 
     def caches(self) -> list[common.Cache]:
@@ -166,7 +142,7 @@ def route(server: Server) -> str:
 
 def naming(test: Test, server: Server) -> list[str]:
     """Return the directors that name server for the probe."""
-    return director.naming(test.fed.directors, route(server), test.path, server.host)
+    return director.naming(test.fed.directors, route(server), test.path(test.probe), server.host)
 
 
 def restored(test: Test, *servers: Server) -> list[str]:
@@ -194,6 +170,24 @@ def restored_row(test: Test, *servers: Server) -> Row:
     problems = restored(test, *servers)
     names = ", ".join(s.host for s in servers)
     return ("restored", *outcome(problems, names))
+
+
+def post_everywhere(
+    test: Test, kind: str, body: Mapping[str, Any], token: str, refusable: bool = False
+) -> list[str]:
+    """POST ad body to every director, which must take it (200).
+
+    If refusable, a director may refuse it (403) too.
+
+    Returns:
+        What is wrong.
+    """
+    problems: list[str] = []
+    for url in test.fed.directors:
+        answer = post_ad(url, kind, body, token)
+        if answer.status != 200 and not (refusable and answer.status == 403):
+            problems.append(f"{director.host(url)} answered {answer.describe()}")
+    return problems
 
 
 # --------------------------------------------------------------------------
@@ -353,7 +347,7 @@ def forged_ads(test: Test) -> list[Row]:
         problems, seen = forged(test, kind, body, token)
         if nowhere is not None:
             prefix, server = nowhere
-            path = test.path if prefix == f"/{test.namespace}" else f"{prefix}/probe"
+            path = test.path(test.probe) if prefix == f"/{test.namespace}" else f"{prefix}/probe"
             for url in fed.directors:
                 if director.ask(url, route(server), path).names(server.host):
                     problems.append(f"{director.host(url)} now names {server.host} for {path}")
@@ -420,24 +414,6 @@ def active_downtime(source: str) -> dict[str, Any]:
     }
 
 
-def post_everywhere(
-    test: Test, kind: str, body: Mapping[str, Any], token: str, refusable: bool = False
-) -> list[str]:
-    """POST ad body to every director, which must take it (200).
-
-    If refusable, a director may refuse it (403) too.
-
-    Returns:
-        What is wrong.
-    """
-    problems: list[str] = []
-    for url in test.fed.directors:
-        answer = post_ad(url, kind, body, token)
-        if answer.status != 200 and not (refusable and answer.status == 403):
-            problems.append(f"{director.host(url)} answered {answer.describe()}")
-    return problems
-
-
 def spoofed_status(test: Test) -> list[Row]:
     """Check that only a cache's own key may take it out of routing.
 
@@ -492,7 +468,7 @@ def spoofed_status(test: Test) -> list[Row]:
         if len(named) != wanted:
             problems.append(f"afterward, only {named} named {first_cache.host}")
         listed = web.request("GET", f"{test.director}{SERVERS}/{quote(first_cache.name, safe='')}")
-        found = common.as_object(listed.json()) or {}
+        found = listed.object()
         if found.get("filtered"):
             problems.append(
                 f"{director.host(test.director)} lists it filtered ({found.get('filteredType')})"
@@ -526,8 +502,7 @@ def fed_token_problems(test: Test, answer: web.Response, host: str) -> list[str]
     for any audience, to read everything, for FED_TOKEN_LIFETIME seconds,
     signed by a key of the federation's JWKS.
     """
-    found = common.as_object(answer.json()) or {}
-    token = str(found.get("access_token") or "")
+    token = str(answer.object().get("access_token") or "")
     if answer.status != 200 or not token:
         return [f"{answer.describe()}, with no access_token"]
     try:
@@ -581,11 +556,8 @@ def pending_registration(test: Test) -> Row:
     registry_host = director.host(fed.registry_url)
     admin = accounts.Api(
         fed.registry_url,
-        credentials.mint_admin(
-            fed,
-            test.session.path(f"tokens/admin.{registry_host}"),
-            credentials.local_issuer(fed, fed.registry_url),
-            common.signing_key(f"issuer-keys/{registry_host}"),
+        credentials.mint_web_user(
+            fed, test.session.path(f"tokens/admin.{registry_host}"), fed.registry_url, "admin"
         ),
     )
     try:
@@ -706,7 +678,7 @@ def fed_token_at_origin(test: Test) -> list[Row]:
     which anyone may read, the probe.
     """
     fed = test.fed
-    if "DirectReads" in fed.exports[test.namespace]:
+    if test.direct:
         return [("", SKIP, "the origins take direct clients ('-p origin-no-direct')")]
     if not fed.native_origins:
         return [("", SKIP, f"XRootD serves the origins ({fed.origin_variant}), not Pelican")]
@@ -716,14 +688,14 @@ def fed_token_at_origin(test: Test) -> list[Row]:
     answer = get_fed_token(
         test, {"host": cache.registered_host, "sType": "Cache"}, test.advertise_token(cache)
     )
-    federation = str((common.as_object(answer.json()) or {}).get("access_token") or "")
+    federation = str(answer.object().get("access_token") or "")
     if not federation:
         return [("", FAIL, f"no federation token for {cache.host}: {answer.describe()}")]
-    user = test.session.token(test.namespace)
+    user = test.token
     fed_only = (200,) if test.namespace == "public" else (401, 403)
     rows: list[Row] = []
     for origin in stores.unique(fed.origins):
-        url = stores.url(origin, test.namespace, test.rel)
+        url = stores.url(origin, test.namespace, test.probe)
         cases = (
             ("both", {"Authorization": f"Bearer {user}, Bearer {federation}"}, (200,)),
             ("user-only", {"Authorization": f"Bearer {user}"}, (401,)),
@@ -759,7 +731,7 @@ def federation_key(fed: common.Federation) -> tuple[str, str]:
     """
     jwks_uri = str(fed.discovery.get("jwks_uri", ""))
     answer = web.request("GET", jwks_uri)
-    listed = common.as_array((common.as_object(answer.json()) or {}).get("keys")) or []
+    listed = common.as_array(answer.object().get("keys")) or []
     for key in sorted(glob.glob("issuer-keys/*/*.pem")):
         jwk = jwt.public_jwk(key)
         for entry in (common.as_object(e) or {} for e in listed):
@@ -880,12 +852,12 @@ def broker(test: Test) -> list[Row]:
             f"{base}{path}",
             token=token,
             upload=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json", "X-Pelican-Timeout": timeout},
+            headers={**accounts.JSON, "X-Pelican-Timeout": timeout},
         )
         why = ""
         if answer.status not in statuses:
             why = f"{answer.describe()}, not {' or '.join(map(str, statuses))}"
-        elif name == "valid" and (common.as_object(answer.json()) or {}).get("status") != "timeout":
+        elif name == "valid" and answer.object().get("status") != "timeout":
             why = f"its status is not 'timeout': {answer.body[:200]!r}"
         rows.append((name, FAIL if why else PASS, why or answer.describe()))
     return rows
@@ -903,47 +875,26 @@ RUN: dict[str, Callable[[Test], list[Row]]] = {
 
 
 def skip(fed: common.Federation) -> str | None:
-    """Return why there is nothing to test, or None if there is something.
+    """Return why there is nothing to test, or None if there are directors.
 
     A standalone origin has no director.
     """
-    if not fed.directors:
-        return "a standalone origin has no director"
-    return None
-
-
-def put_probe(test: Test) -> None:
-    """Put the probe at every origin, in the suite's namespace."""
-    fed = test.fed
-    token = test.session.setup_token(test.namespace)
-    errors = stores.make_dirs(fed.origins, test.namespace, "data/advertise", token)
-    for origin in stores.unique(fed.origins):
-        if errors:
-            break
-        error = stores.seed(origin, test.namespace, test.rel, test.data, token, fed.exports[test.namespace])
-        if error:
-            errors.append(error)
-    if errors:
-        die(f"could not put the probe at every origin: {first(errors)}")
+    return "a standalone origin has no director" if not fed.directors else None
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Put the probe in place, run the selected scenarios, and remove it."""
     test = Test(session)
-    put_probe(test)
-    print(f"Asking the directors about {test.path}\n")
+    why = test.put({test.probe: test.data})
+    if why:
+        die(f"could not put the probe at every origin: {why}")
+    print(f"Asking the directors about {test.path(test.probe)}\n")
     try:
         for name in selected:
             rows = common.guarded(
                 partial(RUN[name], test), lambda note: [("", FAIL, note)], (Missing, accounts.ApiError)
             )
             for case, status, note in rows:
-                results.add(f"{name} {case}" if case else name, status, note)
+                results.add(f"{name} {case}".strip(), status, note)
     finally:
-        fed = session.fed
-        tokens = {test.namespace: session.setup_token(test.namespace)}
-        errors = stores.empty_tree_everywhere(
-            fed.origins, {test.namespace: fed.exports[test.namespace]}, "data/advertise", tokens
-        )
-        if errors:
-            common.warn(f"could not remove the probe: {first(errors)}")
+        test.clean("after the run")

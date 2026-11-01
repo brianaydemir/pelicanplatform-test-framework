@@ -2,18 +2,22 @@
 
 Part of [What the tests check](README.md).
 
-Under `-p cache-tiered` ([presets](../../README.md#presets)), a V2 cache
-that holds all of an object of at least 16 MiB (`Cache.TieringThreshold`)
-uploads it to its prefix of the `s3` service's bucket `tier`
+Under [`-p cache-tiered`](../../framework/presets/cache-tiered.sh), a
+[V2 cache](../glossary.md#native-and-xrootd) that holds all of an object of
+at least 16 MiB (`Cache.TieringThreshold`) uploads it to its prefix of the
+[`s3`](../glossary.md#helper-service) service's bucket `tier`
 (`framework/var/data/tier/<cache>/`). It then serves the object from there,
 by redirecting the client to a pre-signed URL, or, with
-`Cache.TieringDisableRedirect` (cache-1 under `-p topo-multi-cache`), by
+`Cache.TieringDisableRedirect` (cache-1 under
+[`-p topo-multi-cache`](../../framework/presets/topo-multi-cache.sh)), by
 proxying it.
 
-The `tiering` suite checks every cache set to tier, the site-local one
-included. Each scenario records one row, which judges every such cache. Only
-`tampered` touches the bucket. The suite skips without `-p cache-tiered`, or
-where the shape does not export `/protected-a`.
+The [`tiering`](../../framework/suites/tiering.py) suite checks every cache
+set to tier, the [site-local](site-local-cache.md) one included. Each
+[scenario](../glossary.md#scenario) records one [row](../glossary.md#case),
+which judges every such cache. Only `tampered` touches the bucket. The suite
+[skips](../glossary.md#skip) without `-p cache-tiered`, or where the shape
+does not export `/protected-a`.
 
 - `tiered`: An object over the threshold, read cold and whole, must be in
   the cache's prefix within 60 seconds, and
@@ -32,18 +36,21 @@ where the shape does not export `/protected-a`.
 
   Where the cache is the only one the directors know of, each director's
   object route, with no token, must redirect to the cache. Under
-  `-p origin-max-age`, a redirecting cache may answer 200 while it
-  revalidates; it is asked once more, here and in `ranges`.
+  [`-p origin-max-age`](../../framework/presets/origin-max-age.sh), a
+  redirecting cache may answer 200 while it revalidates; it is asked once
+  more, here and in `ranges`.
 
 - `ranges`: `bytes=0-0`, `5242879-5242881`, `-10`, `16777215-16777216`, and
   `16777216-` of the same object. A proxying cache must answer each as at
   [block boundaries](block-boundaries.md). A redirecting cache must answer
   307, and the bucket the range, with no token; a 200 with the range's bytes
-  alone (rclone) is inconclusive.
+  alone ([rclone](https://rclone.org/)) is [inconclusive](../ci.md#results).
 
-- `client-get`: `pelican object get --cache <cache>` of the same object must
-  write it, as must the same through the director, where the cache is the
-  only one it knows of. So must stash_plugin, preferring the cache
+- `client-get`:
+  [`pelican object get --cache <cache>`](../glossary.md#pelican-client) of
+  the same object must write it, as must the same through the director,
+  where the cache is the only one it knows of. So must
+  [`stash_plugin`](../glossary.md#stash_plugin), preferring the cache
   (`Client.PreferredCaches`).
 
 - `tampered`: A tiered object's copy in the bucket is overwritten with

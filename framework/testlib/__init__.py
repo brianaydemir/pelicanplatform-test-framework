@@ -1,6 +1,7 @@
 """What test.py, framework/suites/, and other scripts share.
 
-The others are framework/init-data.py, control.py, and report.py.
+The other scripts are framework/init-data.py, control.py, and
+report.py.
 
   accounts     a server's web API as one of its users; its users and
                groups; logging in
@@ -36,6 +37,8 @@ The others are framework/init-data.py, control.py, and report.py.
                what their storage cannot do
   stub         a stub HTTP server in the dev container, for servers to
                fetch from, which answers as a test tells it
+  suite        what a suite's Test builds on: its pass, its collection,
+               and its namespace's tokens
   transfers    the transfers suite's scenarios, batches, and verdicts
   web          HTTP(S) requests straight to a server
   webapi       every server's web API, and the admin's and a user's

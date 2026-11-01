@@ -1,74 +1,27 @@
 """Collections: prefixes of a namespace with access control of their own.
 
-They are of an exported namespace, kept in an origin's database and
-granted through its embedded OAuth2 issuer (Pelican's
-docs/collections-design.md). The suite needs the embedded issuer
-(ORIGIN_ENABLE_ISSUER, on by default) and a protected namespace, and
-skips with the issuer off or the external one.
+The issuer origin keeps them in its database, and grants them through
+its embedded OAuth2 issuer (Pelican's docs/collections-design.md). The
+suite needs the embedded issuer (ORIGIN_ENABLE_ISSUER, on by default)
+and a protected namespace, and skips with the issuer off or the external
+one. Its namespace is the first protected one exported.
 
-Its users are records of the issuer origin (origin-0, or `fed`), which
+The users are records of the issuer origin (origin-0, or `fed`), which
 its admin creates once and later runs reuse: test-curator, a collection
 administrator (Server.CollectionAdminUsers in
-framework/config.d/base/40-origin.yaml) but no server administrator;
-and test-owner, test-writer, test-reader, test-outsider, test-sharer,
-test-guest, and test-heir, ordinary users. Each acts through a token
-that the origin's web API takes as theirs (credentials.mint_user()),
-and gets tokens for data from the namespace's issuer through its device
-flow, which the tests approve as the user (testlib/issuer.py). Each run
-makes groups of its own, owned by test-owner (test-readers-<run>,
-test-writers-<run>, and test-admins-<run>, for test-heir), and
-collections under /<namespace>/data/collections/<run>/:
-
-  alpha  private; test-owner's, with the admins group as its admin
-         group; the readers may read and the writers write; sharing on
-  beta   public; test-owner's; every authenticated user may read
-
-with an object in each (and alpha/shared/obj, for a share), and one
-beside them, decoy/obj, in no collection. The scenarios make and remove
-collections of their own where they change things:
-
-  users       the admin creates users, and nobody else; a user makes
-              groups of their own, and nobody joins one uninvited
-  create      a collection administrator creates a collection, an
-              ordinary user may not, and a namespace outside every
-              export, climbing out of one, or malformed is refused
-  visibility  a private collection is invisible to a user with no
-              access, a public one visible to every user, and
-              canEdit tells each what they may change
-  acl         who may grant access, to what roles, and what the ACL
-              lists; the admin group revokes
-  tokens      what the issuer grants each user: the storage scopes of
-              their collections alone, and collection.create only to
-              a collection administrator
-  data        what those tokens allow, straight at every origin and
-              through the federation with `pelican object`: reads and
-              writes within a collection, and nothing beside it
-  client      `pelican object get` with no token acquires one from the
-              issuer itself, which the tests approve: a reader's works,
-              and an outsider's gets nothing
-  share-confinement
-              a reader may share only within the collection: a share
-              that climbs out of it, lies beside it, begins like it, or
-              lies outside every export is refused
-  shares      a reader shares part of a collection with a guest, whose
-              access is the lesser of the share's and the sharer's,
-              and goes with the sharer's; what may not be shared; and
-              a multiuser origin refuses shares
-  expiry      a grant with an expiry grants nothing after it
-  revoke      a revoked grant is gone from the next token; the old
-              token keeps it until it expires, as designed
-  manage      who may rename and describe a collection, set its
-              metadata, and delete it
-  ownership   only the owner hands a collection on, by setting its
-              owner or by an invite that one user redeems once
-  cli         `pelican-server origin collection` manages collections
-              through the issuer's device flow, approved as
-              test-curator, and fails for an ordinary user
+framework/config.d/base/40-origin.yaml), and ordinary users. Each acts
+through a web token (credentials.mint_web_user()), and gets tokens for data
+from the namespace's issuer through its device flow, approved as the
+user (testlib/issuer.py). Each run makes groups that test-owner owns;
+two collections, alpha and beta, under data/collections/<run>/, with an
+object in each; and decoy/obj beside them, in none. A scenario that
+changes a collection makes one of its own.
 
 The run's collections, groups, and objects are removed after the suite;
-the users stay.
+the users stay. See docs/tests/collections.md.
 """
 
+import functools
 import json
 import os
 import time
@@ -76,7 +29,7 @@ from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlsplit
 
-from testlib import accounts, common, credentials, issuer, stores, web
+from testlib import accounts, common, credentials, issuer, stores, suite, web
 from testlib.accounts import Api, ApiError, must
 from testlib.collections import (
     COLLECTIONS,
@@ -89,13 +42,15 @@ from testlib.collections import (
     metadata,
     missing,
     patch,
+    remove_under,
     revoke,
     set_metadata,
     share,
+    user_target,
 )
 from testlib.common import die, objects, outcome, warn
 from testlib.credentials import PROTECTED
-from testlib.issuer import DATA_SCOPES, ClientRun, data_scopes
+from testlib.issuer import DATA_SCOPES, ClientRun, IssuerError, data_scopes
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, last_line
 
@@ -120,8 +75,8 @@ SCENARIOS = {
 # its issuer's, beside its setup's (see suites/__init__.py).
 ONE_PROFILE = tuple(SCENARIOS)
 
-REDEEM = "/api/v1.0/invites/redeem/collection-ownership"
-MY_GROUPS = "/api/v1.0/me/groups"
+# Where a user redeems an invite to own a collection.
+REDEEM_OWNERSHIP = "/api/v1.0/invites/redeem/collection-ownership"
 # The director's list of origins, from which the CLI takes the first.
 ORIGINS = "/api/v1.0/director_ui/servers?server_type=origin"
 
@@ -155,35 +110,27 @@ def username(role: str) -> str:
 
 def personal(role: str) -> str:
     """Return the ACL target that grants to role's user alone."""
-    return f"user-{username(role)}"
+    return user_target(username(role))
 
 
 def skip(fed: common.Federation) -> str | None:
     """Return why there is nothing to test, or None if there is something.
 
-    There is nothing without an embedded issuer, or a protected namespace.
+    There is nothing without the embedded issuer, or a protected
+    namespace.
     """
     return missing(fed)
 
 
-class Test:
-    """The issuer origin and its namespace, the run's fixture, and tokens.
+class Test(suite.Test):
+    """The issuer origin, the suite's namespace, and the run's fixture.
 
-    The fixture is the run's users, groups, collections, and objects; the
-    tokens are as each user.
+    The fixture is the run's users, groups, collections, and objects.
 
     Attributes:
         origin: The issuer origin.
         web: Its web URL.
-        namespace: The first protected namespace exported, which holds the
-            collections.
-        caps: The namespace's capabilities.
         issuer_url: The namespace's issuer.
-        base: Where the run's collections are within the namespace.
-        prefix: Where they are in the federation.
-        server_token: The `server` token for the namespace, of the WLCG
-            profile, for putting objects in place, reading them back, and
-            removing them.
         ids: The users' IDs, by role.
         groups: The groups' IDs, by name.
         coll: The IDs of alpha and beta, by name.
@@ -192,17 +139,10 @@ class Test:
 
     def __init__(self, session: Session):
         fed = session.fed
-        self.session = session
-        self.fed = fed
-        self.run = session.run
+        super().__init__(session, "collections", next(ns for ns in PROTECTED if ns in fed.exports))
         self.origin = fed.origins[0]
         self.web = fed.origin_web_url
-        self.namespace = next(ns for ns in PROTECTED if ns in fed.exports)
-        self.caps = fed.exports[self.namespace]
         self.issuer_url = fed.issuer_of(self.namespace)
-        self.base = f"data/collections/{self.run}"
-        self.prefix = f"/{self.namespace}/{self.base}"
-        self.server_token = session.setup_token(self.namespace)
         self.ids: dict[str, str] = {}
         self.groups: dict[str, str] = {}
         self.coll: dict[str, str] = {}
@@ -212,19 +152,19 @@ class Test:
         self._minted = 0
 
     def web_token(self, role: str, web_url: str | None = None) -> str:
-        """Return a token that an origin's web API takes as role's user.
+        """Return a token of role's user for an origin's web API.
 
-        The origin is the one at web_url, or by default the issuer origin.
+        Args:
+            role: Whose it is.
+            web_url: The origin's web URL; the issuer origin's by default.
         """
         web_url = web_url or self.web
         key = (web_url, role)
         if key not in self._web_tokens:
-            svc = urlsplit(web_url).hostname or ""
-            self._web_tokens[key] = credentials.mint_user(
+            self._web_tokens[key] = credentials.mint_web_user(
                 self.fed,
-                self.session.path(f"tokens/web.{svc}.{role}"),
-                credentials.local_issuer(self.fed, web_url),
-                common.signing_key(f"issuer-keys/{svc}"),
+                self.session.path(f"tokens/collections-web.{urlsplit(web_url).hostname}.{role}"),
+                web_url,
                 username(role),
                 lifetime=3600,
             )
@@ -235,7 +175,7 @@ class Test:
         return Api(self.web, self.web_token(role))
 
     def client(self, namespace: str) -> issuer.Client:
-        """Return the tests' client of the issuer of namespace.
+        """Return the suite's client of namespace's issuer, made once.
 
         The issuer is the issuer origin's.
         """
@@ -244,28 +184,30 @@ class Test:
         return self._clients[namespace]
 
     def user(self, role: str, web_url: str | None = None) -> issuer.User:
-        """Return role's user, as an issuer of an origin knows them.
+        """Return role's user, as an origin's issuer knows them.
 
-        The origin is the one at web_url, or by default the issuer origin.
+        Args:
+            role: Who they are.
+            web_url: The origin's web URL; the issuer origin's by default.
         """
         return issuer.User(token=self.web_token(role, web_url))
 
     def data_token(self, role: str) -> str:
-        """Return a token for the namespace from its issuer, as role's user.
+        """Return a token from the namespace's issuer, as role's user.
 
-        It grants what the user's collections allow right now.
+        It grants what the user's collections allow when it is minted.
         """
         return issuer.token(self.client(f"/{self.namespace}"), self.user(role), DATA_SCOPES)
 
     def control_token(self, role: str) -> str:
-        """Return a token for managing collections, as role's user.
+        """Return a token from the origin's local issuer, as role's user.
 
-        It is from the origin's local issuer.
+        It is for managing collections.
         """
         return issuer.token(self.client(issuer.LOCAL_NAMESPACE), self.user(role), CONTROL_SCOPES)
 
-    def token_file(self, role: str) -> str:
-        """Return a `--token` file of a fresh data token for role's user."""
+    def data_token_file(self, role: str) -> str:
+        """Return the file of a fresh data_token() of role's user."""
         self._minted += 1
         path = self.session.path(f"tokens/collections.{role}.{self._minted}")
         with open(path, "w", encoding="utf-8") as f:
@@ -273,38 +215,12 @@ class Test:
         return path
 
     def group_name(self, name: str) -> str:
-        """Return the run's group name for name (the ACL target).
-
-        For example, test-readers-<run> for readers.
-        """
+        """Return the run's name of group name, e.g. test-readers-<run>."""
         return f"test-{name}-{self.run}"
 
-    def path(self, name: str) -> str:
-        """Return the namespace of the run's collection name.
-
-        That is its path in the federation.
-        """
-        return f"{self.prefix}/{name}"
-
-    def rel(self, name: str) -> str:
-        """Return object or collection name's path within the namespace."""
-        return f"{self.base}/{name}"
-
     def scope(self, kind: str, name: str) -> str:
-        """Return the storage scope of kind for collection name.
-
-        It is as the namespace's issuer mints it: `storage.<kind>` of its
-        path within the namespace.
-        """
-        return f"storage.{kind}:/{self.base}/{name}"
-
-    def object_url(self, origin: common.Origin, name: str) -> str:
-        """Return where origin serves object name."""
-        return stores.url(origin, self.namespace, self.rel(name))
-
-    def federation_url(self, name: str) -> str:
-        """Return object name's URL through the federation."""
-        return f"{self.fed.url}/{self.namespace}/{self.rel(name)}"
+        """Return the storage scope of kind of the run's collection name."""
+        return issuer.scope(kind, self.rel(name))
 
 
 def rfc3339(when: float) -> str:
@@ -330,7 +246,7 @@ def make_collection(
     if admins), and have test-owner grant rules ((target, role) pairs).
     """
     curator = test.api("curator")
-    made = must(create(curator, name, test.path(name), visibility, sharing), f"creating {name}")
+    made = must(create(curator, name, test.path(test.rel(name)), visibility, sharing), f"creating {name}")
     cid = str(made.object.get("id", ""))
     fields: dict[str, Any] = {"ownerId": test.ids["owner"]}
     if admins:
@@ -348,13 +264,10 @@ def sweep(test: Test, this_run: bool) -> None:
     Remove the run's, if this_run, or else earlier runs' leftovers.
     """
     admin = test.api("admin")
-    directory = f"/{test.namespace}/data/collections/"
-    for row in objects(admin.call("GET", COLLECTIONS).array):
-        namespace = str(row.get("namespace", ""))
-        if namespace.startswith(directory) and namespace.startswith(test.prefix) == this_run:
-            gone = delete(admin, str(row.get("id")))
-            if not gone.ok:
-                warn(f"could not remove collection {row.get('name')}: {gone.describe()}")
+    directory, ours = test.path("data/collections/"), test.path(test.base)
+    problems = remove_under(admin, ours) if this_run else remove_under(admin, directory, keep=ours)
+    for problem in problems:
+        warn(problem)
 
 
 def prepare(test: Test) -> None:
@@ -363,9 +276,9 @@ def prepare(test: Test) -> None:
     The admin, and each user, agree to the origin's AUP first, without
     which it refuses them its user and group routes.
     """
-    sweep(test, this_run=False)
     admin = test.api("admin")
     accounts.agree_to_aup(admin)
+    sweep(test, this_run=False)
     for role in ROLES:
         test.ids[role] = accounts.ensure_user(admin, username(role))
         accounts.agree_to_aup(test.api(role))
@@ -379,18 +292,10 @@ def prepare(test: Test) -> None:
         test, "alpha", ((readers, "read"), (writers, "write")), admins=True, sharing=True
     )
     test.coll["beta"] = make_collection(test, "beta", ((EVERYONE, "read"),), visibility="public")
-    for name in OBJECTS:
-        test.data[name] = os.urandom(OBJECT_SIZE)
-        errors = stores.seed_everywhere(
-            test.fed.origins,
-            test.namespace,
-            test.rel(name),
-            test.data[name],
-            test.server_token,
-            test.caps,
-        )
-        if errors:
-            die(f"could not put {name} in place: {errors[0]}")
+    test.data = {name: os.urandom(OBJECT_SIZE) for name in OBJECTS}
+    why = test.put({test.rel(name): data for name, data in test.data.items()})
+    if why:
+        die(f"could not put the objects in place: {why}")
 
 
 def finish(test: Test) -> None:
@@ -401,9 +306,7 @@ def finish(test: Test) -> None:
         failed = accounts.delete_group(admin, gid)
         if failed:
             warn(f"could not remove the {name} group: {failed}")
-    for origin in stores.unique(test.fed.origins):
-        for error in stores.empty_tree(origin, test.namespace, "data/collections", test.server_token):
-            warn(error)
+    test.clean("after the run")
 
 
 # --------------------------------------------------------------------------
@@ -458,9 +361,9 @@ def users(test: Test) -> tuple[str, str]:
     refused = test.api("outsider").call("POST", accounts.USERS, {"username": f"test-nobody-{test.run}"})
     if refused.status != 403:
         problems.append(f"an ordinary user's POST {accounts.USERS}: {refused.describe()}, not 403")
-    mine = {row.get("id") for row in objects(test.api("reader").call("GET", MY_GROUPS).array)}
+    mine = {row.get("id") for row in objects(test.api("reader").call("GET", accounts.MY_GROUPS).array)}
     if test.groups["readers"] not in mine:
-        problems.append(f"test-reader's groups ({MY_GROUPS}) lack the readers group")
+        problems.append(f"test-reader's groups ({accounts.MY_GROUPS}) lack the readers group")
     joined = test.api("reader").call(
         "POST",
         f"{accounts.GROUPS}/{test.groups['writers']}/members",
@@ -478,13 +381,14 @@ def create_scenario(test: Test) -> tuple[str, str]:
     """
     problems: list[str] = []
     curator = test.api("curator")
-    made = create(curator, "gamma", test.path("gamma"))
+    gamma, bad = test.path(test.rel("gamma")), test.path(test.rel("bad"))
+    made = create(curator, "gamma", gamma)
     if made.status != 201:
         problems.append(f"test-curator's create: {made.describe()}, not 201")
     else:
         row = made.object
         wanted = (
-            ("namespace", test.path("gamma")),
+            ("namespace", gamma),
             ("ownerId", test.ids["curator"]),
             ("visibility", "private"),
         )
@@ -496,21 +400,20 @@ def create_scenario(test: Test) -> tuple[str, str]:
             problems.append(f"test-curator's delete of it: {gone.describe()}")
         elif get(curator, str(row.get("id"))).status != 404:
             problems.append("the deleted collection is still there")
-    plain = create(test.api("owner"), "gamma", test.path("gamma"))
+    plain = create(test.api("owner"), "gamma", gamma)
     if plain.status != 403:
         problems.append(f"test-owner's create, who administers no collections: {plain.describe()}, not 403")
-    bad = (
+    for namespace, why in (
         (f"/elsewhere/{test.run}", "outside every export"),
         (f"/{test.namespace}/../../etc", "climbing out of its export"),
-        (f"{test.path('bad')} x", "with a space"),
-    )
-    for namespace, why in bad:
+        (f"{bad} x", "with a space"),
+    ):
         refused = create(curator, "bad", namespace)
         if refused.status != 400:
             problems.append(f"a create {why} ({namespace!r}): {refused.describe()}, not 400")
         if refused.ok:
             delete(curator, str(refused.object.get("id")))
-    odd = create(curator, "bad", test.path("bad"), visibility="secret")
+    odd = create(curator, "bad", bad, visibility="secret")
     if odd.status != 400:
         problems.append(f"a create with visibility `secret`: {odd.describe()}, not 400")
     if odd.ok:
@@ -631,7 +534,7 @@ def tokens(test: Test) -> tuple[str, str]:
             problems.append(f"{username(role)}'s local token has {sorted(found)}")
         if issuer.claims(token).get("iss") != local:
             problems.append(f"{username(role)}'s local token's issuer is not {local}")
-        made = create(Api(test.web, token), "eta", test.path("eta"))
+        made = create(Api(test.web, token), "eta", test.path(test.rel("eta")))
         if may_create and made.status != 201:
             problems.append(f"a create with test-curator's local token: {made.describe()}, not 201")
         if not may_create and made.status != 403:
@@ -648,7 +551,7 @@ def data(test: Test) -> tuple[str, str]:
     """
     problems: list[str] = []
     token = {role: test.data_token(role) for role in ("writer", "reader", "outsider")}
-    writes = "Writes" in test.caps
+    writes = test.writes
     reads = (
         ("reader", "alpha/obj", True),
         ("reader", "beta/obj", True),
@@ -658,10 +561,10 @@ def data(test: Test) -> tuple[str, str]:
         ("writer", "decoy/obj", False),
     )
     notes: list[str] = []
-    if "DirectReads" in test.caps:
+    if test.direct:
         for origin in test.fed.origins:
             for role, name, allowed in reads:
-                url = test.object_url(origin, name)
+                url = test.url(origin.url, test.rel(name))
                 answer = web.request("GET", url, token=token[role])
                 if allowed and (answer.status != 200 or answer.body != test.data[name]):
                     problems.append(f"GET {url} as {username(role)}: {answer.describe()}, or wrong bytes")
@@ -689,16 +592,16 @@ def write_problems(test: Test, origin: common.Origin, token: dict[str, str]) -> 
         ("reader", f"alpha/put-reader-{origin.svc}"),
         ("writer", "decoy/put-writer"),
     ):
-        url = test.object_url(origin, name)
+        url = test.url(origin.url, test.rel(name))
         answer = web.request("PUT", url, token=token[role], upload=payload)
         if answer.status not in REFUSED:
             problems.append(f"PUT {url} as {username(role)}: {answer.describe()}, not refused")
     name = f"alpha/put-writer-{origin.svc}"
-    url = test.object_url(origin, name)
+    url = test.url(origin.url, test.rel(name))
     answer = web.request("PUT", url, token=token["writer"], upload=payload)
     if not answer.ok:
         return problems + [f"PUT {url} as test-writer: {answer.describe()}"]
-    back = web.request("GET", url, token=test.server_token)
+    back = web.request("GET", url, token=test.setup)
     if back.status != 200 or back.body != payload:
         problems.append(f"GET {url} after test-writer's PUT: {back.describe()}, or wrong bytes")
     if not stores.cannot(test.fed, "delete"):
@@ -717,14 +620,14 @@ def federation_problems(test: Test, writes: bool) -> list[str]:
     problems: list[str] = []
     session = test.session
     for role, allowed in (("reader", True), ("outsider", False)):
-        dest = session.path(f"get-{role}")
+        dest = os.path.join(test.tmp, f"get-{role}")
         status, _, err = session.pelican_cmd(
             "object",
             "get",
-            test.federation_url("alpha/obj"),
+            test.pelican_url(test.rel("alpha/obj")),
             dest,
             "--token",
-            test.token_file(role),
+            test.data_token_file(role),
         )
         if allowed and (status != 0 or common.sha256(dest) != common.digest(test.data["alpha/obj"])):
             problems.append(f"`object get` as test-reader: exit {status}: {last_line(err)}")
@@ -732,17 +635,15 @@ def federation_problems(test: Test, writes: bool) -> list[str]:
             problems.append("`object get` as test-outsider succeeded")
     if not writes:
         return problems
-    source = session.path("put-source")
-    with open(source, "wb") as f:
-        f.write(os.urandom(OBJECT_SIZE))
+    source = test.local("put-source", os.urandom(OBJECT_SIZE))
     for role, allowed in (("writer", True), ("reader", False)):
         status, _, err = session.pelican_cmd(
             "object",
             "put",
             source,
-            test.federation_url(f"alpha/put-{role}"),
+            test.pelican_url(test.rel(f"alpha/put-{role}")),
             "--token",
-            test.token_file(role),
+            test.data_token_file(role),
         )
         if allowed and status != 0:
             problems.append(f"`object put` as test-writer: exit {status}: {last_line(err)}")
@@ -760,9 +661,10 @@ def client(test: Test) -> tuple[str, str]:
     if test.fed.standalone:
         return SKIP, "a standalone origin has no director to find the issuer through"
     problems: list[str] = []
+    source = test.pelican_url(test.rel("alpha/obj"))
     for role, allowed in (("reader", True), ("outsider", False)):
-        dest = test.session.path(f"client-get-{role}")
-        done = run_approving(test, ["object", "get", test.federation_url("alpha/obj"), dest], role)
+        dest = os.path.join(test.tmp, f"client-get-{role}")
+        done = run_approving(test, ["object", "get", source, dest], role)
         problems += done.problems
         if done.approvals == 0:
             problems.append(f"the client as {username(role)} announced no device flow to approve")
@@ -797,9 +699,9 @@ def share_confinement(test: Test) -> tuple[str, str]:
     problems: list[str] = []
     alpha, sharer = test.coll["alpha"], test.api("sharer")
     bad = (
-        (f"{test.path('alpha')}/../decoy", "climbing out of alpha"),
-        (test.path("decoy"), "beside alpha"),
-        (test.path("alphax"), "beginning like alpha"),
+        (test.path(test.rel("alpha/../decoy")), "climbing out of alpha"),
+        (test.path(test.rel("decoy")), "beside alpha"),
+        (test.path(test.rel("alphax")), "beginning like alpha"),
         (f"/elsewhere/{test.run}", "outside every export"),
     )
     made: list[str] = []
@@ -830,7 +732,8 @@ def shares(test: Test) -> tuple[str, str]:
     problems: list[str] = []
     alpha = test.coll["alpha"]
     owner, sharer = test.api("owner"), test.api("sharer")
-    made = share(sharer, alpha, "shared", test.path("alpha/shared"))
+    shared_path = test.path(test.rel("alpha/shared"))
+    made = share(sharer, alpha, "shared", shared_path)
     if test.fed.multiuser:
         if made.status != 409:
             return FAIL, f"a share at a multiuser origin: {made.describe()}, not 409"
@@ -840,13 +743,13 @@ def shares(test: Test) -> tuple[str, str]:
     sid = str(made.object.get("id"))
     if made.object.get("parentCollectionId") != alpha:
         problems.append("the share's parentCollectionId is not alpha's ID")
-    answer = share(test.api("outsider"), alpha, "shared", test.path("alpha/shared"))
+    answer = share(test.api("outsider"), alpha, "shared", shared_path)
     if answer.status != 404:
         problems.append(f"test-outsider's share of alpha, unreadable to them: {answer.describe()}, not 404")
-    answer = share(sharer, test.coll["beta"], "shared", test.path("beta"))
+    answer = share(sharer, test.coll["beta"], "shared", test.path(test.rel("beta")))
     if answer.status != 409:
         problems.append(f"a share of beta, with sharing off: {answer.describe()}, not 409")
-    answer = share(sharer, sid, "nested", test.path("alpha/shared/nested"))
+    answer = share(sharer, sid, "nested", test.path(test.rel("alpha/shared/nested")))
     if answer.status not in (400, 409):
         problems.append(f"a share of the share: {answer.describe()}, not refused")
     must(grant(sharer, sid, personal("guest"), "read"), "granting read on the share")
@@ -854,14 +757,14 @@ def shares(test: Test) -> tuple[str, str]:
     found = data_scopes(test.data_token("guest"))
     if not {access, shared} <= found or test.scope("read", "alpha") in found:
         problems.append(f"test-guest's token has {sorted(found)}, not {access} and {shared} alone")
-    if "DirectReads" in test.caps:
+    if test.direct:
         for origin in test.fed.origins:
             token = test.data_token("guest")
-            url = test.object_url(origin, "alpha/shared/obj")
+            url = test.url(origin.url, test.rel("alpha/shared/obj"))
             reply = web.request("GET", url, token=token)
             if reply.status != 200 or reply.body != test.data["alpha/shared/obj"]:
                 problems.append(f"GET {url} as test-guest: {reply.describe()}, or wrong bytes")
-            url = test.object_url(origin, "alpha/obj")
+            url = test.url(origin.url, test.rel("alpha/obj"))
             reply = web.request("GET", url, token=token)
             if reply.status not in REFUSED:
                 problems.append(f"GET {url} as test-guest, outside the share: {reply.describe()}")
@@ -921,8 +824,8 @@ def revoke_scenario(test: Test) -> tuple[str, str]:
         problems.append(f"test-reader's next token still has {read}")
     if test.scope("read", "beta") not in data_scopes(new):
         problems.append("test-reader's next token lost beta's read")
-    if "DirectReads" in test.caps:
-        url = test.object_url(test.origin, "alpha/obj")
+    if test.direct:
+        url = test.url(test.origin.url, test.rel("alpha/obj"))
         answer = web.request("GET", url, token=old)
         if answer.status != 200:
             problems.append(f"GET {url} with the old token: {answer.describe()}, not 200")
@@ -1011,12 +914,12 @@ def ownership(test: Test) -> tuple[str, str]:
     if invite.status != 201 or not token:
         problems.append(f"test-heir's ownership invite: {invite.describe()}")
     else:
-        answer = guest.call("POST", REDEEM, {"token": token})
+        answer = guest.call("POST", REDEEM_OWNERSHIP, {"token": token})
         if not answer.ok:
             problems.append(f"test-guest's redeeming of the invite: {answer.describe()}")
         elif get(guest, zeta).object.get("ownerId") != test.ids["guest"]:
             problems.append("after the invite, zeta's ownerId is not test-guest's")
-        again = test.api("outsider").call("POST", REDEEM, {"token": token})
+        again = test.api("outsider").call("POST", REDEEM_OWNERSHIP, {"token": token})
         if again.ok:
             problems.append("test-outsider redeemed the invite too")
     answer = delete(guest, zeta)
@@ -1065,16 +968,17 @@ def cli(test: Test) -> tuple[str, str]:
         problems.extend(done.problems)
         return done
 
-    made = manage_as("curator", "create", "--name", f"cli-{test.run}", "--namespace", test.path("cli"))
+    namespace = test.path(test.rel("cli"))
+    made = manage_as("curator", "create", "--name", f"cli-{test.run}", "--namespace", namespace)
     row = common.as_object(cli_json(made.stdout)) or {}
     cid = str(row.get("id", ""))
     if made.status != 0 or not cid:
         why = f"exit {made.status}: {last_line(made.stderr)}"
         return FAIL, f"`collection create` as test-curator: {why}"
-    if row.get("namespace") != test.path("cli"):
+    if row.get("namespace") != namespace:
         problems.append(f"the created collection's namespace is {row.get('namespace')!r}")
     done = manage_as(
-        "outsider", "create", "--name", "cli-outsider", "--namespace", test.path("cli-outsider")
+        "outsider", "create", "--name", "cli-outsider", "--namespace", test.path(test.rel("cli-outsider"))
     )
     if done.status == 0:
         problems.append("`collection create` as test-outsider succeeded")
@@ -1083,7 +987,7 @@ def cli(test: Test) -> tuple[str, str]:
     if cid not in {str(r.get("id")) for r in objects(common.as_array(cli_json(done.stdout)) or [])}:
         problems.append(f"`collection list`: exit {done.status}, without the new collection")
     done = manage_as("curator", "get", cid)
-    if (common.as_object(cli_json(done.stdout)) or {}).get("namespace") != test.path("cli"):
+    if (common.as_object(cli_json(done.stdout)) or {}).get("namespace") != namespace:
         problems.append(f"`collection get`: exit {done.status}: {last_line(done.stderr)}")
     done = manage_as("curator", "update", cid, "--description", "managed by the CLI")
     if done.status != 0 or get(curator, cid).object.get("description") != "managed by the CLI":
@@ -1107,8 +1011,7 @@ def cli(test: Test) -> tuple[str, str]:
     return outcome(problems, "created, listed, changed, and deleted as test-curator")
 
 
-# Each scenario, by name: it takes the Test, and returns its status and
-# note.
+# Each scenario, by name: it returns its row's status and note.
 RUN = {
     "users": users,
     "create": create_scenario,
@@ -1128,22 +1031,14 @@ RUN = {
 
 
 def run(session: Session, selected: list[str], results: common.Results) -> None:
-    """Run the selected scenarios, on a fixture of the run's own.
-
-    Make the run's users, groups, collections, and objects first, and
-    remove what the run made afterward.
-    """
+    """Run the selected scenarios on the run's fixture, then remove it."""
     test = Test(session)
     try:
         prepare(test)
-    except (ApiError, issuer.IssuerError) as e:
+    except (ApiError, IssuerError) as e:
         die(f"could not set up the suite's users and collections: {e}")
     try:
         for name in selected:
-            try:
-                status, note = RUN[name](test)
-            except (ApiError, issuer.IssuerError) as e:
-                status, note = FAIL, str(e)
-            results.add(name, status, note)
+            results.add(name, *suite.attempt(functools.partial(RUN[name], test), (ApiError, IssuerError)))
     finally:
         finish(test)
