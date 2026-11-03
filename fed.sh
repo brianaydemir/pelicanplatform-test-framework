@@ -133,7 +133,9 @@ fed_enable_profile() {
 # Command line. Everything after the first non-option is for Compose.
 
 # Ignore these if the caller's shell has them: the presets decide the
-# profiles, TOPOLOGY decides the file, and the project is always `pelican`.
+# profiles, TOPOLOGY decides the file, and the project is `pelican`,
+# unless local/environment.cfg names another (as smoke.sh does in each
+# of its copies of the checkout).
 COMPOSE_PROFILES=""
 unset COMPOSE_PROJECT_NAME
 
@@ -300,6 +302,16 @@ export ORIGIN_0_NETWORK CACHES_BLACKHOLE
 : "${IMAGE_DIRECTOR:=${IMAGE_HUB}/director:${PELICAN_TAG}}"
 : "${IMAGE_REGISTRY:=${IMAGE_HUB}/registry:${PELICAN_TAG}}"
 export IMAGE_DEV IMAGE_ORIGIN IMAGE_CACHE IMAGE_DIRECTOR IMAGE_REGISTRY
+
+# Each published port, as PORT_<port>: the port that README.md names,
+# PORT_OFFSET above it.
+case "${PORT_OFFSET}" in
+  ''|*[!0-9]*) die "PORT_OFFSET must be a number, not '${PORT_OFFSET}'" ;;
+esac
+for fed_port in 8444 8445 8446 8447 8448 8449 9000 9001 9002 9003 9004 9005 9006 9007 9008; do
+  eval "PORT_${fed_port}=\$(( fed_port + PORT_OFFSET ))"
+  export "PORT_${fed_port}"
+done
 
 #---------------------------------------------------------------------------
 # Refuse combinations that would start "fine" and then misbehave. Presets

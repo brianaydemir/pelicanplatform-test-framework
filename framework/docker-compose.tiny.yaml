@@ -4,7 +4,8 @@
 #
 # Same project name as docker-compose.yaml, so that the dev container
 # (defined only there) shares this network, and switching topologies
-# replaces the other one's containers.
+# replaces the other one's containers. COMPOSE_PROJECT_NAME overrides
+# both alike.
 #
 # YAML anchors cannot cross files: the health check, mounts, secrets,
 # and idp and metadata services below duplicate docker-compose.yaml's.
@@ -76,7 +77,7 @@ services:
       PELICAN_ORIGIN_ENABLETRANSFERAPI: "${ORIGIN_TRANSFER_API:?run through ./fed.sh}"
       PELICAN_SERVER_DROPPRIVILEGES: "${SERVER_DROP_PRIVILEGES:?run through ./fed.sh}"
     ports:
-      - "9000:8444"
+      - "${PORT_9000:?run through ./fed.sh}:8444"
     volumes:
       - ./service-health.sh:/fed/bin/service-health.sh:ro
       - ./var/generated:/fed/generated:ro
@@ -132,7 +133,7 @@ services:
       resources:
         limits: { memory: 64M }
     ports:
-      - "9007:9007"
+      - "${PORT_9007:?run through ./fed.sh}:9007"
     volumes:
       - ./idp/idp.py:/fed/bin/idp.py:ro
       - ./var/generated/idp-users.json:/fed/idp/users.json:ro

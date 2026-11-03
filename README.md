@@ -9,8 +9,9 @@ Use it to:
 - **Run the [smoke tests](docs/glossary.md#smoke-tests).**
   [`smoke.sh`](smoke.sh) runs every [suite](docs/glossary.md#suite) over a
   [matrix](docs/glossary.md#smoke-matrix) of federation
-  [shapes](docs/glossary.md#shape), each from a clean start, and writes
-  results for people and CI ([CI and results](docs/ci.md)).
+  [shapes](docs/glossary.md#shape), each from a clean start in a copy of
+  the checkout, as many at once as you ask, and writes results for people
+  and CI ([CI and results](docs/ci.md)).
 - **Test your changes.** Point it at your own images, client, or
   configuration ([Testing your changes](#testing-your-changes)).
 
@@ -41,7 +42,7 @@ change this shape.
 ./fed.sh test       # run the tests
 ./fed.sh down       # stop everything
 
-./smoke.sh          # or: run the tests in every shape (destructive)
+./smoke.sh -j 2     # or: run the tests in every shape, two at a time
 ```
 
 ## Running the tests
@@ -61,6 +62,7 @@ tokens, then [SciTokens](https://scitokens.org/technical_docs/Claims)
 ./fed.sh test 'transfers/plugin-*'      # only a suite's scenarios that match
 ./fed.sh test commands/ls-public        # just one
 ./fed.sh test --profile wlcg auth       # only its WLCG pass (or scitokens)
+./fed.sh test --part 2/3                # every third suite, from the second
 ```
 
 The run prints each suite's results as it goes, then a summary of the
@@ -349,22 +351,22 @@ from environment variables, which files can't override.
 
 ## Commands
 
-| Command                                      | Does                                                            |
-| -------------------------------------------- | --------------------------------------------------------------- |
-| `./fed.sh [-p PRESET]... init`               | create what's missing: certs, binaries, keys, data              |
-| `./fed.sh up` / `down`                       | start / stop everything                                         |
-| `./fed.sh restart [SERVICE]...`              | recreate containers so they reread configuration                |
-| `./fed.sh test [ARG]...`                     | the tests: `test.py` in the dev container                       |
-| `./fed.sh control`                           | [service control](#service-control) for a `test.py` run by hand |
-| `./fed.sh dev [CMD]...`                      | a shell (or `CMD`) in the dev container                         |
-| `./fed.sh status`                            | containers, presets, and images                                 |
-| `./fed.sh [-p PRESET]... check`              | exit 0 if it accepts the presets                                |
-| `./fed.sh keys [...]`                        | [issuer keys](docs/configuration.md#issuer-keys)                |
-| `./fed.sh <other>`                           | passed to `docker compose`, e.g. `logs -f cache-0`              |
-| `./test.py [SUITE[/SCENARIO]]...`            | the tests (in the dev container); `-l` lists them               |
-| `./reset.sh`                                 | discard everything generated                                    |
-| `./smoke.sh [-o DIR] [SHAPE]...`             | the smoke tests, over every shape; destructive                  |
-| [`framework/report.py`](framework/report.py) | merge [results](docs/ci.md#results); JUnit XML; Markdown        |
+| Command                                                | Does                                                            |
+| ------------------------------------------------------ | --------------------------------------------------------------- |
+| `./fed.sh [-p PRESET]... init`                         | create what's missing: certs, binaries, keys, data              |
+| `./fed.sh up` / `down`                                 | start / stop everything                                         |
+| `./fed.sh restart [SERVICE]...`                        | recreate containers so they reread configuration                |
+| `./fed.sh test [ARG]...`                               | the tests: `test.py` in the dev container                       |
+| `./fed.sh control`                                     | [service control](#service-control) for a `test.py` run by hand |
+| `./fed.sh dev [CMD]...`                                | a shell (or `CMD`) in the dev container                         |
+| `./fed.sh status`                                      | containers, presets, and images                                 |
+| `./fed.sh [-p PRESET]... check`                        | exit 0 if it accepts the presets                                |
+| `./fed.sh keys [...]`                                  | [issuer keys](docs/configuration.md#issuer-keys)                |
+| `./fed.sh <other>`                                     | passed to `docker compose`, e.g. `logs -f cache-0`              |
+| `./test.py [SUITE[/SCENARIO]]...`                      | the tests (in the dev container); `-l` lists them               |
+| `./reset.sh`                                           | discard everything generated                                    |
+| `./smoke.sh [-j N] [-o DIR] [-p PRESET]... [SHAPE]...` | the smoke tests, over every shape, in N copies of the checkout  |
+| [`framework/report.py`](framework/report.py)           | merge [results](docs/ci.md#results); JUnit XML; Markdown        |
 
 ## Service control
 
@@ -448,6 +450,10 @@ the certificates.
 | <https://localhost:9008> | director, the directors' load balancer (`director-ha`)                                |
 | <http://localhost:9002>  | dev container (serve on `0.0.0.0:8444` inside)                                        |
 | <http://localhost:9003>  | Grafana (`admin` / `admin`; see [`with-grafana`](framework/presets/with-grafana.sh))  |
+
+Each port is `PORT_OFFSET` higher ([knobs](docs/configuration.md#knobs)).
+That is 0 in the checkout, and 100·n in `smoke.sh`'s copy n of it, so the
+copies and the checkout can run side by side.
 
 Under `-p auth-oidc-local` or `-p auth-oidc-cilogon`, each server's OIDC
 redirect URI is `https://localhost:<port>/api/v1.0/auth/oauth/callback`. To

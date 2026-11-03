@@ -15,12 +15,14 @@ and the image registries.
   `IMAGE_DIRECTOR`, and `IMAGE_REGISTRY` name images that the job built and
   loaded into the local daemon ([knobs](configuration.md#knobs)). To test a
   client that the job built, run `./fed.sh init` once, then copy the client
-  over `framework/var/bin/linux/pelican`; `smoke.sh` keeps
-  `framework/var/bin/` across its resets
+  over `framework/var/bin/linux/pelican`; each of `smoke.sh`'s copies of
+  the checkout takes `framework/var/bin/` with it
   ([Client binary](../README.md#client-binary)).
 - **What to run:** `./smoke.sh -o DIR SHAPE...`. `./smoke.sh --names` lists
   the [shapes](glossary.md#shape), one per line, for a matrix of one shape
-  per job.
+  per job. `-j N` runs N copies of the checkout at once, as the host's
+  memory allows: a shape each, or, with fewer shapes than copies, each
+  shape's suites shared out among them.
 - **What comes back:** the exit status, non-zero if any shape failed, and in
   `DIR`:
   - each shape's log, and its results in `results/<shape>/`;
@@ -82,9 +84,13 @@ column -t -s "$(printf '\t')" framework/var/results/transfers.tsv
 
 `smoke.sh` records its own steps as the suite `smoke`, keeps each shape's
 results in `DIR/results/<shape>/`, and merges them with
-[`framework/report.py`](../framework/report.py):
+[`framework/report.py`](../framework/report.py). For a shape whose suites
+it shared out among copies, it first combines the copies' results, each
+case once, with its worst status (federation's required scenarios, and its
+own steps, are each copy's):
 
 ```sh
+framework/report.py combine DIR/results/<shape>/ PART_DIR...  # one shape's
 framework/report.py merge DIR/results/*/ >results.tsv   # adds a shape column
 framework/report.py junit results.tsv >junit.xml
 framework/report.py markdown results.tsv >summary.md

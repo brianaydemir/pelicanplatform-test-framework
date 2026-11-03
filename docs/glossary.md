@@ -244,8 +244,10 @@ if it recorded no case), and goes on to the next.
 ### Smoke tests
 
 What `smoke.sh` runs: every suite, in each of its shapes, each from a clean
-start. It resets the federation before each shape, so it is destructive
-([CI and results](ci.md)).
+start. It runs them in copies of the checkout, as many at once as `-j` says,
+and leaves the checkout alone ([CI and results](ci.md)). With fewer shapes
+than copies, it shares each shape's suites out among them (`test.py --part`), each running the shape, and puts their results together as one
+run's.
 
 ### Smoke matrix
 

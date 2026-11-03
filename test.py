@@ -9,6 +9,7 @@ shape has. Exits non-zero if any case fails.
   ./test.py auth commands            only these suites
   ./test.py 'transfers/plugin-*'     only the scenarios of a suite that match
   ./test.py --profile wlcg [ARG]...  only the WLCG pass (or `scitokens`)
+  ./test.py --part 2/3 [ARG]...      only every third suite, from the second
   ./test.py -l [SUITE]...            list the suites and their scenarios
 
 Run it in the dev container, e.g. from the host:
@@ -26,6 +27,11 @@ __init__.py gives (`-l` lists them). `federation/ready` and
 `federation/caches` run first whatever is asked for; if the federation
 never serves, nothing else runs. A suite that doesn't apply to the
 shape, such as pstore without a pstore origin, is skipped.
+
+`--part I/K` runs every Kth of the suites asked for, in their order,
+from the Ith, so that K runs, each against a federation of its own,
+share them out (as `smoke.sh -j` does). `federation/ready` and
+`federation/caches` still run first in each.
 
 Each pass of a suite writes a row per case to
 framework/var/results/<suite>.tsv (or <suite>-scitokens.tsv). A run of
@@ -382,27 +388,57 @@ def summarize(reports: list[Report], seconds: float) -> None:
     print(f"\nTook {seconds:.0f}s. Results are in framework/var/results/.")
 
 
-def profile_option(args: list[str]) -> tuple[list[str], list[str]]:
-    """Return the profiles that `--profile` chooses, and the other args.
+def take_option(args: list[str], option: str) -> tuple[list[str], list[str]]:
+    """Return the values that args give option, and the other args.
 
-    `--profile PROFILE`, or `--profile=PROFILE`, chooses one of PROFILES;
-    without it, every one, WLCG's first.
+    `OPTION VALUE` and `OPTION=VALUE` each give it a value.
     """
-    chosen: list[str] = []
+    values: list[str] = []
     rest: list[str] = []
     pending = list(args)
     while pending:
         arg = pending.pop(0)
-        if arg == "--profile" and pending:
-            arg = f"--profile={pending.pop(0)}"
-        if not arg.startswith("--profile"):
+        if arg == option and pending:
+            arg = f"{option}={pending.pop(0)}"
+        if arg.startswith(f"{option}="):
+            values.append(arg.partition("=")[2])
+        else:
             rest.append(arg)
-            continue
-        profile = arg.partition("=")[2]
-        if profile not in PROFILES or chosen:
-            common.die_usage(f"--profile takes one of {', '.join(PROFILES)}, once")
-        chosen.append(profile)
+    return values, rest
+
+
+def profile_option(args: list[str]) -> tuple[list[str], list[str]]:
+    """Return the profiles that `--profile` chooses, and the other args.
+
+    `--profile PROFILE` chooses one of PROFILES; without it, every one,
+    WLCG's first.
+    """
+    chosen, rest = take_option(args, "--profile")
+    if len(chosen) > 1 or any(p not in PROFILES for p in chosen):
+        common.die_usage(f"--profile takes one of {', '.join(PROFILES)}, once")
     return chosen or list(PROFILES), rest
+
+
+def part_option(args: list[str]) -> tuple[tuple[int, int], list[str]]:
+    """Return the part (I, K) that `--part I/K` chooses, and the other args.
+
+    Without it, the one part: (1, 1).
+    """
+    given, rest = take_option(args, "--part")
+    if not given:
+        return (1, 1), rest
+    index, _, count = given[0].partition("/")
+    if len(given) > 1 or not (index.isdecimal() and count.isdecimal()):
+        common.die_usage("--part takes I/K, once")
+    if not 1 <= int(index) <= int(count):
+        common.die_usage(f"--part {given[0]}: I must be from 1 to K")
+    return (int(index), int(count)), rest
+
+
+def in_part(chosen: dict[str, list[str]], part: tuple[int, int]) -> dict[str, list[str]]:
+    """Return the suites of chosen in part (I, K): every Kth, from the Ith."""
+    index, count = part
+    return {name: scenarios for n, (name, scenarios) in enumerate(chosen.items()) if n % count == index - 1}
 
 
 def main() -> int:
@@ -419,10 +455,12 @@ def main() -> int:
     if listing:
         args = args[1:]
     profiles, args = profile_option(args)
+    part, args = part_option(args)
     for arg in args:
         if arg.startswith("-"):
             common.die_usage(f"unknown option: {arg}")
     chosen = common.select(args, {name: list(m.SCENARIOS) for name, m in SUITES.items()})
+    chosen = in_part(chosen, part)
     if listing:
         list_suites(chosen)
         return 0

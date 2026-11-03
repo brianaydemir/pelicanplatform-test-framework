@@ -2,13 +2,22 @@
 """Merge the tests' results and convert them for CI.
 
   framework/report.py merge [NAME=]DIR...  one table from each DIR's *.tsv
+  framework/report.py combine OUT DIR...   OUT/*.tsv from DIRs of one shape
   framework/report.py junit TABLE          JUnit XML
   framework/report.py markdown TABLE       a Markdown summary
 
 Each suite writes framework/var/results/<suite>.tsv (see
 framework/testlib/report.py). `merge` prefixes each row with a `shape`
 column: NAME, or DIR's own name. smoke.sh keeps one DIR per shape and
-merges them into results.tsv, then converts that. Output goes to stdout.
+merges them into results.tsv, then converts that. Output goes to stdout,
+but combine's, which goes to OUT.
+
+`combine` makes one run's results of a shape that several runs, each
+against a federation of its own, shared out (`smoke.sh -j`): each table
+holds each DIR's rows of it, each case once. A case that more than one
+run recorded (federation's REQUIRED scenarios, which each runs, and
+smoke.sh's own steps) keeps its worst status.
+
 The TSV is meant for people as much as for programs:
 
   column -t -s "$(printf '\\t')" results.tsv
@@ -54,6 +63,44 @@ def merge(args: Sequence[str]) -> str:
                 for row in report.parse_table(f.read()):
                     rows.append({"shape": name, **row})
     return report.format_table(MERGED, rows)
+
+
+# Which of a case's statuses combine() keeps: the first of these.
+WORST_FIRST = (report.FAIL, report.INCONCLUSIVE, report.PASS, report.SKIP)
+
+
+def rank(row: dict[str, str]) -> int:
+    """Return where row's status is in WORST_FIRST (unknown ones first)."""
+    status = row.get("status", "")
+    return WORST_FIRST.index(status) if status in WORST_FIRST else -1
+
+
+def combine(out: str, directories: Sequence[str]) -> None:
+    """Write out/<table> for each *.tsv table in any of directories.
+
+    Each holds the rows of every directory's table of that name, in the
+    order first seen, each (suite, case) once, with its worst status.
+    """
+    tables: dict[str, dict[tuple[str, str], dict[str, str]]] = {}
+    columns: dict[str, Sequence[str]] = {}
+    for directory in directories:
+        if not os.path.isdir(directory):
+            common.die_usage(f"no such directory: {directory}")
+        for entry in sorted(os.listdir(directory)):
+            if not entry.endswith(".tsv"):
+                continue
+            with open(os.path.join(directory, entry), encoding="utf-8") as f:
+                text = f.read()
+            columns.setdefault(entry, text.split("\n", 1)[0].split("\t"))
+            rows = tables.setdefault(entry, {})
+            for row in report.parse_table(text):
+                key = (row.get("suite", ""), row.get("case", ""))
+                if key not in rows or rank(row) < rank(rows[key]):
+                    rows[key] = row
+    os.makedirs(out, exist_ok=True)
+    for entry, rows in tables.items():
+        with open(os.path.join(out, entry), "w", encoding="utf-8") as f:
+            f.write(report.format_table(columns[entry], list(rows.values())))
 
 
 def load(path: str) -> list[dict[str, str]]:
@@ -187,13 +234,17 @@ def main() -> None:
         if not rest:
             common.die_usage("merge needs at least one directory")
         sys.stdout.write(merge(rest))
+    elif command == "combine":
+        if len(rest) < 2:
+            common.die_usage("combine needs OUT and at least one directory")
+        combine(rest[0], rest[1:])
     elif command in ("junit", "markdown"):
         if len(rest) != 1:
             common.die_usage(f"{command} takes one table")
         rows = load(rest[0])
         sys.stdout.write(junit(rows) if command == "junit" else markdown(rows))
     else:
-        common.die_usage(f"unknown command: {command} (try: merge, junit, markdown)")
+        common.die_usage(f"unknown command: {command} (try: merge, combine, junit, markdown)")
 
 
 if __name__ == "__main__":

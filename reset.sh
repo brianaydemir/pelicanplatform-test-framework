@@ -40,8 +40,18 @@ printf 'Stopping the federation ...\n'
 ./fed.sh -p default down --volumes || true
 
 # A teardown that failed would leave containers that the next `up` keeps,
-# still bound to what is discarded below.
-left=$(docker ps --all --quiet --filter label=com.docker.compose.project=pelican) \
+# still bound to what is discarded below. They are the Compose project's:
+# `pelican`, unless local/environment.cfg names another (see fed.sh).
+project=$(
+  set +eu
+  unset COMPOSE_PROJECT_NAME
+  # shellcheck disable=SC1091
+  . ./framework/environment.cfg
+  # shellcheck disable=SC1091
+  [ ! -f ./local/environment.cfg ] || . ./local/environment.cfg
+  printf '%s' "${COMPOSE_PROJECT_NAME:-pelican}"
+)
+left=$(docker ps --all --quiet --filter "label=com.docker.compose.project=${project}") \
     || die "cannot list the containers left behind"
 if [ -n "${left}" ]; then
   {

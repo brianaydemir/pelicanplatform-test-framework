@@ -4,6 +4,8 @@
 # comes from fed.sh (framework/environment.cfg, presets/default.sh, and
 # the presets) and has no fallback here on purpose.
 
+# COMPOSE_PROJECT_NAME, which local/environment.cfg may set, overrides
+# this (as in smoke.sh's copies of the checkout).
 name: pelican
 
 # Only the dev container's build caches live in volumes. Service state
@@ -156,8 +158,8 @@ services:
   # etc/idp-users.json and any local/etc/idp-users.json; its client is
   # the one the servers read from ./var/generated/oidc-client-{id,secret}.
   # It logs every request in ./var/data/idp/requests.log. Its port is the
-  # same inside and out, so that https://idp:9007 serves a browser too,
-  # given a hosts entry.
+  # same inside and out (unless PORT_OFFSET moves the published one), so
+  # that https://idp:9007 serves a browser too, given a hosts entry.
   idp:
     hostname: idp
     networks: [default, firewalled]
@@ -182,7 +184,7 @@ services:
       resources:
         limits: { memory: 64M }
     ports:
-      - "9007:9007"
+      - "${PORT_9007:?run through ./fed.sh}:9007"
     volumes:
       - ./idp/idp.py:/fed/bin/idp.py:ro
       - ./var/generated/idp-users.json:/fed/idp/users.json:ro
@@ -217,7 +219,7 @@ services:
       resources:
         limits: { memory: 32M }
     ports:
-      - "9005:8444"
+      - "${PORT_9005:?run through ./fed.sh}:8444"
     volumes:
       - ./etc/nginx-discovery.conf:/etc/nginx/conf.d/default.conf:ro
       - ./var/generated/discovery.json:/etc/nginx/html/discovery.json:ro
@@ -246,7 +248,7 @@ services:
     environment:
       <<: [*pelican-env, *server-env]
     ports:
-      - "9000:8444"
+      - "${PORT_9000:?run through ./fed.sh}:8444"
     volumes:
       - *vol-health
       - *vol-generated
@@ -282,7 +284,7 @@ services:
     environment:
       <<: [*pelican-env, *server-env]
     ports:
-      - "9004:8444"
+      - "${PORT_9004:?run through ./fed.sh}:8444"
     volumes:
       - *vol-health
       - *vol-generated
@@ -336,7 +338,7 @@ services:
       resources:
         limits: { memory: 32M }
     ports:
-      - "9008:8444"
+      - "${PORT_9008:?run through ./fed.sh}:8444"
     volumes:
       - ./etc/nginx-director.conf:/etc/nginx/nginx.conf:ro
 
@@ -361,7 +363,7 @@ services:
     environment:
       <<: [*pelican-env, *server-env]
     ports:
-      - "9001:8444"
+      - "${PORT_9001:?run through ./fed.sh}:8444"
     volumes:
       - *vol-health
       - *vol-generated
@@ -394,7 +396,7 @@ services:
       <<: [*pelican-env, *server-env, *origin-env]
       TZ: "${TZ_STORAGE:?run through ./fed.sh}"
     ports:
-      - "8444:8444"
+      - "${PORT_8444:?run through ./fed.sh}:8444"
     volumes:
       - *vol-health
       - *vol-generated
@@ -427,7 +429,7 @@ services:
       <<: [*pelican-env, *server-env, *origin-env]
       TZ: "${TZ_STORAGE:?run through ./fed.sh}"
     ports:
-      - "8446:8444"
+      - "${PORT_8446:?run through ./fed.sh}:8444"
     volumes:
       - *vol-health
       - *vol-generated
@@ -468,7 +470,7 @@ services:
       TZ: "${TZ_STORAGE:?run through ./fed.sh}"
       PELICAN_ORIGIN_ENABLEISSUER: "true"
     ports:
-      - "8448:8444"
+      - "${PORT_8448:?run through ./fed.sh}:8444"
     volumes:
       - *vol-health
       - *vol-generated
@@ -505,7 +507,7 @@ services:
       <<: [*pelican-env, *server-env]
       TZ: "${TZ_STORAGE:?run through ./fed.sh}"
     ports:
-      - "8445:8444"
+      - "${PORT_8445:?run through ./fed.sh}:8444"
     volumes:
       - *vol-health
       - *vol-generated
@@ -538,7 +540,7 @@ services:
       <<: [*pelican-env, *server-env]
       TZ: "${TZ_STORAGE:?run through ./fed.sh}"
     ports:
-      - "8447:8444"
+      - "${PORT_8447:?run through ./fed.sh}:8444"
     volumes:
       - *vol-health
       - *vol-generated
@@ -576,7 +578,7 @@ services:
       TZ: "${TZ_STORAGE:?run through ./fed.sh}"
       PELICAN_CACHE_ENABLESITELOCALMODE: "true"
     ports:
-      - "8449:8444"
+      - "${PORT_8449:?run through ./fed.sh}:8444"
     volumes:
       - *vol-health
       - *vol-generated
@@ -613,7 +615,7 @@ services:
     environment:
       <<: [*pelican-env, *server-env]
     ports:
-      - "9006:8444"
+      - "${PORT_9006:?run through ./fed.sh}:8444"
     volumes:
       - *vol-health
       - *vol-generated
@@ -641,7 +643,7 @@ services:
         limits: { memory: "${DEV_MEM:?run through ./fed.sh}" }
     environment: *pelican-env
     ports:
-      - "9002:8444"
+      - "${PORT_9002:?run through ./fed.sh}:8444"
     volumes:
       - "${PELICAN_SRC_DIR:?run through ./fed.sh}:/app"
       - ..:/scratch
@@ -883,7 +885,7 @@ services:
     environment:
       GF_PLUGINS_PREINSTALL_DISABLED: "true"
     ports:
-      - "9003:3000"
+      - "${PORT_9003:?run through ./fed.sh}:3000"
     volumes:
       - ./var/grafana:/var/lib/grafana
 

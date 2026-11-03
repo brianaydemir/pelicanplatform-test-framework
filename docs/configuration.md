@@ -160,6 +160,12 @@ The knobs that you set:
 `PELICAN_TAG`, `IMAGE_*`, `PELICAN_DEV_TAG`, and `PELICAN_SRC_DIR`. Set the
 rest in your environment, or in a preset.
 
+Two more belong in `local/environment.cfg` alone, since `fed.sh` ignores
+them in your environment: `COMPOSE_PROJECT_NAME` (`pelican`), the Compose
+project, and `PORT_OFFSET` (0), how far above those that the README names
+the published [ports](../README.md#ports) are. `smoke.sh` sets both in each
+of its copies of the checkout, so that they run side by side.
+
 ## Presets
 
 The [README](../README.md#presets) lists the [presets](glossary.md#preset).
