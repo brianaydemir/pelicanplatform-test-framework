@@ -2528,6 +2528,28 @@ fed_control_stop() {
   fed_control_pid=""
 }
 
+# Interrupt the tests that the `test` command runs in the dev container,
+# and wait for them to end, while the control helper still serves what
+# they put back. Docker passes no signal on to what `exec -T` runs, so
+# an interrupt of the command alone would leave them running. If they
+# have not ended after a minute, kill them; the helper puts back what
+# they leave.
+fed_test_interrupt() {
+  docker compose -f framework/docker-compose.yaml exec -T dev sh -c '
+      tests="^python3\.13 /scratch/test\.py"
+      pkill -INT -f "${tests}" || exit 0
+      echo "waiting for the tests in the dev container to end" >&2
+      n=0
+      while pgrep -f "${tests}" >/dev/null; do
+        if [ "${n}" -ge 60 ]; then
+          echo "killing the tests in the dev container" >&2
+          exec pkill -KILL -f "${tests}"
+        fi
+        sleep 1
+        n=$((n + 1))
+      done' || true
+}
+
 # Copy stdin to stdout with the signature of each JWT in it cut out, as
 # test.py cuts it out of what the tests print (redact() in
 # framework/testlib/report.py): a token that a server's log quotes would
@@ -2865,8 +2887,8 @@ case "${cmd}" in
     fi
     fed_control_start "${log_dir:+${log_dir}/control.log}"
     trap 'fed_control_stop' EXIT
-    trap 'fed_control_stop; fed_save_logs "${logs}"; exit 130' INT
-    trap 'fed_control_stop; fed_save_logs "${logs}"; exit 143' TERM
+    trap 'fed_test_interrupt; fed_control_stop; fed_save_logs "${logs}"; exit 130' INT
+    trap 'fed_test_interrupt; fed_control_stop; fed_save_logs "${logs}"; exit 143' TERM
     status=0
     if [ -n "${logs}" ]; then
       # What the tests print is kept beside the services' logs, as
