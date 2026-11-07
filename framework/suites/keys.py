@@ -155,10 +155,17 @@ def new_key(test: "Test", dirs: Sequence[str], first_of_all: bool) -> str:
     if not 0 <= number <= 99:
         die(f"no room for another key prefix in framework/var/{dirs[0]}")
     name = f"{number:02d}-keys-{test.run}.pem"
-    made = registry.new_key(os.path.join(test.tmp, name))
-    for key_dir in dirs:
-        shutil.copyfile(made, os.path.join(key_dir, name))
-        os.chmod(os.path.join(key_dir, name), 0o640)
+    # Another keyset's key may have had this name, so the scratch copy
+    # lasts only this call: registry.new_key would reuse one left behind.
+    made = os.path.join(test.tmp, name)
+    try:
+        registry.new_key(made)
+        for key_dir in dirs:
+            shutil.copyfile(made, os.path.join(key_dir, name))
+            os.chmod(os.path.join(key_dir, name), 0o640)
+    finally:
+        if os.path.exists(made):
+            os.remove(made)
     return name
 
 
