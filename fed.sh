@@ -304,12 +304,21 @@ export ORIGIN_0_NETWORK CACHES_BLACKHOLE
 export IMAGE_DEV IMAGE_ORIGIN IMAGE_CACHE IMAGE_DIRECTOR IMAGE_REGISTRY
 
 # Each published port, as PORT_<port>: the port that README.md names,
-# PORT_OFFSET above it.
+# PORT_OFFSET above it, on PUBLISH_ADDRESS. Docker takes only an IP
+# address there, and an IPv6 one only in brackets.
 case "${PORT_OFFSET}" in
   ''|*[!0-9]*) die "PORT_OFFSET must be a number, not '${PORT_OFFSET}'" ;;
 esac
+case "${PUBLISH_ADDRESS}" in
+  ''|*[!0-9.]*)
+    case "${PUBLISH_ADDRESS}" in
+      \[*:*\]) ;;
+      *) die "PUBLISH_ADDRESS must be an IPv4 address, or an IPv6 one in" \
+             "brackets, not '${PUBLISH_ADDRESS}'" ;;
+    esac ;;
+esac
 for fed_port in 8444 8445 8446 8447 8448 8449 9000 9001 9002 9003 9004 9005 9006 9007 9008; do
-  eval "PORT_${fed_port}=\$(( fed_port + PORT_OFFSET ))"
+  eval "PORT_${fed_port}=\${PUBLISH_ADDRESS}:\$(( fed_port + PORT_OFFSET ))"
   export "PORT_${fed_port}"
 done
 
