@@ -1,14 +1,16 @@
 #!/usr/bin/env -S uv run --quiet --frozen --no-dev
-"""Copy a file into a directory that a container may write, safely.
+"""Copy a file to or from a directory that a container may write, safely.
 
   framework/put-file.py SRC DST     copy SRC to DST
+  framework/put-file.py SRC DIR/    copy SRC into DIR, by SRC's name
 
 For fed.sh, which installs binaries and keys where the containers write
-(see the dev service in docker-compose.yaml). SRC must be a regular
+(see the dev service in docker-compose.yaml), and for fed.sh and
+smoke.sh, which keep what the tests write there. SRC must be a regular
 file, not a symlink, and keeps its permission bits. DST is replaced, never
-written through: a symlink there is replaced, not followed. DST's
-directory must be one that no container can replace, such as a bind
-source.
+written through: a symlink there is replaced, not followed. SRC's and
+DST's directories must be ones that no container can replace, such as a
+bind source.
 """
 
 # A script, which fed.sh names as it is.
@@ -37,6 +39,7 @@ def main() -> None:
         common.die_usage("usage: framework/put-file.py SRC DST (see --help)")
     src, dst = args
     directory, name = os.path.split(dst)
+    name = name or os.path.basename(src)
     try:
         data, mode = common.read_file(src)
         dir_fd = common.open_dir(directory or ".")

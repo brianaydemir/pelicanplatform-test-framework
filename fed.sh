@@ -2657,12 +2657,16 @@ fed_save_logs() {
         done
   if [ -f "${dir}/.started" ]; then
     mkdir -p "${dir}/results"
-    # Regular files alone: the dev container writes these directories,
-    # and cp would follow a symlink.
-    find framework/var/results -type f -name '*.tsv' -newer "${dir}/.started" \
-        -exec cp {} "${dir}/results/" \;
+    # The dev container writes these directories, so put-file.py copies
+    # each file: it follows no symlink, not even one put in the file's
+    # place after find looked.
+    fed_require_python
+    find framework/var/results -maxdepth 1 -type f -name '*.tsv' \
+        -newer "${dir}/.started" \
+        -exec "${fed_python}" framework/put-file.py {} "${dir}/results/" \;
     find framework/var/dev -maxdepth 1 -type f -name 'commands*.log' \
-        -newer "${dir}/.started" -exec cp {} "${dir}/" \;
+        -newer "${dir}/.started" \
+        -exec "${fed_python}" framework/put-file.py {} "${dir}/" \;
     rm -f "${dir}/.started"
   fi
   for svc in $(docker compose ps --all --services 2>/dev/null); do

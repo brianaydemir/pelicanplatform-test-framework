@@ -244,6 +244,10 @@ the images, are trusted; the dev image, and what a build in the
   [`init-data.py`](../framework/init-data.py), and `fed.sh`, through
   [`put-file.py`](../framework/put-file.py), use the helpers in
   [`testlib/common.py`](../framework/testlib/common.py).
+- Neither does the host's code that keeps what a container writes:
+  `fed.sh` and `smoke.sh` copy the tests' results and logs with
+  `put-file.py`, so that a symlink there cannot put a host file, such as a
+  credential, in the logs or a CI artifact.
 - [`check-mounts.py`](../framework/check-mounts.py), which `fed.sh` runs
   before it starts a container, refuses to while the Compose files break
   these rules; its docstring lists them. A new writable mount goes below

@@ -407,10 +407,11 @@ shape_checks() {
 # the tests (framework/var/logs/<time>/; see fed.sh's fed_save_logs).
 save_results() {
   for tsv in framework/var/results/*.tsv; do
-    # Regular files alone: the dev container writes framework/var/results/,
-    # and cp would follow a symlink.
+    # Regular files alone. The dev container writes framework/var/results/,
+    # so put-file.py copies each: it follows no symlink, not even one put
+    # in the file's place after this test.
     [ -f "${tsv}" ] && [ ! -L "${tsv}" ] || continue
-    cp "${tsv}" "${out}/results/${shape}/"
+    framework/put-file.py "${tsv}" "${out}/results/${shape}/"
   done
   if [ -d framework/var/logs ]; then
     mkdir -p "${out}/logs/${shape}" \
