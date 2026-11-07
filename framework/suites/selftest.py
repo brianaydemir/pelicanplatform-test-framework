@@ -1,16 +1,19 @@
 """The tests' own helpers, against the running federation.
 
-Each scenario checks that a helper does what the suites rely on. Each
-but `pool` reads one object, which the suite puts under
+Each scenario checks that a helper does what the suites rely on, or, in
+`confined`, the dev container's mounts. Each but `pool` and `confined`
+reads one object, which the suite puts under
 /protected-a/data/selftest/<run>/ and removes. See
 docs/tests/self-tests.md.
 """
 
+import errno
 import functools
 import json
 import os
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import Future
 
 from testlib import common, control, credentials, director, jwt, metrics, stores, suite, web
@@ -23,8 +26,8 @@ from testlib.suite import NAMESPACE
 # `restart-cache` presents the setup token alone, since its reads are
 # how it fills the cache and sees it serve again, not what it checks; so
 # it runs in the WLCG pass alone (see suites/__init__.py), and cache-0
-# is restarted once. `pool` presents no token.
-ONE_PROFILE = ("restart-cache", "pool")
+# is restarted once. `pool` and `confined` present no token.
+ONE_PROFILE = ("restart-cache", "pool", "confined")
 
 SCENARIOS = {
     "trailers": "a V2 cache's X-Transfer-Status trailer comes back when asked for, and only then",
@@ -40,6 +43,10 @@ SCENARIOS = {
     "pool": (
         "testlib.common.pool() drops the tasks it has not started when an abandoned pass"
         " leaves it, and waits for every one otherwise"
+    ),
+    "confined": (
+        "the dev container cannot write the checkout, nor what of framework/var the host"
+        " runs or reads as code, nor the directories that hold the services' bind sources"
     ),
 }
 
@@ -360,6 +367,73 @@ def pool(_test: Test) -> suite.Row:
     return outcome(problems, f"abandoned, it cancelled 8 queued tasks, and ended in {took:.1f}s")
 
 
+# What `confined` finds read-only, under the top of the checkout: the
+# checkout itself, so that nothing in the dev container can change what
+# the host runs or the framework's code (see the dev service in
+# docker-compose.yaml); the host's own binaries, and what fed.sh generates
+# and reads; and the directories that hold the services' bind sources,
+# which a symlink must not replace.
+CONFINED_FILES = ("fed.sh", "framework/testlib/common.py")
+CONFINED_DIRS = (
+    ".",
+    "framework/testlib",
+    "framework/var",
+    "framework/var/bin",
+    "framework/var/bin/host",
+    "framework/var/generated",
+    "framework/var/control",
+    "framework/var/data",
+    "framework/var/data/origin",
+    "framework/var/issuer-keys",
+)
+
+
+def refused_write(shown: str, opener: Callable[[], int], made: str | None = None) -> str | None:
+    """Return why opening something to write was not refused as read-only.
+
+    Args:
+        shown: What it is, for the message.
+        opener: Opens it, and returns the file descriptor.
+        made: The file that opener creates, if it does, to remove.
+
+    Returns:
+        None if it was refused with EROFS; otherwise the problem.
+    """
+    try:
+        fd = opener()
+    except OSError as e:
+        return None if e.errno == errno.EROFS else f"{shown}: {e.strerror}, not a read-only file system"
+    os.close(fd)
+    if made is not None:
+        os.unlink(made)
+    return f"{shown} is writable from the dev container"
+
+
+def confined(_test: Test) -> suite.Row:
+    """Check that the dev container cannot write what it must not.
+
+    Each file of CONFINED_FILES is opened to append to, and a new file is
+    made in each directory of CONFINED_DIRS: each must fail with EROFS.
+    Nothing is written; a file made is removed.
+    """
+    top = os.path.dirname(common.FRAMEWORK)
+    problems: list[str] = []
+    for rel in CONFINED_FILES:
+        path = os.path.join(top, rel)
+        problem = refused_write(rel, functools.partial(os.open, path, os.O_WRONLY | os.O_APPEND))
+        if problem:
+            problems.append(problem)
+    for rel in CONFINED_DIRS:
+        path = os.path.join(top, rel, f".confined-{os.getpid()}")
+        shown = "the checkout" if rel == "." else f"{rel}/"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        problem = refused_write(shown, functools.partial(os.open, path, flags, 0o600), path)
+        if problem:
+            problems.append(problem)
+    checked = len(CONFINED_FILES) + len(CONFINED_DIRS)
+    return outcome(problems, f"all {checked} files and directories are read-only")
+
+
 # The scenarios, by name: each takes the Test, and returns its result and
 # a note.
 RUN = {
@@ -368,6 +442,7 @@ RUN = {
     "metrics": http_requests,
     "restart-cache": restart_cache,
     "pool": pool,
+    "confined": confined,
 }
 
 

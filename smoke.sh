@@ -28,7 +28,9 @@
 # It runs in N copies of the checkout (-j N; 1 by default), made in
 # DIR/.work/: the files that Git does not ignore, local/, and
 # framework/var/bin/, so that your changes, settings, images, and client
-# are what get tested. Copy n is a Compose project of its own,
+# are what get tested. No copy mounts a Pelican checkout at /app in the
+# dev container, whatever PELICAN_SRC_DIR says: the tests use the
+# binaries in framework/var/bin/. Copy n is a Compose project of its own,
 # pelican-<n>, with its ports 100*n above those that README.md names
 # (PORT_OFFSET), so that the copies, and a federation in the checkout,
 # run side by side. Two runs of smoke.sh at once would clash. Each copy
@@ -51,6 +53,11 @@ set -u
 cd -- "$(dirname -- "$0")" || exit 1
 progname=$(basename -- "$0")
 top=$(pwd -P)
+
+# Never a Pelican checkout at /app in the copies' dev containers (see
+# make_copy, which also sets it empty in each copy's local/environment.cfg,
+# since fed.sh takes the caller's value only when it is not empty).
+unset PELICAN_SRC_DIR
 
 die()       { printf '%s: %s\n' "${progname}" "$*" >&2; exit 1; }
 die_usage() { printf '%s: %s\n' "${progname}" "$*" >&2; exit 2; }
@@ -233,8 +240,8 @@ make_copy() {
   [ -x "${copy}/fed.sh" ] && mkdir -p "${copy}/local" || return 1
   printf '\n# Added by smoke.sh, for copy %s of the checkout.\n' "$1" \
       >>"${copy}/local/environment.cfg"
-  printf 'COMPOSE_PROJECT_NAME=pelican-%s\nPORT_OFFSET=%s\n' "$1" "$(( $1 * 100 ))" \
-      >>"${copy}/local/environment.cfg"
+  printf 'COMPOSE_PROJECT_NAME=pelican-%s\nPORT_OFFSET=%s\nPELICAN_SRC_DIR=\n' \
+      "$1" "$(( $1 * 100 ))" >>"${copy}/local/environment.cfg"
 }
 
 # Stop copy $1's federation, discard what it made, and remove the copy.
@@ -400,7 +407,9 @@ shape_checks() {
 # the tests (framework/var/logs/<time>/; see fed.sh's fed_save_logs).
 save_results() {
   for tsv in framework/var/results/*.tsv; do
-    [ -e "${tsv}" ] || continue
+    # Regular files alone: the dev container writes framework/var/results/,
+    # and cp would follow a symlink.
+    [ -f "${tsv}" ] && [ ! -L "${tsv}" ] || continue
     cp "${tsv}" "${out}/results/${shape}/"
   done
   if [ -d framework/var/logs ]; then

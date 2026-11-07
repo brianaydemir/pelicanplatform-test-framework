@@ -85,8 +85,10 @@ both [rclone](https://rclone.org/), and the
 ### Dev container
 
 The service in which the tests run (`./fed.sh test`, `./fed.sh dev`). This
-checkout is `/scratch` there, and your Pelican checkout is `/app`. It is no
-part of the federation.
+checkout is `/scratch` there, read-only but for the parts of
+`framework/var/` that the tests write
+([Isolation](development.md#isolation)), and your Pelican checkout, if
+`PELICAN_SRC_DIR` names one, is `/app`. It is no part of the federation.
 
 ### Discovery host
 

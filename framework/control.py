@@ -41,8 +41,7 @@ import time
 from types import FrameType
 from typing import Any, NoReturn
 
-# No __pycache__ in the checkout, where the dev container would leave it
-# root's.
+# Keep the checkout free of __pycache__.
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -179,14 +178,28 @@ class Helper:
         of theirs.
         """
         configured: set[str] = set()
-        for svc in sorted(os.listdir(control.CONFIG)):
-            directory = os.path.join(control.CONFIG, svc)
-            if not os.path.isdir(directory):
-                continue
-            for name in os.listdir(directory):
-                say(f"removing framework/var/control/config/{svc}/{name}, a test's")
-                os.remove(os.path.join(directory, name))
-                configured.add(svc)
+        # The dev container writes each config/<svc>/, so the helper
+        # follows no symlink there (see common.open_dir).
+        config = common.open_dir(control.CONFIG)
+        try:
+            for svc in sorted(os.listdir(config)):
+                try:
+                    directory = common.open_dir(svc, config)
+                except OSError:
+                    continue
+                try:
+                    for name in sorted(os.listdir(directory)):
+                        shown = f"framework/var/control/config/{svc}/{name}"
+                        if common.is_dir_entry(name, directory):
+                            say(f"leaving {shown}, a directory, which no test makes")
+                            continue
+                        say(f"removing {shown}, a test's")
+                        os.unlink(name, dir_fd=directory)
+                        configured.add(svc)
+                finally:
+                    os.close(directory)
+        finally:
+            os.close(config)
         for svc, action in sorted(self.undo.items()):
             say(f"{action} {svc}, which a test left so")
             ok, output = compose(*compose_args(action, svc))
@@ -205,40 +218,43 @@ class Helper:
                 say(output)
 
 
-def answer(path: str, ok: bool, output: str) -> None:
-    """Answer request path, and remove it."""
-    response = path[: -len(".req")] + ".res"
-    with open(f"{response}.tmp", "w", encoding="utf-8") as f:
-        json.dump({"ok": ok, "output": output}, f)
-    os.rename(f"{response}.tmp", response)
+def answer(requests: int, name: str, ok: bool, output: str) -> None:
+    """Answer request name in directory requests, and remove it.
+
+    The dev container writes the directory, so the answer replaces
+    whatever is in its place rather than being written through it (see
+    common.replace_file).
+    """
+    response = name[: -len(".req")] + ".res"
+    common.replace_file(response, json.dumps({"ok": ok, "output": output}).encode(), 0o644, requests)
     with contextlib.suppress(FileNotFoundError):
-        os.remove(path)
+        os.unlink(name, dir_fd=requests)
 
 
-def serve_requests(helper: Helper, parent: int) -> None:
+def serve_requests(helper: Helper, parent: int, requests: int) -> None:
     """Answer requests, oldest first, until the helper's parent ends.
 
     Args:
         helper: What does the requests.
         parent: The process ID of the process that started the helper.
+        requests: The requests' directory, open.
     """
     while os.getppid() == parent:
-        for name in sorted(os.listdir(control.REQUESTS)):
+        for name in sorted(os.listdir(requests)):
             if not name.endswith(".req"):
                 continue
-            path = os.path.join(control.REQUESTS, name)
             try:
-                with open(path, encoding="utf-8") as f:
-                    request = common.as_object(json.load(f))
+                data, _ = common.read_file(name, requests)
+                request = common.as_object(json.loads(data))
             except FileNotFoundError:
                 continue  # given up on
             except (OSError, ValueError) as e:
-                answer(path, False, f"cannot read the request: {e}")
+                answer(requests, name, False, f"cannot read the request: {e}")
                 continue
             if request is None:
-                answer(path, False, "the request is not a JSON object")
+                answer(requests, name, False, "the request is not a JSON object")
                 continue
-            answer(path, *helper.handle(request))
+            answer(requests, name, *helper.handle(request))
         time.sleep(POLL)
 
 
@@ -264,18 +280,21 @@ def serve() -> None:
     for signum in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, stopped)
     helper = Helper()
+    requests = common.open_dir(control.REQUESTS)
     # What is here is an earlier run's: no test asks before `serving` is.
-    for name in os.listdir(control.REQUESTS):
-        os.remove(os.path.join(control.REQUESTS, name))
+    for name in os.listdir(requests):
+        if not common.is_dir_entry(name, requests):
+            os.unlink(name, dir_fd=requests)
     helper.put_back()
     with open(control.SERVING, "w", encoding="utf-8") as f:
         f.write(f"{os.getpid()}\n")
     try:
-        serve_requests(helper, parent)
+        serve_requests(helper, parent, requests)
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.remove(control.SERVING)
         helper.put_back()
+        os.close(requests)
 
 
 def main() -> None:

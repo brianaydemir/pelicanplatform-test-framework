@@ -46,3 +46,12 @@ a [shape](../glossary.md#shape) that does not export `/protected-a`.
   ten tasks queued on two workers, such an exception must cancel the eight
   waiting at once, and let the two running end; a normal exit must wait for
   all ten. WLCG pass only.
+- `confined`: the [dev container](../glossary.md#dev-container) must not
+  write what the host runs or the framework's own code
+  ([Isolation](../development.md#isolation)). Opening `fed.sh` or
+  `framework/testlib/common.py` to append, and making a file in the
+  checkout, `framework/testlib/`, `framework/var/`, `framework/var/bin/`,
+  `framework/var/bin/host/`, `framework/var/generated/`,
+  `framework/var/control/`, `framework/var/data/`,
+  `framework/var/data/origin/`, or `framework/var/issuer-keys/`, must each
+  fail as on a read-only file system. Nothing is written. WLCG pass only.

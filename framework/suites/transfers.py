@@ -16,7 +16,7 @@ data/put/<scenario> (Scenario.store_dir), emptied first.
 
 What each scenario expects, how many batches it runs, and how a batch
 is judged, is in framework/testlib/transfers.py. Results go to
-framework/var/data/transfers, by <scenario>/<batch>: input/ (the batch,
+framework/var/dev/transfers, by <scenario>/<batch>: input/ (the batch,
 in stash_plugin's format), output/ (the pelican client's transfer
 stats, or the plugin's result ads), log/ (client logs, or the plain
 HTTP client's requests and answers, ending with the exit status),
@@ -25,7 +25,7 @@ files/ (what each batch downloaded or uploaded), and verify/problems
 
 Each credential's token is of the session's profile, and must fare as
 its twin of the other profile does. The SciTokens pass keeps its results
-in data/transfers-scitokens/. The test objects are seeded, and the
+in dev/transfers-scitokens/. The test objects are seeded, and the
 stores read, with WLCG tokens either way. See docs/tests/test-data.md.
 """
 
@@ -48,7 +48,7 @@ from testlib.session import CLIENT_TIMEOUT, TIMED_OUT, Session, timed_out
 from testlib.transfers import SCENARIOS as TABLE
 from testlib.transfers import Batch, Observation, Outcome, Scenario
 
-OUT = "data/transfers"
+OUT = "dev/transfers"
 
 
 SCENARIOS = {s.name: s.description for s in TABLE}
@@ -81,7 +81,7 @@ def token_path(scenario: Scenario) -> str | None:
     """
     if scenario.credential is None or scenario.credential.key is None:
         return None
-    return f".condor_creds/{scenario.name}/{scenario.credential.name}.use"
+    return f"dev/condor-creds/{scenario.name}/{scenario.credential.name}.use"
 
 
 def hash_files(directory: str, prefix: str) -> dict[str, str]:
@@ -182,7 +182,7 @@ def named_cache(fed: common.Federation) -> common.Cache:
 
 
 def make_directories(fed: common.Federation, plan: Plan) -> None:
-    """Start framework/var/data/transfers afresh.
+    """Start framework/var/dev/transfers afresh.
 
     It gets each batch in stash_plugin's input format, and a credentials
     directory for each scenario. Dies if a store lacks a put scenario's
@@ -193,11 +193,11 @@ def make_directories(fed: common.Federation, plan: Plan) -> None:
     out = plan.out
     for sub in ("input", "output", "log", "files", "verify"):
         shutil.rmtree(f"{out}/{sub}", ignore_errors=True)
-    shutil.rmtree(".condor_creds", ignore_errors=True)
+    shutil.rmtree("dev/condor-creds", ignore_errors=True)
     for s in plan.scenarios:
         for sub in ("input", "output", "log", "files"):
             os.makedirs(f"{out}/{sub}/{s.name}")
-        os.makedirs(f".condor_creds/{s.name}")
+        os.makedirs(f"dev/condor-creds/{s.name}")
     for batch in plan.all_batches():
         os.makedirs(f"{out}/files/{batch.id}")
         with open(f"{out}/input/{batch.id}", "w", encoding="utf-8") as f:
@@ -303,7 +303,7 @@ def command(session: Session, plan: Plan, batch: Batch) -> tuple[list[str], dict
     if s.client == "plugin":
         # A direct get's URLs carry ?directread (see transfers.batch_url);
         # a named get's cache is in the environment.
-        env["_CONDOR_CREDS"] = os.path.abspath(f".condor_creds/{s.name}")
+        env["_CONDOR_CREDS"] = os.path.abspath(f"dev/condor-creds/{s.name}")
         if s.named:
             env["PELICAN_CLIENT_PREFERREDCACHES"] = named_cache(session.fed).url
         args = [session.plugin]

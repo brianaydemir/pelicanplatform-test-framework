@@ -12,8 +12,8 @@ The run's objects lie flat in data/auth/, as data/auth/<run>-<name>.
 
 `expired-in-use` takes three minutes, so it runs in a thread of its own
 beside the rest, and records its rows last. Responses go to
-framework/var/data/auth-test/ (in the SciTokens pass,
-data/auth-test-scitokens/), and a row per request to the results (per
+framework/var/dev/auth-test/ (in the SciTokens pass,
+dev/auth-test-scitokens/), and a row per request to the results (per
 server and kind, for `expired-in-use`, `traversal`, and `narrow-climb`).
 
 Every token presented is of the session's profile, and must fare as its
@@ -40,7 +40,7 @@ from testlib.report import FAIL, PASS, SKIP, Report, label, record, record_skip
 from testlib.session import Session
 from testlib.web import save
 
-OUT = "data/auth-test"
+OUT = "dev/auth-test"
 
 # The checks that are not credentials.
 KEYS = "keys"

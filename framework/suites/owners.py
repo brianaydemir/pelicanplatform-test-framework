@@ -10,8 +10,8 @@ pass until origin-2 serves; the suite stops if it can't pass.
 
 Objects go under data/owners/<run>/ in each namespace's storage, and are
 removed after the suite, from a pstore origin too. Responses go to
-framework/var/data/owners-test/ (in the SciTokens pass,
-data/owners-test-scitokens/). See docs/tests/another-owner.md.
+framework/var/dev/owners-test/ (in the SciTokens pass,
+dev/owners-test-scitokens/). See docs/tests/another-owner.md.
 """
 
 import os
@@ -27,7 +27,7 @@ from testlib.report import FAIL, PASS, SKIP, Report, label, record, record_skip
 from testlib.session import Session, last_line, not_refused
 from testlib.web import save
 
-OUT = "data/owners-test"
+OUT = "dev/owners-test"
 
 CLIENT = {
     "get": "`pelican object get` of each of origin-2's exports, through a cache",

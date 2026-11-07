@@ -150,7 +150,7 @@ The knobs that you set:
 | `IMAGE_<SERVICE>`   | `${IMAGE_HUB}/<service>:<tag>`     | one service's image (`ORIGIN`, ..., `DEV`); `DEV`'s is `pelican-dev:${PELICAN_DEV_TAG}` |
 | `IMAGE_HUB`         | `hub.osg-htc.org/pelican_platform` | image registry                                                                          |
 | `PELICAN_DEV_TAG`   | `latest-itb`                       | dev container tag                                                                       |
-| `PELICAN_SRC_DIR`   | `$HOME/pelican`                    | mounted at `/app` in the dev container                                                  |
+| `PELICAN_SRC_DIR`   | empty                              | a Pelican checkout to mount, read-write, at `/app` in the dev container; empty, none    |
 | `PELICAN_LOG_LEVEL` | `info`                             | `Logging.Level`                                                                         |
 | `TZ_SERVICES`       | `UTC`                              | central services' timezone                                                              |
 | `TZ_STORAGE`        | `America/Chicago`                  | origins' and caches' timezone                                                           |

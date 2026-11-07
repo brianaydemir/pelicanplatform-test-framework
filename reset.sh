@@ -86,12 +86,14 @@ if [ $# -gt 0 ]; then
 fi
 
 # On a Linux host, containers leave root-owned files behind. Remove them
-# from a container.
+# from a container, which gets framework/var/ alone: no container may
+# write the rest of the checkout (see the dev service in
+# framework/docker-compose.yaml).
 if ! all_gone "$@"; then
   printf 'Removing the rest as root, from inside a container ...\n'
   docker run --rm --pull=missing --network none --user 0:0 \
-      --volume "${PWD}:/w" --workdir /w --entrypoint /bin/rm \
-      nginx:alpine -rf -- "$@" || true
+      --volume "${PWD}/framework/var:/w/framework/var" --workdir /w \
+      --entrypoint /bin/rm nginx:alpine -rf -- "$@" || true
 fi
 
 if [ -n "${presets}" ]; then

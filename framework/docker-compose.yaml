@@ -8,9 +8,11 @@
 # this (as in smoke.sh's copies of the checkout).
 name: pelican
 
-# Only the dev container's build caches live in volumes. Service state
+# Only the dev container's build caches live in volumes, and app_empty,
+# its /app when PELICAN_SRC_DIR names no Pelican checkout. Service state
 # and data are bind-mounted from ./var/state and ./var/data.
 volumes:
+  app_empty:
   go_build:
   go_pkg:
   pre_commit:
@@ -633,6 +635,14 @@ services:
 
   # Build environment and test client. The tests use the binaries in
   # framework/var/bin/linux/, through the checkout mounted at /scratch.
+  #
+  # The checkout is read-only there, so that nothing in the container can
+  # change what the host runs or the framework's own code. The tests may
+  # write only the directories mounted read-write below, each mounted on
+  # its own. Each is either another service's bind source itself or holds
+  # none, and its parent is read-only, so that the container cannot swap
+  # in a symlink that the host would follow when it starts that service
+  # (framework/check-mounts.py, which fed.sh runs, enforces this).
   dev:
     hostname: dev
     networks: [default, firewalled]
@@ -645,8 +655,56 @@ services:
     ports:
       - "${PORT_9002:?run through ./fed.sh}:8444"
     volumes:
-      - "${PELICAN_SRC_DIR:?run through ./fed.sh}:/app"
-      - ..:/scratch
+      # PELICAN_SRC_DIR, if set; otherwise the empty volume app_empty.
+      - "${DEV_APP_SOURCE:?run through ./fed.sh}:/app"
+      - ..:/scratch:ro
+      # What the dev container keeps for itself: the client you build
+      # (README.md), the tests' results, and what else they write.
+      - ./var/bin/linux:/scratch/framework/var/bin/linux
+      - ./var/results:/scratch/framework/var/results
+      - ./var/dev:/scratch/framework/var/dev
+      # The tests' requests to the control helper, and their
+      # configuration of each service (framework/testlib/control.py).
+      - ./var/control/requests:/scratch/framework/var/control/requests
+      - ./var/control/config/director-0:/scratch/framework/var/control/config/director-0
+      - ./var/control/config/director-1:/scratch/framework/var/control/config/director-1
+      - ./var/control/config/registry:/scratch/framework/var/control/config/registry
+      - ./var/control/config/origin-0:/scratch/framework/var/control/config/origin-0
+      - ./var/control/config/origin-1:/scratch/framework/var/control/config/origin-1
+      - ./var/control/config/origin-2:/scratch/framework/var/control/config/origin-2
+      - ./var/control/config/cache-0:/scratch/framework/var/control/config/cache-0
+      - ./var/control/config/cache-1:/scratch/framework/var/control/config/cache-1
+      - ./var/control/config/cache-2:/scratch/framework/var/control/config/cache-2
+      - ./var/control/config/transfer:/scratch/framework/var/control/config/transfer
+      - ./var/control/config/fed:/scratch/framework/var/control/config/fed
+      - ./var/control/config/dev:/scratch/framework/var/control/config/dev
+      # The keys that the keys suite adds, retires, and sets aside.
+      - ./var/issuer-keys/origin-0:/scratch/framework/var/issuer-keys/origin-0
+      - ./var/issuer-keys/origin-1:/scratch/framework/var/issuer-keys/origin-1
+      - ./var/issuer-keys/origin-2:/scratch/framework/var/issuer-keys/origin-2
+      - ./var/issuer-keys/cache-0:/scratch/framework/var/issuer-keys/cache-0
+      - ./var/issuer-keys/cache-1:/scratch/framework/var/issuer-keys/cache-1
+      - ./var/issuer-keys/cache-2:/scratch/framework/var/issuer-keys/cache-2
+      - ./var/issuer-keys/fed:/scratch/framework/var/issuer-keys/fed
+      # The origins' backups, which the pstore suite removes.
+      - ./var/state/origin-0:/scratch/framework/var/state/origin-0
+      - ./var/state/origin-1:/scratch/framework/var/state/origin-1
+      - ./var/state/origin-2:/scratch/framework/var/state/origin-2
+      - ./var/state/fed:/scratch/framework/var/state/fed
+      # The stores, which the tests write straight to disk, and the
+      # backends' and receivers' logs, which they read and clear.
+      - ./var/data/origin/0:/scratch/framework/var/data/origin/0
+      - ./var/data/origin/1:/scratch/framework/var/data/origin/1
+      - ./var/data/origin/2:/scratch/framework/var/data/origin/2
+      - ./var/data/cache/0:/scratch/framework/var/data/cache/0
+      - ./var/data/cache/1:/scratch/framework/var/data/cache/1
+      - ./var/data/cache/2:/scratch/framework/var/data/cache/2
+      - ./var/data/cache/fed:/scratch/framework/var/data/cache/fed
+      - ./var/data/lab-server:/scratch/framework/var/data/lab-server
+      - ./var/data/tier:/scratch/framework/var/data/tier
+      - ./var/data/metadata:/scratch/framework/var/data/metadata
+      - ./var/data/idp:/scratch/framework/var/data/idp
+      - ./var/data/webdav-gate:/scratch/framework/var/data/webdav-gate
       - *vol-generated
       - *vol-conf-root
       - *vol-conf-base
@@ -775,6 +833,12 @@ services:
   # that init-data.py made, writable by any uid, even when their last
   # object goes. Multipart uploads, such as the caches', take memory to
   # buffer.
+  #
+  # The buckets are the upstreams of a `combine` remote, so that each
+  # export's bucket is a path in the container rather than a bind mount of
+  # its own: a bind source inside a store, which the origins and the dev
+  # container write, could be swapped for a symlink that the host would
+  # follow (see the dev service).
   s3:
     hostname: s3
     networks: [default, firewalled]
@@ -783,7 +847,19 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
-        exec rclone serve s3 /srv --addr=:8444
+        exec rclone serve s3 :combine: --addr=:8444
+        --combine-upstreams="origin-0=/srv/origin-0 origin-1=/srv/origin-1
+        origin-2=/srv/origin-2
+        origin-0-public=/srv/origin-0/public
+        origin-0-protected-a=/srv/origin-0/protected-a
+        origin-0-protected-b=/srv/origin-0/protected-b
+        origin-1-public=/srv/origin-1/public
+        origin-1-protected-a=/srv/origin-1/protected-a
+        origin-1-protected-b=/srv/origin-1/protected-b
+        origin-2-other=/srv/origin-2/other
+        origin-2-public-other=/srv/origin-2/public-other
+        origin-2-public-secret=/srv/origin-2/public-secret
+        tier=/srv/tier"
         --cert=/certs/tls.crt --key=/certs/tls.key
         --auth-key="$$(cat /fed/s3-access-key),$$(cat /fed/s3-secret-key)"
         --dir-cache-time=0s --no-cleanup
@@ -795,15 +871,6 @@ services:
       - ./var/data/origin/0:/srv/origin-0
       - ./var/data/origin/1:/srv/origin-1
       - ./var/data/origin/2:/srv/origin-2
-      - ./var/data/origin/0/public:/srv/origin-0-public
-      - ./var/data/origin/0/protected-a:/srv/origin-0-protected-a
-      - ./var/data/origin/0/protected-b:/srv/origin-0-protected-b
-      - ./var/data/origin/1/public:/srv/origin-1-public
-      - ./var/data/origin/1/protected-a:/srv/origin-1-protected-a
-      - ./var/data/origin/1/protected-b:/srv/origin-1-protected-b
-      - ./var/data/origin/2/other:/srv/origin-2-other
-      - ./var/data/origin/2/public-other:/srv/origin-2-public-other
-      - ./var/data/origin/2/public-secret:/srv/origin-2-public-secret
       # Bucket `tier`, which the caches tier to (`-p cache-tiered`).
       - ./var/data/tier:/srv/tier
       - ./var/generated/s3-access-key:/fed/s3-access-key:ro

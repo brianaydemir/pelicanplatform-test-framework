@@ -42,8 +42,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
-# No __pycache__ in the checkout, where the dev container would leave it
-# root's.
+# Keep the checkout free of __pycache__.
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

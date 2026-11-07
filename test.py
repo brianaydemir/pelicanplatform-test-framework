@@ -58,8 +58,8 @@ import traceback
 from collections.abc import Generator, Sequence
 from typing import Any, TextIO
 
-# No __pycache__ in the checkout, where the dev container would leave it
-# root's.
+# No __pycache__: the checkout is read-only in the dev container (see the
+# dev service in framework/docker-compose.yaml).
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "framework"))
 

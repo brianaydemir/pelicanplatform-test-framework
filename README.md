@@ -31,8 +31,9 @@ change this shape.
 - About 2.5 GB of memory for the containers, or 3.5 GB with
   [`-p topo-multi-origin`](framework/presets/topo-multi-origin.sh) and
   [`-p topo-multi-cache`](framework/presets/topo-multi-cache.sh).
-- Optional: a Pelican checkout, mounted in the
-  [dev container](docs/glossary.md#dev-container) at `/app`.
+- Optional: a Pelican checkout, to build in the
+  [dev container](docs/glossary.md#dev-container) at `/app`
+  (`PELICAN_SRC_DIR`).
 
 ## Quickstart
 
@@ -111,8 +112,9 @@ container's log afresh.
    doesn't use.
 
 4. **Test** with `./fed.sh test`. Or open a shell in the dev container with
-   `./fed.sh dev`, where this checkout is `/scratch` and your Pelican
-   checkout is `/app`, and run `python3.13 /scratch/test.py` or the client:
+   `./fed.sh dev`, where this checkout is `/scratch`, read-only (edit it on
+   the host), and your Pelican checkout, if you name one, is `/app`, and run
+   `python3.13 /scratch/test.py` or the client:
 
    ```
    /scratch/framework/var/bin/linux/pelican object get \
@@ -310,7 +312,8 @@ whose image changed. `topo-tiny` runs everything from `IMAGE_ORIGIN`.
 The tests run `framework/var/bin/linux/pelican`
 ([Pelican client](docs/glossary.md#pelican-client)), and
 [`stash_plugin`](docs/glossary.md#stash_plugin), a symlink to it. To test
-your own client, build it over that file from the dev container:
+your own client, set `PELICAN_SRC_DIR` to your Pelican checkout in
+`local/environment.cfg`, and build it over that file from the dev container:
 
 ```sh
 cd /app && CGO_ENABLED=0 go build -tags client -o /scratch/framework/var/bin/linux/pelican ./cmd
@@ -322,9 +325,9 @@ replaces it.
 For server-only commands, such as `origin collection`, the tests run the dev
 container's `pelican-server`, if it has one, or else
 `framework/var/bin/linux/pelican-server`, which `init` fetches if it is
-missing. To test your own, put it there. On a Linux host, that binary is
-also the host's, so `init` keeps it only if it reports `PELICAN_TAG`'s
-version; otherwise it replaces it and the client.
+missing. To test your own, put it there; `init` keeps it as it keeps your
+client. The host runs only its own binaries, in `framework/var/bin/host/`,
+which no container can write.
 
 ### Pelican configuration
 
@@ -415,13 +418,13 @@ Everything the framework creates is in plain directories under
 | `data/origin/<N>/`   | origin-N's store (`/data`; `/srv/origin-<N>` on the `webdav` and `s3` backends), a directory per namespace                           |
 | `data/cache/<N>/`    | cache-N's storage (`/data`)                                                                                                          |
 | `data/lab-server/`   | the lab server's shared directory                                                                                                    |
-| `data/transfers/`    | the [`transfers`](docs/tests/test-data.md) suite's batches (`input/`) and results; `transfers-scitokens/` for its SciTokens pass     |
-| `data/auth-test/`    | the responses the [`auth`](docs/tests/authorization.md) suite got; `auth-test-scitokens/` for its SciTokens pass                     |
-| `data/owners-test/`  | the responses the [`owners`](docs/tests/another-owner.md) suite got; `owners-test-scitokens/` for its SciTokens pass                 |
 | `data/metadata/`     | every request the [metadata recorder](framework/metadata-server/recorder.py) received                                                |
 | `data/webdav-gate/`  | the `Authorization` of each request that an `https` or `httpsv2` origin sent its backend through the gate                            |
 | `data/idp/`          | every request the [identity provider](framework/idp/idp.py) served (`-p auth-oidc-local`), one JSON object per line, without secrets |
-| `data/commands.log`  | the client commands the tests ran, with exit status and output; `commands-scitokens.log` for the SciTokens pass                      |
+| `dev/transfers/`     | the [`transfers`](docs/tests/test-data.md) suite's batches (`input/`) and results; `transfers-scitokens/` for its SciTokens pass     |
+| `dev/auth-test/`     | the responses the [`auth`](docs/tests/authorization.md) suite got; `auth-test-scitokens/` for its SciTokens pass                     |
+| `dev/owners-test/`   | the responses the [`owners`](docs/tests/another-owner.md) suite got; `owners-test-scitokens/` for its SciTokens pass                 |
+| `dev/commands.log`   | the client commands the tests ran, with exit status and output; `commands-scitokens.log` for the SciTokens pass                      |
 | `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                                        |
 | `logs/<time>/`       | each `./fed.sh test` run's [logs](#logs)                                                                                             |
 | `control/`           | the tests' requests to [control services](#service-control), and their configuration of a service (`config/<svc>/`)                  |
@@ -429,7 +432,7 @@ Everything the framework creates is in plain directories under
 | `test-keys/`         | private keys for the [authorization tests](docs/tests/authorization.md)                                                              |
 | `issuer-jwks/`       | the public keys that the origins add with `Server.IssuerJwks` and each export's `IssuerJwks`                                         |
 | `generated/`         | files that `fed.sh` derives from the shape and `local/`, e.g. each service's own layer in `instance/<service>/`                      |
-| `bin/`               | binaries; the dev container uses `linux/`                                                                                            |
+| `bin/`               | binaries: `linux/` for the dev container, which may write it, and `host/` for the host, which no container can                       |
 | `certs/`             | the framework's CA and server certificate                                                                                            |
 | `grafana/`           | Grafana's database (`reset.sh` keeps it)                                                                                             |
 
@@ -478,9 +481,14 @@ file, and log in as a user in `framework/etc/idp-users.json` or
   certificate from the same CA, which running services still trust.
 - **`~/.gitconfig`.** The dev container mounts it, so `fed.sh` creates an
   empty one if it's missing.
-- **Your Pelican checkout.** The dev image's entrypoint runs
-  `pre-commit install` in `/app`, which installs Pelican's Git hook in the
-  checkout that `PELICAN_SRC_DIR` names.
+- **Your Pelican checkout.** The dev container mounts the one that
+  `PELICAN_SRC_DIR` names, if any, read-write: what runs there, such as the
+  dev image and what a build fetches, can change it. The dev image's
+  entrypoint runs `pre-commit install` in `/app`, which installs Pelican's
+  Git hook there. `smoke.sh` never mounts one.
+- **This checkout** is read-only in the dev container, so that nothing in a
+  container can change what the host runs
+  ([Isolation](docs/development.md#isolation)). Edit it on the host.
 - **`-p topo-tiny`** refuses `cache-xrootd`, `auth-external-issuer`,
   `director-discovery`, `origin-broker`, `origin-firewalled`,
   `topo-no-cache`, and every preset that adds a service but

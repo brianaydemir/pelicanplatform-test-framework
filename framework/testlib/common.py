@@ -6,6 +6,7 @@ Messages name paths from the top of the checkout.
 """
 
 import contextlib
+import errno
 import fnmatch
 import glob
 import hashlib
@@ -15,9 +16,11 @@ import os
 import platform
 import re
 import shutil
+import stat
 import sys
 import time
 import traceback
+import uuid
 from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -165,6 +168,113 @@ def shown(path: str | None) -> str:
     if not path:
         return ""
     return path if "://" in path else f"framework/var/{path}"
+
+
+# --------------------------------------------------------------------------
+# Writing, from the host, where a container may write.
+#
+# A container may leave a symlink anywhere it can write (see the dev
+# service in docker-compose.yaml), and the host must write nothing through
+# one. So the host's code that writes there works down from a directory
+# that no container can replace: a bind source, such as data/origin/0,
+# whose parent no container can write. It goes by file descriptor, and
+# opens nothing through a symlink.
+
+
+def open_dir(path: str, dir_fd: int | None = None) -> int:
+    """Open directory path, which must not be a symlink.
+
+    Returns:
+        Its file descriptor.
+
+    Raises:
+        OSError: It is missing, a symlink, or no directory.
+    """
+    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+
+
+def make_dirs(rel: str, dir_fd: int, mode: int) -> int:
+    """Make each directory of path rel, relative to dir_fd, that is missing.
+
+    Each is given mode, whether it was there or not.
+
+    Returns:
+        The file descriptor of the last.
+
+    Raises:
+        OSError: One is a symlink or no directory.
+    """
+    fd = os.dup(dir_fd)
+    try:
+        for name in rel.split("/"):
+            if name in ("", "."):
+                continue
+            if name == "..":
+                raise ValueError(f"{rel} climbs out")
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(name, mode, dir_fd=fd)
+            child = open_dir(name, fd)
+            os.close(fd)
+            fd = child
+            # mkdir's mode is subject to the umask.
+            os.fchmod(fd, mode)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def read_file(path: str, dir_fd: int | None = None) -> tuple[bytes, int]:
+    """Read regular file path, which must not be a symlink.
+
+    Returns:
+        What it holds, and its permission bits.
+
+    Raises:
+        OSError: It is missing, a symlink, or no regular file.
+    """
+    # O_NONBLOCK, so that a FIFO in its place cannot hold the open.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    with os.fdopen(fd, "rb") as f:
+        found = os.fstat(f.fileno())
+        if not stat.S_ISREG(found.st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", path)
+        return f.read(), stat.S_IMODE(found.st_mode)
+
+
+def write_new_file(name: str, data: bytes, mode: int, dir_fd: int) -> None:
+    """Write data to a new file, name in dir_fd, with mode.
+
+    Raises:
+        FileExistsError: Something is there already, a symlink included.
+    """
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=dir_fd)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+        # The mode open() gives is subject to the umask.
+        os.fchmod(f.fileno(), mode)
+
+
+def replace_file(name: str, data: bytes, mode: int, dir_fd: int) -> None:
+    """Make name in dir_fd a new file that holds data, with mode.
+
+    Whatever is there, a symlink included, is replaced rather than written
+    through: data goes to a new file beside it, renamed over it. A
+    directory there is not replaced.
+    """
+    tmp = f".{name}.{uuid.uuid4().hex}.tmp"
+    write_new_file(tmp, data, mode, dir_fd)
+    try:
+        os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp, dir_fd=dir_fd)
+        raise
+
+
+def is_dir_entry(name: str, dir_fd: int) -> bool:
+    """Return whether name in dir_fd is a directory; a symlink is not."""
+    return stat.S_ISDIR(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
 
 
 # --------------------------------------------------------------------------

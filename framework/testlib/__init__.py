@@ -11,7 +11,9 @@ report.py.
   cacheapi     a V2 cache's own APIs: prestage, evict, stats, purges, and
                introspection
   collections  collections, through an origin's web API
-  common       paths, messages, the command line, and generated/
+  common       paths, messages, the command line, generated/, and the
+               host's writing, without following symlinks, where a
+               container writes
   control      restarting, stopping, or reconfiguring a service mid-run,
                through framework/control.py on the host
   credentials  the credentials the tests present, what each allows, and

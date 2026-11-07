@@ -85,8 +85,8 @@ class Session:
         namespaces: The namespaces that the federation exports.
         stale_at: When the last expired token expired.
         commands_log: Where each client command is logged, under
-            framework/var: data/commands.log, or
-            data/commands-<profile>.log in another profile's pass.
+            framework/var: dev/commands.log, or
+            dev/commands-<profile>.log in another profile's pass.
     """
 
     def __init__(
@@ -122,7 +122,7 @@ class Session:
         self._credential: dict[tuple[str, str, str], str | None] = {}
         self._web: dict[tuple[str, str, tuple[str, ...], str], tuple[str, float]] = {}
         self.stale_at: float | None = None
-        self.commands_log = f"{self.var_dir('data/commands')}.log"
+        self.commands_log = f"{self.var_dir('dev/commands')}.log"
         with open(self.commands_log, "w", encoding="utf-8"):
             pass
         self._log_lock = threading.Lock()
@@ -147,7 +147,7 @@ class Session:
 
         Args:
             name: A directory under framework/var that a suite empties as
-                it starts, e.g. data/auth-test.
+                it starts, e.g. dev/auth-test.
         """
         return name if self.profile == WLCG else f"{name}-{self.profile}"
 

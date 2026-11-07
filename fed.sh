@@ -915,12 +915,25 @@ if [ -n "${presets_given}" ]; then
   printf '%s\n' "${presets}" >framework/var/generated/presets
 fi
 
-# Compose refuses to start if the dev container's /app source is missing.
-if [ ! -d "${PELICAN_SRC_DIR:-}" ]; then
-  PELICAN_SRC_DIR="${PWD}/framework/var/generated/pelican-src"
-  mkdir -p "${PELICAN_SRC_DIR}"
+# The dev container's /app: the Pelican checkout that PELICAN_SRC_DIR
+# names, if any, which the container may write; otherwise app_empty, an
+# empty volume. Not this checkout, nor one that holds it: the container
+# must not write what the host runs (see the dev service in
+# docker-compose.yaml).
+if [ -n "${PELICAN_SRC_DIR:-}" ]; then
+  DEV_APP_SOURCE=$(CDPATH="" cd -- "${PELICAN_SRC_DIR}" 2>/dev/null && pwd -P) \
+      || die "PELICAN_SRC_DIR is not a directory: ${PELICAN_SRC_DIR}"
+  fed_top=$(pwd -P)
+  case "${DEV_APP_SOURCE}/" in
+    "${fed_top}/"*) die "PELICAN_SRC_DIR must be outside this checkout: ${PELICAN_SRC_DIR}" ;;
+  esac
+  case "${fed_top}/" in
+    "${DEV_APP_SOURCE}/"*) die "PELICAN_SRC_DIR must not hold this checkout: ${PELICAN_SRC_DIR}" ;;
+  esac
+else
+  DEV_APP_SOURCE=app_empty
 fi
-export PELICAN_SRC_DIR
+export DEV_APP_SOURCE
 
 #---------------------------------------------------------------------------
 # Generated files, rewritten on every invocation.
@@ -1939,6 +1952,10 @@ fed_prepare_dirs() {
     mkdir -p "framework/var/data/${store}"
   done
   mkdir -p framework/var/grafana framework/var/issuer-jwks framework/var/test-keys
+  # What the dev container keeps for itself (see docker-compose.yaml), and
+  # the host's binaries, which it cannot write.
+  mkdir -p framework/var/results framework/var/dev framework/var/bin/linux \
+      framework/var/bin/host
   # Written over SSH by `alice`, whose uid is unrelated to yours.
   chmod 0777 framework/var/data/lab-server
   # Each export's storage (fed_storage_dir), which the s3 service mounts
@@ -1952,13 +1969,14 @@ fed_prepare_dirs() {
 }
 
 # Make directories $2... in store $1, writable by any user, unless they
-# are there.
+# are there. The containers write the store, so one that is a symlink
+# is left alone rather than followed.
 fed_prepare_storage() {
   store=$1
   shift
   for dir in "$@"; do
-    if [ ! -d "${store}/${dir}" ]; then
-      mkdir -p "${store}/${dir}"
+    if [ ! -d "${store}/${dir}" ] && [ ! -L "${store}/${dir}" ]; then
+      mkdir "${store}/${dir}"
       chmod 0777 "${store}/${dir}"
     fi
   done
@@ -1984,35 +2002,45 @@ fed_prepare_dirs
 # service containers:
 #
 #   linux/    the client the tests use in the dev container, and
-#             pelican-server for the server-only commands they run
-#   <host>/   pelican-server for `keys`, plus a client for the host
+#             pelican-server for the server-only commands they run; the
+#             dev container may write them (your own client, README.md)
+#   host/     pelican-server for `keys`, plus a client, for the host
 #
-# On a Linux host these are the same directory.
+# The host runs only those in host/, which no container can write, so
+# that nothing in a container can change what the host runs (see the dev
+# service in docker-compose.yaml). On a Linux host, the two directories
+# start with the same binaries.
 
 fed_os=$(uname -s)
 fed_arch=$(uname -m)
 case "${fed_arch}" in
   aarch64) fed_arch=arm64 ;;
 esac
-fed_host_bin="framework/var/bin/$(printf '%s' "${fed_os}" | tr '[:upper:]' '[:lower:]')"
+fed_host_bin=framework/var/bin/host
 
-# Unpack binary $1 at version $2 for OS $3 into framework/var/bin/<os>.
+# Copy file $1 to $2, in a directory that a container may write, following
+# no symlink at either (see framework/put-file.py).
+fed_put() {
+  fed_require_python
+  "${fed_python}" framework/put-file.py "$1" "$2" || exit 1
+}
+
+# Download binary $1 at version $2 for OS $3 as $4/$1-$3, in directory $4,
+# which no container can write.
 fed_fetch_archive() {
   tarball="$1_$3_${fed_arch}.tar.gz"
-  dir="framework/var/bin/$(printf '%s' "$3" | tr '[:upper:]' '[:lower:]')"
-  mkdir -p "${dir}"
-  ( cd "${dir}" || exit 1
-    curl -fSL -O \
-        "https://github.com/PelicanPlatform/pelican/releases/download/v$2/${tarball}"
-    tar xzf "${tarball}"
-    mv "$1-$2/$1" .
-    rm -rf "${tarball}" "$1-$2" )
+  ( cd "$4" \
+      && curl -fSL -O \
+          "https://github.com/PelicanPlatform/pelican/releases/download/v$2/${tarball}" \
+      && tar xzf "${tarball}" \
+      && mv "$1-$2/$1" "$1-$3" \
+      && rm -rf "${tarball}" "$1-$2" ) \
+      || die "cannot download $1 $2 for $3"
 }
 
 # True if framework/var/bin/ holds PELICAN_TAG's binaries. Only the
-# host's pelican-server is version-checked, so a custom linux/pelican, or
-# on a host other than Linux a custom linux/pelican-server, survives
-# `init`.
+# host's pelican-server is version-checked, so a custom linux/pelican or
+# linux/pelican-server survives `init`.
 fed_have_binaries() {
   [ -x framework/var/bin/linux/pelican ] || return 1
   [ -e framework/var/bin/linux/stash_plugin ] || return 1
@@ -2023,22 +2051,36 @@ fed_have_binaries() {
   return 0
 }
 
-# Download PELICAN_TAG's binaries (see above).
+# Download PELICAN_TAG's binaries (see above): all of them, or, given
+# `linux-server`, linux/pelican-server alone. Each is downloaded into a
+# directory of framework/var/bin/, which no container can write, and then
+# copied into place.
 fed_fetch_binaries() {
   version=${PELICAN_TAG#v}
+  fed_stage=$(mktemp -d framework/var/bin/.fetch.XXXXXX)
+  if [ "${1:-}" = linux-server ]; then
+    fed_fetch_archive pelican-server "${version}" Linux "${fed_stage}"
+    fed_put "${fed_stage}/pelican-server-Linux" framework/var/bin/linux/pelican-server
+    rm -rf "${fed_stage}"
+    return 0
+  fi
+
   printf 'Downloading the %s binaries ...\n' "${version}"
+  for name in pelican pelican-server; do
+    fed_fetch_archive "${name}" "${version}" Linux "${fed_stage}"
+    if [ "${fed_os}" != Linux ]; then
+      fed_fetch_archive "${name}" "${version}" "${fed_os}" "${fed_stage}"
+    fi
+    fed_put "${fed_stage}/${name}-Linux" "framework/var/bin/linux/${name}"
+    fed_put "${fed_stage}/${name}-${fed_os}" "${fed_host_bin}/${name}"
+  done
+  rm -rf "${fed_stage}"
 
   # The client dispatches on its name; the transfers suite's plugin-*
-  # scenarios invoke stash_plugin.
-  fed_fetch_archive pelican "${version}" Linux
-  ln -sf pelican framework/var/bin/linux/stash_plugin
-
-  fed_fetch_archive pelican-server "${version}" "${fed_os}"
-  if [ "${fed_os}" != Linux ]; then
-    fed_fetch_archive pelican-server "${version}" Linux
-    fed_fetch_archive pelican "${version}" "${fed_os}"
-    ln -sf pelican "${fed_host_bin}/stash_plugin"
-  fi
+  # scenarios invoke stash_plugin. With -n, a symlink already there is
+  # replaced, not followed.
+  ln -sfn pelican framework/var/bin/linux/stash_plugin
+  ln -sfn pelican "${fed_host_bin}/stash_plugin"
 }
 
 #---------------------------------------------------------------------------
@@ -2132,29 +2174,27 @@ fed_key_make() {
                "pelican user. Start over with ./reset.sh"
   done
 
-  # `key create` will not overwrite a .jwks left behind by a deleted .pem.
-  if [ -e "framework/var/issuer-keys/${first}/${name}.jwks" ] \
-      && [ ! -e "framework/var/issuer-keys/${first}/${name}.pem" ]; then
-    rm -f "framework/var/issuer-keys/${first}/${name}.jwks"
-  fi
-
+  # The containers write the issuer-key directories, so the key is made
+  # in framework/var/, which none can write, and copied into each with
+  # fed_put, which follows no symlink they may have left there.
   printf 'Creating framework/var/issuer-keys/%s/%s.pem ...\n' "${first}" "${name}"
+  fed_stage=$(mktemp -d framework/var/.keys.XXXXXX)
   "${fed_host_bin}/pelican-server" key create \
-      --private-key "framework/var/issuer-keys/${first}/${name}.pem" \
-      --public-key "framework/var/issuer-keys/${first}/${name}.jwks" >/dev/null
-
-  [ -f "framework/var/issuer-keys/${first}/${name}.pem" ] \
+      --private-key "${fed_stage}/${name}.pem" \
+      --public-key "${fed_stage}/${name}.jwks" >/dev/null
+  [ -f "${fed_stage}/${name}.pem" ] && [ -f "${fed_stage}/${name}.jwks" ] \
       || die "framework/var/issuer-keys/${first}/${name}.pem was not created"
+  chmod 0640 "${fed_stage}/${name}.pem"
+  chmod 0644 "${fed_stage}/${name}.jwks"
 
-  chmod 0640 "framework/var/issuer-keys/${first}/${name}.pem"
-  chmod 0644 "framework/var/issuer-keys/${first}/${name}.jwks"
-
-  shift
   for dir in "$@"; do
-    printf 'Copying it to framework/var/issuer-keys/%s/ ...\n' "${dir}"
-    cp "framework/var/issuer-keys/${first}/${name}.pem" "framework/var/issuer-keys/${dir}/${name}.pem"
-    cp "framework/var/issuer-keys/${first}/${name}.jwks" "framework/var/issuer-keys/${dir}/${name}.jwks"
+    if [ "${dir}" != "${first}" ]; then
+      printf 'Copying it to framework/var/issuer-keys/%s/ ...\n' "${dir}"
+    fi
+    fed_put "${fed_stage}/${name}.pem" "framework/var/issuer-keys/${dir}/${name}.pem"
+    fed_put "${fed_stage}/${name}.jwks" "framework/var/issuer-keys/${dir}/${name}.jwks"
   done
+  rm -rf "${fed_stage}"
 }
 
 # True if directory $1 holds an NN-*.pem. Keys Pelican generated for
@@ -2201,8 +2241,8 @@ fed_key_init_group() {
         "${source_dir}" "${dir}"
     for key in "framework/var/issuer-keys/${source_dir}"/[0-9][0-9]-*.pem \
                "framework/var/issuer-keys/${source_dir}"/[0-9][0-9]-*.jwks; do
-      [ -e "${key}" ] || continue
-      cp "${key}" "framework/var/issuer-keys/${dir}/"
+      [ -e "${key}" ] || [ -L "${key}" ] || continue
+      fed_put "${key}" "framework/var/issuer-keys/${dir}/${key##*/}"
     done
   done
 }
@@ -2497,9 +2537,17 @@ fed_require_gitconfig() {
   [ -e "${HOME}/.gitconfig" ] || : >"${HOME}/.gitconfig"
 }
 
+# Refuse to start a container that could change what the host runs (see
+# framework/check-mounts.py).
+fed_check_mounts() {
+  fed_require_python
+  "${fed_python}" framework/check-mounts.py || exit 1
+}
+
 # Start the dev container, which only docker-compose.yaml defines,
 # whatever the topology.
 fed_dev_up() {
+  fed_check_mounts
   fed_require_gitconfig
   COMPOSE_IGNORE_ORPHANS=true \
       docker compose -f framework/docker-compose.yaml up --detach dev
@@ -2609,10 +2657,12 @@ fed_save_logs() {
         done
   if [ -f "${dir}/.started" ]; then
     mkdir -p "${dir}/results"
-    find framework/var/results -name '*.tsv' -newer "${dir}/.started" \
+    # Regular files alone: the dev container writes these directories,
+    # and cp would follow a symlink.
+    find framework/var/results -type f -name '*.tsv' -newer "${dir}/.started" \
         -exec cp {} "${dir}/results/" \;
-    find framework/var/data -maxdepth 1 -name 'commands*.log' -newer "${dir}/.started" \
-        -exec cp {} "${dir}/" \;
+    find framework/var/dev -maxdepth 1 -type f -name 'commands*.log' \
+        -newer "${dir}/.started" -exec cp {} "${dir}/" \;
     rm -f "${dir}/.started"
   fi
   for svc in $(docker compose ps --all --services 2>/dev/null); do
@@ -2699,7 +2749,7 @@ fed_init() {
     # fed_have_binaries does not look for this one, so that a custom one
     # survives; fetch it only if there is none.
     if [ ! -x framework/var/bin/linux/pelican-server ]; then
-      fed_fetch_archive pelican-server "${PELICAN_TAG#v}" Linux
+      fed_fetch_binaries linux-server
     fi
   else
     fed_fetch_binaries
@@ -2783,6 +2833,7 @@ fed_remove_unselected() {
 # framework/var/generated/conf-changed holds those IDs until none are
 # left.
 fed_up() {
+  fed_check_mounts
   fed_remove_unselected
 
   before=""

@@ -79,7 +79,7 @@ redirect led to, 401 or 403 is `server`, and 404 `not found`. Anything else
 is `other`, and unexpected.
 
 The summary counts each scenario's batches that passed, failed, and went
-unexpectedly. Under `framework/var/data/transfers/`
+unexpectedly. Under `framework/var/dev/transfers/`
 ([where things live](../../README.md#where-things-live)), `verify/problems`
 lists each unexpected result, and `log/<scenario>/<batch>` keeps the plain
 HTTP client's requests and answers. `read-back` fails where a pstore
