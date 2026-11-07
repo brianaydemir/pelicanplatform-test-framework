@@ -25,6 +25,7 @@ The TSV is meant for people as much as for programs:
 
 import os
 import re
+import string
 import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
@@ -193,8 +194,14 @@ def junit(rows: Sequence[dict[str, str]]) -> str:
 
 
 def cell(text: str) -> str:
-    """Return text, safe in a Markdown table's cell."""
-    return text.replace("|", "\\|").replace("\n", " ")
+    """Return text as Markdown that shows it as is, on one line.
+
+    A note may quote a server (an error body, a client's output), so none
+    of it may become a link, an image, emphasis, HTML, or a cell's end.
+    CommonMark lets a backslash escape any ASCII punctuation, and each is.
+    """
+    line = " ".join(text.splitlines())
+    return "".join("\\" + c if c in string.punctuation else c for c in line)
 
 
 def markdown(rows: Sequence[dict[str, str]]) -> str:
