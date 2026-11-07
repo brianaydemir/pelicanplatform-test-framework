@@ -4,8 +4,9 @@ The suite adds and rotates keys in the services' key directories under
 framework/var/issuer-keys/, as `./fed.sh keys add` and `keys rotate`
 do, and restores them afterward. A key it made the signer is kept as a
 verify-only key, since V2 caches and pstore origins need the keys that
-sealed their stores. It runs last, since servers cache keys for up to
-15 minutes, so its changes outlast it. It skips under
+sealed their stores, until the next run removes it, if each store is
+sealed with a key that stays too. It runs last, since servers cache
+keys for up to 15 minutes, so its changes outlast it. It skips under
 `-p server-unprivileged`, whose servers' keys the host may not write,
 and the tiny topology, whose one process holds every key.
 
@@ -181,14 +182,68 @@ def remove_key(dirs: Sequence[str], name: str) -> None:
 def demote_key(dirs: Sequence[str], name: str) -> str:
     """Rename key name in each of dirs to sort last; return its new name.
 
-    The key it displaced then signs again.
+    The key it displaced then signs again. With a key at 99 already, it
+    shares that prefix, so as never to sort before the signer.
     """
     used = sorted({n for d in dirs for n in prefixes_in(d) if f"{n:02d}" != name[:2]})
-    number = (used[-1] if used else 50) + 1
+    number = min((used[-1] if used else 50) + 1, 99)
     new_name = f"{number:02d}{name[2:]}"
     for key_dir in dirs:
         os.replace(os.path.join(key_dir, name), os.path.join(key_dir, new_name))
     return new_name
+
+
+def sealed_stores(fed: common.Federation, key_dir: str) -> list[str]:
+    """Return the master key files sealed with the keys in key_dir.
+
+    They are those, under framework/var, of the V2 cache or pstore
+    origin whose key directory it is, if any.
+    """
+    svc = os.path.basename(key_dir)
+    found = [master_key_path(c) for c in fed.caches if c.kind == "v2" and c.svc == svc]
+    found += [pstore_key_path(o) for o in fed.origins if o.pstore and o.svc == svc]
+    return found
+
+
+def prune_keys(test: "Test", dirs: Sequence[str]) -> None:
+    """Remove the keys that earlier runs left in dirs, where it is safe.
+
+    They are the suite's keys (new_key()) but the signer: those that
+    put_back() demoted, and any that a killed run left. They go only if
+    each master key file sealed with dirs' keys (sealed_stores()) is
+    sealed with a key that stays too; otherwise all are kept, with a
+    warning. It is called before any scenario, so none is this run's.
+    """
+    signers = {os.path.basename(common.signing_key(d)) for d in dirs}
+    stale = sorted(
+        {
+            os.path.basename(path)
+            for d in dirs
+            for path in glob.glob(os.path.join(d, "[0-9][0-9]-keys-*.pem"))
+        }
+        - signers
+    )
+    if not stale:
+        return
+    for key_dir in dirs:
+        staying = {
+            jwt.key_id(path)
+            for path in glob.glob(os.path.join(key_dir, "*.pem"))
+            if os.path.basename(path) not in stale
+        }
+        for path in sealed_stores(test.fed, key_dir):
+            sealed = sealed_with(path)
+            if sealed is None or not sealed & staying:
+                why = "is missing or unreadable" if sealed is None else "is sealed with none of the rest"
+                warn(f"kept {', '.join(stale)} in framework/var/{key_dir}: framework/var/{path} {why}")
+                return
+    try:
+        for name in stale:
+            remove_key(dirs, name)
+    except OSError as e:
+        warn(f"could not remove the keys that earlier runs left in {dirs}: {e}")
+        return
+    print(f"Removed the keys that earlier runs left in framework/var/{dirs[0]}: {', '.join(stale)}")
 
 
 def key_ids_at(url: str) -> frozenset[str] | None:
@@ -1067,11 +1122,15 @@ RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
 def run(session: Session, selected: list[str], results: common.Results) -> None:
     """Run the selected scenarios, then put the keys back.
 
-    The run's objects are removed too.
+    First, the keys that earlier runs left are removed (prune_keys()).
+    The run's objects are removed afterward too.
     """
     test = Test(session)
     print(f"Keys against {session.fed.url}, the probe at {test.path(test.rel(PROBE))}\n")
     try:
+        prune_keys(test, test.origin_dirs)
+        if test.cache:
+            prune_keys(test, key_dirs_of(test.fed, test.cache.svc))
         for name in selected:
             suite.record(results, name, suite.attempt_cases(functools.partial(RUN[name], test)))
     finally:

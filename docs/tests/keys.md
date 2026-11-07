@@ -6,7 +6,9 @@ The [`keys`](../../framework/suites/keys.py) suite changes
 [issuer keys](../configuration.md#issuer-keys) while the servers run, as
 `./fed.sh keys add` and `keys rotate` do, then restores them. A key it made
 the signer stays as a verify-only key, since V2 caches and
-[pstore](pstore.md) origins need the keys that sealed their stores.
+[pstore](pstore.md) origins need the keys that sealed their stores. The next
+run removes it first, if each store is sealed with a key that stays too, so
+that such keys do not pile up.
 
 The suite runs last, since servers cache keys for up to 15 minutes, so its
 changes outlast it. It runs in the [WLCG pass](../glossary.md#pass) only
