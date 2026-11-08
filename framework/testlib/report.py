@@ -88,7 +88,7 @@ def slug(name: str) -> str:
 
 # A JWT in its compact form: a base64url header (which begins `{"`, so
 # `eyJ`), claims, and signature.
-_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+_JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 
 
 def redact(text: str) -> str:
