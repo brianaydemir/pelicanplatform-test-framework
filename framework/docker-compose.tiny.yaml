@@ -7,9 +7,11 @@
 # replaces the other one's containers. COMPOSE_PROJECT_NAME overrides
 # both alike.
 #
-# YAML anchors cannot cross files: the health check, mounts, secrets,
-# and idp and metadata services below duplicate docker-compose.yaml's.
-# Keep them in sync.
+# Every service here extends docker-compose.yaml's, and restates only
+# what differs. `extends` brings in no top-level elements, so the
+# secrets below repeat docker-compose.yaml's; one missing here fails
+# `docker compose config`. `!reset` drops the `firewalled` network,
+# which this file has no need for.
 
 name: pelican
 
@@ -29,11 +31,14 @@ secrets:
 
 services:
 
+  # origin-0, serving every module: the origin image has everything any
+  # of the four needs, so IMAGE_ORIGIN applies here too. It keeps
+  # origin-0's health check, environment, secrets, and shared mounts,
+  # and origin-0's store.
   fed:
+    extends: { file: docker-compose.yaml, service: origin-0 }
     hostname: fed
-    # The origin image has everything any of the four modules needs, so
-    # IMAGE_ORIGIN applies here too.
-    image: "${IMAGE_ORIGIN:?run through ./fed.sh}"
+    networks: !reset []
     # The image's entrypoint, minus the module name, so that `serve` runs
     # the modules listed below in one process.
     entrypoint: ["/entrypoint.sh", "pelican-server"]
@@ -48,154 +53,34 @@ services:
       - "--module"
       - "cache"
     # Only matter under `-p origin-metadata` and `-p auth-oidc-local`.
-    depends_on:
+    depends_on: !override
       metadata: { condition: service_healthy, required: false }
       idp: { condition: service_healthy, required: false }
-    healthcheck:
-      test: ["CMD", "/fed/bin/service-health.sh"]
-      start_period: 90s
-      start_interval: 2s
-      interval: 30s
-      timeout: 10s
-      retries: 3
     deploy:
       resources:
         limits: { memory: "${FED_MEM:?run through ./fed.sh}" }
     environment:
       TZ: "${TZ_SERVICES:?run through ./fed.sh}"
-      PELICAN_ORIGIN_ENABLEISSUER: "${ORIGIN_ENABLE_ISSUER:?run through ./fed.sh}"
-      PELICAN_ORIGIN_POSC_ENABLED: "${ORIGIN_POSC:?run through ./fed.sh}"
-      PELICAN_ORIGIN_ENABLEATOMICUPLOADS: "${ORIGIN_ATOMIC_UPLOADS:?run through ./fed.sh}"
-      # May be empty, hence ? rather than :?.
-      PELICAN_ORIGIN_CACHECONTROL: "${ORIGIN_CACHE_CONTROL?run through ./fed.sh}"
-      PELICAN_ORIGIN_METADATA_ENABLED: "${ORIGIN_METADATA:?run through ./fed.sh}"
-      PELICAN_ORIGIN_METADATA_TRACKACCESS: "${ORIGIN_METADATA:?run through ./fed.sh}"
-      PELICAN_ORIGIN_METADATA_MODE: "${ORIGIN_METADATA_MODE:?run through ./fed.sh}"
-      PELICAN_ORIGIN_DISABLEDIRECTCLIENTS: "${ORIGIN_DISABLE_DIRECT_CLIENTS:?run through ./fed.sh}"
-      PELICAN_ORIGIN_MULTIUSER: "${ORIGIN_MULTIUSER:?run through ./fed.sh}"
-      PELICAN_ORIGIN_ENABLESTANDALONEMODE: "${ORIGIN_STANDALONE:?run through ./fed.sh}"
-      PELICAN_ORIGIN_ENABLETRANSFERAPI: "${ORIGIN_TRANSFER_API:?run through ./fed.sh}"
-      PELICAN_SERVER_DROPPRIVILEGES: "${SERVER_DROP_PRIVILEGES:?run through ./fed.sh}"
-    ports:
+    ports: !override
       - "${PORT_9000:?run through ./fed.sh}:8444"
+    # Its own instance's mounts, which replace origin-0's by target, and
+    # the cache's store.
     volumes:
-      - ./service-health.sh:/fed/bin/service-health.sh:ro
-      - ./var/generated:/fed/generated:ro
-      - ./etc/pelican.yaml:/etc/pelican/pelican.yaml:ro
-      - ./config.d/base:/fed/conf.base:ro
-      - ./var/generated/local/base:/fed/local.base:ro
-      - "./config.d/origin/${ORIGIN_VARIANT:?run through ./fed.sh}:/fed/conf.role:ro"
       - ./config.d/instance/fed:/fed/conf.instance:ro
       - ./var/generated/local/fed:/fed/local.instance:ro
       - ./var/control/config/fed:/fed/control.instance:ro
       - ./var/generated/instance/fed:/fed/generated.instance:ro
       - ./var/issuer-keys/fed:/fed/issuer-keys
-      # Server.IssuerJwks (config.d/instance/fed/): public keys only.
-      - ./var/issuer-jwks:/fed/issuer-jwks:ro
-      - ./var/data/origin/0:/data
       - ./var/data/cache/fed:/cache
       - ./var/state/fed:/var/lib/pelican
-    secrets:
-      - source: ca-crt
-        target: /certs/ca.crt
-      - source: tls-crt
-        target: /certs/tls.crt
-      - source: tls-key
-        target: /certs/tls.key
-      - source: oidc-client-id
-        target: /etc/pelican/oidc-client-id
-      - source: oidc-client-secret
-        target: /etc/pelican/oidc-client-secret
-      - source: server-web-passwd
-        target: /etc/pelican/server-web-passwd
 
-  # As in docker-compose.yaml.
   idp:
-    hostname: idp
-    image: python:3.13-alpine
-    profiles: ["idp"]
-    command: ["python3", "-u", "/fed/bin/idp.py"]
-    environment:
-      IDP_ISSUER: https://idp:9007
-      IDP_PORT: "9007"
-    healthcheck:
-      test:
-        - CMD
-        - python3
-        - -c
-        - "import ssl, urllib.request; c = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); c.check_hostname = False; c.verify_mode = ssl.CERT_NONE; urllib.request.urlopen('https://127.0.0.1:9007/healthz', context=c, timeout=5)"
-      start_period: 30s
-      start_interval: 1s
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    deploy:
-      resources:
-        limits: { memory: 64M }
-    ports:
-      - "${PORT_9007:?run through ./fed.sh}:9007"
-    volumes:
-      - ./idp/idp.py:/fed/bin/idp.py:ro
-      - ./var/generated/idp-users.json:/fed/idp/users.json:ro
-      - ./var/generated:/fed/generated:ro
-      - ./var/data/idp:/var/log/idp
-    secrets:
-      - source: tls-crt
-        target: /certs/tls.crt
-      - source: tls-key
-        target: /certs/tls.key
+    extends: { file: docker-compose.yaml, service: idp }
+    networks: !reset []
 
-  # As in docker-compose.yaml, but the federation is `fed`.
+  # FED_DISCOVERY_URL names `fed` as the federation.
   metadata:
-    hostname: metadata
-    image: python:3.13-alpine
-    profiles: ["metadata"]
-    command: ["python3", "-u", "/fed/bin/recorder.py"]
-    depends_on:
-      metadata-verifier: { condition: service_healthy }
-    environment:
-      RECORDER_UPSTREAM: http://metadata-verifier:9999/events
-      RECORDER_DIR: /captures
-    healthcheck:
-      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9999/healthz"]
-      start_period: 10s
-      start_interval: 1s
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    deploy:
-      resources:
-        limits: { memory: 64M }
-    volumes:
-      - ./metadata-server/recorder.py:/fed/bin/recorder.py:ro
-      - ./var/data/metadata:/captures
+    extends: { file: docker-compose.yaml, service: metadata }
 
   metadata-verifier:
-    hostname: metadata-verifier
-    image: pelican-metadata-verifier:local
-    profiles: ["metadata"]
-    pull_policy: build
-    build:
-      context: ./metadata-server
-      args:
-        PELICAN_TAG: "${PELICAN_TAG:?run through ./fed.sh}"
-    command:
-      - "-addr=:9999"
-      - "-path=/events"
-      - "-audience=http://metadata:9999/events"
-      - "-federation=${FED_DISCOVERY_URL:?run through ./fed.sh}"
-      - "-ca=/certs/ca.crt"
-      - "-require-namespace-scope"
-    healthcheck:
-      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:9999/healthz"]
-      start_period: 10s
-      start_interval: 1s
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    deploy:
-      resources:
-        limits: { memory: 64M }
-    secrets:
-      - source: ca-crt
-        target: /certs/ca.crt
+    extends: { file: docker-compose.yaml, service: metadata-verifier }

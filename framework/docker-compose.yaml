@@ -3,6 +3,9 @@
 # `federation` profile). Run it through ./fed.sh: every variable below
 # comes from fed.sh (framework/environment.cfg, presets/default.sh, and
 # the presets) and has no fallback here on purpose.
+#
+# docker-compose.tiny.yaml extends origin-0, idp, metadata, and
+# metadata-verifier.
 
 # COMPOSE_PROJECT_NAME, which local/environment.cfg may set, overrides
 # this (as in smoke.sh's copies of the checkout).
@@ -381,6 +384,9 @@ services:
       - ./var/state/registry:/var/lib/pelican
     <<: *common-secrets
 
+  # The `tiny` topology's one server extends this
+  # (docker-compose.tiny.yaml), so what is added here applies there too,
+  # unless that file replaces it.
   origin-0:
     hostname: origin-0
     # Behind a firewall (`-p origin-firewalled`), a network the caches

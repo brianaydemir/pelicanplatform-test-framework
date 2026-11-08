@@ -19,6 +19,13 @@ repos:
       - id: check-xml
       - id: check-yaml
         args: [--allow-multiple-documents]
+        exclude: ^framework/docker-compose\.tiny\.yaml$
+      # Syntax only, for Compose's !reset and !override tags, which the
+      # default check cannot load. `docker compose config` checks the rest.
+      - id: check-yaml
+        name: check yaml (syntax only)
+        args: [--unsafe]
+        files: ^framework/docker-compose\.tiny\.yaml$
       - id: debug-statements
       - id: destroyed-symlinks
       - id: detect-private-key
