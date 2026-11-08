@@ -517,11 +517,11 @@ def proxied_after_tampering(
 def redirected_after_tampering(
     test: Test, cache: common.Cache, name: str, data: bytes, other: bytes
 ) -> str | None:
-    """Return why the client kept a tampered object's bytes, or None.
+    """Return why a client kept a tampered object's bytes, or None.
 
-    That is, why `pelican object get` through a redirecting cache kept
-    the bucket's substitute for its object, or kept anything but the
-    object.
+    That is, why `pelican object get`, or stash_plugin, through a
+    redirecting cache kept the bucket's substitute for its object, or
+    kept anything but the object.
 
     Args:
         test: The test.
@@ -531,13 +531,18 @@ def redirected_after_tampering(
         other: The bucket's substitute.
     """
     code, target, said = object_get(test, cache, name, "--cache", cache.url)
-    got = common.sha256(target)
-    if got == common.digest(other):
-        return "`pelican object get` kept the bucket's substitute"
-    if code == 0 and got != common.digest(data):
-        return "`pelican object get` succeeded, but the file is not the object"
-    if code != 0 and got is not None:
-        return f"`pelican object get` failed ({said}), but left a file"
+    passed, plugin_target, plugin_said = test.plugin(cache, name)
+    for client, succeeded, path, output in (
+        ("`pelican object get`", code == 0, target, said),
+        ("stash_plugin", passed, plugin_target, transfers.plugin_error(plugin_said) or plugin_said),
+    ):
+        got = common.sha256(path)
+        if got == common.digest(other):
+            return f"{client} kept the bucket's substitute"
+        if succeeded and got != common.digest(data):
+            return f"{client} succeeded, but the file is not the object"
+        if not succeeded and got is not None:
+            return f"{client} failed ({last_line(output)}), but left a file"
     return None
 
 
@@ -548,9 +553,9 @@ def tampered(test: Test) -> Row:
     its size. A proxying cache must not serve those bytes: the read may
     fail, but within TIER_WAIT seconds the cache must serve the object
     again, fetched afresh (openTierStream in Pelican's
-    local_cache/tier_serve.go). Through a redirecting cache, `pelican
-    object get` must not keep the bytes, which the redirect's Digest
-    belies: it must fail, or get the object itself.
+    local_cache/tier_serve.go). Through a redirecting cache, neither
+    `pelican object get` nor stash_plugin may keep the bytes, which the
+    redirect's Digest belies: each must fail, or get the object itself.
     """
 
     def check(cache: common.Cache) -> str | None:

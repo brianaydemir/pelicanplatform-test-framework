@@ -43,7 +43,9 @@ BUDGET_SECONDS, is abandoned, so that a scenario stuck on a server that
 never answers cannot stall the run. Where each of its threads was is
 printed, and the pass is recorded as `aborted` (or `setup`, if it
 recorded no case). If its cleanup takes over GRACE_SECONDS, that is
-interrupted too.
+interrupted too. The run then goes on only if every Pelican server
+answers on its web port within control.SERVE_WAIT seconds, since every
+later pass would otherwise stall in turn.
 """
 
 import contextlib
@@ -65,7 +67,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fra
 
 # pylint: disable=wrong-import-position
 from suites import SUITES
-from testlib import common
+from testlib import common, control, web, webapi
 from testlib.credentials import PROFILES, WLCG
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP, Report, redact
 from testlib.session import Session
@@ -297,18 +299,40 @@ def describe(fed: common.Federation) -> str:
     )
 
 
-def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report, bool]:
+def not_serving(fed: common.Federation) -> str | None:
+    """Return why fed no longer serves, or None if it does.
+
+    It serves if every Pelican server answers on its web port, whatever
+    it says, within control.SERVE_WAIT seconds, and none exited on its
+    own (control.settle()).
+    """
+    servers = webapi.servers(fed)
+
+    def silent() -> str | None:
+        quiet = [
+            s.name
+            for s in servers
+            if web.request("GET", f"{s.web_url}/api/v1.0/health", timeout=5).status is None
+        ]
+        return f"{', '.join(quiet)} did not answer on its web port" if quiet else None
+
+    return control.settle(silent, control.SERVE_WAIT)
+
+
+def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report, str | None]:
     """Run one suite's selected scenarios in session's pass; write its results.
 
     Returns:
-        The pass's report, and whether the suite finished; if it didn't,
-        its report says why.
+        The pass's report, and None if the suite finished; otherwise
+        `stalled` if the watchdog abandoned it, and `error` if it ended
+        early another way. Its report says why.
     """
     module = SUITES[name]
     report = Report(suite_name(name, session.profile), RESULTS)
     results = common.Results(list(module.SCENARIOS), report)
     print(f"\n==> {report.suite}\n")
     error: str | None = None
+    ended: str | None = None
     try:
         why = module.skip(session.fed)
         if why:
@@ -322,6 +346,7 @@ def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report,
         error = e.message
     except Stalled as e:
         error = str(e)
+        ended = "stalled"
     except KeyboardInterrupt:
         report.write("interrupted")
         raise
@@ -332,14 +357,17 @@ def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report,
         error = f"{type(e).__name__}: {e}"
     results.print()
     report.write(error)
-    return report, error is None
+    if error is not None and ended is None:
+        ended = "error"
+    return report, ended
 
 
 def run_passes(chosen: dict[str, list[str]], sessions: list[Session]) -> list[Report]:
     """Run each chosen suite's pass in each of sessions, in turn.
 
     Stops once a suite with REQUIRED scenarios does not finish in the
-    first session's pass.
+    first session's pass, or once a pass is abandoned and the federation
+    no longer serves (not_serving()).
 
     Returns:
         Each pass's report, in the order the passes ran.
@@ -350,15 +378,25 @@ def run_passes(chosen: dict[str, list[str]], sessions: list[Session]) -> list[Re
             scenarios = in_pass(name, selected, session.profile)
             if not scenarios:
                 continue
-            report, finished = run_suite(name, scenarios, session)
+            report, ended = run_suite(name, scenarios, session)
             reports.append(report)
             # The first pass shows whether the federation serves at all.
-            if not finished and required(name) and session is sessions[0]:
+            if ended and required(name) and session is sessions[0]:
                 print(
                     f"\n{common.PROG}: stopping: {name} did not finish, so nothing else can pass",
                     file=sys.stderr,
                 )
                 return reports
+            if ended == "stalled":
+                print(f"\nChecking that the federation still serves, after {report.suite} ...")
+                why = not_serving(session.fed)
+                if why:
+                    print(
+                        f"\n{common.PROG}: stopping: after {report.suite} was abandoned, {why},"
+                        + " so every later pass would stall",
+                        file=sys.stderr,
+                    )
+                    return reports
     return reports
 
 

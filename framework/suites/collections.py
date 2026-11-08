@@ -25,7 +25,7 @@ import functools
 import json
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -291,12 +291,19 @@ def finish(test: Test) -> None:
 # The clients, acquiring tokens from the issuer themselves.
 
 
-def run_approving(test: Test, args: Sequence[str], role: str, pelican: str | None = None) -> ClientRun:
+def run_approving(
+    test: Test,
+    args: Sequence[str],
+    role: str,
+    pelican: str | None = None,
+    extra_env: Mapping[str, str] | None = None,
+) -> ClientRun:
     """Run `pelican <args>` as role's user, approving its device flows.
 
     Approve each device flow it announces on its stderr as that user, at
     whichever origin's issuer it names (see issuer.run_approving()). The
-    binary is at pelican, by default the client.
+    binary is at pelican, by default the client, and extra_env adds to
+    its environment.
     """
 
     def approve_as_role(issuer_url: str, user_code: str) -> None:
@@ -305,6 +312,7 @@ def run_approving(test: Test, args: Sequence[str], role: str, pelican: str | Non
 
     session = test.session
     env = issuer.client_env(session.env, session.path(f"credentials/{role}"))
+    env.update(extra_env or {})
     return issuer.run_approving(pelican or session.pelican, args, env, session.tmp, approve_as_role)
 
 
@@ -922,7 +930,10 @@ def cli(test: Test) -> tuple[str, str]:
 
     The command, which only pelican-server has, manages them through
     the issuer's device flow, approved as test-curator; it fails for an
-    ordinary user.
+    ordinary user. It is run as on the origin's host, whose web URL it
+    takes from Server.ExternalWebUrl; a release that asks the director
+    instead manages the first origin the director lists, which must be
+    the same.
     """
     server = test.session.pelican_server
     if server is None:
@@ -940,7 +951,13 @@ def cli(test: Test) -> tuple[str, str]:
     discovery = f"https://{urlsplit(test.fed.url).netloc}"
 
     def manage_as(role: str, *args: str) -> ClientRun:
-        done = run_approving(test, ["--json", "-f", discovery, "origin", "collection", *args], role, server)
+        done = run_approving(
+            test,
+            ["--json", "-f", discovery, "origin", "collection", *args],
+            role,
+            server,
+            {"PELICAN_SERVER_EXTERNALWEBURL": test.web},
+        )
         problems.extend(done.problems)
         return done
 

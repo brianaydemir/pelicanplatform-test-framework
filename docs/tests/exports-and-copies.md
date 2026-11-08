@@ -104,6 +104,16 @@ The scenarios:
     403);
   - `protected`: with no token: refused.
 
+  And with the read token, by every [route](../glossary.md#route) (through
+  the director's choice, direct, and from each federated cache, named):
+
+  - `client`: `pelican object get` must get the object;
+  - `plugin`: so must [`stash_plugin`](../glossary.md#stash_plugin), with
+    the token alone in its credentials directory.
+
+  The Pelican clients present a token for a read only where the director
+  says that the namespace takes one, as it must of the nested export.
+
   Needs `/public` exported, and origins that take direct clients.
 
 - `backend-token`: Under the gate restart, with a static token

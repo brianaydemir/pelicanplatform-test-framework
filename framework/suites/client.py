@@ -70,7 +70,7 @@ SCENARIOS = {
     ),
     "share-url": (
         "`pelican object share` hands out a URL whose token reads the collection: through a"
-        " director as curl, and by the client"
+        " director as curl, and by both clients; with --write, the client puts with it"
     ),
     "director-decision": "the plugin records the director's decision when asked",
     "skipstat-failover": (
@@ -1470,7 +1470,11 @@ def share_url(test: Test) -> list[CaseRow]:
     route, with the token in the query as curl sends it, must redirect
     with `authz` in Location and no token in Link, and the redirect
     followed must serve the object (`curl`); and `pelican object get` of
-    the URL, with no other token, must serve it too (`get`).
+    the URL, with no other token, must serve it too (`get`), as must
+    stash_plugin, with its credentials directory empty, as a job given
+    the URL would run it (`plugin`). With the --write URL's token in its
+    query, `pelican object put` of a new object in the collection must
+    land it (`put`).
     """
     if not test.fed.embedded_issuer or test.fed.external_issuer:
         return [("", SKIP, "the share's token comes from the origins' embedded issuer")]
@@ -1546,7 +1550,40 @@ def share_url(test: Test) -> list[CaseRow]:
         rows.append(("get", FAIL, wrong))
     else:
         rows.append(("get", PASS, "the client read the token from the URL"))
+    shared = f"{test.pelican_url(test.rel(name))}?authz={token}"
+    fetch = test.plugin("share-plugin", [shared], env=test.creds_env(test.creds("share-plugin", {})))
+    if not transfers.plugin_passed(fetch.said):
+        why = transfers.plugin_error(fetch.said) or last_line(fetch.said)
+        rows.append(("plugin", FAIL, f"exit {fetch.status}: {why}"))
+    elif not common.file_holds(os.path.join(fetch.directory, transfers.local_name(shared)), data):
+        rows.append(("plugin", FAIL, "the file is not the object"))
+    else:
+        rows.append(("plugin", PASS, "stash_plugin read the token from the URL"))
+    rows.append(("put", *share_put(test, tokens.get("url-write"))))
     return rows
+
+
+def share_put(test: Test, token: str | None) -> tuple[str, str]:
+    """Check `pelican object put` to a URL that carries a --write share's token.
+
+    With no other token, a new object in the shared collection, put to
+    its URL with ?authz=<token>, must land in an origin's store.
+    """
+    if token is None:
+        return SKIP, "no --write share's token to put with"
+    if not test.writes:
+        return SKIP, "/protected-a takes no writes"
+    rel = test.rel("share/put")
+    data = os.urandom(OBJECT_SIZE)
+    source = os.path.join(test.directory("share-put-source"), "put")
+    with open(source, "wb") as f:
+        f.write(data)
+    put = test.pelican("share-put", ["object", "put", source, f"{test.pelican_url(rel)}?authz={token}"])
+    if put.status != 0:
+        return FAIL, f"exit {put.status}: {last_line(put.said)}"
+    if not test.somewhere(rel, data):
+        return FAIL, "succeeded, but no origin holds the object"
+    return PASS, "the client read the --write share's token from the URL"
 
 
 # --------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from collections.abc import Set as AbstractSet
 from typing import Any
 from urllib.parse import quote
 
-from . import common, credentials, web, webdav
+from . import blocks, common, credentials, web, webdav
 from .session import Session
 
 
@@ -51,7 +51,7 @@ ORIGIN_DIGESTS = ("crc32c", "md5")
 # once it outgrows one (gocloud.dev's s3blob, which the backend uses), and
 # the service keeps no MD5 of an object held in parts. A declared length
 # sends the object whole.
-S3_PART = 5 << 20
+S3_PART = blocks.S3_PART
 
 # A pstore origin's storage API, on its web port, which answers its admin
 # alone (RegisterStorageAPI in Pelican's origin_serve/storage_api.go): ls,

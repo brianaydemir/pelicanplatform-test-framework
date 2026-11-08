@@ -59,8 +59,9 @@ does not export `/protected-a`.
   - A proxying cache must never serve them. The first read may fail, but
     within 60 seconds the cache must serve the object, fetched afresh.
   - Through a redirecting cache, whose `Digest` belies the bytes,
-    `pelican object get --cache <cache>` must write the object, or fail and
-    leave no file.
+    `pelican object get --cache <cache>`, and
+    [`stash_plugin`](../glossary.md#stash_plugin) preferring the cache, must
+    each write the object, or fail and leave no file.
 
 - `overwritten`: A tiered object is overwritten at every origin. Every whole
   read must be all one version. Under `-p origin-max-age`, the reads must

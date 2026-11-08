@@ -71,6 +71,7 @@ both `test-owner`'s; and `decoy/obj` beside them.
 - `cli`: `pelican-server origin collection`, approved as `test-curator`,
   creates, lists, shows, changes, grants on, sets and gets metadata of, and
   deletes a collection; as `test-outsider`, it may not create one. Needs
-  `pelican-server` ([client binary](../../README.md#client-binary)). Skips
-  unless the director lists the issuer origin first, since the CLI manages
-  that one.
+  `pelican-server` ([client binary](../../README.md#client-binary)). It runs
+  as on the issuer origin's host, with `Server.ExternalWebUrl` that origin's
+  web URL. Skips unless the director lists that origin first, since a
+  release that asks the director manages that one.

@@ -212,6 +212,36 @@ def blocks_held(cache: common.Cache, token: str, url: str) -> tuple[Blocks | Non
     )
 
 
+def object_file(cache: common.Cache, token: str, url: str) -> tuple[str | None, bool | None, str]:
+    """Return the file in which cache keeps the object it keys by url.
+
+    The file is in its store of object files, named by the object's
+    instance hash, which introspect/metadata gives, split as
+    objects/<2>/<2>/<rest> (GetInstanceStoragePath in Pelican's
+    local_cache/schema.go). An object held inline has none.
+
+    Args:
+        cache: The cache.
+        token: A token of the cache's admin (admin_token()).
+        url: The object's key (object_url()).
+
+    Returns:
+        The file's path, under framework/var, or None if it is inline;
+        whether it is inline; and ""; or None, None, and why the cache did
+        not say.
+    """
+    found, why = _metadata(cache, token, url)
+    if found is None:
+        return None, None, why
+    inline, hashed = found.get("is_inline"), found.get("instance_hash")
+    if not isinstance(inline, bool) or not isinstance(hashed, str) or len(hashed) < 5:
+        return None, None, "introspect/metadata gave no instance hash, or no is_inline"
+    if inline:
+        return None, True, ""
+    path = f"{blocks.cache_dir(cache)}/persistent-cache/objects/{hashed[:2]}/{hashed[2:4]}/{hashed[4:]}"
+    return path, False, ""
+
+
 def held_inline(cache: common.Cache, token: str, url: str) -> tuple[bool | None, str]:
     """Return whether cache holds the object it keys by url inline.
 

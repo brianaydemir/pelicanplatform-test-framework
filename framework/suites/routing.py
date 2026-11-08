@@ -35,7 +35,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urljoin, urlsplit
 
 from testlib import common, control, credentials, director, jwt, metrics, stores, suite, web
 from testlib.common import first, outcome, warn
@@ -51,7 +51,10 @@ SCENARIOS = {
     "stat": "an object no origin holds: 404 where the director asks the origins, else 307",
     "redirect": "Location carries the token and parameters, and serves alone; Link carries no token",
     "expired-401": "a token about to expire gets 401 and WWW-Authenticate; an unreadable one 307",
-    "status-codes": "unknown namespaces, unwritable writes, bad parameters, old clients, OPTIONS",
+    "status-codes": (
+        "unknown namespaces, unwritable writes, a redirected DELETE, bad parameters, old"
+        " clients, OPTIONS"
+    ),
     "random-and-adaptive": (
         "random orders the caches both ways; adaptive weighs a cache's copy, when it can ask"
     ),
@@ -888,6 +891,55 @@ class Statuses:
                 problems += self.expect(what, 405, f"{url}{path}", method=method)
         return outcome(problems, "405")
 
+    def delete(self) -> tuple[str, str]:
+        """Check that a bare-path DELETE, followed as curl follows it, removes the object.
+
+        Each director must redirect a DELETE of an object in the
+        namespace to an origin (307), carrying the token in Location's
+        authz, since a client such as curl drops its Authorization header
+        when a redirect leads to another host. Followed so, the DELETE
+        must succeed, and leave that origin's store without the object;
+        another origin's replica is not the DELETE's to remove.
+        """
+        test = self.test
+        if not test.writes:
+            return SKIP, f"/{test.namespace} takes no writes"
+        cannot = stores.cannot(test.fed, "delete")
+        if cannot:
+            return SKIP, cannot
+        problems: list[str] = []
+        for url in test.fed.directors:
+            host = director.host(url)
+            rel = test.rel(f"delete-{host}")
+            errors = stores.put_everywhere(
+                stores.unique(test.fed.origins), test.namespace, rel, os.urandom(4096), test.setup
+            )
+            if errors:
+                problems.append(f"{host}: could not put the object in place: {first(errors)}")
+                continue
+            path = f"/{test.namespace}/{rel}"
+            answer = self.ask(f"{host}: DELETE {path}", f"{url}{path}", test.token, method="DELETE")
+            location = answer.header("Location")
+            if answer.status != 307 or not location:
+                problems.append(f"{host}: DELETE got {answer.describe()}, not 307")
+                continue
+            if "authz=" not in urlsplit(location).query:
+                problems.append(f"{host}: the redirect's Location carries no authz")
+                continue
+            target = urljoin(url, location)
+            origin = next(
+                (o for o in test.fed.origins if director.host(o.url) == director.host(target)), None
+            )
+            if origin is None:
+                problems.append(f"{host}: the DELETE was redirected to {director.host(target)}, no origin")
+                continue
+            followed = web.request("DELETE", target)
+            if followed.status not in (200, 204):
+                problems.append(f"{host}: the DELETE, redirected, got {followed.describe()}")
+            elif stores.held(origin, test.namespace, rel, test.setup) is not None:
+                problems.append(f"{host}: after the DELETE, {origin.svc} still holds {path}")
+        return outcome(problems, f"{len(test.fed.directors)} director(s): redirected, and removed")
+
     def bad_requests(self) -> tuple[str, str]:
         """Check that conflicting parameters and too old a client get 400.
 
@@ -973,6 +1025,7 @@ def status_codes(test: Test) -> list[CaseRow]:
     checks = Statuses(test, [])
     rows: list[CaseRow] = [("unknown-namespace", *unknown_namespace(test))]
     rows.append(("writes", *checks.writes()))
+    rows.append(("delete", *checks.delete()))
     rows.append(("bad-requests", *checks.bad_requests()))
     rows.append(("options", *checks.options()))
     for url in test.fed.directors:

@@ -2657,6 +2657,10 @@ fed_test_interrupt() {
 #   results/        the rows of the suites that this run ran
 #   commands*.log   every client command of each pass of the tests,
 #                   with all it printed
+#   dev/            what the suites kept of their own (see "Where things
+#                   live" in README.md): the transfers suite's batches,
+#                   downloads, verdicts, and plain HTTP exchanges, and
+#                   the responses that the auth and owners suites got
 #
 # test.log and control.log, what the tests and the control helper
 # print, are written there as the tests run (see the `test` command). The
@@ -2703,6 +2707,13 @@ fed_save_logs() {
     find framework/var/dev -maxdepth 1 -type f -name 'commands*.log' \
         -newer "${dir}/.started" \
         -exec "${fed_python}" framework/put-file.py {} "${dir}/" \;
+    # Each suite empties its directory as it starts, so one newer than
+    # the run is the run's.
+    find framework/var/dev -mindepth 1 -maxdepth 1 -type d \
+        \( -name 'transfers*' -o -name 'auth-test*' -o -name 'owners-test*' \) \
+        -newer "${dir}/.started" \
+        -exec sh -c 'exec "$1" framework/put-file.py --tree "$2" "$3/dev/${2##*/}"' \
+            sh "${fed_python}" {} "${dir}" \;
     rm -f "${dir}/.started"
   fi
   # Each token's signature is cut out, as test.py cuts it out of what the

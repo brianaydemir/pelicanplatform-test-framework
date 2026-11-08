@@ -40,6 +40,9 @@ scenarios skip where it reports none.
 - `put-checksum`: `pelican object put --require-checksum` of every size must
   succeed, with the objects intact, where the storage reports a digest, and
   fail elsewhere.
+- `put-checksum-config`: The same, with the algorithm named by
+  `Client.DefaultChecksumAlgo` in place of both flags, which must require a
+  checksum as `--require-checksum` does.
 - `origin-read`: Each origin must return every object whole and in every
   range.
 - `client-get`, `plugin-get`: Each client reads its set by every
@@ -48,7 +51,13 @@ scenarios skip where it reports none.
   `Client.PreferredCaches`). Only the named cache may serve, as the client's
   transfer statistics and the plugin's result ads must say.
 - `cache-whole-first`: Each cache reads its set cold and whole, then warm,
-  then in every range.
+  then in every range. At native origins, which count what they serve, the
+  warm reads must fetch nothing from them: no GET of the tests' own, and no
+  more than 64 KiB in all, which the directors' health tests account for. A
+  V2 cache must then hold each object under 4,096 bytes inline, and each
+  other in a file of its own, named by the instance hash that its
+  introspection gives, whose size on disk is the object's blocks and a
+  16-byte tag for each.
 - `director-read`: A [plain HTTP client](../glossary.md#plain-http-client)
   asks each director for every object of the whole-first set, whole and in
   every range, and follows the 307 to a federated cache (an origin under
@@ -150,7 +159,9 @@ scenarios skip where it reports none.
   32-bit size or offset, written as a sparse file in each origin's store. At
   each origin, director, and cache, a HEAD must give its length; nine ranges
   across 2 GiB, 4 GiB, and the end must get 206, the right `Content-Range`,
-  and exactly their bytes; and Depth 0 PROPFIND, `pelican object stat`, and
+  and exactly their bytes; at each origin, a GET of the whole must give its
+  length too, and begin with its first bytes (the rest is not read); and
+  Depth 0 PROPFIND, `pelican object stat`, and
   `pelican object ls -l` (with `Listings`) must give its size. It is evicted
   from each V2 cache afterward. Skips at pstore origins, and where a store
   keeps no sparse files.

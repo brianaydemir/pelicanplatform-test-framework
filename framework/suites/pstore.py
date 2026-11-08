@@ -60,6 +60,7 @@ SCENARIOS = {
     "introspect-cli": "`pelican-server origin introspect` says what the storage API says",
     "scheduled-passes": "the index check and data scan run clean, and reclaim old versions",
     "corruption": "a block of an object, changed in its file, is counted by the next data scan",
+    "chunks": "an object streamed in three chunks: a file for each, and every byte across their edges",
     "capacity": "a full store refuses a PUT with 507 before its body, and takes it once freed",
     "backups": "catalog backups at startup and every interval, keeping only the newest",
     "restore": (
@@ -70,7 +71,7 @@ SCENARIOS = {
 
 # The scenarios that present no storage token beyond their setup's (see
 # suites/__init__.py).
-ONE_PROFILE = ("introspect-cli", "scheduled-passes", "corruption", "backups")
+ONE_PROFILE = ("introspect-cli", "scheduled-passes", "corruption", "chunks", "backups")
 
 # The protected namespaces, of which the suite writes in the first that
 # takes writes.
@@ -952,6 +953,102 @@ def corruption(test: Test) -> dict[str, Row]:
 
 
 # --------------------------------------------------------------------------
+# chunks
+
+# An object of unknown length, which pstore streams in chunks of
+# blocks.CHUNK_UNDECLARED: two whole, and a third of one byte, so that the
+# second has a chunk edge on either side.
+CHUNKS_SIZE = 2 * blocks.CHUNK_UNDECLARED + 1
+
+
+def chunk_requests() -> list[blocks.Request]:
+    """Return the ranges that chunks asks for: at and across each chunk edge."""
+    found: list[blocks.Request] = []
+    for edge in (blocks.CHUNK_UNDECLARED, 2 * blocks.CHUNK_UNDECLARED):
+        found += [
+            ((edge - 1, edge),),
+            ((edge, edge),),
+            ((edge - 1, edge - 1),),
+            ((edge - blocks.BLOCK - 1, edge + blocks.BLOCK),),
+        ]
+    middle = (blocks.CHUNK_UNDECLARED - 1, 2 * blocks.CHUNK_UNDECLARED)
+    return found + [
+        (middle,),
+        ((0, 0), (blocks.CHUNK_UNDECLARED, blocks.CHUNK_UNDECLARED), (CHUNKS_SIZE - 1, CHUNKS_SIZE - 1)),
+        ((None, 2),),
+    ]
+
+
+def chunk_files(made: Mapping[str, int]) -> str | None:
+    """Return what is wrong with the block files that the object made, or None.
+
+    pstore keeps a streamed object's chunks in files of their own: the
+    first by its version's hash, and each after it with -2, -3, and so on
+    (GetChunkPath in Pelican's local_cache/chunking.go), each holding its
+    blocks and their tags, the last trimmed to what it holds.
+    """
+    bases = [p for p in made if f"{p}-2" in made and f"{p}-3" in made]
+    if len(made) != 3 or len(bases) != 1:
+        return f"made {len(made)} block files ({', '.join(sorted(os.path.basename(p) for p in made))}), not 3 chunks"
+    base = bases[0]
+    want = {
+        base: blocks.stored(blocks.CHUNK_UNDECLARED),
+        f"{base}-2": blocks.stored(blocks.CHUNK_UNDECLARED),
+        f"{base}-3": blocks.stored(1),
+    }
+    for path, size in want.items():
+        if made[path] != size:
+            return f"chunk file {os.path.basename(path)} is {made[path]} bytes, not {size}"
+    return None
+
+
+def chunked_at(test: Test, origin: common.Origin) -> Row:
+    """Check an object streamed in three chunks at origin.
+
+    It is put in chunks, with no length, as the clients put one, so that
+    pstore streams it in chunks of blocks.CHUNK_UNDECLARED
+    (streamChunkSizeCodeFor in Pelican's pstore/object_io.go). Its store
+    must hold a block file for each chunk (chunk_files()), and the origin
+    must serve it whole, and each range at and across each chunk edge,
+    byte for byte. Afterward the object is deleted.
+    """
+    rel = test.rel("chunks", origin.svc)
+    data = os.urandom(CHUNKS_SIZE)
+    known = set(block_files(origin))
+    why = stores.put(origin, test.namespace, rel, data, test.setup, chunked=True)
+    if why:
+        return FAIL, why
+    try:
+        problems: list[str] = []
+        why = chunk_files({p: n for p, n in block_files(origin).items() if p not in known})
+        if why:
+            problems.append(why)
+        url = test.url(origin.url, rel)
+        answer = web.request("GET", url, token=test.setup)
+        if answer.status != 200 or answer.body != data:
+            problems.append(f"GET of the whole: {answer.describe()}, not the object")
+        for request in chunk_requests():
+            header = blocks.range_header(request)
+            why = blocks.check(
+                data, request, web.request("GET", url, token=test.setup, headers={"Range": header})
+            )
+            if why:
+                problems.append(f"{header}: {why}")
+        return outcome(
+            problems, f"{CHUNKS_SIZE} bytes in 3 chunk files; whole and {len(chunk_requests())} ranges"
+        )
+    finally:
+        why = stores.delete(origin, test.namespace, rel, test.setup)
+        if why:
+            warn(why)
+
+
+def chunks(test: Test) -> dict[str, Row]:
+    """Run chunked_at() at each pstore origin."""
+    return {origin.svc: chunked_at(test, origin) for origin in test.pstores}
+
+
+# --------------------------------------------------------------------------
 # The restart, for capacity and backups.
 
 
@@ -1762,6 +1859,7 @@ RUN: dict[str, Callable[[Test], dict[str, Row]]] = {
     "introspect-cli": introspect_cli,
     "scheduled-passes": scheduled_passes,
     "corruption": corruption,
+    "chunks": chunks,
 }
 
 

@@ -241,7 +241,9 @@ scenarios that need it skip ([README](../README.md#service-control)).
 
 `test.py`'s guard against a stalled run: it abandons a pass that prints
 nothing for 20 minutes, or runs for 90, records it as `aborted` (or `setup`,
-if it recorded no case), and goes on to the next.
+if it recorded no case), and goes on to the next, but only if every Pelican
+server still answers within three minutes. Otherwise the run stops, since
+every later pass would stall too.
 
 ### Smoke tests
 

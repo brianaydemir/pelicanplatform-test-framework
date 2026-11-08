@@ -42,8 +42,11 @@ every other suite but [`keys`](keys.md). It needs a
   [helper service](../glossary.md#helper-service), is stopped. Meanwhile, a
   GET, HEAD, or PUT at origin-0 (`direct`, where it takes direct clients),
   and a cache miss through the first federated cache (`cache`), must get a
-  server error, never 404, 405, or the object; an `ssh` origin's health must
-  report `ssh-backend` not ok within 60 seconds (`health`). With the service
+  server error, never 404, 405, or the object. Both Pelican clients, asking
+  the director for an object that no cache holds, must fail, leaving no
+  file, but not as not found (error 5011; `clients`). An `ssh` origin's
+  health must report `ssh-backend` not ok within 60 seconds (`health`). With
+  the service
   back, the origin must serve again within 120 seconds, without a restart,
   and its health say ok (`recovered`); if the origin exited, the suite
   restarts it, and `recovered` fails. Skips where the origin stores on its

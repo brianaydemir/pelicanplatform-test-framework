@@ -737,7 +737,10 @@ def backend_outage(test: Test) -> list[CaseRow]:
     is not ok within HEALTH_WAIT seconds (`health`). Once the service is
     back, the origin must serve the object again within BACKEND_WAIT
     seconds, without a restart, as must the cache, and the health
-    component must say ok again (`recovered`).
+    component must say ok again (`recovered`). Meanwhile, too, both
+    Pelican clients must fail to get an object, by the director's
+    choice of server, but not as a missing one (`clients`;
+    outage_clients()).
     """
     fed = test.fed
     backend = BACKENDS.get(fed.origin_variant)
@@ -747,6 +750,7 @@ def backend_outage(test: Test) -> list[CaseRow]:
     data, cold_data = os.urandom(OBJECT_SIZE), os.urandom(OBJECT_SIZE)
     test.place("outage", data)
     test.place("outage-cold", cold_data)
+    test.place("outage-clients", os.urandom(OBJECT_SIZE))
     rel, cold = test.rel("outage"), test.rel("outage-cold")
     cache = fed.federated_caches[0] if fed.federated_caches else None
     component = BACKEND_COMPONENTS.get(fed.origin_variant)
@@ -793,6 +797,7 @@ def backend_outage(test: Test) -> list[CaseRow]:
                 )
             else:
                 rows.append(("cache", PASS, f"through {cache.svc}: {answer.describe()}"))
+        rows.append(("clients", *outage_clients(test, test.rel("outage-clients"), backend)))
         if component:
             seen = ""
             gone = False
@@ -968,6 +973,28 @@ class Fetched:
     said: str
     directory: str
     hosts: list[str]
+
+
+def outage_clients(test: Test, rel: str, backend: str) -> tuple[str, str]:
+    """Check that both Pelican clients fail to get rel while backend is stopped.
+
+    `pelican object get` and stash_plugin each ask the director, which
+    sends them where it would, for an object that no cache holds. Each
+    must fail, leaving no file, but not as not found (error 5011, which
+    Pelican's error codes call not retryable): the object exists, and
+    only the storage behind its origin is away.
+    """
+    problems: list[str] = []
+    for client, fetch in (("pelican", get_pelican), ("plugin", get_plugin)):
+        got = fetch(test, f"outage-{client}", test.pelican_url(rel))
+        passed = got.status == 0 if client == "pelican" else transfers.plugin_passed(got.said)
+        if passed:
+            problems.append(f"{client}: succeeded with {backend} stopped")
+        elif re.search(r"\b5011\b|FileNotFound|not found", got.said, re.I):
+            problems.append(f"{client}: failed as not found: {last_line(got.said)}")
+        if os.path.exists(os.path.join(got.directory, "object")):
+            problems.append(f"{client}: left a file with {backend} stopped")
+    return outcome(problems, f"both failed with {backend} stopped, neither as not found")
 
 
 def get_pelican(test: Test, name: str, url: str, direct: bool = False) -> Fetched:

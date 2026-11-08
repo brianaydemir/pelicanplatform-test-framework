@@ -72,6 +72,13 @@ takes writes, and skips where neither does. At other
   (`pelican_pstore_data_scan_mismatches_total`;
   [section 11.3](https://github.com/PelicanPlatform/pelican/blob/main/docs/pstore-design.md#113-scheduled-integrity-checks)).
 
+- `chunks`: At each pstore origin, an object of 16,776,961 bytes, put in
+  chunks with no length, as the clients put one, is streamed in chunks of
+  8,388,480 bytes: two whole and one of a byte. Its store must hold a file
+  for each chunk, of the size its blocks and their tags take, and the origin
+  must serve it whole, and every byte in ranges at and across each chunk
+  edge. Runs in the WLCG [pass](../glossary.md#pass) only.
+
 `capacity`, `backups`, and `restore` restart the first origin, as the last
 of its [configuration layers](../glossary.md#configuration-layer)
 ([service control](../../README.md#service-control)): its storage bounded at

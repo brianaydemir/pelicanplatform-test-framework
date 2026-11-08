@@ -1711,10 +1711,11 @@ def put_test_objects(test: Test, narrow: bool) -> None:
 def cache_sibling(test: Test) -> None:
     """GET the object's sibling through each cache, with the server's token.
 
-    Then `narrow-out` asks each cache for an object it holds.
+    The token is of the pass's profile, as the row's is. Then
+    `narrow-out` asks each cache for an object it holds.
     """
     for cache in test.fed.caches:
-        answer = web.request("GET", test.url(cache.url, test.sibling), token=test.setup)
+        answer = web.request("GET", test.url(cache.url, test.sibling), token=test.token)
         why = ""
         if answer.status != 200:
             why = "expected 200: the server's token is good for the sibling"

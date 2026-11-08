@@ -59,10 +59,13 @@ SCENARIOS = {
     "put-client": "`pelican object put` of every size",
     "put-plugin": "stash_plugin's upload of every size",
     "put-checksum": "`pelican object put --require-checksum` succeeds only where a digest is reported",
+    "put-checksum-config": "the same, with Client.DefaultChecksumAlgo configured in place of the flags",
     "origin-read": "each origin returns every object whole and every range",
     "client-get": "`pelican object get` of every size: through a cache, direct, and from each cache",
     "plugin-get": "stash_plugin's download of every size: through a cache, direct, and from each cache",
-    "cache-whole-first": "each cache: a cold whole read, a warm one, then every range",
+    "cache-whole-first": (
+        "each cache: a cold whole read, a warm one that fetches nothing, then every range"
+    ),
     "director-read": "each director's redirect, followed by a plain HTTP client: every object and range",
     "cache-range-first": "each cache: a cold range first, then every range, then the whole",
     "cache-stored": "each XRootD cache's store on disk holds every object's bytes, block by block",
@@ -604,34 +607,63 @@ def put_checksum(test: Test) -> Row:
 
     The client checks each upload against a digest that the origin
     reports after the PUT, by the first algorithm the origins' storage
-    reports (crc32c otherwise). The command must succeed, leaving the
-    objects intact, where the storage reports the object's digest
-    (stores.has_digests(); the client declares no length). Elsewhere it
-    must fail, rather than report an unverified upload as a success.
+    reports (--checksum-algorithm; crc32c otherwise). The command must
+    succeed, leaving the objects intact, where the storage reports the
+    object's digest (stores.has_digests(); the client declares no
+    length). Elsewhere it must fail, rather than report an unverified
+    upload as a success.
+    """
+    return checked_put(test, "put-checksum", configured=False)
+
+
+def put_checksum_config(test: Test) -> Row:
+    """Check `pelican object put` of every size, with its algorithm configured.
+
+    Client.DefaultChecksumAlgo, given in the environment, names the
+    algorithm that put_checksum() names with --checksum-algorithm (crc32c
+    where the storage reports none), and, with neither flag given, must
+    require a checksum as --require-checksum does.
+    """
+    return checked_put(test, "put-checksum-config", configured=True)
+
+
+def checked_put(test: Test, name: str, configured: bool) -> Row:
+    """Upload every size into collection name, requiring a checksum.
+
+    With configured, the algorithm comes from Client.DefaultChecksumAlgo,
+    and no flag asks for a checksum; otherwise --require-checksum does,
+    and --checksum-algorithm names the algorithm, if the storage reports
+    any.
     """
     if not test.writes:
         return SKIP, NO_WRITES
-    collection = test.rel("put-checksum")
+    collection = test.rel(name)
     if why := test.make(collection):
         return FAIL, why
-    directory, files = local_sizes(test, "put-checksum")
+    directory, files = local_sizes(test, name)
     verifiable = {
         size: data for size, data in files.items() if stores.has_digests(test.fed, size, declared=False)
     }
+    algorithm = test.digests[0] if test.digests else "crc32c"
+    if configured:
+        flags: list[str] = []
+        env = dict(test.session.env, PELICAN_CLIENT_DEFAULTCHECKSUMALGO=algorithm)
+    else:
+        flags = ["--require-checksum", *(["--checksum-algorithm", algorithm] if test.digests else [])]
+        env = None
     notes: list[str] = []
     for sizes, verified in ((verifiable, True), (set(files) - set(verifiable), False)):
         if not sizes:
             continue
-        algorithm = ["--checksum-algorithm", test.digests[0]] if test.digests else []
         code, out, err = test.session.pelican_cmd(
             "object",
             "put",
-            "--require-checksum",
-            *algorithm,
+            *flags,
             "--token",
             test.token_file,
             *(os.path.join(directory, str(size)) for size in sorted(sizes)),
             test.pelican_url(collection) + "/",
+            env=env,
         )
         if verified:
             if code != 0:
@@ -639,7 +671,7 @@ def put_checksum(test: Test) -> Row:
             why = uploaded(test, verifiable, collection)
             if why:
                 return FAIL, why
-            notes.append(f"{len(sizes)} objects verified by {test.digests[0]}")
+            notes.append(f"{len(sizes)} objects verified by {algorithm}")
             continue
         why = test.no_digests or f"the storage holds no digest of an object over {stores.S3_PART} bytes"
         if code == 0:
@@ -799,18 +831,112 @@ def plugin_get(test: Test) -> Row:
 
 
 def cache_whole_first(test: Test) -> Row:
-    """Check each cache: a cold whole read, a warm one, then every range."""
+    """Check each cache: a cold whole read, a warm one, then every range.
+
+    Each cache reads every object of its set whole, cold, and then again,
+    warm. The warm reads must come from what the cache stored: at native
+    origins, which count what they serve, the origins must serve none of
+    them (warm_fetches()), as they would if the cache could not read back
+    a block it wrote, and fetched it again. A V2 cache must then keep
+    each object as its size says (stored_files()).
+    """
     if why := test.not_uploaded(True):
         return FAIL, why
-    problems: list[str] = []
+    found = Findings()
     for cache in test.caches:
         for size in blocks.SIZES:
-            for when in ("cold", "warm"):
-                why = test.read(cache.url, "whole", size, None)
-                if why:
-                    problems.append(f"{cache.svc} ({when}): {why}")
-        problems += [f"{cache.svc}: {p}" for p in test.read_all(cache.url, "whole")]
-    return outcome(problems, f"{len(test.caches)} cache(s)")
+            why = test.read(cache.url, "whole", size, None)
+            if why:
+                found.fail(f"{cache.svc} (cold): {why}")
+        before = settled_metrics(test) if test.fed.native_origins else None
+        for size in blocks.SIZES:
+            why = test.read(cache.url, "whole", size, None)
+            if why:
+                found.fail(f"{cache.svc} (warm): {why}")
+        if before is not None:
+            why = warm_fetches(test, before)
+            if why:
+                found.fail(f"{cache.svc}: for its warm reads, {why}")
+            else:
+                found.note(f"{cache.svc}'s warm reads fetched nothing")
+        if cache.kind == "v2":
+            wrong = stored_files(test, cache, "whole")
+            found.problems += [f"{cache.svc}: {p}" for p in wrong]
+            if not wrong:
+                found.note(f"{cache.svc} stored {len(blocks.SIZES)} objects as their sizes say")
+        found.problems += [f"{cache.svc}: {p}" for p in test.read_all(cache.url, "whole")]
+    if not test.fed.native_origins:
+        found.note("XRootD serves the origins, which count nothing that the warm reads might fetch")
+    return found.row(f"{len(test.caches)} cache(s)")
+
+
+def stored_files(test: Test, cache: common.Cache, set_name: str) -> list[str]:
+    """Return what is wrong with how a V2 cache keeps a set it read whole.
+
+    Each object under blocks.INLINE bytes must be inline in its database;
+    each other, in a file of its own in its store on disk
+    (cacheapi.object_file()), whose size, found on disk, must be its
+    blocks and a tag for each (blocks.stored()).
+    """
+    token = test.admin_token(cache)
+    problems: list[str] = []
+    for size in blocks.SIZES:
+        url = cacheapi.object_url(test.fed, test.path(test.set_rel(set_name, size)))
+        path, inline, why = cacheapi.object_file(cache, token, url)
+        if inline is None:
+            problems.append(f"{size}: {why}")
+        elif inline != (size < blocks.INLINE):
+            problems.append(f"{size}: held {'inline' if inline else 'in a file'}, not as its size says")
+        elif path is not None:
+            try:
+                on_disk = os.stat(path).st_size
+            except OSError as e:
+                problems.append(f"{size}: its file, framework/var/{path}: {e.strerror}")
+                continue
+            if on_disk != blocks.stored(size):
+                problems.append(f"{size}: its file is {on_disk} bytes, not {blocks.stored(size)}")
+    return problems
+
+
+def settled_metrics(test: Test) -> list[metrics.Snapshot] | None:
+    """Return the origins' metrics once their count of the tests' GETs holds still.
+
+    An origin counts a request once its handler returns, which may be
+    after the cache has handed its client the last byte. So they are
+    fetched every second until the count is the same twice, for up to
+    SETTLE_METRICS seconds; None if an origin's /metrics did not answer.
+    """
+    last = origin_metrics(test)
+    deadline = time.monotonic() + SETTLE_METRICS
+    while last is not None and time.monotonic() < deadline:
+        time.sleep(1)
+        now = origin_metrics(test)
+        if now is None:
+            return None
+        if risen(last, now, GETS, OUR_GETS) == 0:
+            return now
+        last = now
+    return last
+
+
+def warm_fetches(test: Test, before: list[metrics.Snapshot] | None) -> str | None:
+    """Return what the origins served since before, if the warm reads need none.
+
+    The origins may serve no GET of the tests' own (OUR_GETS), and send
+    no more than WARM_SLACK bytes, which the directors' health tests
+    account for.
+    """
+    if before is None:
+        return "an origin's /metrics did not answer"
+    time.sleep(1)
+    now = origin_metrics(test)
+    if now is None:
+        return "an origin's /metrics did not answer"
+    sent = risen(before, now, SENT_BYTES, SENT)
+    served = sum(risen(before, now, GETS, {**OUR_GETS, "code": c}) for c in ("200", "206"))
+    if served or sent > WARM_SLACK:
+        return f"the origins served {served:g} GETs and sent {sent:.0f} bytes"
+    return None
 
 
 def director_read(test: Test) -> Row:
@@ -1184,6 +1310,9 @@ COALESCE_GETS = 2
 # directors' health tests fetch a small object from each origin every 15
 # seconds (Director.OriginCacheHealthTestInterval).
 WARM_SLACK = 64 << 10
+# How long the origins' count of the tests' GETs may take to hold still
+# after the reads that made them (settled_metrics()).
+SETTLE_METRICS = 15
 
 
 def origin_metrics(test: Test) -> list[metrics.Snapshot] | None:
@@ -2822,11 +2951,13 @@ def huge_at(
     head: Callable[[], web.Response],
     get: Callable[[str], web.Response],
     size_of: Callable[[], tuple[int | None, str]] | None = None,
+    get_whole: Callable[[], web.Response] | None = None,
 ) -> list[str]:
     """Return what is wrong with how a server serves the object.
 
     The HEAD must give the object's length, each range must come back
-    right, and the size must be the object's.
+    right, and the size must be the object's. A GET of the whole object,
+    if sent, must give its length too, and begin with its first bytes.
 
     Args:
         test: The test.
@@ -2836,6 +2967,7 @@ def huge_at(
             part.
         size_of: Says what the server says the object's size is, and why
             not, if it says none.
+        get_whole: Sends a GET with no Range, read only in part.
     """
     problems: list[str] = []
     answer = head()
@@ -2844,6 +2976,15 @@ def huge_at(
     elif answer.header("Content-Length").strip() != str(HUGE_SIZE):
         length = answer.header("Content-Length")
         problems.append(f"{what}: HEAD gave Content-Length '{length}', not {HUGE_SIZE}")
+    if get_whole is not None:
+        answer = get_whole()
+        if answer.status != 200:
+            problems.append(f"{what}: GET got {answer.describe()}")
+        elif answer.header("Content-Length").strip() != str(HUGE_SIZE):
+            length = answer.header("Content-Length")
+            problems.append(f"{what}: GET gave Content-Length '{length}', not {HUGE_SIZE}")
+        elif answer.body != huge_expected(test.run, 0, len(answer.body) - 1) or not answer.body:
+            problems.append(f"{what}: GET's body does not begin with the object's first bytes")
     for r in HUGE_RANGES:
         header = blocks.range_header((r,))
         why = huge_range_problem(test.run, get(header), r)
@@ -2876,8 +3017,13 @@ def huge_propfind(target: str, token: str) -> tuple[int | None, str]:
     return sizes[0], f"PROPFIND said getcontentlength {sizes[0]}"
 
 
-def huge_server(test: Test, svc: str, server_url: str, rel: str) -> list[str]:
-    """Return huge_at() for a server, asked straight."""
+def huge_server(test: Test, svc: str, server_url: str, rel: str, whole: bool = False) -> list[str]:
+    """Return huge_at() for a server, asked straight.
+
+    With whole, it is also sent a GET of the whole object: only an origin,
+    which reads its sparse file, since a cache would set about storing
+    the object whole.
+    """
     target = test.url(server_url, rel)
     return huge_at(
         test,
@@ -2887,6 +3033,7 @@ def huge_server(test: Test, svc: str, server_url: str, rel: str) -> list[str]:
             target, test.token, HUGE_READ, timeout=HUGE_TIMEOUT, headers={"Range": header}
         ),
         lambda: huge_propfind(target, test.token),
+        (lambda: web.read_part(target, test.token, HUGE_READ, timeout=HUGE_TIMEOUT)) if whole else None,
     )
 
 
@@ -3010,7 +3157,7 @@ def huge_ranges(test: Test) -> Row:
     try:
         if test.direct:
             for origin in test.origins:
-                problems += huge_server(test, origin.svc, origin.url, rel)
+                problems += huge_server(test, origin.svc, origin.url, rel, whole=True)
                 asked.append(origin.svc)
         if test.fed.federated_caches:
             for url in test.fed.directors:
@@ -4077,6 +4224,7 @@ RUN = {
     "put-client": put_client,
     "put-plugin": put_plugin,
     "put-checksum": put_checksum,
+    "put-checksum-config": put_checksum_config,
     "origin-read": origin_read,
     "client-get": client_get,
     "plugin-get": plugin_get,

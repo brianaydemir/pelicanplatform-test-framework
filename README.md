@@ -25,7 +25,10 @@ change this shape.
 
 - [Docker Engine](https://docs.docker.com/engine/) 25+ and
   [Docker Compose](https://docs.docker.com/compose/) v2.24+. On Docker
-  Desktop, use VirtioFS file sharing.
+  Desktop, use VirtioFS file sharing. Where Docker runs in a VM, the
+  checkout, and the directory that `smoke.sh -o` names, which holds its
+  copies of the checkout, must be where the VM shares the host's files
+  (e.g. under your home directory), or the services' bind mounts fail.
 - `sh`, `curl` 7.71+, `openssl`, `ssh-keygen`, and `tar`.
 - [uv](https://docs.astral.sh/uv/), which provides the scripts' Python.
 - About 2.5 GB of memory for the containers, or 3.5 GB with
@@ -71,7 +74,8 @@ failures, and exits non-zero if any [case](docs/glossary.md#case) failed.
 Each suite writes a row per case to `framework/var/results/`
 ([Results](docs/ci.md#results)). A [watchdog](docs/glossary.md#watchdog)
 abandons a pass that prints nothing for 20 minutes, or runs for 90, and
-records it as `aborted`.
+records it as `aborted`; the run stops there if the servers no longer
+answer.
 
 ### Logs
 
@@ -87,6 +91,7 @@ After every run, pass or fail, `./fed.sh test` saves these in
 | `config/`                                | the configuration that [`fed.sh`](fed.sh) generated, without secrets        |
 | `results/`                               | the run's [results](docs/ci.md#results)                                     |
 | `commands.log`, `commands-scitokens.log` | each pass's client commands, with exit status, output, and the plugin's ads |
+| `dev/`                                   | what the suites keep in `framework/var/dev/` ([below](#where-things-live))  |
 | `test.log`                               | everything the tests printed                                                |
 | `control.log`                            | what the [control helper](#service-control) did                             |
 

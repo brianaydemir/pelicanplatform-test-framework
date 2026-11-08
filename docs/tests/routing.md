@@ -82,6 +82,12 @@ origin-0 are in Madison; cache-1 and origin-1, in Lisbon
     in the director's first 5 minutes.
   - `writes`: A bare-path PUT and DELETE in `/public` must get 405. Skips
     where `/public` is not exported, or takes writes.
+  - `delete`: A bare-path DELETE of an object in the namespace, with the
+    pass's token, must be redirected to an origin (307), with the token in
+    `Location`'s `authz`; followed so, with no `Authorization` header, as
+    curl follows a redirect to another host, it must succeed, and leave that
+    origin's store without the object. Skips where the namespace takes no
+    writes, or its storage no deletes.
   - `bad-requests`: `?directread&prefercached` must get 400, and so must a
     client older than any the director serves
     (`User-Agent: pelican-client/0.0.1`); a client of the director's own

@@ -73,8 +73,10 @@ suite   case   status   seconds   note
 A suite that stops early records why, as a `FAIL` row named `setup` or
 `aborted`. One reason is the [watchdog](glossary.md#watchdog), which
 abandons a pass that prints nothing for 20 minutes, or runs for 90
-(`STALL_SECONDS` and `BUDGET_SECONDS` in `test.py`). A run of every suite
-first removes earlier results with the same tag.
+(`STALL_SECONDS` and `BUDGET_SECONDS` in `test.py`), and then stops the run
+if any Pelican server no longer answers, leaving no rows for the suites
+after it. A run of every suite first removes earlier results with the same
+tag.
 
 To read one:
 

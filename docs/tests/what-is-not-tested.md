@@ -29,6 +29,9 @@ such as the namespaces it exports, is in the
   [`dev`](../glossary.md#dev-container), and a suite of its own. The V2
   cache's code runs here as a federated and a
   [site-local cache](site-local-cache.md) instead.
+- **A cache that sends a client to its storage on a shared filesystem**
+  (`Client.FileRedirectRoots`): a client so configured accepts a `file://`
+  redirect, but no Pelican server sends one yet.
 - **A cache serving a second federation** (`Cache.AllowedFederations`),
   which would need a second director, registry, and discovery host. The
   [`cache-api`](cache-apis.md) suite checks that a cache refuses a

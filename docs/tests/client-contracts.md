@@ -116,7 +116,11 @@ and `auth` suites. `stash_plugin stage` is not tested.
   with `--write`, its `storage.create` (`url-write`). With the `url` token
   in the query, each director's object route must redirect with `authz` in
   `Location` and no token in `Link`, and lead to the object (`curl`).
-  `pelican object get` of the URL must get it (`get`). Skips without the
+  `pelican object get` of the URL must get it (`get`), and so must
+  [`stash_plugin`](../glossary.md#stash_plugin), with its credentials
+  directory empty, as a job handed the URL would run it (`plugin`). With the
+  `url-write` token in its query, `pelican object put` of a new object in
+  the collection must land it (`put`). Skips without the
   origins' embedded issuer, and at a standalone origin. Runs in the WLCG
   [pass](../glossary.md#pass) only
   ([token profiles](README.md#token-profiles)).

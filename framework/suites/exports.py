@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from functools import partial
 from urllib.parse import quote
 
-from testlib import common, control, credentials, jwt, registry, stores, suite, web, webdav
+from testlib import common, control, credentials, jwt, registry, stores, suite, transfers, web, webdav
 from testlib.common import Findings, die, first, outcome, warn
 from testlib.recorder import index
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
@@ -64,7 +64,7 @@ SCENARIOS = {
     ),
     "nested-export": (
         "an export nested in /public, which takes a token: the origin serves both, and the"
-        " nested one to its own token alone"
+        " nested one to its own token alone, which both Pelican clients present by every route"
     ),
     "backend-token": (
         "an HTTPS backend reached with a static token (Origin.HttpAuthTokenFile): every"
@@ -85,7 +85,7 @@ SCENARIOS = {
 # row per case, named `<scenario> <case>`.
 MULTIPART_CASES = ("pelican-shaped", "form-shaped")
 FAILURE_CASES = ("bad-source", "source-error", "missing-source", "mid-stream")
-NESTED_CASES = ("served", "token", "wrong-scope", "protected")
+NESTED_CASES = ("served", "token", "wrong-scope", "protected", "client", "plugin")
 SENTINEL_CASES = ("present", "missing")
 ROWS: dict[str, tuple[str, ...]] = {
     "multipart-put": tuple(f"multipart-put {c}" for c in MULTIPART_CASES),
@@ -1238,12 +1238,70 @@ def nested_protected(test: Test, prefix: str, data: Mapping[str, bytes], _token:
     return found.row(f"{prefix}, with no token, at {len(test.fed.origins)} origin(s)")
 
 
+def nested_by(test: Test, prefix: str, data: Mapping[str, bytes], token: str, plugin: bool) -> Row:
+    """Check that a Pelican client reads the nested export's object with its token.
+
+    A Pelican client presents a token for a read only where the director
+    says that the namespace takes one (X-Pelican-Namespace's
+    require-token), as it must of the export, though /public, around it,
+    takes none. So `pelican object get --token`, or stash_plugin with the
+    token alone in its credentials directory, must get the object by every
+    route: through the director's choice of server, from an origin
+    (direct), and from each federated cache, named.
+    """
+    tool = "plugin" if plugin else "client"
+    token_file = os.path.join(test.tmp, f"nested-{tool}.token")
+    with open(token_file, "w", encoding="ascii") as f:
+        f.write(token)
+    url = test.pelican_url(f"{test.rel(NESTED)}/obj", namespace="public")
+    want = common.digest(data[f"{NESTED}/obj"])
+    # Each route: its name, the cache it names, if any, and whether it
+    # is direct.
+    routes: list[tuple[str, common.Cache | None, bool]] = [
+        ("director", None, False),
+        ("direct", None, True),
+    ]
+    routes += [(f"named-{cache.svc}", cache, False) for cache in test.fed.federated_caches]
+    found = Findings()
+    for route, cache, direct in routes:
+        local = os.path.join(test.tmp, f"nested-{tool}-{route}")
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(local)
+        if plugin:
+            _, out, err, ads = test.session.plugin_run(
+                f"exports/nested-{tool}-{route}",
+                [(url + (transfers.DIRECT_QUERY if direct else ""), local)],
+                {"nested.use": token_file},
+                cache=cache.url if cache else None,
+                cwd=test.tmp,
+            )
+            error = (
+                None
+                if transfers.plugin_passed(ads)
+                else transfers.plugin_error(ads) or last_line(err or out)
+            )
+        else:
+            flags = ["--direct"] if direct else ["--cache", cache.url] if cache else []
+            code, out, err = test.session.pelican_cmd(
+                "object", "get", "--token", token_file, *flags, url, local
+            )
+            error = None if code == 0 else f"exit {code}: {last_line(err or out)}"
+        if error:
+            found.problems.append(f"{route}: failed: {error}")
+        elif common.sha256(local) != want:
+            found.problems.append(f"{route}: the file is not the object")
+    client = "stash_plugin" if plugin else "pelican object get"
+    return found.row(f"{prefix}, with its token, by {client}: {', '.join(r for r, _, _ in routes)}")
+
+
 NestedCheck = Callable[[Test, str, Mapping[str, bytes], str, str], Row]
 NESTED_CHECKS: dict[str, NestedCheck] = {
     "served": nested_served,
     "token": nested_with_token,
     "wrong-scope": nested_wrong_scope,
     "protected": nested_protected,
+    "client": lambda test, prefix, data, token, _wrong: nested_by(test, prefix, data, token, False),
+    "plugin": lambda test, prefix, data, token, _wrong: nested_by(test, prefix, data, token, True),
 }
 
 
@@ -1271,7 +1329,9 @@ def nested_export(test: Test) -> dict[str, Row]:
     must then serve /public as before (`served`), and the export's
     object to a token for the export (`token`), but not to a token of
     its issuer scoped elsewhere (`wrong-scope`), nor to no token
-    (`protected`). Afterward the origins are restored, and the export's
+    (`protected`). Both Pelican clients must read it with the token, by
+    every route (`client`, `plugin`; nested_by()), which the director
+    must say takes one. Afterward the origins are restored, and the export's
     registration, which they made as they started, is removed
     (unregister()).
     """

@@ -19,8 +19,10 @@ local_cache/schema.go). Beyond that:
 - The V2 cache fetches the blocks that each read is missing, and Go's
   http.ServeContent reads 32 KiB at a time, so it fills a range miss at
   most 8 blocks at a time. The block store that pstore and the V2 cache
-  share reads 16 blocks per read of its disk (local_cache/range_reader.go,
-  storage.go).
+  share reads 16 blocks per read of its disk, and writes 64 per write
+  (local_cache/range_reader.go, storage.go).
+- An s3v2 origin uploads an object of unknown length to the S3 service
+  in parts of 5 MiB once it outgrows one (S3_PART in stores.py).
 - The XRootD cache uses 128 KiB blocks (xrootd/resources/xrootd-cache.cfg).
 - XRootD's HTTP server, in front of an XRootD origin or cache, reads a
   single range by reads of up to 8 MiB, and several ranges by vector
@@ -55,6 +57,8 @@ INLINE = 4096
 SPILL = 1 << 20
 CHUNK_DECLARED_2M = 2097120
 CHUNK_UNDECLARED = 8388480
+WRITE_BATCH = 64 * BLOCK
+S3_PART = 5 << 20
 XROOTD_BLOCK = 128 << 10
 READV_CHUNKS = 512
 READV_CHUNK = 512 << 10
@@ -75,20 +79,26 @@ SIZES = (
     XROOTD_BLOCK - 1,
     XROOTD_BLOCK,
     XROOTD_BLOCK + 1,
+    WRITE_BATCH - 1,
+    WRITE_BATCH,
+    WRITE_BATCH + 1,
     SPILL - 1,
     SPILL,
     SPILL + 1,
     CHUNK_DECLARED_2M,
     CHUNK_DECLARED_2M + 1,
     2 << 20,
+    S3_PART,
+    S3_PART + 1,
     CHUNK_UNDECLARED,
     CHUNK_UNDECLARED + 1,
     READ_MAX + 2,
 )
 
 # Offsets worth straddling, where an object is big enough: the first block
-# edges, the V2 cache's and pstore's read batches, XRootD's block, the
-# spill threshold and the block edge below it, and chunk edges.
+# edges, the V2 cache's and pstore's read and write batches, XRootD's
+# block, the spill threshold and the block edge below it, an S3 part, and
+# chunk edges.
 EDGES = (
     BLOCK,
     2 * BLOCK,
@@ -96,9 +106,11 @@ EDGES = (
     8 * BLOCK,
     16 * BLOCK,
     XROOTD_BLOCK,
+    WRITE_BATCH,
     (SPILL // BLOCK) * BLOCK,
     SPILL,
     CHUNK_DECLARED_2M,
+    S3_PART,
     CHUNK_UNDECLARED,
 )
 
@@ -175,6 +187,15 @@ def requests(size: int) -> list[Request]:
         found.append(((BLOCK - 80, 2 * BLOCK + 40),))
     if size > BLOCK + 1:
         found.append(((0, 0), (BLOCK - 1, BLOCK), (size - 1, size - 1)))
+    # Sets that a server must still serve (RFC 9110, section 14.2): one
+    # whose last range starts past the end, which is passed over; two in
+    # descending order; and two that overlap across a block edge.
+    if size > 10:
+        found.append(((0, 9), (size, size + 10)))
+    if size > 1:
+        found.append(((size - 1, size - 1), (0, 0)))
+    if size > BLOCK + 10:
+        found.append(((BLOCK - 10, BLOCK + 10), (BLOCK - 5, BLOCK + 5)))
     found += readv_edges(size)
     return list(dict.fromkeys(found))
 
