@@ -85,6 +85,10 @@ DIRECTORS_WAIT = 60
 # downtime, and of its end, from the registry, which they ask every minute
 # (Director.RegistryQueryInterval), and which the server tells at once.
 DOWNTIME_WAIT = 150
+# How long `downtime` declares a server down for, in seconds: long enough
+# to outlast both waits, so that only its end can put the server back, and
+# short enough that one it fails to end soon lapses.
+DOWNTIME_LENGTH = 4 * DOWNTIME_WAIT
 
 # A server's registration's prefix (`registry-approval`) is
 # /caches/<host> or /origins/<host>.
@@ -939,10 +943,10 @@ def presence(test: Test) -> tuple[str, str]:
 def down(test: Test, web_url: str, route: str) -> str | None:
     """Declare a server down, then up, and check what the directors name.
 
-    As its admin, through its web API at web_url, declare it down for the
-    next hour: within DOWNTIME_WAIT seconds, no director may name it for
-    route. Then end the downtime, after which, as soon, every director
-    must name it again.
+    As its admin, through its web API at web_url, declare it down for
+    DOWNTIME_LENGTH seconds: within DOWNTIME_WAIT seconds, no director may
+    name it for route. Then end the downtime, even if interrupted, after
+    which, as soon, every director must name it again.
 
     Returns:
         What went wrong, or None if nothing did.
@@ -967,16 +971,20 @@ def down(test: Test, web_url: str, route: str) -> str | None:
         "severity": "Outage (completely inaccessible)",
         "description": "pelican-test-framework",
         "startTime": now - 60_000,
-        "endTime": now + 3_600_000,
+        "endTime": now + DOWNTIME_LENGTH * 1000,
     }
     downtime_id = str(uuid.uuid4())
     answer = api.call("POST", f"{registry.DOWNTIME}/{downtime_id}", declared, headers)
     if not answer.ok:
         return f"declaring the downtime: {answer.describe()}"
     why = None
-    if not common.wait_for(lambda: not named(), DOWNTIME_WAIT, 5):
-        why = f"{named()} still named it {DOWNTIME_WAIT}s into its downtime"
-    ended = api.call("DELETE", f"{registry.DOWNTIME}/{downtime_id}", headers=headers)
+    try:
+        if not common.wait_for(lambda: not named(), DOWNTIME_WAIT, 5):
+            why = f"{named()} still named it {DOWNTIME_WAIT}s into its downtime"
+    finally:
+        # Until it ends, no director sends later suites, or later runs
+        # (the server keeps it with its state), to the server.
+        ended = api.call("DELETE", f"{registry.DOWNTIME}/{downtime_id}", headers=headers)
     if why:
         return why
     if not ended.ok:
