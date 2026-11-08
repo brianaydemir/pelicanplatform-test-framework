@@ -33,7 +33,10 @@ scenarios skip where it reports none.
 
 - `put-declared`, `put-chunked`: Every size must upload straight to every
   origin, with a `Content-Length`, or in chunks with none. A pstore origin's
-  `/metrics` must count each upload in the tier its size predicts.
+  `/metrics` must count each upload in the tier its size predicts, and each
+  must make the block files on disk that its tier and chunks predict: none
+  up to 4,096 bytes, one for a buffered object, and one per chunk for a
+  streamed one, each the size its blocks and their tags take.
 - `put-client`, `put-plugin`: Every size, uploaded by `pelican object put`
   or `stash_plugin`, must reach an origin intact, and, at a pstore origin,
   land in its tier.
@@ -100,9 +103,10 @@ scenarios skip where it reports none.
   [`docs/pelican-http-headers.md`](https://github.com/PelicanPlatform/pelican/blob/main/docs/pelican-http-headers.md)
   in [Pelican](https://pelicanplatform.org/)'s repository), must announce
   `Trailer: X-Transfer-Status` and end with the trailer `200: OK`, cold and
-  warm, of a whole object, a range, a suffix, and a 512-byte object, which a
-  V2 cache should hold inline (`is_inline`; inconclusive otherwise). A GET
-  that does not ask must get no trailer; a HEAD that asks, 200.
+  warm, of a whole object, a range, a suffix, two ranges at once, a 512-byte
+  object, which a V2 cache should hold inline (`is_inline`; inconclusive
+  otherwise), and a 0-byte object. A GET that does not ask must get no
+  trailer; a HEAD that asks, 200.
 - `transfer-status-failure`: Each federated V2 cache's chaos API corrupts
   the fourth block of an object it holds, which is then removed from every
   origin. A GET that asks for the status must get a trailer reporting a
@@ -113,6 +117,15 @@ scenarios skip where it reports none.
   the object. Inconclusive where the cache serves the object intact (as
   under [`-p cache-memory`](../../framework/presets/cache-memory.sh)). Skips
   without a federated V2 cache and its chaos API.
+- `cache-memory`: Under
+  [`-p cache-memory`](../../framework/presets/cache-memory.sh), each
+  federated V2 cache reads an object it holds whole four times more from its
+  store, which leaves the blocks it decrypts in memory. Its chaos API then
+  corrupts the fourth block on disk, and the origins' copies are removed. A
+  GET that asks for the status must still get the object intact, with
+  `200: OK`: the block came from memory. A failure to read the block leaves
+  the row inconclusive, since the memory cache may not keep every block;
+  bytes that are not the object's fail it. Skips elsewhere.
 - `origin-transfer-status`: Each origin, so asked, must send the trailer
   too, `200: OK`.
 - `digests`: Every server is asked each object's digest, by each of
@@ -187,8 +200,8 @@ scenarios skip where it reports none.
     the object;
   - a PUT with `If-None-Match: *, "junk"` over an object must get 412;
   - of 8 PUTs at once of a new object with `If-None-Match: *`, exactly one
-    may succeed, and the store hold its bytes; the rest must get 412 or 423
-    ([RFC 4918](https://www.rfc-editor.org/rfc/rfc4918)).
+    may succeed, and the store hold its bytes; the rest must get 412
+    ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-13.1.2)).
 - `mixed-version`: An object is overwritten at the origins once each cache
   holds its first block. Later reads, of a range in its third XRootD block
   and of the whole, must succeed, and be entirely one version, the same for

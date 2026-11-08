@@ -1456,6 +1456,7 @@ fed_generate() {
   fed_write_value origin-atomic-uploads "${ORIGIN_ATOMIC_UPLOADS}"
   fed_write_value origin-cache-control "${ORIGIN_CACHE_CONTROL}"
   fed_write_value origin-multiuser "${ORIGIN_MULTIUSER}"
+  fed_write_value cache-memory "${CACHE_MEMORY_SIZE:-off}"
   fed_write_value server-drop-privileges "${SERVER_DROP_PRIVILEGES}"
   if [ "${ORIGIN_METADATA}" = true ]; then
     printf '%s\n' "${ORIGIN_METADATA_MODE}"

@@ -31,7 +31,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 
-from testlib import common, control, stores, suite, transfers, web
+from testlib import cacheapi, common, control, stores, suite, transfers, web
 from testlib.common import Findings, die, outcome, warn
 from testlib.report import FAIL, SKIP
 from testlib.session import Session, last_line
@@ -46,6 +46,10 @@ SCENARIOS = {
     "client-throttled": "the clients, shed by a V2 cache, report a retryable error and retry",
     "timeout-header": "each V2 cache answers 504 by X-Pelican-Timeout, and goes on filling",
     "streaming": "each V2 cache sends a cold object's first bytes long before its last",
+    "slow-miss": (
+        "each V2 cache keeps a cold object whose fill outlasts its idle timeout, and what it filled"
+        " of one given up on"
+    ),
     "slow-transfer": "the clients give up on a transfer too slow, with error 6002",
 }
 
@@ -53,7 +57,7 @@ SCENARIOS = {
 # scheduler as the shape has it: the small one lets a cache fetch from
 # an origin one at a time, which would queue range-ahead's fill behind
 # the download it is ahead of.
-SCHEDULER_AS_IS = ("range-ahead",)
+SCHEDULER_AS_IS = ("range-ahead", "slow-miss")
 
 
 # The origins' rate limit (Origin.TransferRateLimit, in which a KB is
@@ -135,6 +139,22 @@ AHEAD_START = AHEAD_SIZE - (128 << 10) - 1000
 AHEAD_DELAY = 2.0
 AHEAD_ANSWER = 5.0
 AHEAD_SLOWEST = 0.5 * (AHEAD_SIZE - RATE) / RATE
+
+# slow-miss: a V2 cache goes on filling a miss while any client reads it,
+# and LocalCache.PrefetchTimeout (10 seconds by default) once none does,
+# keeping the whole blocks it wrote (local_cache/block_fetcher.go). Its
+# objects: one whose cold read, at the rate limit, takes about 16
+# seconds (one faster than MISS_SLOWEST shows nothing, since the origins
+# were not slow); and one read for MISS_ABANDON_AFTER bytes, then given
+# up on, after which the cache's fill goes on for FILL_IDLE seconds at
+# most.
+MISS_SIZE = 4 << 20
+MISS_SLOWEST = 12.0
+MISS_ABANDONED_SIZE = 8 << 20
+MISS_ABANDON_AFTER = 64 << 10
+FILL_IDLE = 10 + 5
+ASK_STATUS = {"X-Transfer-Status": "true", "TE": "trailers"}
+STATUS_OK = "200: OK"
 
 
 class Test(suite.Test):
@@ -485,6 +505,81 @@ def range_ahead(test: Test) -> suite.Row:
     return found.row(f"{len(test.v2)} cache(s)")
 
 
+def slow_miss(test: Test) -> dict[str, suite.Row]:
+    """Check that a V2 cache keeps what it fills of a slow miss.
+
+    kept       a cold whole read of MISS_SIZE through each V2 cache,
+               asking for the transfer's status, which the rate limit
+               draws out past LocalCache.PrefetchTimeout: it must get
+               the object, and end with the trailer STATUS_OK, and the
+               cache then hold the object whole (only-if-cached)
+    abandoned  a cold read of MISS_ABANDONED_SIZE given up on after
+               MISS_ABANDON_AFTER bytes: FILL_IDLE seconds later, the
+               cache's introspection must say it holds some of the
+               object's blocks, which it keeps; a whole read must then
+               get the object, and leave the cache holding it whole
+    """
+    kept, abandoned = Findings(), Findings()
+    admin = {c.svc: cacheapi.admin_token(test.session, c) for c in test.v2}
+    for cache in test.v2:
+        rel = test.rel("slow-miss", cache.svc, "kept")
+        data = os.urandom(MISS_SIZE)
+        why = test.write({rel: data})
+        if why:
+            kept.problems.append(why)
+            continue
+        started = time.monotonic()
+        answer = test.ask("GET", cache.url, rel, ASK_STATUS)
+        took = time.monotonic() - started
+        said = answer.trailer("X-Transfer-Status")
+        why = web.served(answer, data)
+        if why:
+            kept.problems.append(f"{cache.svc}: the cold read got {why}")
+        elif said != STATUS_OK:
+            kept.problems.append(
+                f"{cache.svc}: the cold read ended with '{said or 'no trailer'}', not '{STATUS_OK}'"
+            )
+        elif not test.wait_cached(cache, rel):
+            kept.problems.append(
+                f"{cache.svc}: after the cold read of {took:.0f}s, it does not hold the object"
+            )
+        elif took < MISS_SLOWEST:
+            kept.doubts.append(f"{cache.svc}: the cold read took {took:.1f}s: the origins were not slow")
+        else:
+            kept.notes.append(f"{cache.svc}: '{said}' after {took:.0f}s, and held")
+    for cache in test.v2:
+        rel = test.rel("slow-miss", cache.svc, "abandoned")
+        data = os.urandom(MISS_ABANDONED_SIZE)
+        why = test.write({rel: data})
+        if why:
+            abandoned.problems.append(why)
+            continue
+        answer = web.read_part(test.url(cache.url, rel), test.token, MISS_ABANDON_AFTER)
+        if answer.status != 200 or answer.body != data[:MISS_ABANDON_AFTER]:
+            abandoned.problems.append(f"{cache.svc}: the read given up on got {answer.describe()}")
+            continue
+        time.sleep(FILL_IDLE)
+        url = cacheapi.object_url(test.fed, test.path(rel))
+        held, why = cacheapi.blocks_held(cache, admin[cache.svc], url)
+        if held is None:
+            abandoned.doubts.append(f"{cache.svc}: no block summary ({why})")
+        elif not held.held:
+            abandoned.problems.append(
+                f"{cache.svc}: {FILL_IDLE}s after its client gave up, it holds no block"
+            )
+        why = web.served(test.ask("GET", cache.url, rel), data)
+        if why:
+            abandoned.problems.append(f"{cache.svc}: a whole read afterward got {why}")
+        elif not test.wait_cached(cache, rel):
+            abandoned.problems.append(f"{cache.svc}: after a whole read, it does not hold the object")
+        elif held is not None:
+            abandoned.notes.append(f"{cache.svc} kept {held.describe()}")
+    return {
+        "kept": kept.row(f"{len(test.v2)} cache(s)"),
+        "abandoned": abandoned.row(f"{len(test.v2)} cache(s)"),
+    }
+
+
 # --------------------------------------------------------------------------
 # The clients.
 
@@ -804,11 +899,17 @@ def slow_transfer(test: Test) -> dict[str, suite.Row]:
                    direct clients, through the first V2 cache
     cache          `pelican object get` through each V2 cache, cold,
                    with SLOW_ENV, must fail as `direct` does
+    plugin-cache   stash_plugin, preferring each V2 cache, likewise, as
+                   `plugin-direct` does
     """
     rows: dict[str, suite.Row] = {}
     slow = test.rel("slow-transfer", "direct")
     data = os.urandom(SLOW_TRANSFER_SIZE)
-    via = {c.svc: test.rel("slow-transfer", c.svc) for c in test.v2}
+    via = {
+        (client, c.svc): test.rel("slow-transfer", f"{client}-{c.svc}")
+        for client in CLIENTS
+        for c in test.v2
+    }
     defaults = {c: test.rel("slow-transfer", f"default-{c}") for c in CLIENTS}
     objects = {slow: data}
     objects.update({rel: os.urandom(SLOW_TRANSFER_SIZE) for rel in [*via.values(), *defaults.values()]})
@@ -842,14 +943,17 @@ def slow_transfer(test: Test) -> dict[str, suite.Row]:
             found.problems.append(f"{client}, {route}: {why}")
     rows["default"] = found.row(f"both clients, {route}")
 
-    found = Findings()
-    for cache in test.v2:
-        fetch = get_pelican(test, f"slow-cache-{cache.svc}", via[cache.svc], True, cache=cache)
-        if fetch.status == 0:
-            found.problems.append(f"{cache.svc}: it got the object, under the minimum speed")
-            continue
-        found.problems += [f"{cache.svc}: {p}" for p in pelican_problems(fetch, {SLOW_TRANSFER})]
-    rows["cache"] = found.row(f"{len(test.v2)} cache(s), error 6002")
+    for name, client in (("cache", "pelican"), ("plugin-cache", "plugin")):
+        found = Findings()
+        for cache in test.v2:
+            rel = via[(client, cache.svc)]
+            fetch = CLIENTS[client](test, f"slow-{name}-{cache.svc}", rel, True, cache=cache)
+            if fetch.status == 0:
+                found.problems.append(f"{cache.svc}: it got the object, under the minimum speed")
+                continue
+            judge = pelican_problems if client == "pelican" else plugin_problems
+            found.problems += [f"{cache.svc}: {p}" for p in judge(fetch, {SLOW_TRANSFER})]
+        rows[name] = found.row(f"{len(test.v2)} cache(s), error 6002")
     return rows
 
 
@@ -870,6 +974,7 @@ CASES: dict[str, Callable[[Test], dict[str, suite.Row]]] = {
     "timeout-header": timeout_header,
     "streaming": single(streaming),
     "range-ahead": single(range_ahead),
+    "slow-miss": slow_miss,
     "slow-transfer": slow_transfer,
 }
 

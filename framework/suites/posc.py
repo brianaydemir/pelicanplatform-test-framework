@@ -21,8 +21,8 @@ half-written one.
 Uploads go straight to the first origin in
 framework/var/generated/origins, as /protected-a/data/posc/<run>-<name>,
 with a token of the session's profile; what the stores hold is read, and
-removed, with a WLCG token either way. Only `client` goes through the
-director. An interruption is judged only once the upload is seen under
+removed, with a WLCG token either way. Only `client` and `plugin` go
+through the director. An interruption is judged only once the upload is seen under
 way: by a new staging file, by growth in pstore/objects on pstore, or,
 on a plain origin, by the object appearing or growing. Afterward,
 /protected-a/data/posc is emptied on every store.
@@ -50,7 +50,7 @@ from http.client import HTTPException, HTTPSConnection
 from typing import override
 from urllib.parse import unquote, urlsplit
 
-from testlib import blocks, common, control, metrics, stores, suite, web, webdav
+from testlib import blocks, common, control, metrics, stores, suite, transfers, web, webdav
 from testlib.common import die, first, outcome, shown, wait_for, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -64,6 +64,7 @@ SCENARIOS = {
     "overwrite": "the old object is served during an overwrite, and intact once it is cut",
     "concurrent": "two whole uploads of one object at once leave one of them, whole",
     "client": "killing `pelican object put` midway leaves nothing",
+    "plugin": "killing stash_plugin's upload midway leaves nothing",
     "hidden": "neither a PROPFIND nor an HTML listing of the export shows .pelican-posc",
     "posc-expiry": "stale staging files are reaped, an idle upload kept, and staging guarded",
 }
@@ -746,21 +747,59 @@ def concurrent(test: Test) -> Row:
 
 def client(test: Test) -> Row:
     """Check that killing `pelican object put` midway leaves nothing."""
-    name = f"{test.run}-client"
+    return killed(test, "client")
+
+
+def plugin(test: Test) -> Row:
+    """Check that killing stash_plugin's upload midway leaves nothing.
+
+    Its token is in its credentials directory (_CONDOR_CREDS).
+    """
+    return killed(test, "plugin")
+
+
+def upload_command(test: Test, which: str, source: str, url: str) -> tuple[list[str], dict[str, str]]:
+    """Return the command that uploads source to url, and its environment.
+
+    Args:
+        test: The run.
+        which: `client` for `pelican object put`, `plugin` for
+            stash_plugin.
+        source: The local file.
+        url: The object's pelican:// URL.
+    """
+    if which == "client":
+        return [test.pelican, "object", "put", "--token", test.token_file, source, url], dict(test.env)
+    infile, outfile, creds = (os.path.join(test.tmp, f"plugin.{ext}") for ext in ("in", "ad", "creds"))
+    with open(infile, "w", encoding="utf-8") as f:
+        f.write(transfers.transfer_ad(url, source))
+    os.makedirs(creds, exist_ok=True)
+    shutil.copyfile(test.token_file, os.path.join(creds, "scitokens.use"))
+    command = [test.session.plugin, "-upload", "-infile", infile, "-outfile", outfile]
+    return command, {**test.env, "_CONDOR_CREDS": creds}
+
+
+def killed(test: Test, which: str) -> Row:
+    """Check that killing an upload by which midway leaves nothing.
+
+    Args:
+        test: The run.
+        which: The client, as upload_command() takes it.
+    """
+    name = f"{test.run}-{which}"
     total = 1 << 30
     # Sparse: the client reads 1 GiB of zeros, with no 1 GiB written first.
-    source = os.path.join(test.tmp, "client")
+    source = os.path.join(test.tmp, which)
     with open(source, "wb") as f:
         f.truncate(total)
-    log_file = os.path.join(test.tmp, "client.log")
-    args = ["object", "put", "--token", test.token_file, source]
-    args.append(test.pelican_url(f"data/posc/{name}"))
+    log_file = os.path.join(test.tmp, f"{which}.log")
+    command, env = upload_command(test, which, source, test.pelican_url(f"data/posc/{name}"))
     test.mark()
     with (
         open(log_file, "wb") as log,
         subprocess.Popen(
-            [test.pelican, *args],
-            env=test.env,
+            command,
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=log,
@@ -791,7 +830,7 @@ def client(test: Test) -> Row:
                 return INCONCLUSIVE, "could not see the upload begin"
             if code != 0:
                 with open(log_file, encoding="utf-8", errors="replace") as f:
-                    return FAIL, f"`pelican object put` exited {code}: {last_line(f.read())}"
+                    return FAIL, f"{command[0].rsplit('/', 1)[-1]} exited {code}: {last_line(f.read())}"
             return INCONCLUSIVE, "the upload finished before it could be interrupted"
         if path is not None:
             return FAIL, f"{shown(path)} holds {test.size(path)} of {total} bytes"
@@ -1119,6 +1158,7 @@ RUN = {
     "overwrite": overwrite,
     "concurrent": concurrent,
     "client": client,
+    "plugin": plugin,
     "hidden": hidden,
 }
 

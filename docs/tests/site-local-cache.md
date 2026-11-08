@@ -26,10 +26,14 @@ records one [row](../glossary.md#case), named for it.
   [`stash_plugin`](../glossary.md#stash_plugin), preferring cache-2, must
   report `TransferSuccess = true` and write the object. Its ad's last
   `Endpoint<N>` must name cache-2.
-- `get-plus`: As `get-protected-a`, with `--cache <cache-2>,+`: cache-2 must
-  still serve the object alone.
-- `refused`: As `get-protected-a`, with a token signed by a key no server
-  knows: a refusal, and nothing written.
+- `get-plus`, `plugin-get-plus`: As `get-protected-a` and
+  `plugin-get-protected-a`, preferring `<cache-2>,+`: cache-2 must still
+  serve the object alone.
+- `refused`, `plugin-refused`: As `get-protected-a` and
+  `plugin-get-protected-a`, with a token signed by a key no server knows: a
+  refusal, and nothing written.
+- `http-refused`: A GET of cache-2 with that token must get 401 or 403, and
+  none of the object's bytes.
 - `upstream`: A GET through cache-2 of a cold object in `/protected-a` must
   get it, and leave a federated [V2 cache](../glossary.md#native-and-xrootd)
   holding it, where none did before ([cache freshness](cache-freshness.md)).

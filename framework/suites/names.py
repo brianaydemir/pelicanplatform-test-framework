@@ -40,8 +40,9 @@ SCENARIOS = {
     "cache-get": "each cache serves each object by its name, cold, and no decoy",
     "director-get": (
         "each director's redirect, followed as a plain HTTP client, leads to each object by"
-        " its name, and no decoy"
+        " its name, and no decoy: of its object route, a bare path, and ?directread"
     ),
+    "director-put": "a PUT of each name through each director, followed as curl -L follows it, lands as that object",
     "origin-list": "each origin lists every name once, decoded, with its size",
     "cache-list": "each federated cache lists every name once, decoded, with its size",
     "client-get": (
@@ -236,39 +237,110 @@ def cache_get(test: Test) -> Row:
     return served(test, [(c.svc, c.url) for c in test.fed.caches])
 
 
+def redirected(answer: web.Response, urls: list[str], kind: str) -> str | None:
+    """Return why answer is not a redirect to one of the servers at urls.
+
+    Args:
+        answer: A director's answer.
+        urls: The servers it may send the request to.
+        kind: What they are, for the reason ("an origin").
+    """
+    where = answer.header("Location")
+    if answer.status != 307 or not where:
+        return f"{answer.describe()}, not a redirect"
+    if not any(where.startswith(url + "/") for url in urls):
+        return f"redirected to {where}, not {kind}"
+    return None
+
+
 def director_get(test: Test) -> Row:
     """Check that each director's redirect leads to each object by its name.
 
-    Each director's object route, asked for each object by its name,
-    sends a plain HTTP client to a federated cache, or, with none, to an
-    origin, by a redirect whose Location names the object again: the
+    Each director, asked for each object by its name, sends a plain HTTP
+    client on by a redirect whose Location names the object again: the
     director takes the name decoded and encodes it anew (getRedirectURL
     in Pelican's director/director.go), so a name it mangled on the way
     would fetch a decoy, or nothing. The client follows the Location as
-    it is, as curl -L does, and must get the object's bytes.
+    it is, as curl -L does, and must get the object's bytes. It is asked
+    by three routes:
+
+    object      its object route, which sends the client to a federated
+                cache, or, with none, to an origin
+    bare        the bare path, which it sends where
+                Director.DefaultResponse says (ShortcutMiddleware)
+    directread  the bare path with ?directread, which it sends to an
+                origin; only where /protected-a takes direct clients
     """
-    if not test.fed.directors:
+    fed = test.fed
+    if not fed.directors:
         return SKIP, "a standalone origin has no director"
+    origins = [o.url for o in fed.origins]
+    caches = [c.url for c in fed.federated_caches] or origins
+    to_cache = (caches, "a cache" if fed.federated_caches else "an origin")
+    routes = {
+        "object": ("/api/v1.0/director/object", "", to_cache),
+        "bare": ("", "", to_cache if fed.director_default_response == "cache" else (origins, "an origin")),
+    }
+    if test.direct:
+        routes["directread"] = ("", "?directread", (origins, "an origin"))
     problems: list[str] = []
-    for url in test.fed.directors:
+    for url in fed.directors:
         svc = director.host(url)
-        for name in NAMES:
-            route = test.url(f"{url}/api/v1.0/director/object", test.rel(name))
-            answer = web.request("GET", route, token=test.token)
-            why = director.misdirected(test.fed, answer)
+        for route, (prefix, query, (targets, kind)) in routes.items():
+            for name in NAMES:
+                answer = web.request(
+                    "GET", test.url(f"{url}{prefix}", test.rel(name)) + query, token=test.token
+                )
+                why = redirected(answer, targets, kind)
+                if why:
+                    problems.append(f"{svc} {route}: {name!r}: {why}")
+                    continue
+                where = answer.header("Location")
+                answer = web.request("GET", where, token=test.token)
+                if answer.status != 200:
+                    problems.append(f"{svc} {route}: {name!r}: {answer.describe()} at {where}")
+                    continue
+                why = test.wrong(name, answer.body)
+                if why:
+                    problems.append(f"{svc} {route}: {why}")
+    return outcome(problems, f"{len(fed.directors)} director(s), by {', '.join(routes)}")
+
+
+def director_put(test: Test) -> Row:
+    """Check that a PUT of each name through each director lands as it.
+
+    Each PUT goes to a director's bare path, which it redirects (307) to
+    an origin (ShortcutMiddleware in director/director.go), with a
+    Location that names the object again; it is sent there again, body
+    and all, as curl -L sends it. put_by() judges what lands, a
+    collection for each director.
+    """
+    fed = test.fed
+    if not fed.directors:
+        return SKIP, "a standalone origin has no director"
+    if not test.writes:
+        return SKIP, "/protected-a takes no writes"
+    origins = [o.url for o in fed.origins]
+    found: list[Row] = []
+    for url in fed.directors:
+
+        def put(source: str, target: str, director_url: str = url) -> str | None:
+            with open(source, "rb") as f:
+                data = f.read()
+            answer = web.request(
+                "PUT", director_url + target[len(fed.url) :], token=test.token, upload=data
+            )
+            why = redirected(answer, origins, "an origin")
             if why:
-                problems.append(f"{svc}: {name!r}: {why}")
-                continue
-            where = answer.header("Location")
-            answer = web.request("GET", where, token=test.token)
-            if answer.status != 200:
-                problems.append(f"{svc}: {name!r}: {answer.describe()} at {where}")
-                continue
-            why = test.wrong(name, answer.body)
-            if why:
-                problems.append(f"{svc}: {why}")
-    kind = "a cache" if test.fed.federated_caches else "an origin"
-    return outcome(problems, f"{len(test.fed.directors)} director(s), each leading to {kind}")
+                return why
+            answer = web.request("PUT", answer.header("Location"), token=test.token, upload=data)
+            return None if answer.ok else f"{answer.describe()} at the origin"
+
+        found.append(put_by(test, f"director-put-{director.host(url)}", put))
+    failed = [note for status, note in found if status != PASS]
+    if failed:
+        return FAIL, "; ".join(failed)
+    return PASS, f"{len(fed.directors)} director(s), {found[0][1]} each"
 
 
 def listed(test: Test, servers: list[Row]) -> Row:
@@ -618,6 +690,7 @@ RUN = {
     "origin-get": origin_get,
     "cache-get": cache_get,
     "director-get": director_get,
+    "director-put": director_put,
     "origin-list": origin_list,
     "cache-list": cache_list,
     "client-get": client_get,

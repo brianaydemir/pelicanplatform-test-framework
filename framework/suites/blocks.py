@@ -76,6 +76,10 @@ SCENARIOS = {
     "cache-corrupted": "each V2 cache: a block corrupted or cut from its store is never served",
     "transfer-status": "each federated cache, asked, ends a GET with an X-Transfer-Status trailer, 200: OK",
     "transfer-status-failure": "each federated V2 cache reports a block it cannot repair; the clients fail",
+    "cache-memory": (
+        "each federated V2 cache with a memory cache serves an object from memory once its block"
+        " on disk is corrupted"
+    ),
     "origin-transfer-status": "each origin, asked, ends a GET with an X-Transfer-Status trailer, 200: OK",
     "digests": "every digest that a server reports (Want-Digest) is the object's",
     "digest-overwrite": "each origin's digests and ETag of an object follow its overwrites",
@@ -110,6 +114,7 @@ CACHE_SCENARIOS = (
     "cache-corrupted",
     "transfer-status",
     "transfer-status-failure",
+    "cache-memory",
     "digest-relay",
     "digest-range-first",
     "stale-origin-digest",
@@ -204,7 +209,8 @@ class Test(suite.Test):
         """Upload each set uploaded this way to every origin, and check it.
 
         Upload the objects one at a time, and check that each store holds
-        them; on a pstore origin, check the tiers they landed in. Where
+        them; on a pstore origin, check the tiers they landed in, and the
+        block files that each made on disk (blocks.pstore_files()). Where
         /protected-a takes no writes, put them straight in each store
         instead.
 
@@ -233,10 +239,17 @@ class Test(suite.Test):
                 if errors:
                     return FAIL, "; ".join(errors)
             before = (self.tiers(origin) or dict.fromkeys(TIERS, 0.0)) if origin.pstore else None
-            for _, rel, data in objects:
+            files = blocks.pstore_block_files(origin) if origin.pstore else {}
+            for what, rel, data in objects:
                 error = stores.put(origin, self.namespace, rel, data, self.token, chunked=not declared)
                 if error:
                     return FAIL, error
+                if origin.pstore:
+                    known, files = files, blocks.pstore_block_files(origin)
+                    made = sorted(n for p, n in files.items() if p not in known)
+                    want = sorted(blocks.pstore_files(len(data), declared))
+                    if made != want:
+                        return FAIL, f"{origin.svc}: {what} made block files of {made} bytes, not {want}"
             for what, rel, data in objects:
                 try:
                     got = stores.held(origin, self.namespace, rel, self.setup)
@@ -1644,17 +1657,20 @@ def cache_corrupted(test: Test) -> Row:
 # with that trailer, `<status>: <text>`.
 ASK_STATUS = {"X-Transfer-Status": "true", "TE": "trailers"}
 STATUS_OK = "200: OK"
-# transfer-status's objects: one of several V2 blocks, and one under 4,096
-# bytes, which a V2 cache keeps inline in its database. Each read is of an
-# object of its own, so that it is cold the first time: the whole object;
-# a range across the second and third blocks; the last 1,000 bytes; and
-# the small object.
+# transfer-status's objects: one of several V2 blocks, one under 4,096
+# bytes, which a V2 cache keeps inline in its database, and one of 0 bytes.
+# Each read is of an object of its own, so that it is cold the first time:
+# the whole object; a range across the second and third blocks; the last
+# 1,000 bytes; two ranges, in the first and third blocks, as
+# multipart/byteranges; the small object; and the empty one.
 STATUS_SIZE = 16384
 STATUS_READS: dict[str, tuple[int, blocks.Request | None]] = {
     "whole": (STATUS_SIZE, None),
     "range": (STATUS_SIZE, ((blocks.BLOCK, 3 * blocks.BLOCK - 1),)),
     "suffix": (STATUS_SIZE, ((None, 1000),)),
+    "multi": (STATUS_SIZE, ((0, 99), (2 * blocks.BLOCK, 2 * blocks.BLOCK + 99))),
     "small": (512, None),
+    "empty": (0, None),
 }
 # The block that transfer-status-failure corrupts: past the bytes that
 # http.ServeContent reads to sniff a type before it sends the headers, so
@@ -1951,6 +1967,78 @@ def transfer_status_failure(test: Test) -> Row:
         return each_cache(test, "transfer-failure", STATUS_SIZE, test.federated_v2, check)
     except NoChaos as e:
         return SKIP, f"{e}; it needs Cache.EnableChaosAPI"
+
+
+# How many times cache-memory reads an object whole from a cache's store,
+# so that its blocks, read that often, win a place in the memory cache
+# over blocks read less (ristretto's TinyLFU admission); and how long it
+# then waits for the cache's buffered writes to its memory cache.
+MEMORY_READS = 4
+MEMORY_SETTLE = 2
+
+
+def cache_memory(test: Test) -> Row:
+    """Check that a V2 cache with a memory cache serves blocks from it.
+
+    Under `-p cache-memory` (Cache.MemoryCacheSize), each federated V2
+    cache holds an object of its own whole, and reads it whole from its
+    store MEMORY_READS times more, each read leaving the blocks it
+    decrypts in memory (decryptBlocksFromFile in Pelican's
+    local_cache/storage.go). Then, as in transfer_status_failure(), its
+    chaos API corrupts block FAILED_BLOCK on disk, and every origin's
+    copy is removed. A GET must then get the object intact, with the
+    trailer STATUS_OK: the block came from memory. A failure to read the
+    block shows only that the memory cache did not keep it, and leaves
+    the row inconclusive; bytes other than the object's fail it.
+    """
+    if not test.fed.cache_memory:
+        return SKIP, "the caches keep no blocks in memory ('-p cache-memory')"
+    if not test.federated_v2:
+        return SKIP, "no federated V2 cache, whose chaos API alone can spoil a block"
+    check = functools.partial(from_memory, test)
+    try:
+        return each_cache(test, "memory", STATUS_SIZE, test.federated_v2, check)
+    except NoChaos as e:
+        return SKIP, f"{e}; it needs Cache.EnableChaosAPI"
+
+
+def from_memory(test: Test, cache: common.Cache, rel: str, data: bytes, found: Findings) -> None:
+    """Run cache_memory at one V2 cache, of rel, holding data.
+
+    Raises:
+        NoChaos: The cache has no chaos API.
+    """
+    why = read_held(test, cache, rel, data)
+    for _ in range(MEMORY_READS):
+        why = why or test.get(cache.url, rel, data, None)
+    if why:
+        found.fail(f"{cache.svc}: before spoiling: {why}")
+        return
+    time.sleep(MEMORY_SETTLE)
+    try:
+        spoil(test, cache, rel, "corrupt", block=str(FAILED_BLOCK), bytes=str(blocks.TAG))
+    except ValueError as e:
+        found.fail(str(e))
+        return
+    for origin in test.origins:
+        error = stores.delete(origin, test.namespace, rel, test.setup)
+        if error:
+            found.fail(error)
+            return
+    answer = test.ask("GET", cache.url, rel, ASK_STATUS)
+    said = answer.trailer("X-Transfer-Status")
+    if answer.status == 200 and answer.body == data and said == STATUS_OK:
+        return
+    if answer.status == 200 and answer.body != data and not status_failed(said):
+        found.fail(
+            f"{cache.svc}: once a block on disk was corrupted, 200 with {len(answer.body)} bytes"
+            + f" that are not the object, and trailer '{said or 'none'}'"
+        )
+        return
+    found.doubt(
+        f"{cache.svc} did not serve the object from memory ({answer.describe()}, trailer"
+        + f" '{said or 'none'}'), so its memory cache did not keep the block"
+    )
 
 
 # The sizes whose digests `digests` asks each server for: empty, within a
@@ -3546,11 +3634,9 @@ def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
     """Race RACERS PUTs that create rel at origin.
 
     Each has If-None-Match: * and bytes of its own, and rel does not
-    exist: exactly one must succeed, and the rest be refused, with 412,
-    as RFC 9110 has it, or with 423: x/net's WebDAV, which a native
-    origin serves PUTs through, locks a path for a PUT, so one that
-    finds another in flight is Locked (RFC 4918), which refuses it as
-    well; and the store must then hold the winner's bytes.
+    exist: exactly one must succeed, and the rest be refused with 412
+    (RFC 9110, section 13.1.2); and the store must then hold the
+    winner's bytes.
 
     Returns:
         What is wrong.
@@ -3575,9 +3661,9 @@ def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
             f"{len(won)} of {RACERS} PUTs at once with If-None-Match: * of a new object"
             + " succeeded, not 1"
         )
-    other = [a for a in answers if not a.ok and a.status not in (412, 423)]
+    other = [a for a in answers if not a.ok and a.status != 412]
     if other:
-        problems.append(f"a racing PUT that lost: {other[0].describe()}, not 412 or 423")
+        problems.append(f"a racing PUT that lost: {other[0].describe()}, not 412")
     held = stores.held(origin, test.namespace, rel, test.setup)
     if not any(held == common.digest(bodies[n]) for n in won):
         problems.append("after the racing PUTs, the store holds no winner's bytes")
@@ -3698,32 +3784,26 @@ def mixed_version(test: Test) -> Row:
         return FAIL, why
     start, end = MIXED_LATER, MIXED_LATER + block
     later = f"bytes {start}-{end - 1}"
+    versions = {"v1": v1, "v2": v2}
     notes: list[str] = []
     for cache in test.caches:
         answer = get(cache, f"bytes={start}-{end - 1}")
-        part = answer.body
-        if answer.status != 206:
-            return FAIL, f"{cache.svc}: {later} got {answer.describe()}, not 206"
-        if part not in (v1[start:end], v2[start:end]):
-            return FAIL, f"{cache.svc}: {later} are neither version"
+        range_version, why = blocks.which_version(versions, ((start, end - 1),), answer)
+        if range_version is None:
+            return FAIL, f"{cache.svc}: {later}: {why}"
         answer = get(cache, None)
-        if answer.status != 200:
-            return FAIL, f"{cache.svc}: the whole object got {answer.describe()}, not 200"
-        if answer.body == v1:
-            version = "v1"
-        elif answer.body == v2:
-            version = "v2"
-        else:
-            which = "".join(
-                (
-                    "1"
-                    if answer.body[i : i + block] == v1[i : i + block]
-                    else "2" if answer.body[i : i + block] == v2[i : i + block] else "?"
+        version, why = blocks.which_version(versions, None, answer)
+        if version is None:
+            if answer.status == 200 and len(answer.body) == size:
+                why = "it mixes versions, block by block: " + "".join(
+                    (
+                        "1"
+                        if answer.body[i : i + block] == v1[i : i + block]
+                        else "2" if answer.body[i : i + block] == v2[i : i + block] else "?"
+                    )
+                    for i in range(0, size, block)
                 )
-                for i in range(0, size, block)
-            )
-            return FAIL, f"{cache.svc}: the whole object mixes versions, block by block: {which}"
-        range_version = "v1" if part == v1[start:end] else "v2"
+            return FAIL, f"{cache.svc}: the whole object: {why}"
         if range_version != version:
             return FAIL, f"{cache.svc}: {later} came back as {range_version}, the whole object as {version}"
         notes.append(f"{cache.svc} served {version}")
@@ -3940,6 +4020,33 @@ def put_through(test: Test, cache: common.Cache, rel: str, v1: bytes) -> str | N
     return None
 
 
+def new_through(test: Test, cache: common.Cache, rel: str, data: bytes, chunked: bool) -> str | None:
+    """Send write_through()'s PUT of a new object, rel, holding data.
+
+    Some origin must then hold data at rel, and the cache serve it.
+
+    Args:
+        test: The test.
+        cache: The cache to send it through.
+        rel: The object, which no origin holds.
+        data: Its bytes.
+        chunked: Whether to send them in chunks, with no Content-Length.
+
+    Returns:
+        What went wrong, or None.
+    """
+    how = f"a {'chunked ' if chunked else ''}PUT of {len(data)} bytes"
+    answer = web.request("PUT", test.url(cache.url, rel), token=test.token, upload=data, chunked=chunked)
+    if not answer.ok:
+        return f"{how}: {answer.describe()}"
+    if common.digest(data) not in holdings(test, rel):
+        return f"{how} succeeded, but no origin holds what it wrote"
+    why = test.get(cache.url, rel, data, None)
+    if why:
+        return f"after {how}: {why}"
+    return None
+
+
 def delete_through(test: Test, cache: common.Cache, rel: str) -> str | None:
     """Send write_through()'s DELETE of rel, which every origin holds.
 
@@ -3989,9 +4096,12 @@ def write_through(test: Test) -> Row:
     the server's token must reach an origin; and once every origin holds
     what was written, the cache must serve it at once. Then likewise a
     DELETE, after which the cache must serve nothing, where the origins'
-    storage can delete. Where /protected-a takes no writes, the PUT must
-    be refused. An XRootD cache takes no writes, so its PUT must be
-    refused, and change no origin.
+    storage can delete. Then a PUT of a new object of 0 bytes, and one
+    sent in chunks with no Content-Length, as the Pelican client sends
+    it, must each reach an origin, and be served by the cache. Where
+    /protected-a takes no writes, the PUT must be refused. An XRootD
+    cache takes no writes, so its PUT must be refused, and change no
+    origin.
     """
     base = test.rel("write-through")
     v1 = {c.svc: os.urandom(blocks.OVERWRITE_SIZE) for c in test.caches}
@@ -4008,6 +4118,10 @@ def write_through(test: Test) -> Row:
             why = put_through(test, cache, rel, v1[cache.svc])
             if not why and deletes:
                 why = delete_through(test, cache, rel)
+            if not why and test.writes:
+                why = new_through(test, cache, f"{rel}-empty", b"", False) or new_through(
+                    test, cache, f"{rel}-chunked", os.urandom(blocks.OVERWRITE_SIZE), True
+                )
         if why:
             problems.append(f"{cache.svc}: {why}")
     kinds = Counter(c.kind for c in test.caches)
@@ -4017,9 +4131,9 @@ def write_through(test: Test) -> Row:
     if kinds["v2"] and not test.writes:
         notes.append(f"{kinds['v2']} V2 cache(s) refused a PUT")
     elif kinds["v2"] and not deletes:
-        notes.append(f"{kinds['v2']} V2 cache(s) relayed a PUT; {cannot_delete}")
+        notes.append(f"{kinds['v2']} V2 cache(s) relayed PUTs, empty and chunked too; {cannot_delete}")
     elif kinds["v2"]:
-        notes.append(f"{kinds['v2']} V2 cache(s) relayed a PUT and a DELETE")
+        notes.append(f"{kinds['v2']} V2 cache(s) relayed PUTs, empty and chunked too, and a DELETE")
     return outcome(problems, "; ".join(notes))
 
 
@@ -4239,6 +4353,7 @@ RUN = {
     "cache-corrupted": cache_corrupted,
     "transfer-status": transfer_status,
     "transfer-status-failure": transfer_status_failure,
+    "cache-memory": cache_memory,
     "origin-transfer-status": origin_transfer_status,
     "digests": digests_scenario,
     "digest-overwrite": digest_overwrite,

@@ -74,14 +74,16 @@ SCENARIOS = {
     ),
     "director-decision": "the plugin records the director's decision when asked",
     "skipstat-failover": (
-        "a direct read with ?skipstat of an object one origin alone holds comes back (several origins)"
+        "a direct read with ?skipstat of an object one origin alone holds comes back, by the client"
+        " and the plugin (several origins)"
     ),
     "multi-source": (
         "`get` and `put` with several sources: a directory, a collection, or refused"
         " (G8-G10, P8-P10); and ?recursive, by the client and the plugin"
     ),
     "preferred-cache-down": (
-        "a preferred cache that is down: with `+`, a director's cache serves; without, a contact error"
+        "a preferred cache that is down: with `+`, a director's cache serves; without, a contact"
+        " error; by the client and the plugin"
     ),
     "async-job": (
         "`get --async` and `copy --async` through the client agent: the bytes, `job status`"
@@ -1631,7 +1633,7 @@ def director_decision(test: Test) -> tuple[str, str]:
 # skipstat-failover
 
 
-def skipstat_failover(test: Test) -> tuple[str, str]:
+def skipstat_failover(test: Test) -> list[CaseRow]:
     """Check that a direct ?skipstat read finds the one origin holding it.
 
     With several origins, an object put in the last origin's store
@@ -1641,17 +1643,27 @@ def skipstat_failover(test: Test) -> tuple[str, str]:
     lists until one serves (getObjectServersToTry in
     client/handle_http.go). The note says whether the client's stats
     show a failed try at an origin that lacks it, or the client's probes
-    put the holder first.
+    put the holder first. stash_plugin's read of it with
+    ?directread&skipstat must likewise bring it, served by the holder
+    (`plugin`).
     """
     origins = stores.unique(test.fed.origins)
     if len(origins) < 2:
-        return SKIP, "one origin, or origins sharing a store ('-p topo-multi-origin')"
+        return [("", SKIP, "one origin, or origins sharing a store ('-p topo-multi-origin')")]
     if not test.direct:
-        return SKIP, "/protected-a takes no direct clients"
+        return [("", SKIP, "/protected-a takes no direct clients")]
     holder = origins[-1]
     name = "skipstat"
     data = os.urandom(OBJECT_SIZE)
     test.place(name, data, origins=[holder])
+    return [
+        ("", *skipstat_get(test, name, data, holder)),
+        ("plugin", *skipstat_plugin(test, name, data, holder)),
+    ]
+
+
+def skipstat_get(test: Test, name: str, data: bytes, holder: common.Origin) -> tuple[str, str]:
+    """Return skipstat_failover()'s row for `pelican object get`."""
     tried_first = False
     for n in range(SKIPSTAT_TRIES):
         fetch = test.pelican(
@@ -1679,6 +1691,21 @@ def skipstat_failover(test: Test) -> tuple[str, str]:
     if tried_first:
         return PASS, f"an origin without it was tried first, then {holder.svc} served"
     return PASS, f"{holder.svc} served at the first try each time ({SKIPSTAT_TRIES} reads)"
+
+
+def skipstat_plugin(test: Test, name: str, data: bytes, holder: common.Origin) -> tuple[str, str]:
+    """Return skipstat_failover()'s row for stash_plugin."""
+    url = test.pelican_url(test.rel(name), "directread&skipstat")
+    env = test.creds_env(test.server_creds("skipstat-plugin"))
+    for n in range(SKIPSTAT_TRIES):
+        fetch = test.plugin(f"skipstat-plugin-{n}", [url], env)
+        why = got(fetch, data, name)
+        if why:
+            return FAIL, why
+        served = transfers.plugin_endpoints(fetch.said)
+        if served != [holder.svc]:
+            return FAIL, f"served by {served or 'no host recorded'}, not {holder.svc}"
+    return PASS, f"{holder.svc} served each of {SKIPSTAT_TRIES} reads"
 
 
 # --------------------------------------------------------------------------
@@ -1857,7 +1884,9 @@ def preferred_cache_down(test: Test) -> list[CaseRow]:
     cache that answers nothing, and then the director's caches, which
     `+` adds, one of which must serve; without `+`, the client has only
     the dead cache, and must fail to reach it, by something other than a
-    refusal (getPreferredCaches in client/).
+    refusal (getPreferredCaches in client/). stash_plugin, given the
+    same in Client.PreferredCaches, must do the same (`plugin-plus`,
+    `plugin-alone`).
     """
     caches = test.fed.federated_caches
     if not caches:
@@ -1912,6 +1941,31 @@ def preferred_cache_down(test: Test) -> list[CaseRow]:
         rows.append(("alone", FAIL, f"failed by refusal, not by contact: {last_line(fetch.said)}"))
     else:
         rows.append(("alone", PASS, f"failed to reach the cache: {last_line(fetch.said)[:80]}"))
+    url = test.pelican_url(test.rel(name))
+    creds = test.server_creds("preferred-plugin")
+    fetch = test.plugin(
+        "preferred-plugin-plus", [url], test.creds_env(creds, PELICAN_CLIENT_PREFERREDCACHES=f"{dead},+")
+    )
+    why = got(fetch, data, name)
+    if why:
+        rows.append(("plugin-plus", FAIL, why))
+    else:
+        served = transfers.plugin_endpoints(fetch.said)
+        if not served or served[-1] not in {c.svc for c in caches}:
+            rows.append(("plugin-plus", FAIL, f"served by {served or 'no host recorded'}, not a cache"))
+        else:
+            rows.append(("plugin-plus", PASS, f"served by {served[-1]}"))
+    fetch = test.plugin(
+        "preferred-plugin-alone", [url], test.creds_env(creds, PELICAN_CLIENT_PREFERREDCACHES=dead)
+    )
+    if fetch.status == 0 or transfers.plugin_passed(fetch.said):
+        rows.append(("plugin-alone", FAIL, "succeeded, though its only cache is down"))
+    elif transfers.refused(fetch.said):
+        rows.append(("plugin-alone", FAIL, f"failed by refusal, not by contact: {last_line(fetch.said)}"))
+    elif os.path.exists(os.path.join(fetch.directory, name)):
+        rows.append(("plugin-alone", FAIL, "failed, but left a file of the object's name"))
+    else:
+        rows.append(("plugin-alone", PASS, f"failed to reach the cache: {last_line(fetch.said)[:80]}"))
     return rows
 
 

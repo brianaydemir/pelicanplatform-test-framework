@@ -158,7 +158,8 @@ client (`Issuer.PublicClientID`) has no secret and uses
 
 - `code-expiry`: Needs `-p origin-short-tokens`
   (`Issuer.AuthorizationCodeLifetime` of a minute). Redeemed after expiry,
-  an approved device code is `expired_token` or `invalid_grant`, and an
+  an approved device code is `expired_token`
+  ([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628#section-3.5)), and an
   authorization code `invalid_grant`. An expired device code may not be
   approved (400).
 

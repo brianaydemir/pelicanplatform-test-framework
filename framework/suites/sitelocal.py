@@ -29,7 +29,10 @@ SCENARIOS = {
     "plugin-get-public": "stash_plugin, preferring the site-local cache, of /public",
     "plugin-get-protected-a": "the same in /protected-a, with the server's token",
     "get-plus": "`--cache <site-local>,+`: the site-local cache still serves it",
+    "plugin-get-plus": "stash_plugin, preferring `<site-local>,+`: the site-local cache still serves it",
     "refused": "a token signed by a key no server knows: refused, and nothing written",
+    "plugin-refused": "the same for stash_plugin, with the token in its credentials directory",
+    "http-refused": "the same for a plain GET of the site-local cache: 401 or 403, and no bytes",
     "upstream": "a cold read through the site-local cache fills a federated V2 cache",
     "list": "Depth 1 through the site-local cache: listed where origins list, else refused",
 }
@@ -122,13 +125,20 @@ def get(test: Test, namespace: str) -> Row:
     return client_get(test, namespace, f"get-{namespace}", test.cache.url)
 
 
-def plugin_get(test: Test, namespace: str) -> Row:
-    """Run stash_plugin's download of a new object.
+def plugin_get(test: Test, namespace: str, name: str = "", caches: str = "") -> Row:
+    """Run stash_plugin's download of a new object in namespace.
 
-    The site-local cache is its preferred cache, and the server's token
-    is in its credentials directory where the namespace takes one.
+    Its preferred caches are caches, or the site-local cache alone, and
+    the server's token is in its credentials directory where the
+    namespace takes one. The site-local cache alone must serve it.
+
+    Args:
+        test: The run.
+        namespace: The object's namespace.
+        name: The object's name; plugin-get-<namespace> if empty.
+        caches: Client.PreferredCaches; the site-local cache if empty.
     """
-    name = f"plugin-get-{namespace}"
+    name = name or f"plugin-get-{namespace}"
     data = os.urandom(SIZE)
     rel = test.rel(name)
     test.seed(namespace, rel, data)
@@ -137,7 +147,7 @@ def plugin_get(test: Test, namespace: str) -> Row:
         f"sitelocal/{name}",
         [(test.pelican_url(rel, namespace=namespace), name)],
         creds={"server.use": token_file} if token_file else {},
-        cache=test.cache.url,
+        cache=caches or test.cache.url,
         cwd=test.tmp,
     )
     if not transfers.plugin_passed(ad):
@@ -159,6 +169,26 @@ def get_plus(test: Test) -> Row:
     return client_get(test, "protected-a", "get-plus", f"{test.cache.url},+")
 
 
+def unknown_token(test: Test) -> str:
+    """Return the file of a read token for /protected-a that no server takes.
+
+    It is signed by a key no server knows, and names the namespace's
+    issuer.
+    """
+    path = test.session.path("tokens/sitelocal-unknown")
+    if not os.path.exists(path):
+        credentials.mint(
+            test.fed,
+            path,
+            "/protected-a/",
+            credentials.UNKNOWN_KEY,
+            test.fed.issuer_of("protected-a"),
+            credentials.R,
+            profile=test.session.profile,
+        )
+    return path
+
+
 def refused(test: Test) -> Row:
     """Check a token that no server accepts, through the site-local cache.
 
@@ -167,17 +197,7 @@ def refused(test: Test) -> Row:
     name = "refused"
     rel = test.rel(name)
     test.seed("protected-a", rel, os.urandom(SIZE))
-    token = test.session.path("tokens/sitelocal-unknown")
-    issuer = test.fed.issuer_of("protected-a")
-    credentials.mint(
-        test.fed,
-        token,
-        "/protected-a/",
-        credentials.UNKNOWN_KEY,
-        issuer,
-        credentials.R,
-        profile=test.session.profile,
-    )
+    token = unknown_token(test)
     target = os.path.join(test.tmp, name)
     code, out, err = test.session.pelican_cmd(
         "object",
@@ -195,6 +215,47 @@ def refused(test: Test) -> Row:
     if common.sha256(target) is not None:
         return FAIL, "refused, but the file was written"
     return PASS, f"refused ({transfers.refused(out + err)})"
+
+
+def plugin_refused(test: Test) -> Row:
+    """Check refused() for stash_plugin.
+
+    The token is the only one in its credentials directory, and the
+    site-local cache its preferred cache.
+    """
+    name = "plugin-refused"
+    rel = test.rel(name)
+    test.seed("protected-a", rel, os.urandom(SIZE))
+    status, out, err, ad = test.session.plugin_run(
+        f"sitelocal/{name}",
+        [(test.pelican_url(rel), name)],
+        creds={"scitokens.use": unknown_token(test)},
+        cache=test.cache.url,
+        cwd=test.tmp,
+    )
+    if transfers.plugin_passed(ad):
+        return FAIL, "succeeded, but should have been refused"
+    category = transfers.refused(ad or out + err)
+    if category is None:
+        return FAIL, f"exit {status}, but not by refusal: {last_line(ad or err or out)}"
+    if common.sha256(os.path.join(test.tmp, name)) is not None:
+        return FAIL, "refused, but the file was written"
+    return PASS, f"refused ({category})"
+
+
+def http_refused(test: Test) -> Row:
+    """Check refused() for a plain GET of the site-local cache."""
+    rel = test.rel("http-refused")
+    data = os.urandom(SIZE)
+    test.seed("protected-a", rel, data)
+    with open(unknown_token(test), encoding="utf-8") as f:
+        token = f.read().strip()
+    answer = web.request("GET", f"{test.cache.url}{test.path(rel)}", token=token)
+    if answer.status not in (401, 403):
+        return FAIL, f"{answer.describe()}, not 401 or 403"
+    if data[:64] in answer.body:
+        return FAIL, f"refused ({answer.status}), but the body holds the object's bytes"
+    return PASS, f"refused ({answer.status})"
 
 
 def upstream(test: Test) -> Row:
@@ -263,7 +324,12 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
         "plugin-get-public": lambda: plugin_get(test, "public"),
         "plugin-get-protected-a": lambda: plugin_get(test, "protected-a"),
         "get-plus": lambda: get_plus(test),
+        "plugin-get-plus": lambda: plugin_get(
+            test, "protected-a", "plugin-get-plus", f"{test.cache.url},+"
+        ),
         "refused": lambda: refused(test),
+        "plugin-refused": lambda: plugin_refused(test),
+        "http-refused": lambda: http_refused(test),
         "upstream": lambda: upstream(test),
         "list": lambda: listing(test),
     }

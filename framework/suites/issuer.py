@@ -1568,7 +1568,9 @@ def code_expiry(test: Test) -> tuple[str, str]:
     """Check that device and authorization codes expire unredeemed.
 
     Each expires once its lifetime is over, and a device code may then
-    not be approved.
+    not be approved. An expired device code is refused with
+    expired_token (RFC 8628, section 3.5), and an expired authorization
+    code with invalid_grant (RFC 6749, section 5.2).
     """
     lifetime = test.lifetimes.code
     if lifetime > SHORT:
@@ -1591,9 +1593,8 @@ def code_expiry(test: Test) -> tuple[str, str]:
     # The codes were issued before `issued`, the device codes first.
     time.sleep(max(0.0, issued + lifetime + CODE_MARGIN - time.time()))
     polled = issuer.poll(client, str(approved["device_code"]))
-    expired = ("expired_token", "invalid_grant")
-    if polled.status != 400 or issuer.error_of(polled) not in expired:
-        problems.append(f"redeeming an expired device code: {polled.describe()}")
+    if not refused_with(polled, 400, "expired_token"):
+        problems.append(f"redeeming an expired device code: {polled.describe()}, not expired_token")
     answer = issuer.decide(client.url, str(unapproved["user_code"]), member, "approve")
     if answer.status != 400:
         problems.append(f"approving an expired device code: {answer.describe()}, not 400")

@@ -1042,6 +1042,14 @@ class Federation:
         }
 
     @cached_property
+    def cache_memory(self) -> bool:
+        """Whether the V2 caches keep decrypted blocks in memory.
+
+        That is Cache.MemoryCacheSize (`-p cache-memory`).
+        """
+        return self._line("cache-memory") != "off"
+
+    @cached_property
     def eviction(self) -> dict[str, tuple[int, int]]:
         """Each bounded cache's water marks, by service (`-p cache-small`).
 

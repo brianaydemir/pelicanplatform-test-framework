@@ -23,11 +23,19 @@ the log lists them all. The suite [skips](../glossary.md#skip) where
 - `origin-get`, `cache-get`: Every origin, and every cache, cold, must serve
   each object by its name. `origin-get` skips where `/protected-a` takes no
   direct clients.
-- `director-get`: Every director's object route must redirect a
-  [plain HTTP client](../glossary.md#plain-http-client) to a federated
-  cache, or with none, to an origin, with a `Location` that, followed as
-  given, gets the object. Skips at a standalone origin
+- `director-get`: Every director must redirect a
+  [plain HTTP client](../glossary.md#plain-http-client) with a `Location`
+  that, followed as given, gets the object: from its object route, to a
+  federated cache, or with none, to an origin; from the bare path, where
+  `Director.DefaultResponse` says
+  ([`-p director-default-origin`](../../framework/presets/director-default-origin.sh));
+  and from the bare path with `?directread`, to an origin, where
+  `/protected-a` takes direct clients. Skips at a standalone origin
   ([`-p topo-standalone`](../../framework/presets/topo-standalone.sh)).
+- `director-put`: A PUT of each name to every director's bare path must be
+  redirected to an origin, and, sent again there as `curl -L` sends it,
+  land as `client-put` says. Skips at a standalone origin, and where
+  `/protected-a` takes no writes.
 - `origin-list`, `cache-list`: Every origin and federated cache must list
   each name once, decoded, with its size. Each skips where `/protected-a`
   cannot be [listed](listings.md) there.

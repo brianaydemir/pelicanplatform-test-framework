@@ -32,6 +32,11 @@ OUT = "dev/owners-test"
 CLIENT = {
     "get": "`pelican object get` of each of origin-2's exports, through a cache",
     "direct-get": "the same with --direct, from origin-2, where the export allows it",
+    "cache-get": "the same with --cache, from each federated cache, named",
+    "plugin-get": (
+        "stash_plugin's get of an object on each side of each pair at once, with both owners'"
+        " tokens in its credentials directory, in either order"
+    ),
     "put": "`pelican object put` to each of origin-2's exports with its token, where it takes writes",
     "cross-get": "`pelican object get` with each owner's token in the other's namespace: refused",
     "cross-put": "`pelican object put` likewise: refused, and nothing stored",
@@ -512,13 +517,39 @@ def check_delete(
 # The client.
 
 
+def serving(test: Test, pair: Pair, side: str, direct: bool) -> set[str]:
+    """Return the hosts that may serve a client side's object of pair.
+
+    They are the side's origins for a direct read, and otherwise the
+    federated caches, or, where there are none, the side's origins.
+    """
+    if direct or not test.fed.federated_caches:
+        return {director.host(o.url) for o in test.stores_of(pair, side)}
+    return {director.host(c.url) for c in test.fed.federated_caches}
+
+
 def client_get(
-    test: Test, pair: Pair, side: str, cred: OwnerCredential, direct: bool, tag: str
+    test: Test,
+    pair: Pair,
+    side: str,
+    cred: OwnerCredential,
+    direct: bool,
+    tag: str,
+    cache: common.Cache | None = None,
 ) -> str | None:
     """Run `pelican object get` of one of side's objects with cred's token.
 
     Get it into a directory, so that the client stats the object first
     and a refusal reads as the server's (see testlib/transfers.py).
+
+    Args:
+        test: The run.
+        pair: The pair.
+        side: The side whose object it gets.
+        cred: The credential whose token it presents.
+        direct: Whether to get it from an origin (--direct).
+        tag: The name of its directory.
+        cache: The cache to get it from alone (--cache), if any.
 
     Returns:
         What went wrong, or None.
@@ -532,11 +563,14 @@ def client_get(
     args = ["--token", token_file] if token_file else []
     if direct:
         args.append("--direct")
+    if cache:
+        args += ["--cache", cache.url]
     ns = pair.namespace(side)
     code, out, err = test.session.pelican_cmd(
         "object", "get", *args, "--transfer-stats", stats, f"{fed.url}/{ns}/{rel}", into
     )
-    what = f"{'direct ' if direct else ''}get of /{ns}/{rel} ({cred.name})"
+    route = "direct " if direct else f"{cache.svc} " if cache else ""
+    what = f"{route}get of /{ns}/{rel} ({cred.name})"
     if owners.expected(fed, cred, pair, side, "get", direct) != ALLOW:
         why = not_refused(code, out, err)
         return f"{what}: {why}" if why else None
@@ -550,14 +584,56 @@ def client_get(
     if found is None:
         return f"{what}: no transfer stats"
     hosts = transfers.stats_endpoints(found)
-    servers = (
-        {director.host(o.url) for o in test.stores_of(pair, side)}
-        if direct
-        else {director.host(c.url) for c in fed.caches}
-    )
+    servers = {director.host(cache.url)} if cache else serving(test, pair, side, direct)
     if not hosts or not set(hosts) <= servers:
         return f"{what}: served by {sorted(set(hosts))}, not {sorted(servers)}"
     return None
+
+
+def plugin_get(test: Test, pair: Pair, tag: str) -> list[str]:
+    """Run stash_plugin's get of an object on each side of pair at once.
+
+    Its credentials directory holds each side's reader's token, with no
+    scitokens.use, so that for each object it must pick, among both, the
+    token whose issuer the director names for the object's namespace
+    (tokenIsAcceptable in client/acquire_token.go). It runs twice, with
+    the tokens' files in either order, since it tries them in order.
+
+    Returns:
+        What went wrong.
+    """
+    fed = test.fed
+    readers = {
+        "owner": reader(pair),
+        "origins": owners.BY_NAME["origins" if pair.like in credentials.PROTECTED else "none"],
+    }
+    files = {side: test.credential_token(readers[side], pair, side)[1] for side in owners.SIDES}
+    objects = {side: test.object_rel(side, 1) for side in owners.SIDES}
+    problems: list[str] = []
+    for order in (owners.SIDES, owners.SIDES[::-1]):
+        creds = {f"{n}-{side}.use": path for n, side in enumerate(order) if (path := files[side])}
+        into = test.directory(f"{tag}-{order[0]}-first")
+        urls = {side: f"{fed.url}/{pair.namespace(side)}/{objects[side]}" for side in owners.SIDES}
+        status, out, err, ads = test.session.plugin_run(
+            f"owners/{tag}-{order[0]}-first",
+            [(urls[side], os.path.join(into, objects[side].rsplit("/", 1)[-1])) for side in owners.SIDES],
+            creds=creds,
+            cwd=into,
+        )
+        what = f"{order[0]}'s token first"
+        if not transfers.plugin_passed(ads):
+            problems.append(f"{what}: exit {status}: {last_line(ads or err or out)}")
+            continue
+        for side in owners.SIDES:
+            local = os.path.join(into, objects[side].rsplit("/", 1)[-1])
+            want = common.sha256(test.store_path(test.stores_of(pair, side)[0], pair, side, objects[side]))
+            if common.sha256(local) != want:
+                problems.append(f"{what}: /{pair.namespace(side)}/{objects[side]} is not the object")
+        hosts = set(transfers.plugin_endpoints(ads))
+        servers = serving(test, pair, "owner", False) | serving(test, pair, "origins", False)
+        if not hosts or not hosts <= servers:
+            problems.append(f"{what}: served by {sorted(hosts)}, not {sorted(servers)}")
+    return problems
 
 
 def client_put(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: str) -> str | None:
@@ -598,9 +674,10 @@ def client_put(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: st
 def client(test: Test, name: str) -> tuple[str, str]:
     """Check the client scenario name, for each pair.
 
-    It runs the reads of every pair; the cross-owner reads of the pairs
-    that take a token to read; and the puts of those that take writes
-    (/other, and /public/other under `-p origin-public-writes`).
+    It runs the reads of every pair, by each route and by the plugin;
+    the cross-owner reads of the pairs that take a token to read; and the
+    puts of those that take writes (/other, and /public/other under
+    `-p origin-public-writes`).
     """
     owner, theirs = owners.BY_NAME["owner"], owners.BY_NAME["origins"]
     problems: list[str] = []
@@ -611,6 +688,15 @@ def client(test: Test, name: str) -> tuple[str, str]:
         writes = "Writes" in pair.export.caps and "Writes" in test.fed.exports[pair.like]
         if name in ("get", "direct-get"):
             found.append(client_get(test, pair, "owner", reader(pair), name == "direct-get", tag))
+        elif name == "cache-get":
+            for cache in test.fed.federated_caches:
+                found.append(
+                    client_get(test, pair, "owner", reader(pair), False, f"{tag}-{cache.svc}", cache)
+                )
+        elif name == "plugin-get":
+            problems += plugin_get(test, pair, tag)
+            done += 2
+            continue
         elif name == "cross-get":
             if pair.like not in credentials.PROTECTED:
                 continue
@@ -626,6 +712,8 @@ def client(test: Test, name: str) -> tuple[str, str]:
         done += len(found)
         problems += [p for p in found if p]
     if not done:
+        if name == "cache-get":
+            return SKIP, "there is no federated cache"
         return SKIP, "origin-2 exports no namespace that takes a token, or writes"
     return outcome(problems, f"{done} command(s)")
 

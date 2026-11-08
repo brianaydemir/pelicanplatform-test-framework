@@ -65,7 +65,28 @@ such as the namespaces it exports, is in the
 - **Sorting by GeoIP** (`Director.GeoIPLocation`), which needs
   [MaxMind](https://www.maxmind.com/)'s database and clients at public
   addresses. The servers declare their locations (`GeoLocation`) instead
-  ([routing](routing.md)).
+  ([routing](routing.md)). Its overrides (`GeoIPOverrides`), which map
+  addresses to coordinates without the database, change one director's
+  settings, not the shape; no scenario sets them.
+- **Caches that fetch from caches** (`Director.CachesPullFromCaches`): the
+  director adds caches to its list of origins only for a GET with
+  `?prefercached`, and only while it knows fewer origins than it would
+  name. A cache reading through another is the
+  [site-local cache](site-local-cache.md)'s case.
+- **XRootD's throttle** (`Origin.Concurrency`, `Cache.Concurrency`): a limit
+  on an XRootD server's I/O operations at once, which changes when requests
+  are served, not what. The [`throttling`](throttling.md) suite checks the
+  V2 cache's own limits.
+- **Settings of one server's administration**, each for a scenario that
+  restarts the server with it rather than for a shape, and none set by any:
+  a read-only web UI (`Server.WebReadOnly`), the issuer's groups from a file
+  (`Issuer.GroupSource` `file`; [`oidc`](oidc-login.md)'s `groups` checks
+  `oidc`), and the registry's list of institutions and fields of its own
+  (`Registry.Institutions`, `Registry.CustomRegistrationFields`).
+- **Background checks**: a V2 cache's data scan of each object once
+  (`Cache.DataScanMode` `once`), rather than on every pass, and an origin's
+  count of its exports' usage (`Origin.EnableDiskUsageCalculation`), which
+  adds metrics alone. Neither changes what a server serves.
 - **A server behind a reverse proxy** (`Server.TrustedProxies`), **or on
   port 443**: every server here listens on 8444, and
   [`director-ha`](../../framework/presets/director-ha.sh)'s load balancer
@@ -96,8 +117,8 @@ would catch a fault:
 - [`cache-v2`](../../framework/presets/cache-v2.sh) and
   [`origin-pstore`](../../framework/presets/origin-pstore.sh): the bytes in
   the store on disk, which only Pelican can decrypt. The tests compare what
-  such a server serves with what they wrote, and check the sizes of a V2
-  cache's files ([block boundaries](block-boundaries.md)).
+  such a server serves with what they wrote, and check the sizes of the
+  files in its store ([block boundaries](block-boundaries.md)).
 - [`topo-tiny`](../../framework/presets/topo-tiny.sh): that a download came
   through the cache; the [`transfers`](test-data.md) suite's `served-by`
   checks skip.
@@ -120,8 +141,6 @@ would catch a fault:
 - [`cache-tiered`](../../framework/presets/cache-tiered.sh): that a cache
   drops its copy of a tiered object, or serves one after a restart or an
   eviction ([tiering](tiering.md)).
-- [`cache-memory`](../../framework/presets/cache-memory.sh): that a read
-  came from memory.
 - [`origin-metadata`](../../framework/presets/origin-metadata.sh): that an
   upload cut short, or refused, publishes no event
   ([POSC and metadata](posc-and-metadata.md)).

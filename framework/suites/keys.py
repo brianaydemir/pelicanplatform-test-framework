@@ -500,8 +500,6 @@ def hot_rotate(test: Test) -> list[CaseRow]:
     if not fed.registry_url or not fed.directors:
         return [("", SKIP, "a standalone origin has no registry or director")]
     test.put_probe()
-    cache_name = test.cache_name()
-    old_tokens = {p: test.signed_with(test.origin_key, p) for p in credentials.PROFILES}
     client: issuer.Client | None = None
     admin_web = ""
     if fed.embedded_issuer and not fed.external_issuer:
@@ -512,6 +510,25 @@ def hot_rotate(test: Test) -> list[CaseRow]:
             admin_web,
             name=f"pelican-test-framework keys {test.run}",
         )
+    try:
+        return rotate(test, client, admin_web)
+    finally:
+        if client:
+            issuer.delete_client(fed.origin_web_url, f"/{NAMESPACE}", admin_web, client.client_id)
+
+
+def rotate(test: Test, client: issuer.Client | None, admin_web: str) -> list[CaseRow]:
+    """Rotate the keys, watch, and return hot_rotate()'s rows.
+
+    Args:
+        test: The suite's Test.
+        client: A client of the origins' issuer, whose tokens must come to
+            carry the new kid; None where the origins run none.
+        admin_web: The origins' admin web token, for the client.
+    """
+    fed = test.fed
+    cache_name = test.cache_name()
+    old_tokens = {p: test.signed_with(test.origin_key, p) for p in credentials.PROFILES}
     origin_name = new_key(test, test.origin_dirs, first_of_all=True)
     test.rotated.append((test.origin_dirs, origin_name))
     new_origin_key = os.path.join(test.origin_dirs[0], origin_name)
@@ -641,7 +658,6 @@ def hot_rotate(test: Test) -> list[CaseRow]:
             )
         else:
             rows.append(("issuer-kid", PASS, f"the new kid {issuer_kid_at:.0f}s in"))
-        issuer.delete_client(fed.origin_web_url, f"/{NAMESPACE}", admin_web, client.client_id)
     else:
         rows.append(("issuer-kid", SKIP, "the origins run no issuer of their own"))
     if "origins" in registry_at:

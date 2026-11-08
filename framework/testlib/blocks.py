@@ -43,6 +43,7 @@ read_cinfo() what an XRootD cache's .cinfo records, and xrootd_holds()
 whether it holds all of an object.
 """
 
+import glob
 import os
 import re
 import struct
@@ -136,9 +137,75 @@ def stored(size: int) -> int:
     """Return how many bytes the V2 cache's file of an object of size takes.
 
     It holds the object's blocks, and a tag for each (CalculateFileSize
-    in Pelican's local_cache).
+    in Pelican's local_cache). So does pstore's.
     """
     return size + TAG * -(-size // BLOCK)
+
+
+def chunk_size(declared: int | None) -> int:
+    """Return the size of the chunks that pstore streams an object in.
+
+    A declared length, held between 2 and 64 MiB, picks the smallest of
+    2, 4, 8, 16, 32, and 64 MiB that it fits in, by whole MiB, rounded
+    down to a whole block (streamChunkSizeCodeFor in Pelican's
+    pstore/object_io.go; BytesToChunkSizeCode and ChunkSizeCodeToBytes
+    in local_cache/chunking.go).
+
+    Args:
+        declared: The object's declared length; None if it has none.
+    """
+    if declared is None:
+        return CHUNK_UNDECLARED
+    mib = -(-min(max(declared, 2 << 20), 64 << 20) // (1 << 20))
+    step = next(n for n in (2, 4, 8, 16, 32, 64) if mib <= n)
+    return (step << 20) // BLOCK * BLOCK
+
+
+def pstore_files(size: int, declared: bool) -> list[int]:
+    """Return the size of each block file that pstore writes for an object.
+
+    An inline object has none; a buffered one, a file of its own; and a
+    streamed one, a file for each chunk, the last trimmed to what it
+    holds (GetChunkPath in Pelican's local_cache/chunking.go).
+
+    Args:
+        size: The object's size.
+        declared: Whether its length was declared.
+    """
+    kind = tier(size, declared)
+    if kind == "inline":
+        return []
+    if kind == "buffered":
+        return [stored(size)]
+    chunk = chunk_size(size if declared else None)
+    count = -(-size // chunk)
+    return [stored(chunk)] * (count - 1) + [stored(size - (count - 1) * chunk)]
+
+
+def pstore_dir(origin: common.Origin) -> str:
+    """Return a pstore origin's store, under framework/var.
+
+    It is Origin.PStoreLocation, /data/pstore in the origin, whose /data
+    is origin.store.
+    """
+    return f"{origin.store}/pstore"
+
+
+def pstore_block_files(origin: common.Origin) -> dict[str, int]:
+    """Return the size of each block file in a pstore origin's store, by path.
+
+    Each is in the store's objects/, two directories down, by the first
+    characters of its name, which is its version's hash
+    (GetInstanceStoragePath in Pelican's local_cache/schema.go). The paths
+    are under framework/var.
+    """
+    found: dict[str, int] = {}
+    for path in glob.glob(f"{pstore_dir(origin)}/objects/*/*/*"):
+        try:
+            found[path] = os.path.getsize(path)
+        except OSError:
+            pass  # reclaimed meanwhile
+    return found
 
 
 def range_header(request: Request) -> str:

@@ -36,13 +36,13 @@ server it checks.
 
 - `metric-authorization`: At each server:
 
-  - `metrics`: `/metrics` must get 401 or 403 with no token, or with one
-    signed by another key; 200 and the exposition with a token of the
+  - `metrics`: `/metrics` must get 401 with no token, and 401 or 403 with
+    one signed by another key; 200 and the exposition with a token of the
     server's local issuer and scope `monitoring.scrape`, or with the admin's
     login cookie; and 403 with the admin's bearer token (`web_ui.access`
     alone).
   - `promql`: A [Prometheus](https://prometheus.io/) query
-    (`/api/v1.0/prometheus/query`) must get 401 or 403 with no token; 200
+    (`/api/v1.0/prometheus/query`) must get 401 with no token; 200
     and a result with a local-issuer token of scope `monitoring.query`, or
     with the admin's login cookie; and 403 with `monitoring.scrape` alone.
   - `scrapes`: Within 60 seconds, each server's Prometheus must find its

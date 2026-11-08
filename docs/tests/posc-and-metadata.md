@@ -39,6 +39,8 @@ answered with a success or 405.
   all of one that succeeded.
 - `client`: Killing the [Pelican client](../glossary.md#pelican-client)'s
   `pelican object put` midway through a 1 GiB upload must leave nothing.
+- `plugin`: The same for [`stash_plugin`](../glossary.md#stash_plugin)'s
+  upload, its token in its credentials directory.
 - `hidden`: While an upload is staged, neither a Depth 1 PROPFIND of the
   export nor an HTML listing may show `.pelican-posc`. POSC only.
 - `posc-expiry`, at the first origin, POSC only:

@@ -34,9 +34,15 @@ suite's `nested-protected` check. `ready`, `keys`, and `routing` run in the
   `owner`, `origins`, and `none`; under
   [`-p origin-public-writes`](../../framework/presets/origin-public-writes.sh),
   all but `ns-jwks`.
-- `get`, `direct-get`, and `put`: The
+- `get`, `direct-get`, `cache-get`, and `put`: The
   [Pelican client](../glossary.md#pelican-client) must get origin-2's
-  objects from a cache and from origin-2, and put with its token to each of
-  its exports that takes writes.
+  objects through the director, from origin-2, and from each federated
+  cache it names, and put with its token to each of its exports that takes
+  writes.
+- `plugin-get`: [`stash_plugin`](../glossary.md#stash_plugin) must get an
+  object on each side of each pair in one run, with both owners' tokens in
+  its credentials directory and no `scitokens.use`, so that it picks, for
+  each object, the token whose issuer the director names. It runs twice,
+  with the tokens' files in either order.
 - `cross-get` and `cross-put`: Each owner's token must be refused in the
   other's namespace, storing nothing.

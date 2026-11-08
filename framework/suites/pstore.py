@@ -60,7 +60,10 @@ SCENARIOS = {
     "introspect-cli": "`pelican-server origin introspect` says what the storage API says",
     "scheduled-passes": "the index check and data scan run clean, and reclaim old versions",
     "corruption": "a block of an object, changed in its file, is counted by the next data scan",
-    "chunks": "an object streamed in three chunks: a file for each, and every byte across their edges",
+    "chunks": (
+        "objects streamed in three chunks, and declared past the largest chunk: a file for each"
+        " chunk, and every byte across their edges"
+    ),
     "capacity": "a full store refuses a PUT with 507 before its body, and takes it once freed",
     "backups": "catalog backups at startup and every interval, keeping only the newest",
     "restore": (
@@ -252,14 +255,6 @@ class Test(suite.Test):
             What went wrong, or None.
         """
         return stores.put(origin, self.namespace, rel, data, self.setup)
-
-
-def store_dir(origin: common.Origin) -> str:
-    """Return origin's store, under framework/var.
-
-    It is STORE (/data/pstore) in the origin, whose /data is origin.store.
-    """
-    return f"{origin.store}/{STORE[len('/data/') :]}"
 
 
 def usage(test: Test, origin: common.Origin) -> tuple[dict[str, Any] | None, str]:
@@ -855,23 +850,6 @@ def scheduled_passes(test: Test) -> dict[str, Row]:
 # corruption
 
 
-def block_files(origin: common.Origin) -> dict[str, int]:
-    """Return the size of each block file in origin's store, by path.
-
-    Each is in its objects/, two directories down, by the first
-    characters of its name, which is its version's hash
-    (GetInstanceStoragePath in Pelican's local_cache/schema.go). The paths
-    are under framework/var.
-    """
-    found: dict[str, int] = {}
-    for path in glob.glob(f"{store_dir(origin)}/{OBJECTS_DIR}/*/*/*"):
-        try:
-            found[path] = os.path.getsize(path)
-        except OSError:
-            pass  # reclaimed meanwhile
-    return found
-
-
 def flip_byte(path: str, offset: int) -> str | None:
     """Invert the byte at offset in the file at path.
 
@@ -906,13 +884,13 @@ def corrupted_at(test: Test, origin: common.Origin) -> Row:
     """
     rel = test.rel("corruption", origin.svc)
     data = os.urandom(CORRUPT_SIZE)
-    known = set(block_files(origin))
+    known = set(blocks.pstore_block_files(origin))
     why = test.upload(origin, rel, data)
     if why:
         return FAIL, why
     try:
         size = blocks.stored(CORRUPT_SIZE)
-        made = [p for p, n in block_files(origin).items() if p not in known and n == size]
+        made = [p for p, n in blocks.pstore_block_files(origin).items() if p not in known and n == size]
         if len(made) != 1:
             return INCONCLUSIVE, f"{len(made)} new block files of {size} bytes, not 1"
         before = fetch_metrics(origin)
@@ -959,84 +937,107 @@ def corruption(test: Test) -> dict[str, Row]:
 # blocks.CHUNK_UNDECLARED: two whole, and a third of one byte, so that the
 # second has a chunk edge on either side.
 CHUNKS_SIZE = 2 * blocks.CHUNK_UNDECLARED + 1
+# An object of a declared length a byte past 64 MiB, which pstore streams
+# in chunks of the largest size, 64 MiB rounded down to a whole block
+# (blocks.chunk_size()): one whole, and a second of the rest.
+CAPPED_SIZE = (64 << 20) + 1
+# The objects that `chunks` puts, by case ("" for the streamed one): each
+# with whether its length is declared, and its size.
+CHUNKED: dict[str, tuple[bool, int]] = {"": (False, CHUNKS_SIZE), "capped": (True, CAPPED_SIZE)}
 
 
-def chunk_requests() -> list[blocks.Request]:
-    """Return the ranges that chunks asks for: at and across each chunk edge."""
+def chunk_requests(size: int, chunk: int) -> list[blocks.Request]:
+    """Return the ranges that chunks asks for: at and across each chunk edge.
+
+    Args:
+        size: The object's size.
+        chunk: pstore's chunk size for it.
+    """
+    edges = list(range(chunk, size, chunk))
     found: list[blocks.Request] = []
-    for edge in (blocks.CHUNK_UNDECLARED, 2 * blocks.CHUNK_UNDECLARED):
+    for edge in edges:
         found += [
             ((edge - 1, edge),),
             ((edge, edge),),
             ((edge - 1, edge - 1),),
             ((edge - blocks.BLOCK - 1, edge + blocks.BLOCK),),
         ]
-    middle = (blocks.CHUNK_UNDECLARED - 1, 2 * blocks.CHUNK_UNDECLARED)
+    if len(edges) > 1:
+        found.append(((edges[0] - 1, edges[1]),))
     return found + [
-        (middle,),
-        ((0, 0), (blocks.CHUNK_UNDECLARED, blocks.CHUNK_UNDECLARED), (CHUNKS_SIZE - 1, CHUNKS_SIZE - 1)),
+        ((0, 0), (edges[0], edges[0]), (size - 1, size - 1)),
         ((None, 2),),
     ]
 
 
-def chunk_files(made: Mapping[str, int]) -> str | None:
-    """Return what is wrong with the block files that the object made, or None.
+def chunk_files(made: Mapping[str, int], size: int, chunk: int) -> str | None:
+    """Return what is wrong with the block files that an object made, or None.
 
     pstore keeps a streamed object's chunks in files of their own: the
     first by its version's hash, and each after it with -2, -3, and so on
     (GetChunkPath in Pelican's local_cache/chunking.go), each holding its
     blocks and their tags, the last trimmed to what it holds.
+
+    Args:
+        made: The size of each block file that the object made, by path.
+        size: The object's size.
+        chunk: pstore's chunk size for it.
     """
-    bases = [p for p in made if f"{p}-2" in made and f"{p}-3" in made]
-    if len(made) != 3 or len(bases) != 1:
-        return f"made {len(made)} block files ({', '.join(sorted(os.path.basename(p) for p in made))}), not 3 chunks"
+    count = -(-size // chunk)
+    bases = [p for p in made if all(f"{p}-{n}" in made for n in range(2, count + 1))]
+    if len(made) != count or len(bases) != 1:
+        names = ", ".join(sorted(os.path.basename(p) for p in made))
+        return f"made {len(made)} block files ({names}), not {count} chunks"
     base = bases[0]
-    want = {
-        base: blocks.stored(blocks.CHUNK_UNDECLARED),
-        f"{base}-2": blocks.stored(blocks.CHUNK_UNDECLARED),
-        f"{base}-3": blocks.stored(1),
-    }
-    for path, size in want.items():
-        if made[path] != size:
-            return f"chunk file {os.path.basename(path)} is {made[path]} bytes, not {size}"
+    want = {base if n == 1 else f"{base}-{n}": blocks.stored(chunk) for n in range(1, count)}
+    want[base if count == 1 else f"{base}-{count}"] = blocks.stored(size - (count - 1) * chunk)
+    for path, stored in want.items():
+        if made[path] != stored:
+            return f"chunk file {os.path.basename(path)} is {made[path]} bytes, not {stored}"
     return None
 
 
-def chunked_at(test: Test, origin: common.Origin) -> Row:
-    """Check an object streamed in three chunks at origin.
+def chunked_at(test: Test, origin: common.Origin, case: str) -> Row:
+    """Check an object of CHUNKED's case, which pstore keeps in chunks.
 
-    It is put in chunks, with no length, as the clients put one, so that
-    pstore streams it in chunks of blocks.CHUNK_UNDECLARED
-    (streamChunkSizeCodeFor in Pelican's pstore/object_io.go). Its store
-    must hold a block file for each chunk (chunk_files()), and the origin
-    must serve it whole, and each range at and across each chunk edge,
-    byte for byte. Afterward the object is deleted.
+    The streamed object is put in chunks, with no length, as the
+    clients put one, so that pstore streams it in chunks of
+    blocks.CHUNK_UNDECLARED (streamChunkSizeCodeFor in Pelican's
+    pstore/object_io.go); the capped one, with its length, past the
+    largest chunk. The store must hold a block file for each chunk
+    (chunk_files()), and the origin must serve the object whole, and
+    each range at and across each chunk edge, byte for byte. Afterward
+    the object is deleted.
     """
-    rel = test.rel("chunks", origin.svc)
-    data = os.urandom(CHUNKS_SIZE)
-    known = set(block_files(origin))
-    why = stores.put(origin, test.namespace, rel, data, test.setup, chunked=True)
+    declared, size = CHUNKED[case]
+    chunk = blocks.chunk_size(size if declared else None)
+    rel = test.rel("chunks", f"{origin.svc}{'-' + case if case else ''}")
+    data = os.urandom(size)
+    known = set(blocks.pstore_block_files(origin))
+    why = stores.put(origin, test.namespace, rel, data, test.setup, chunked=not declared)
     if why:
         return FAIL, why
     try:
         problems: list[str] = []
-        why = chunk_files({p: n for p, n in block_files(origin).items() if p not in known})
+        why = chunk_files(
+            {p: n for p, n in blocks.pstore_block_files(origin).items() if p not in known}, size, chunk
+        )
         if why:
             problems.append(why)
         url = test.url(origin.url, rel)
         answer = web.request("GET", url, token=test.setup)
         if answer.status != 200 or answer.body != data:
             problems.append(f"GET of the whole: {answer.describe()}, not the object")
-        for request in chunk_requests():
+        requests = chunk_requests(size, chunk)
+        for request in requests:
             header = blocks.range_header(request)
             why = blocks.check(
                 data, request, web.request("GET", url, token=test.setup, headers={"Range": header})
             )
             if why:
                 problems.append(f"{header}: {why}")
-        return outcome(
-            problems, f"{CHUNKS_SIZE} bytes in 3 chunk files; whole and {len(chunk_requests())} ranges"
-        )
+        files = -(-size // chunk)
+        return outcome(problems, f"{size} bytes in {files} chunk files; whole and {len(requests)} ranges")
     finally:
         why = stores.delete(origin, test.namespace, rel, test.setup)
         if why:
@@ -1044,8 +1045,12 @@ def chunked_at(test: Test, origin: common.Origin) -> Row:
 
 
 def chunks(test: Test) -> dict[str, Row]:
-    """Run chunked_at() at each pstore origin."""
-    return {origin.svc: chunked_at(test, origin) for origin in test.pstores}
+    """Run chunked_at() at each pstore origin, for each of CHUNKED."""
+    return {
+        f"{origin.svc} {case}".strip(): chunked_at(test, origin, case)
+        for origin in test.pstores
+        for case in CHUNKED
+    }
 
 
 # --------------------------------------------------------------------------
@@ -1561,8 +1566,8 @@ class Restore:
 
     @property
     def store(self) -> str:
-        """The store, under framework/var (store_dir())."""
-        return store_dir(self.origin)
+        """The store, under framework/var (blocks.pstore_dir())."""
+        return blocks.pstore_dir(self.origin)
 
     @property
     def catalog(self) -> str:
@@ -1750,17 +1755,19 @@ class Restore:
             return rows
         finally:
             if stopped:
-                if not self.swapped:
-                    self.put_back()
-                else:
-                    found = os.stat(f"{self.store}/{MASTER_KEY}")
-                    why = give_back(self.catalog, found.st_uid, found.st_gid)
-                    if why:
-                        warn(why)
                 try:
-                    control.start(self.origin.svc)
-                except control.ControlError as e:
-                    warn(f"starting {self.origin.svc} again: {e}")
+                    if not self.swapped:
+                        self.put_back()
+                    else:
+                        found = os.stat(f"{self.store}/{MASTER_KEY}")
+                        why = give_back(self.catalog, found.st_uid, found.st_gid)
+                        if why:
+                            warn(why)
+                finally:
+                    try:
+                        control.start(self.origin.svc)
+                    except control.ControlError as e:
+                        warn(f"starting {self.origin.svc} again: {e}")
         rows["served"] = suite.attempt(self.served)
         if rows["served"][0] != PASS:
             # Leave the rest of the run the catalog that served before.

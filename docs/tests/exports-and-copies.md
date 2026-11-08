@@ -75,10 +75,11 @@ The scenarios:
 - `disable-copies`:
 
   - `public`: A COPY to `/public`, which takes no writes, must be refused
-    (401, 403, 404, or 405). XRootD origins are asked too. Skips under
+    (401, 403, or 405). XRootD origins are asked too. Skips under
     [`-p origin-public-writes`](../../framework/presets/origin-public-writes.sh).
-  - `disabled`: Under the capability restart, a COPY to `/protected-a`: 404
-    or 405. An OPTIONS of `/` with no token: 200, with an `Allow` that names
+  - `disabled`: Under the capability restart, a COPY to `/protected-a`: 405
+    ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.6)). An
+    OPTIONS of `/` with no token: 200, with an `Allow` that names
     no COPY.
 
 - `listings-capability`: Under the capability restart, in the export without

@@ -505,7 +505,7 @@ def vector(answer: web.Response) -> Series | None:
 def metrics_access(test: Test, server: Server) -> CaseRow:
     """Check who may read server's /metrics.
 
-    No one with no token (401 or 403); a token of its own issuer with
+    No one with no token (401); a token of its own issuer with
     scope monitoring.scrape, as it scrapes itself; not one signed by
     another key; the admin's login cookie, which carries the scope
     (setLoginCookie); and not the admin's bearer token, which lacks it
@@ -522,7 +522,7 @@ def metrics_access(test: Test, server: Server) -> CaseRow:
     return judge(
         f"{server.name} metrics",
         [
-            ("none", web.request("GET", url), (401, 403)),
+            ("none", web.request("GET", url), (401,)),
             ("scrape token", allowed, (200,)),
             (f"signed by {whose}", web.request("GET", url, token=foreign), (401, 403)),
             ("admin's cookie", web.request("GET", url, headers=cookie(test, server)), (200,)),
@@ -535,7 +535,7 @@ def metrics_access(test: Test, server: Server) -> CaseRow:
 def promql_access(test: Test, server: Server) -> CaseRow:
     """Check who may query server's Prometheus.
 
-    No one with no token (401 or 403); a token of its own issuer with
+    No one with no token (401); a token of its own issuer with
     scope monitoring.query, and the admin's login cookie (200); not a
     token with scope monitoring.scrape alone (403).
     """
@@ -549,7 +549,7 @@ def promql_access(test: Test, server: Server) -> CaseRow:
     return judge(
         f"{server.name} promql",
         [
-            ("none", webapi.promql(server.web_url, promql), (401, 403)),
+            ("none", webapi.promql(server.web_url, promql), (401,)),
             ("query token", answered, (200,)),
             ("admin's cookie", webapi.promql(server.web_url, promql, headers=cookie(test, server)), (200,)),
             ("scrape token", webapi.promql(server.web_url, promql, scrape), (403,)),

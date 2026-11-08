@@ -134,8 +134,9 @@ and `auth` suites. `stash_plugin stage` is not tested.
 - `skipstat-failover`: Under `-p topo-multi-origin`, an object in one
   origin's store alone, read by `pelican object get --direct` with
   `?skipstat`, must come back, since the client tries each origin the
-  director lists. Skips where the origins share a store, and where
-  `/protected-a` takes no direct clients.
+  director lists. `stash_plugin`'s read of it with `?directread&skipstat`
+  must come back from that origin (`plugin`). Skips where the origins share
+  a store, and where `/protected-a` takes no direct clients.
 
 - `multi-source`: `get` and `put` with several sources (G8–G10, P8–P10 of
   [Pelican](https://pelicanplatform.org/)'s
@@ -160,8 +161,10 @@ and `auth` suites. `stash_plugin stage` is not tested.
 
 - `preferred-cache-down`: `pelican object get --cache https://<cache>:1,+`
   names a dead cache, then the director's, which must serve (`plus`).
-  Without `+`, the get must fail, but not by refusal (`alone`). Skips
-  without a federated cache.
+  Without `+`, the get must fail, but not by refusal (`alone`).
+  `stash_plugin`, given the same in `Client.PreferredCaches`, must do the
+  same, and leave no file when it fails (`plugin-plus`, `plugin-alone`).
+  Skips without a federated cache.
 
 - `async-job`: `pelican object get --async --wait`, run by the client agent,
   must bring the object (`get`). `pelican job status --json` must report it

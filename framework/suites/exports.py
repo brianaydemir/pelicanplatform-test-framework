@@ -180,11 +180,12 @@ SENTINEL_WAIT = 120
 # also answer that it does not allow the method (405).
 REFUSED = (401, 403)
 LISTING_REFUSED = (401, 403, 405)
-# What a COPY to an export without Copies must get: 405, or 404, as from
-# an origin that routes no COPY there. A COPY to /public may also be
-# refused as a write.
-NO_COPY = (404, 405)
-PUBLIC_COPY_REFUSED = (401, 403, 404, 405)
+# What a COPY to an export without Copies must get: 405, since the
+# method is not one the export supports (RFC 9110, section 15.5.6). A
+# COPY to /public, which takes no writes, may also be refused as a
+# write.
+NO_COPY = (405,)
+PUBLIC_COPY_REFUSED = (401, 403, 405)
 
 # Why the origins cannot take an export with DirectReads or Listings.
 UNDIRECTED = (
@@ -723,7 +724,7 @@ def copies_to_public(test: Test) -> Row:
         answer = test.copy(origin, "public", rel, source, test.token)
         if answer.status not in PUBLIC_COPY_REFUSED:
             found.problems.append(
-                f"{origin.svc}: a COPY to /public got {answer.describe()}, not 401, 403, 404," + " or 405"
+                f"{origin.svc}: a COPY to /public got {answer.describe()}, not 401, 403, or 405"
             )
         problem = test.stored(origin, "public", rel, None, "the destination in /public")
         if problem:
@@ -897,9 +898,7 @@ def copies_disabled(test: Test, _layout: Layout, _data: Mapping[str, bytes]) -> 
         source = stores.url(origin, NAMESPACE, test.rel(PROBE))
         answer = test.copy(origin, NAMESPACE, rel, source, test.token)
         if answer.status not in NO_COPY:
-            found.problems.append(
-                f"{origin.svc}: a COPY to /{NAMESPACE} got {answer.describe()}, not 404 or 405"
-            )
+            found.problems.append(f"{origin.svc}: a COPY to /{NAMESPACE} got {answer.describe()}, not 405")
         problem = test.stored(origin, NAMESPACE, rel, None, "the destination")
         if problem:
             found.problems.append(f"{origin.svc}: {problem}")
@@ -1913,12 +1912,15 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
                 run_restarted(test, later, record)
             if "nested-export" in selected:
                 print("  nested-export ...")
-                for row, result in nested_export(test).items():
+                found = suite.attempt_all(ROWS["nested-export"], partial(nested_export, test), EXPECTED)
+                for row, result in found.items():
                     record(row, result)
             for name in ("backend-token", "backend-passthrough"):
                 if name in selected:
                     print(f"  {name} ...")
-                    record(name, gated(test, name == "backend-passthrough"))
+                    record(
+                        name, suite.attempt(partial(gated, test, name == "backend-passthrough"), EXPECTED)
+                    )
             if "sentinel" in selected:
                 print("  sentinel ...")
                 found = suite.attempt_all(ROWS["sentinel"], partial(sentinel_location, test), EXPECTED)
