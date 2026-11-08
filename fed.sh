@@ -2032,11 +2032,14 @@ fed_put() {
 }
 
 # Download binary $1 at version $2 for OS $3 as $4/$1-$3, in directory $4,
-# which no container can write.
+# which no container can write. A download that fails, or that stalls
+# (under 1 kB/s for 30 s), is retried, so that a passing network fault
+# neither fails nor hangs `init`.
 fed_fetch_archive() {
   tarball="$1_$3_${fed_arch}.tar.gz"
   ( cd "$4" \
-      && curl -fSL -O \
+      && curl -fSL -O --connect-timeout 30 --speed-limit 1000 --speed-time 30 \
+          --retry 3 --retry-all-errors \
           "https://github.com/PelicanPlatform/pelican/releases/download/v$2/${tarball}" \
       && tar xzf "${tarball}" \
       && mv "$1-$2/$1" "$1-$3" \

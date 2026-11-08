@@ -26,7 +26,7 @@ change this shape.
 - [Docker Engine](https://docs.docker.com/engine/) 25+ and
   [Docker Compose](https://docs.docker.com/compose/) v2.24+. On Docker
   Desktop, use VirtioFS file sharing.
-- `sh`, `curl`, `openssl`, `ssh-keygen`, and `tar`.
+- `sh`, `curl` 7.71+, `openssl`, `ssh-keygen`, and `tar`.
 - [uv](https://docs.astral.sh/uv/), which provides the scripts' Python.
 - About 2.5 GB of memory for the containers, or 3.5 GB with
   [`-p topo-multi-origin`](framework/presets/topo-multi-origin.sh) and

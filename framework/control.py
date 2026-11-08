@@ -25,9 +25,11 @@ the shape's services but `dev`:
 On stopping, the helper puts back what the tests left: it removes their
 configuration from control/config/, and restarts each running service
 it was in; and it starts, unpauses, or thaws what they stopped, killed,
-paused, or froze. On starting, it removes any configuration still left,
-as by a helper that was killed, and restarts each running service it
-was in; what else an earlier helper did, it cannot know.
+paused, or froze. SIGTERM or SIGHUP stops it once the request in hand
+is done, so that it knows what that request's action did. On starting,
+it removes any configuration still left, as by a helper that was
+killed, and restarts each running service it was in; what else an
+earlier helper did, it cannot know.
 """
 
 import contextlib
@@ -39,7 +41,7 @@ import subprocess
 import sys
 import time
 from types import FrameType
-from typing import Any, NoReturn
+from typing import Any
 
 # Keep the checkout free of __pycache__.
 sys.dont_write_bytecode = True
@@ -104,6 +106,7 @@ class Helper:
         services: The shape's services that the tests may control: all
             but `dev`.
         undo: The action that puts each service back, by service.
+        stopping: Whether a signal has asked it to stop serving (stop()).
     """
 
     def __init__(self) -> None:
@@ -112,6 +115,16 @@ class Helper:
             common.die(f"cannot list the shape's services: {output}")
         self.services = sorted(set(output.split()) - {"dev"})
         self.undo: dict[str, str] = {}
+        self.stopping = False
+
+    def stop(self, _signum: int, _frame: FrameType | None) -> None:
+        """Have serving end once the request in hand is done.
+
+        Ending in the middle of a request would kill its `docker compose`,
+        which may have acted all the same, before what puts it back is
+        recorded in undo.
+        """
+        self.stopping = True
 
     def handle(self, request: dict[str, Any]) -> tuple[bool, str]:
         """Do what request asks.
@@ -232,15 +245,17 @@ def answer(requests: int, name: str, ok: bool, output: str) -> None:
 
 
 def serve_requests(helper: Helper, parent: int, requests: int) -> None:
-    """Answer requests, oldest first, until the helper's parent ends.
+    """Answer requests, oldest first, until stopped or the parent ends.
 
     Args:
         helper: What does the requests.
         parent: The process ID of the process that started the helper.
         requests: The requests' directory, open.
     """
-    while os.getppid() == parent:
+    while os.getppid() == parent and not helper.stopping:
         for name in sorted(os.listdir(requests)):
+            if helper.stopping:
+                return
             if not name.endswith(".req"):
                 continue
             try:
@@ -258,11 +273,6 @@ def serve_requests(helper: Helper, parent: int, requests: int) -> None:
         time.sleep(POLL)
 
 
-def stopped(_signum: int, _frame: FrameType | None) -> NoReturn:
-    """Exit, so that serving ends, and what the tests left is put back."""
-    sys.exit(0)
-
-
 def serve() -> None:
     """Serve the tests' requests, unless another helper does."""
     if "COMPOSE_FILE" not in os.environ:
@@ -277,9 +287,9 @@ def serve() -> None:
         say("another helper serves the tests already")
         return
     parent = os.getppid()
-    for signum in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(signum, stopped)
     helper = Helper()
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, helper.stop)
     requests = common.open_dir(control.REQUESTS)
     # What is here is an earlier run's: no test asks before `serving` is.
     for name in os.listdir(requests):
