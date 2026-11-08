@@ -5,7 +5,8 @@ name = "brianaydemir-pelicanplatform-test-framework"
 version = "0.0.0"
 description = "brianaydemir-pelicanplatform-test-framework"
 readme = "README.md"
-# Also the tag of the python images in framework/docker-compose*.yaml.
+# Also the tag of the python images in framework/docker-compose*.yaml, and
+# the interpreter that test.py's shebang names (see PELICAN_DEV_TAG).
 requires-python = ">=3.13,<3.14"
 license = "Apache-2.0"
 authors = [{ name = "Brian Aydemir", email = "baydemir@morgridge.org" }]

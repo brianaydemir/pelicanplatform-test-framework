@@ -114,7 +114,7 @@ container's log afresh.
 4. **Test** with `./fed.sh test`. Or open a shell in the dev container with
    `./fed.sh dev`, where this checkout is `/scratch`, read-only (edit it on
    the host), and your Pelican checkout, if you name one, is `/app`, and run
-   `python3.13 /scratch/test.py` or the client:
+   `/scratch/test.py` or the client:
 
    ```
    /scratch/framework/var/bin/linux/pelican object get \

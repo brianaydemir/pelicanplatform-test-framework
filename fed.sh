@@ -2581,6 +2581,16 @@ fed_dev_up() {
       docker compose -f framework/docker-compose.yaml up --detach dev
 }
 
+# Refuse to run the tests in a dev container without the interpreter that
+# test.py's shebang names, which the dev image supplies.
+fed_require_test_python() {
+  fed_test_python=$(sed -n '1s/^#!.*[ /]//p' test.py)
+  docker compose -f framework/docker-compose.yaml exec -T dev \
+      sh -c 'command -v "$1" >/dev/null' sh "${fed_test_python}" \
+      || die "${IMAGE_DEV} has no ${fed_test_python}, which test.py's shebang" \
+             "names; set PELICAN_DEV_TAG (or IMAGE_DEV) to a dev image with it"
+}
+
 # Serve the tests' requests to control the services
 # (framework/control.py) in the background, for as long as they run,
 # with what it says appended to file $1, if given, and otherwise on
@@ -2609,10 +2619,11 @@ fed_control_stop() {
 # they put back. Docker passes no signal on to what `exec -T` runs, so
 # an interrupt of the command alone would leave them running. If they
 # have not ended after a minute, kill them; the helper puts back what
-# they leave.
+# they leave. They run as test.py under whatever interpreter its shebang
+# names.
 fed_test_interrupt() {
   docker compose -f framework/docker-compose.yaml exec -T dev sh -c '
-      tests="^python3\.13 /scratch/test\.py"
+      tests="^[^ ]* /scratch/test\.py"
       pkill -INT -f "${tests}" || exit 0
       echo "waiting for the tests in the dev container to end" >&2
       n=0
@@ -2939,6 +2950,7 @@ case "${cmd}" in
     fed_dev_up
     logs=""
     if [ "${cmd}" = test ]; then
+      fed_require_test_python
       # The services' logs are kept, pass or fail, but for a listing or
       # the usage (see fed_save_logs).
       case "${1:-}" in
@@ -2947,7 +2959,7 @@ case "${cmd}" in
       esac
       # RESULTS_TAG goes through, to name the results (see
       # framework/testlib/report.py).
-      set -- env ${RESULTS_TAG:+"RESULTS_TAG=${RESULTS_TAG}"} python3.13 /scratch/test.py "$@"
+      set -- env ${RESULTS_TAG:+"RESULTS_TAG=${RESULTS_TAG}"} /scratch/test.py "$@"
     fi
     [ $# -gt 0 ] || set -- bash -il
     # No TTY unless both ends are a terminal, so output can be captured.
