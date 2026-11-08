@@ -112,7 +112,7 @@ services:
   # As in docker-compose.yaml.
   idp:
     hostname: idp
-    image: python:3-alpine
+    image: python:3.13-alpine
     profiles: ["idp"]
     command: ["python3", "-u", "/fed/bin/idp.py"]
     environment:
@@ -148,7 +148,7 @@ services:
   # As in docker-compose.yaml, but the federation is `fed`.
   metadata:
     hostname: metadata
-    image: python:3-alpine
+    image: python:3.13-alpine
     profiles: ["metadata"]
     command: ["python3", "-u", "/fed/bin/recorder.py"]
     depends_on:

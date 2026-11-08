@@ -165,7 +165,7 @@ services:
   idp:
     hostname: idp
     networks: [default, firewalled]
-    image: python:3-alpine
+    image: python:3.13-alpine
     profiles: ["idp"]
     command: ["python3", "-u", "/fed/bin/idp.py"]
     environment:
@@ -883,7 +883,7 @@ services:
   # metadata-server/recorder.py.
   metadata:
     hostname: metadata
-    image: python:3-alpine
+    image: python:3.13-alpine
     profiles: ["metadata"]
     command: ["python3", "-u", "/fed/bin/recorder.py"]
     depends_on:
