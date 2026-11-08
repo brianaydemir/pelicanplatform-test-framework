@@ -2615,14 +2615,6 @@ fed_test_interrupt() {
       done' || true
 }
 
-# Copy stdin to stdout with the signature of each JWT in it cut out, as
-# test.py cuts it out of what the tests print (redact() in
-# framework/testlib/report.py): a token that a server's log quotes would
-# otherwise be good, for as long as it lasts, to whoever reads the log.
-fed_redact_tokens() {
-  sed -E 's/(eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,})\.[A-Za-z0-9_-]{8,}/\1.<signature>/g'
-}
-
 # Keep the run's record in framework/var/logs/$1/, once:
 #
 #   <svc>.log       each service's log since its container was created,
@@ -2672,12 +2664,12 @@ fed_save_logs() {
           mkdir -p "${dir}/config/$(dirname -- "${f}")" \
               && cp "framework/var/generated/${f}" "${dir}/config/${f}"
         done
+  fed_require_python
   if [ -f "${dir}/.started" ]; then
     mkdir -p "${dir}/results"
     # The dev container writes these directories, so put-file.py copies
     # each file: it follows no symlink, not even one put in the file's
     # place after find looked.
-    fed_require_python
     find framework/var/results -maxdepth 1 -type f -name '*.tsv' \
         -newer "${dir}/.started" \
         -exec "${fed_python}" framework/put-file.py {} "${dir}/results/" \;
@@ -2686,10 +2678,13 @@ fed_save_logs() {
         -exec "${fed_python}" framework/put-file.py {} "${dir}/" \;
     rm -f "${dir}/.started"
   fi
+  # Each token's signature is cut out, as test.py cuts it out of what the
+  # tests print: a token that a server's log quotes would otherwise be
+  # good, for as long as it lasts, to whoever reads the log.
   for svc in $(docker compose ps --all --services 2>/dev/null); do
     { docker compose logs --no-color --no-log-prefix --timestamps "${svc}" 2>&1 \
           || warn "cannot save ${svc}'s log; see ${dir}/${svc}.log"; } \
-        | fed_redact_tokens >"${dir}/${svc}.log"
+        | "${fed_python}" framework/report.py redact >"${dir}/${svc}.log"
   done
   printf 'Service logs are in %s/.\n' "${dir}"
 }

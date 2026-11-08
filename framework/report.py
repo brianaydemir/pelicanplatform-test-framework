@@ -5,6 +5,7 @@
   framework/report.py combine OUT DIR...   OUT/*.tsv from DIRs of one shape
   framework/report.py junit TABLE          JUnit XML
   framework/report.py markdown TABLE       a Markdown summary
+  framework/report.py redact               stdin, each token's signature cut out
 
 Each suite writes framework/var/results/<suite>.tsv (see
 framework/testlib/report.py). `merge` prefixes each row with a `shape`
@@ -18,6 +19,10 @@ holds each DIR's rows of it, each case once. A case that more than one
 run recorded (federation's REQUIRED scenarios, which each runs, and
 smoke.sh's own steps) keeps its worst status.
 
+`redact` cuts out of a service's log what test.py cuts out of what the
+tests print (testlib.report.redact()), for fed.sh and smoke.sh, which
+keep the logs.
+
 The TSV is meant for people as much as for programs:
 
   column -t -s "$(printf '\\t')" results.tsv
@@ -29,6 +34,7 @@ import string
 import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
+from typing import BinaryIO
 
 # Keep the checkout free of __pycache__.
 sys.dont_write_bytecode = True
@@ -227,6 +233,16 @@ def markdown(rows: Sequence[dict[str, str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def redact(source: BinaryIO, sink: BinaryIO) -> None:
+    """Copy source to sink, each token's signature cut out (report.redact()).
+
+    What is not UTF-8, and each line's end, goes through as it is.
+    """
+    for line in source:
+        text = report.redact(line.decode("utf-8", "surrogateescape"))
+        sink.write(text.encode("utf-8", "surrogateescape"))
+
+
 def main() -> None:
     """Run the command that the arguments name."""
     args = sys.argv[1:]
@@ -247,8 +263,12 @@ def main() -> None:
             common.die_usage(f"{command} takes one table")
         rows = load(rest[0])
         sys.stdout.write(junit(rows) if command == "junit" else markdown(rows))
+    elif command == "redact":
+        if rest:
+            common.die_usage("redact takes no arguments")
+        redact(sys.stdin.buffer, sys.stdout.buffer)
     else:
-        common.die_usage(f"unknown command: {command} (try: merge, combine, junit, markdown)")
+        common.die_usage(f"unknown command: {command} (try: merge, combine, junit, markdown, redact)")
 
 
 if __name__ == "__main__":

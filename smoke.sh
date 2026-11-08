@@ -449,11 +449,10 @@ run_part() {
            && shape_checks "${shape}"; }; then
     result=FAIL
     ./fed.sh ps --all >"${out}/${shape}.compose.log" 2>&1
-    # With each token's signature cut out, as fed_redact_tokens in fed.sh
-    # does.
+    # With each token's signature cut out, as in the logs that fed.sh
+    # keeps.
     ./fed.sh logs --no-color --timestamps 2>&1 \
-        | sed -E 's/(eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,})\.[A-Za-z0-9_-]{8,}/\1.<signature>/g' \
-        >>"${out}/${shape}.compose.log"
+        | framework/report.py redact >>"${out}/${shape}.compose.log"
   fi
   # After a failed reset, framework/var/results/ may be another shape's.
   if [ -n "${fresh}" ]; then
