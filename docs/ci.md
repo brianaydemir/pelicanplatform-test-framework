@@ -84,10 +84,12 @@ column -t -s "$(printf '\t')" framework/var/results/transfers.tsv
 
 `smoke.sh` records its own steps as the suite `smoke`, keeps each shape's
 results in `DIR/results/<shape>/`, and merges them with
-[`framework/report.py`](../framework/report.py). For a shape whose suites
-it shared out among copies, it first combines the copies' results, each
-case once, with its worst status (federation's required scenarios, and its
-own steps, are each copy's):
+[`framework/report.py`](../framework/report.py). A shape that it did not
+finish, interrupted, say, gets a `FAIL` row named `aborted`, beside the
+rows of what it had done. For a shape whose suites it shared out among
+copies, it first combines the copies' results, each case once, with its
+worst status (federation's required scenarios, and its own steps, are each
+copy's):
 
 ```sh
 framework/report.py combine DIR/results/<shape>/ PART_DIR...  # one shape's

@@ -1,16 +1,16 @@
 #!/usr/bin/env -S uv run --quiet --frozen --no-dev
 """Merge the tests' results and convert them for CI.
 
-  framework/report.py merge [NAME=]DIR...  one table from each DIR's *.tsv
+  framework/report.py merge DIR...         one table from each DIR's *.tsv
   framework/report.py combine OUT DIR...   OUT/*.tsv from DIRs of one shape
   framework/report.py junit TABLE          JUnit XML
   framework/report.py markdown TABLE       a Markdown summary
 
 Each suite writes framework/var/results/<suite>.tsv (see
 framework/testlib/report.py). `merge` prefixes each row with a `shape`
-column: NAME, or DIR's own name. smoke.sh keeps one DIR per shape and
-merges them into results.tsv, then converts that. Output goes to stdout,
-but combine's, which goes to OUT.
+column: DIR's own name. smoke.sh keeps one DIR per shape and merges them
+into results.tsv, then converts that. Output goes to stdout, but
+combine's, which goes to OUT.
 
 `combine` makes one run's results of a shape that several runs, each
 against a federation of its own, shared out (`smoke.sh -j`): each table
@@ -42,18 +42,16 @@ from testlib import common, report
 MERGED = ("shape",) + report.COLUMNS
 
 
-def merge(args: Sequence[str]) -> str:
-    """Return one table of every DIR's results, each row with its shape.
+def merge(directories: Sequence[str]) -> str:
+    """Return one table of the directories' rows, each with its shape.
 
     Args:
-        args: Each `[NAME=]DIR`: a directory of *.tsv tables, and the
-            shape of their rows (by default, DIR's own name).
+        directories: Each a directory of *.tsv tables, whose own name is
+            the shape of their rows.
     """
     rows: list[dict[str, str]] = []
-    for arg in args:
-        name, sep, directory = arg.partition("=")
-        if not sep:
-            name, directory = os.path.basename(os.path.normpath(arg)), arg
+    for directory in directories:
+        name = os.path.basename(os.path.normpath(directory))
         if not os.path.isdir(directory):
             common.die_usage(f"no such directory: {directory}")
         for entry in sorted(os.listdir(directory)):

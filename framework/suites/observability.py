@@ -156,8 +156,9 @@ RESTART_POLL = 0.5
 # XRootD's log level parameters, by server kind (logging/xrootd.go).
 XROOTD_PARAMETERS = {"origin": "Logging.Origin.Xrootd", "cache": "Logging.Cache.Xrootd"}
 
-# A Go duration, as a string (time.Duration.String()).
-_DURATION = re.compile(r"(\d+(?:\.\d+)?)(h|m|s|ms|us|µs|ns)")
+# A Go duration, as a string (time.Duration.String()). The longer units
+# come first, lest ms be read as m.
+_DURATION = re.compile(r"(\d+(?:\.\d+)?)(ms|us|µs|ns|h|m|s)")
 _UNITS = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 1e-3, "us": 1e-6, "µs": 1e-6, "ns": 1e-9}
 
 

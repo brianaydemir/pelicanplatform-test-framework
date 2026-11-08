@@ -168,7 +168,13 @@ fed_find_preset() {
   fi
 }
 
+# framework/var/ holds keys, tokens, and stores, some of which must be
+# open to any user for the containers' sake (see fed_prepare_dirs and
+# fed_prepare_unprivileged). Keep the host's other accounts out of all of
+# it: the containers reach what is in it through their bind mounts, and
+# the dev container, which has the checkout, runs as root.
 mkdir -p framework/var/generated/conf
+chmod 0700 framework/var
 presets_given=""
 if [ -n "${presets}" ]; then
   presets_given=yes

@@ -46,7 +46,9 @@
 # -part<i> after <time> for a shape shared out), and, merged over every
 # shape, results.tsv, junit.xml, and summary.md. A shape that fails also
 # leaves <shape>.compose.log, every service's log when it failed. Exits
-# non-zero if any shape fails.
+# non-zero if any shape fails. On SIGINT or SIGTERM, it stops the copies
+# at once, and puts what they had done in DIR, failing each shape, or
+# part of one, that they had not finished.
 
 set -u
 
@@ -280,13 +282,15 @@ descendants() {
   done
 }
 
-# On an interrupt: kill each worker, and everything it runs, then discard
-# the copies, and exit with status $1. They are killed outright, since
-# whatever they would put back is in the copies.
+# On an interrupt: kill each worker, and everything it runs, then finish
+# with what the parts left, and exit with status $1. They are killed
+# outright, since whatever they would put back is in the copies: a part
+# cut short leaves only its log and its steps so far.
 workers=""
 stop() {
   trap '' INT TERM
-  printf '\n%s: stopping, and discarding the copies ...\n' "${progname}" >&2
+  printf '\n%s: stopping, putting together what has run, and discarding the copies ...\n' \
+      "${progname}" >&2
   if [ -n "${workers}" ]; then
     pids=""
     for pid in ${workers}; do
@@ -297,7 +301,7 @@ stop() {
     # Quietly: some shells report each job that was killed.
     wait 2>/dev/null
   fi
-  cleanup
+  finish
   exit "$1"
 }
 
@@ -508,7 +512,11 @@ assemble() {
       [ "${status}" = PASS ] || result=FAIL
       [ "${seconds}" -le "${took}" ] || took=${seconds}
     else
+      # Cut short, or never run: say so, as a suite that stops early does
+      # (see framework/testlib/report.py).
       result=FAIL
+      steps="${out}/results/${shape}/smoke.tsv"
+      mkdir -p "${out}/results/${shape}" && record aborted FAIL ""
     fi
     [ ! -d "${out}/results/${shape}" ] || set -- "$@" "${out}/results/${shape}"
     for file in "${shape}.log" "${shape}.compose.log"; do
@@ -535,6 +543,37 @@ assemble() {
 "
 }
 
+# Put each shape's parts together in DIR, and merge every shape's
+# results there, then discard the copies, and print each shape's result.
+# Fails if any shape failed, or if the merged results could not be
+# written.
+finish() {
+  summary=""
+  failed=0
+  for shape in ${shapes}; do
+    assemble "${shape}"
+  done
+
+  # One table over every shape, and its conversions for CI. Results that
+  # an earlier run left in ${log_dir} for other shapes are merged too.
+  report_ok=yes
+  framework/report.py merge "${log_dir}/results"/*/ >"${log_dir}/results.tsv" \
+      && framework/report.py junit "${log_dir}/results.tsv" >"${log_dir}/junit.xml" \
+      && framework/report.py markdown "${log_dir}/results.tsv" >"${log_dir}/summary.md" \
+      || report_ok=""
+
+  cleanup
+
+  printf '\n%s' "${summary}"
+  printf 'Logs and results: %s/\n' "${shown_dir}"
+  if [ -z "${report_ok}" ]; then
+    printf '%s: could not write %s/results.tsv, junit.xml, or summary.md\n' \
+        "${progname}" "${shown_dir}" >&2
+    return 1
+  fi
+  [ "${failed}" -eq 0 ]
+}
+
 #---------------------------------------------------------------------------
 # Main
 
@@ -559,25 +598,7 @@ done
 wait
 workers=""
 
-summary=""
-failed=0
-for shape in ${shapes}; do
-  assemble "${shape}"
-done
-
-# One table over every shape, and its conversions for CI. Results that an
-# earlier run left in ${log_dir} for other shapes are merged too.
-report_ok=yes
-framework/report.py merge "${log_dir}/results"/*/ >"${log_dir}/results.tsv" \
-    && framework/report.py junit "${log_dir}/results.tsv" >"${log_dir}/junit.xml" \
-    && framework/report.py markdown "${log_dir}/results.tsv" >"${log_dir}/summary.md" \
-    || report_ok=""
-
+# Not to be interrupted, since stop() would put the parts together again,
+# without the services' logs that assemble has already moved.
 trap '' INT TERM
-cleanup
-
-printf '\n%s' "${summary}"
-printf 'Logs and results: %s/\n' "${shown_dir}"
-[ -n "${report_ok}" ] \
-    || die "could not write ${shown_dir}/results.tsv, junit.xml, or summary.md"
-[ "${failed}" -eq 0 ]
+finish
