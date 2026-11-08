@@ -347,12 +347,12 @@ done
 # of your own can set the knobs too, so the checks are on the knobs, and
 # the messages name the presets that set them.
 
-for fed_knob in ORIGIN_ENABLE_ISSUER ENABLE_OIDC EXTERNAL_ISSUER \
-    ORIGIN_DISABLE_DIRECT_CLIENTS ORIGIN_POSC ORIGIN_ATOMIC_UPLOADS ORIGIN_METADATA \
-    ORIGIN_MULTIUSER ORIGIN_BROKER ORIGIN_TRANSFER_API TRANSFER_SERVER CACHE_TIERING \
-    FEDERATED_CACHE SERVER_DROP_PRIVILEGES REGISTRY_REQUIRE_APPROVAL ISSUER_SHORT_TOKENS \
-    ORIGIN_EXPORT_TEMPLATES DIRECTOR_DISCOVERY ORIGIN_PUBLIC_ONLY DIRECTOR_HA \
-    ORIGIN_SSH_TUNNEL ORIGIN_PUBLIC_WRITES ORIGIN_FIREWALLED OIDC_CILOGON; do
+# The knobs that default.sh sets to `true` or `false` take only those:
+# fed.sh tests some as `= true` and others as `= false`, so any other
+# value would count as either.
+fed_boolean_knobs=$(sed -nE 's/^([A-Z][A-Z0-9_]*)=(true|false)$/\1/p' \
+    framework/presets/default.sh)
+for fed_knob in ${fed_boolean_knobs}; do
   eval "fed_value=\${${fed_knob}}"
   # shellcheck disable=SC2154  # assigned by the eval above
   case "${fed_value}" in
