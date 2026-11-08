@@ -276,6 +276,7 @@ names, which must not be, or hold, this one.
 [Pyright](https://microsoft.github.io/pyright/) (configured in
 `pyproject.toml`, and run with `uv run`);
 [pytest](https://docs.pytest.org/);
-[mdformat](https://mdformat.readthedocs.io/); and
-[typos](https://github.com/crate-ci/typos). Run them all with
-`pre-commit run --all-files`.
+[mdformat](https://mdformat.readthedocs.io/);
+[typos](https://github.com/crate-ci/typos); and
+[`framework/matrix.py check`](#the-smoke-matrix), when a file that it reads
+changes. Run them all with `pre-commit run --all-files`.
