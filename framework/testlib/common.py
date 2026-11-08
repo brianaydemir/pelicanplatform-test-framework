@@ -703,11 +703,6 @@ class IssuerLifetimes:
     code: int
 
 
-# The origins that XRootD serves (ORIGIN_VARIANT); the rest are Pelican's
-# native origins.
-XROOTD_ORIGINS = ("posix", "https", "s3")
-
-
 @dataclass(frozen=True)
 class TransferApi:
     """Where the transfer API is served.
@@ -867,13 +862,13 @@ class Federation:
         """ORIGIN_VARIANT: a directory under framework/config.d/origin/."""
         return self._line("origin-variant")
 
-    @property
+    @cached_property
     def native_origins(self) -> bool:
         """Whether Pelican serves the origins itself, rather than XRootD.
 
-        See origin_serve/ in Pelican, and XROOTD_ORIGINS.
+        See origin_serve/ in Pelican, and fed_xrootd_origin in fed.sh.
         """
-        return self.origin_variant not in XROOTD_ORIGINS
+        return not self._flag("origin-xrootd")
 
     @property
     def sent_cache_control(self) -> str:

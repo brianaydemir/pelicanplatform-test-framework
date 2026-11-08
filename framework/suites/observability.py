@@ -221,7 +221,7 @@ class Test(suite.Test):
 
     def xrootd(self, server: Server) -> bool:
         """Return whether XRootD serves an origin or a cache of server's."""
-        if self.origins_at(server) and self.fed.origin_variant in common.XROOTD_ORIGINS:
+        if self.origins_at(server) and not self.fed.native_origins:
             return True
         return any(c.kind == "xrootd" for c in self.caches_at(server))
 
@@ -1266,7 +1266,7 @@ def xrootd_targets(test: Test) -> list[XrootdTarget]:
     """
     fed = test.fed
     found: list[tuple[str, common.Origin | common.Cache]] = []
-    if fed.origins and fed.origin_variant in common.XROOTD_ORIGINS:
+    if fed.origins and not fed.native_origins:
         found.append(("origin", fed.origins[0]))
     cache = next((c for c in fed.federated_caches if c.kind == "xrootd"), None)
     if cache is not None:

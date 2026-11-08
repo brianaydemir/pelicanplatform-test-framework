@@ -157,7 +157,8 @@ NOT_RUN: dict[str, str] = {
     "auth-oidc-cilogon": "it needs a CILogon client of the user's own",
 }
 
-# The origins that run XRootD, and those with a backend service.
+# The origins that run XRootD (fed_xrootd_origin in fed.sh), and those
+# with a backend service.
 XROOTD_ORIGINS = ("xrootd", "s3", "https")
 BACKED_ORIGINS = ("ssh", "httpsv2", "s3v2", "s3", "https")
 # The factors that add a server to the full topology.

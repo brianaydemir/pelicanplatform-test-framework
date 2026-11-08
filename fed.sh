@@ -1421,6 +1421,11 @@ fed_generate() {
   fed_write_value federation-url "${fed_federation_url}"
   fed_write_value topology "${fed_topology}"
   fed_write_value origin-variant "${ORIGIN_VARIANT}"
+  if fed_xrootd_origin; then
+    fed_write_value origin-xrootd true
+  else
+    fed_write_value origin-xrootd false
+  fi
   fed_write_value origin-broker "${ORIGIN_BROKER}"
   fed_write_value origin-firewalled "${ORIGIN_FIREWALLED}"
   fed_write_value director-default-response "${DIRECTOR_DEFAULT_RESPONSE}"
