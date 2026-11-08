@@ -97,8 +97,6 @@ RESTARTED = ("mapfile username-claim", "mapfile unmatched")
 PELICAN_UID = 10941
 XROOTD_UID = 10940
 PELICAN_GID = 10941
-# Origin.MultiuserMinID's default.
-MIN_ID = 1000
 
 # The subjects of fed.sh's mapfile rules for this suite, and the group of
 # its `group` rule. Each maps to the pelican user, but min-id's, which map

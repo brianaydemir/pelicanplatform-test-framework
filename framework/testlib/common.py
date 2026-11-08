@@ -1,8 +1,9 @@
 """Paths, messages, arguments, and what fed.sh derived from the shape.
 
-They are for test.py, its suites, and init-data.py, which run in
-framework/var (see enter_var), so the paths they use are relative to it.
-Messages name paths from the top of the checkout.
+They are for test.py, its suites, and framework/*.py. Of these, test.py,
+its suites, and init-data.py run in framework/var (see enter_var), so the
+paths they use are relative to it. Messages name paths from the top of the
+checkout.
 """
 
 import contextlib
@@ -1106,11 +1107,6 @@ class Results:
         self.status_width = max(len(s) for s in report_module.STATUSES)
         self.rows: list[str] = []
         self.report = report
-
-    @property
-    def failed(self) -> int:
-        """How many rows failed."""
-        return self.report.failed
 
     def add(self, scenario: str, status: str, note: str = "") -> None:
         """Record a row, and print it briefly."""
