@@ -942,7 +942,7 @@ fi
 export DEV_APP_SOURCE
 
 #---------------------------------------------------------------------------
-# Generated files, rewritten on every invocation.
+# Generated files, which fed_prepare_var rewrites.
 
 # Write stdin to $1 only if it changed. In place, not by rename: some of
 # these are bind-mounted as single files, which Docker binds by inode.
@@ -1045,9 +1045,13 @@ fed_owner_caps_of() {
 
 # Make directory $2 hold a copy of what directory $1 holds, or nothing if
 # $1 is missing. $2 is emptied rather than replaced, because a running
-# container's bind mount refers to it by inode.
+# container's bind mount refers to it by inode, and only if it differs,
+# so that a container starting meanwhile does not find it half made.
 fed_copy_dir() {
   mkdir -p "$2"
+  if [ -d "$1" ] && diff -r "$1" "$2" >/dev/null 2>&1; then
+    return 0
+  fi
   find "$2" -mindepth 1 -delete
   if [ -d "$1" ]; then
     cp -R "$1/." "$2/"
@@ -1996,12 +2000,20 @@ fed_conf_sum() {
       2>/dev/null | cksum
 }
 
-fed_conf_was=$(fed_conf_sum)
-fed_generate
-if [ "$(fed_conf_sum)" != "${fed_conf_was}" ]; then
-  : >framework/var/generated/conf-changed
-fi
-fed_prepare_dirs
+# Generate framework/var/generated/ and make the bind-mount sources, for
+# the commands that set up or start the federation, or run tests. The
+# others (`status`, `down`, `dev`, and what goes to Compose) leave
+# framework/var/ as it is, since a test run may be using it: the users
+# suite edits the mapfile for a while, which fed_generate would put back.
+# `dev` needs only its container's bind sources, which `init` makes.
+fed_prepare_var() {
+  fed_conf_was=$(fed_conf_sum)
+  fed_generate
+  if [ "$(fed_conf_sum)" != "${fed_conf_was}" ]; then
+    : >framework/var/generated/conf-changed
+  fi
+  fed_prepare_dirs
+}
 
 #---------------------------------------------------------------------------
 # PELICAN_TAG's binaries in framework/var/bin/, for use outside the
@@ -2892,14 +2904,17 @@ cmd="$1"; shift
 case "${cmd}" in
 
   init)
+    fed_prepare_var
     fed_init "$@"
     ;;
 
   keys)
+    fed_prepare_var
     fed_keys "$@"
     ;;
 
   up)
+    fed_prepare_var
     fed_preflight
     fed_up "$@"
     ;;
@@ -2911,11 +2926,15 @@ case "${cmd}" in
   # Recreated, not restarted: fed_up tracks stale configuration by
   # container ID.
   restart)
+    fed_prepare_var
     fed_preflight
     fed_up --force-recreate "$@"
     ;;
 
   dev|test)
+    if [ "${cmd}" = test ]; then
+      fed_prepare_var
+    fi
     fed_dev_up
     logs=""
     if [ "${cmd}" = test ]; then
@@ -2978,6 +2997,7 @@ case "${cmd}" in
   # In the foreground, for a test.py run by hand in the dev container.
   control)
     [ $# -eq 0 ] || die_usage "control takes no arguments"
+    fed_prepare_var
     fed_require_python
     exec "${fed_python}" framework/control.py serve
     ;;
