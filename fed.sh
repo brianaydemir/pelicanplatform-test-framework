@@ -119,14 +119,28 @@ fed_add_profile() {
   fi
 }
 
-# Enable profile $1 for a preset. It must be in fed_profiles: a profile
-# that no Compose file defines would start nothing, silently.
+# The variable that lists the presets that enabled profile $1, quoted,
+# for fed_refuse_profiles.
+fed_enabled_by() {
+  printf 'fed_enabled_by_%s\n' "$1" | tr - _
+}
+
+# Enable profile $1 for the preset being sourced, and record that it did.
+# The profile must be in fed_profiles: a profile that no Compose file
+# defines would start nothing, silently.
 fed_enable_profile() {
   case " ${fed_profiles} " in
     *" $1 "*) ;;
     *) die "no such Compose profile: $1 (try: ${fed_profiles})" ;;
   esac
   fed_add_profile "$1"
+  fed_by_var=$(fed_enabled_by "$1")
+  eval "fed_by_list=\${${fed_by_var}:-}"
+  # shellcheck disable=SC2154  # assigned by the eval above
+  case "${fed_by_list}" in
+    *"'${fed_preset_name}'"*) ;;
+    *) eval "${fed_by_var}=\"\${fed_by_list:+\${fed_by_list}, }'\${fed_preset_name}'\"" ;;
+  esac
 }
 
 #---------------------------------------------------------------------------
@@ -445,25 +459,6 @@ case "${PELICAN_LOG_LEVEL}" in
       die "PELICAN_LOG_LEVEL must be a level such as 'debug', not '${PELICAN_LOG_LEVEL}'" ;;
 esac
 
-# The presets that enable profile $1, for the messages below.
-fed_profile_presets() {
-  case "$1" in
-    multi-origin)     echo "'topo-multi-origin'" ;;
-    multi-cache)      echo "'topo-multi-cache'" ;;
-    multi-owner)      echo "'topo-multi-owner'" ;;
-    multi-director)   echo "'topo-multi-director'" ;;
-    site-local-cache) echo "'topo-site-local-cache'" ;;
-    transfer)         echo "'topo-transfer-server'" ;;
-    director-ha)      echo "'director-ha'" ;;
-    lab)              echo "'origin-ssh'" ;;
-    idp)              echo "'auth-oidc-local'" ;;
-    metadata)         echo "'origin-metadata' or 'origin-metadata-tx'" ;;
-    monitoring)       echo "'with-grafana'" ;;
-    webdav)           echo "'origin-https' or 'origin-httpsv2'" ;;
-    s3)               echo "'origin-s3', 'origin-s3v2', or 'cache-tiered'" ;;
-  esac
-}
-
 # Die if any of profiles $2... is enabled; $1 says why, as in "$1, so it
 # cannot add profile ...".
 fed_refuse_profiles() {
@@ -471,8 +466,9 @@ fed_refuse_profiles() {
   shift
   for fed_refused in "$@"; do
     if fed_has_profile "${fed_refused}"; then
+      eval "fed_by_list=\${$(fed_enabled_by "${fed_refused}")}"
       die "${fed_why}, so it cannot add profile '${fed_refused}'" \
-          "($(fed_profile_presets "${fed_refused}"))"
+          "(enabled by ${fed_by_list})"
     fi
   done
 }
