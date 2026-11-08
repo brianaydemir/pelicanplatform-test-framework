@@ -156,7 +156,7 @@ is measured by the pairs of choices it makes. So the shapes:
 
 - `PRESETS`: the choice each preset makes;
 - `REFUSED`: the combinations that `fed.sh` refuses, which must agree with
-  its checks;
+  its checks, each rule refusing some shape that no other does;
 - `SMOKE_LIMITS`: the shapes that `smoke.sh` does not run;
 - `BASELINES` and `MAX_CHOICES`.
 
@@ -171,6 +171,11 @@ shapes, but changes more. A shape's name spells out its choices, e.g.
 reports any shape that `fed.sh` would refuse, that breaks one of these
 rules, or that is misnamed; any preset no shape runs; and any pair no shape
 covers.
+
+Both hold `REFUSED` to `fed.sh`: `./fed.sh check` must refuse, for each
+rule, the simplest shape that the rule alone refuses, and accept each shape
+that `smoke.sh` is to run. Where they disagree, `check` reports it, and
+`generate` writes nothing.
 
 So a new preset goes in `framework/presets/`, the tables in
 `framework/matrix.py`, and the

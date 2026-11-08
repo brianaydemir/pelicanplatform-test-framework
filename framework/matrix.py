@@ -23,14 +23,21 @@ makes some pair that no other shape makes, and would leave some pair
 uncovered if any one of its choices were the default instead.
 SHAPES_FILE lists them.
 
+REFUSED must agree with fed.sh, so `check` and `generate` ask `./fed.sh
+check` about it (disagreements()): fed.sh must refuse each rule's
+witness, the simplest shape that the rule alone refuses (witnesses()),
+and accept each shape that smoke.sh is to run.
+
 `check` reads the shapes from `smoke.sh --table`, and reports any shape
 that makes no sense, that fed.sh would refuse, that breaks the rules
-above, or that is misnamed (name_of()); any preset no shape runs; and
-any pair no shape covers. It exits 1 if it found any.
+above, or that is misnamed (name_of()); any preset no shape runs; any
+pair no shape covers; and where REFUSED and fed.sh disagree. It exits 1
+if it found any.
 
 `generate` keeps the shapes in SHAPES_FILE that still pass (or none,
 with --fresh), picks shapes greedily until they cover every pair, then
-simplifies them, and drops any that adds nothing.
+simplifies them, and drops any that adds nothing. Where REFUSED and
+fed.sh disagree, it says so, writes nothing, and exits 1.
 """
 
 import itertools
@@ -40,6 +47,7 @@ import sys
 import textwrap
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 # Keep the checkout free of __pycache__.
@@ -160,6 +168,10 @@ ADDED_LEVELS = (("transfer_api", "server"),)
 # How many factors besides a pair's completion() may change.
 SEARCH_DEPTH = 3
 
+# How many factors a rule's witness (witnesses()) may move from their
+# defaults: as many as the rules of REFUSED need.
+WITNESS_DEPTH = 4
+
 # How many choices a shape that smoke.sh runs may make (Shape.choices()).
 # A simpler shape points at fewer presets when it fails; at 8, the
 # shapes are about as many as with no limit.
@@ -217,7 +229,8 @@ class Shape:
 
 Rule = tuple[str, Callable[[Shape], bool]]
 
-# The shapes fed.sh refuses: why, and whether a shape is one.
+# The shapes fed.sh refuses: why, and whether a shape is one. Each rule
+# must refuse some shape that no other does (witnesses()).
 REFUSED: list[Rule] = [
     (
         "the 'tiny' topology has no room for the origin's backend",
@@ -337,10 +350,6 @@ REFUSED: list[Rule] = [
     (
         "a firewalled origin is reached only through the broker, which only an XRootD cache" + " can use",
         lambda s: s["broker"] == "firewalled" and s["cache"] != "xrootd",
-    ),
-    (
-        "a firewalled origin needs a cache to reach it through the broker",
-        lambda s: s["broker"] == "firewalled" and s["caches"] == "none",
     ),
     (
         "a firewalled origin's own issuer is out of the caches' reach, so the exports must"
@@ -548,6 +557,25 @@ def valid_pairs() -> set[Pair]:
     return found
 
 
+def witnesses() -> dict[str, Shape]:
+    """Return each rule of REFUSED's witness, by the rule's why.
+
+    A rule's witness is a shape that the rule refuses and no other rule
+    of REFUSED does, with as few factors away from their defaults as can
+    be, and no more than WITNESS_DEPTH. A rule may have none.
+    """
+    defaults = {f: choices[0] for f, choices in FACTORS.items()}
+    found: dict[str, Shape] = {}
+    for change in changes(list(FACTORS), WITNESS_DEPTH):
+        shape = Shape({**defaults, **change})
+        refused = [why for why, applies in REFUSED if applies(shape)]
+        if len(refused) == 1:
+            found.setdefault(refused[0], shape)
+            if len(found) == len(REFUSED):
+                break
+    return found
+
+
 def covered(shapes: Iterable[Shape]) -> set[Pair]:
     """Return every pair of choices that shapes make."""
     found: set[Pair] = set()
@@ -718,6 +746,56 @@ def name_of(shape: Shape) -> str:
 
 
 # --------------------------------------------------------------------------
+# fed.sh's own checks.
+
+
+def fed_refusal(presets: Sequence[str]) -> str | None:
+    """Return why `./fed.sh check` refuses presets, or None if it accepts them."""
+    # `default` first, so that fed.sh never falls back on the presets it
+    # remembers.
+    args = [arg for preset in ("default", *presets) for arg in ("-p", preset)]
+    result = subprocess.run(
+        ["sh", os.path.join(TOP, "fed.sh"), *args, "check"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return None
+    return result.stderr.strip() or f"exit status {result.returncode}"
+
+
+def disagreements(accepted: Sequence[tuple[str, Sequence[str]]]) -> list[str]:
+    """Return where REFUSED and `./fed.sh check` disagree.
+
+    fed.sh must refuse each rule's witness (witnesses()), and accept
+    each shape of accepted. A rule with no witness is reported too.
+
+    Args:
+        accepted: Shapes that REFUSED accepts: each one's name, and its
+            presets.
+    """
+    found_witnesses = witnesses()
+    found = [
+        f"no shape that moves at most {WITNESS_DEPTH} factors is refused by this rule of REFUSED"
+        + f" alone: {why}"
+        for why, _ in REFUSED
+        if why not in found_witnesses
+    ]
+    witness_presets = {why: presets_of(shape) for why, shape in found_witnesses.items()}
+    with ThreadPoolExecutor() as pool:
+        refusals_of_accepted = list(pool.map(fed_refusal, (presets for _, presets in accepted)))
+        refusals_of_witnesses = list(pool.map(fed_refusal, witness_presets.values()))
+    for (name, _), refusal in zip(accepted, refusals_of_accepted):
+        if refusal is not None:
+            found.append(f"{name}: fed.sh refuses it, though REFUSED does not ({refusal})")
+    for (why, presets), refusal in zip(witness_presets.items(), refusals_of_witnesses):
+        if refusal is None:
+            found.append(f"{' '.join(presets)}: fed.sh accepts it, though REFUSED does not ({why})")
+    return found
+
+
+# --------------------------------------------------------------------------
 # smoke.sh's shapes.
 
 
@@ -817,6 +895,9 @@ def check(shapes: Sequence[SmokeShape]) -> list[str]:
         found.append(f"{preset} is not in framework/matrix.py")
     for (f1, l1), (f2, l2) in sorted(valid - covered(shape for _, shape in shapes_made)):
         found.append(f"no shape has both {f1}={l1} and {f2}={l2}")
+    found += disagreements(
+        [(smoke.name, smoke.presets) for smoke, shape in shapes_made if not refusals(shape)]
+    )
     return found
 
 
@@ -862,6 +943,12 @@ def main() -> None:
         before = smoke_shapes() if os.path.exists(SHAPES_FILE) else []
         current = [] if rest else [s for b, s in made(before)[0] if b.name not in BASELINES]
         picked = generate(current)
+        accepted = [(name, presets) for name, (presets, _, _) in BASELINES.items()]
+        found = disagreements(accepted + [(name_of(s), presets_of(s)) for s in picked])
+        for problem in found:
+            print(problem)
+        if found:
+            sys.exit(1)
         write_shapes(picked)
         old, new = {s.name for s in before}, {name_of(s) for s in picked} | set(BASELINES)
         for name in sorted(new - old):
