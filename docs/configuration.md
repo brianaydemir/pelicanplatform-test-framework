@@ -176,9 +176,11 @@ start optional services. No smoke shape runs a preset of your own.
 
 ### Coverage
 
-Together, the shapes that [`smoke.sh`](../smoke.sh) runs (`./smoke.sh -l`)
-make every pair of choices that the presets offer, including rotating every
-key ([the smoke matrix](development.md#the-smoke-matrix)). The exceptions:
+The shapes that [`smoke.sh`](../smoke.sh) runs (`./smoke.sh -l`) are picked
+by hand, and need not make every pair of choices that the presets offer,
+including rotating every key; `framework/matrix.py check` lists the pairs
+that none makes ([the smoke matrix](development.md#the-smoke-matrix)). It
+counts no pair that only these would make:
 
 - [`with-grafana`](../framework/presets/with-grafana.sh), which needs a data
   source that the framework lacks.

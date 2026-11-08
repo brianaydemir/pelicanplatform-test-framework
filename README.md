@@ -404,7 +404,7 @@ framework/    the framework itself; don't edit it for local changes
   testlib/    the suites' shared code, credentials, and scenarios
   report.py   merges results and converts them to JUnit XML and Markdown
   smoke-shapes.tsv
-              the shapes that smoke.sh runs (framework/matrix.py writes it)
+              the shapes that smoke.sh runs
   var/        everything generated (ignored by Git, emptied by reset.sh)
 smoke-logs/   smoke.sh's logs and results (ignored by Git)
 ```

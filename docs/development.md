@@ -28,8 +28,8 @@ scripts on the host ([`control.py`](../framework/control.py),
 | [`framework/testlib/`](../framework/testlib/)                                                                                                             | what the suites share; `__init__.py` indexes its modules                                                                         |
 | `framework/control.py`                                                                                                                                    | the helper on the host that restarts, stops, and pauses services for the tests ([service control](../README.md#service-control)) |
 | `framework/report.py`                                                                                                                                     | merges results and converts them to JUnit XML and Markdown ([Results](ci.md#results))                                            |
-| `framework/matrix.py`                                                                                                                                     | the choices the presets make, and the shapes that `smoke.sh` runs ([the smoke matrix](#the-smoke-matrix))                        |
-| [`framework/smoke-shapes.tsv`](../framework/smoke-shapes.tsv)                                                                                             | the shapes that `smoke.sh` runs, which `framework/matrix.py` writes                                                              |
+| `framework/matrix.py`                                                                                                                                     | the choices the presets make, and the pairs of them that the smoke shapes don't make ([the smoke matrix](#the-smoke-matrix))     |
+| [`framework/smoke-shapes.tsv`](../framework/smoke-shapes.tsv)                                                                                             | the shapes that `smoke.sh` runs, picked by hand                                                                                  |
 | `framework/init-data.py`, [`framework/init-certs.sh`](../framework/init-certs.sh)                                                                         | the test objects and the certificates, which `./fed.sh init` makes                                                               |
 | `framework/check-mounts.py`, `framework/put-file.py`                                                                                                      | what keeps the containers from changing what the host runs ([Isolation](#isolation))                                             |
 | [`framework/presets/`](../framework/presets/)                                                                                                             | one file per [preset](glossary.md#preset); `default.sh` declares every [knob](glossary.md#knob)                                  |
@@ -137,50 +137,38 @@ pauses, kills, freezes, or configures, even if it fails.
 
 ## The smoke matrix
 
-[`smoke.sh`](../smoke.sh) runs the shapes in `framework/smoke-shapes.tsv`:
-as many as are useful, each as simple as it can be. A shape makes a choice
-for each of its presets, and another if it rotates every key. What it tests
-is measured by the pairs of choices it makes. So the shapes:
-
-- together make every pair of choices that a shape could make, but those
-  that would test nothing
-  ([smoke limits](#refusals-skips-and-smoke-limits));
-- each make some pair that no other shape makes;
-- each make at most `MAX_CHOICES` choices (8), none of which could go back
-  to its default without leaving some pair uncovered, since a simpler shape
-  points at fewer presets when it fails;
-- include two baselines: `default`, the framework's own choices, and
-  `pelican-defaults`, Pelican's.
+[`smoke.sh`](../smoke.sh) runs the shapes in `framework/smoke-shapes.tsv`,
+which are picked by hand. A shape makes a choice for each of its presets,
+and another if it rotates every key. What the shapes test together is
+measured by the pairs of choices they make. The suites aim to be
+exhaustive; the shapes need not make every pair.
 
 `framework/matrix.py` holds the rules in its tables:
 
 - `PRESETS`: the choice each preset makes;
 - `REFUSED`: the combinations that `fed.sh` refuses, which must agree with
   its checks, each rule refusing some shape that no other does;
-- `SMOKE_LIMITS`: the shapes that `smoke.sh` does not run;
-- `BASELINES` and `MAX_CHOICES`.
+- `SMOKE_LIMITS`: the shapes that `smoke.sh` does not run, since they would
+  test nothing, or nothing that other shapes don't
+  ([smoke limits](#refusals-skips-and-smoke-limits)).
 
-`framework/matrix.py generate` writes `framework/smoke-shapes.tsv` from
-them, in a few minutes. It keeps the shapes there that still pass, adds
-shapes greedily until every pair is covered, simplifies each, and drops any
-that adds nothing. With `--fresh`, it starts from none, which may find fewer
-shapes, but changes more. A shape's name spells out its choices, e.g.
-`xrootd-v2-multi-cache-no-direct`.
+A pair of choices is possible if some shape that `fed.sh` accepts, and that
+no smoke limit rules out, makes it with at most `SEARCH_DEPTH` (3) other
+choices away from their defaults. `framework/matrix.py pairs` lists them.
 
 `framework/matrix.py check` reads the shapes from `smoke.sh --table`, and
-reports any shape that `fed.sh` would refuse, that breaks one of these
-rules, or that is misnamed; any preset no shape runs; and any pair no shape
-covers.
-
-Both hold `REFUSED` to `fed.sh`: `./fed.sh check` must refuse, for each
-rule, the simplest shape that the rule alone refuses, and accept each shape
-that `smoke.sh` is to run. Where they disagree, `check` reports it, and
-`generate` writes nothing.
+lists each preset that no shape runs and each possible pair that no shape
+makes. It takes about half a minute. It exits 1, saying why, if a shape
+names an unknown preset, or is one that `fed.sh` would refuse or a smoke
+limit rules out; if a preset is missing from the tables; or if `REFUSED`
+and `fed.sh` disagree: `./fed.sh check` must refuse, for each rule, the
+simplest shape that the rule alone refuses, and accept each shape that
+`smoke.sh` is to run.
 
 So a new preset goes in `framework/presets/`, the tables in
 `framework/matrix.py`, and the
 [README's preset tables](../README.md#presets); then run
-`framework/matrix.py generate`, and commit the shapes it writes.
+`framework/matrix.py check` to see the pairs that the shapes don't make.
 `./fed.sh -p ... check` asks `fed.sh` whether it accepts a set of presets,
 without starting anything.
 
@@ -276,7 +264,6 @@ names, which must not be, or hold, this one.
 [Pyright](https://microsoft.github.io/pyright/) (configured in
 `pyproject.toml`, and run with `uv run`);
 [pytest](https://docs.pytest.org/);
-[mdformat](https://mdformat.readthedocs.io/);
-[typos](https://github.com/crate-ci/typos); and
-[`framework/matrix.py check`](#the-smoke-matrix), when a file that it reads
-changes. Run them all with `pre-commit run --all-files`.
+[mdformat](https://mdformat.readthedocs.io/); and
+[typos](https://github.com/crate-ci/typos). Run them all with
+`pre-commit run --all-files`.

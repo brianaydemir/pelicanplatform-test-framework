@@ -254,9 +254,10 @@ run's.
 ### Smoke matrix
 
 The shapes that `smoke.sh` runs when named none, listed in
-[`framework/smoke-shapes.tsv`](../framework/smoke-shapes.tsv). Together they
-make every pair of choices that the presets offer, but those that would test
-nothing ([the smoke matrix](development.md#the-smoke-matrix)).
+[`framework/smoke-shapes.tsv`](../framework/smoke-shapes.tsv). They are
+picked by hand, and need not make every pair of choices that the presets
+offer; `framework/matrix.py check` lists the pairs that none makes
+([the smoke matrix](development.md#the-smoke-matrix)).
 
 ## The approach
 

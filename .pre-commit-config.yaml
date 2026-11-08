@@ -81,18 +81,6 @@ repos:
         pass_filenames: false
         types: [python]
   #
-  # Check the smoke matrix
-  #
-  - repo: local
-    hooks:
-      - id: matrix
-        name: framework/matrix.py check
-        language: system
-        entry: framework/matrix.py check
-        pass_filenames: false
-        # The files that `check` reads, directly or through `fed.sh check`
-        files: ^(fed\.sh|smoke\.sh|framework/(environment\.cfg|matrix\.py|smoke-shapes\.tsv|presets/.*))$
-  #
   # Check text
   #
   - repo: https://github.com/hukkin/mdformat

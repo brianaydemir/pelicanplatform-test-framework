@@ -2,10 +2,9 @@
 # its name, whether it rotates every key after the tests and runs them
 # again (yes or no), and its presets, separated by tabs.
 #
-# `framework/matrix.py generate` writes this file (see "The smoke
-# matrix" in docs/development.md). Rather than edit it, change
-# framework/matrix.py, and run that again; `framework/matrix.py check`
-# checks it.
+# The shapes are picked by hand (see "The smoke matrix" in
+# docs/development.md). `framework/matrix.py check` checks them, and
+# lists the pairs of choices that no shape makes.
 #
 # The framework's own defaults, what `./fed.sh up` runs, each named.
 default	yes	topo-basic origin-posixv2 cache-v2

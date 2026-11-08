@@ -17,12 +17,9 @@
 #   ./smoke.sh --table      list them for framework/matrix.py
 #
 # Given no shapes and no -p, it runs those in framework/smoke-shapes.tsv,
-# which framework/matrix.py generates: two baselines, default (the
-# framework's own choices) and pelican-defaults (Pelican's), and as many
-# other shapes, each as simple as it can be, as it takes to make every
-# useful pair of choices that the presets offer (see "The smoke matrix"
-# in docs/development.md). Some shapes also rotate every key, restart,
-# and run every suite again. The shape of -p's presets, named
+# which are picked by hand (see "The smoke matrix" in
+# docs/development.md). Some shapes also rotate every key, restart, and
+# run every suite again. The shape of -p's presets, named
 # +<preset>+<preset>..., does not.
 #
 # It runs in N copies of the checkout (-j N; 1 by default), made in
