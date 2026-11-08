@@ -334,19 +334,19 @@ def pool(workers: int) -> Generator[ThreadPoolExecutor, None, None]:
     """Run tasks on a pool of worker threads, for the length of a block.
 
     The block waits for every task when it ends, as a ThreadPoolExecutor's
-    own does. Left by an exception, as when test.py abandons a pass, it
-    cancels the tasks not yet started instead: a ThreadPoolExecutor would
-    run them in the background while later suites ran, and the
-    interpreter would wait for them as it exited. Tasks already running
-    end by their own timeouts.
+    own does. Left by an exception, or interrupted by one as it waits, as
+    when test.py abandons a pass, it cancels the tasks not yet started
+    instead: a ThreadPoolExecutor would run them in the background while
+    later suites ran, and the interpreter would wait for them as it
+    exited. Tasks already running end by their own timeouts.
     """
     executor = ThreadPoolExecutor(workers)
     try:
         yield executor
+        executor.shutdown(wait=True)
     except BaseException:
         executor.shutdown(wait=False, cancel_futures=True)
         raise
-    executor.shutdown(wait=True)
 
 
 def wait_for(condition: Callable[[], bool], seconds: float, interval: float = 0.5) -> bool:

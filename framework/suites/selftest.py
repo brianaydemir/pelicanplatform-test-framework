@@ -11,10 +11,12 @@ import errno
 import functools
 import json
 import os
+import signal
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
+from typing import Any
 
 from testlib import common, control, credentials, director, jwt, metrics, stores, suite, web
 from testlib.common import die, first, outcome
@@ -42,7 +44,7 @@ SCENARIOS = {
     ),
     "pool": (
         "testlib.common.pool() drops the tasks it has not started when an abandoned pass"
-        " leaves it, and waits for every one otherwise"
+        " leaves it, or interrupts its wait for them, and waits for every one otherwise"
     ),
     "confined": (
         "the dev container cannot write the checkout, nor what of framework/var the host"
@@ -315,21 +317,55 @@ def restart_cache(test: Test) -> suite.Row:
 
 
 class Abandoned(BaseException):
-    """What `pool` leaves a pool's block with, as test.py's Stalled does."""
+    """What `pool` abandons a pool's block with, as test.py's Stalled does."""
 
 
 def pool(_test: Test) -> suite.Row:
     """Check what testlib.common.pool() does as its block ends.
 
     Ten tasks are queued on a pool of two workers, each of which holds
-    its worker until it is let go. Left by an exception that no suite
-    catches, as test.py's watchdog leaves a pass, with two running, the
-    block must cancel the eight not started, and return at once; the two
-    then end on their own. Left as usual, it must wait for every task.
+    its worker until it is let go. Abandoned with two running, by an
+    exception that no suite catches, which a signal raises as test.py's
+    watchdog does, the block must cancel the eight not started, and
+    return at once; the two then end on their own. It is abandoned once
+    within the block, and once as the block, ended as usual, waits for
+    its tasks. Left as usual, it must wait for every task.
+    """
+    problems: list[str] = []
+    took: list[float] = []
+    for where in ("in its block", "as it waited"):
+        found, seconds = abandon(in_wait=where == "as it waited")
+        problems += [f"abandoned {where}, {p}" for p in found]
+        took.append(seconds)
+    done: list[int] = []
+    with common.pool(2) as workers:
+        for n in range(10):
+            workers.submit(done.append, n)
+    if sorted(done) != list(range(10)):
+        problems.append(f"left as usual, it had run only tasks {sorted(done)} of 10 as it ended")
+    return outcome(
+        problems,
+        "abandoned in its block, and as it waited, it cancelled 8 queued tasks"
+        f" each time, and ended in {took[0]:.1f}s and {took[1]:.1f}s",
+    )
+
+
+def abandon(in_wait: bool) -> tuple[list[str], float]:
+    """Abandon a pool's block with 2 of its 10 tasks running (see pool()).
+
+    Args:
+        in_wait: Whether the block ends as usual, to be abandoned as it
+            waits for its tasks; otherwise, it is abandoned within.
+
+    Returns:
+        What went wrong, and how long the block took to end once
+        abandoned.
     """
     lock = threading.Lock()
     started: list[int] = []
     release = threading.Event()
+    sent: list[float] = []
+    main = threading.get_ident()
 
     def task(n: int) -> int:
         with lock:
@@ -337,34 +373,44 @@ def pool(_test: Test) -> suite.Row:
         release.wait(30)
         return n
 
+    def interrupt() -> None:
+        common.wait_for(lambda: len(started) == 2, 10, interval=0.05)
+        # For the block to queue every task and, if it is to, end.
+        time.sleep(0.5)
+        sent.append(time.monotonic())
+        signal.pthread_kill(main, signal.SIGUSR1)
+
+    def abandoned(_signum: int, _frame: Any) -> None:
+        raise Abandoned()
+
     futures: list[Future[int]] = []
-    left = time.monotonic()
     took = float("inf")
+    previous = signal.signal(signal.SIGUSR1, abandoned)
+    interrupter = threading.Thread(target=interrupt)
+    interrupter.start()
     try:
         with common.pool(2) as workers:
             futures = [workers.submit(task, n) for n in range(10)]
-            common.wait_for(lambda: len(started) == 2, 10, interval=0.05)
-            left = time.monotonic()
-            raise Abandoned()
+            if not in_wait:
+                time.sleep(30)
     except Abandoned:
-        took = time.monotonic() - left
+        took = time.monotonic() - sent[0]
+    finally:
+        # Ignored first, so that a signal sent late does no harm.
+        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+        interrupter.join()
+        signal.signal(signal.SIGUSR1, previous)
     release.set()
     problems: list[str] = []
     cancelled = sum(f.cancelled() for f in futures)
     if cancelled != 8:
-        problems.append(f"abandoned with 2 tasks running, it cancelled {cancelled} of 8 queued")
+        problems.append(f"with 2 tasks running, it cancelled {cancelled} of 8 queued")
     if took > 5:
-        problems.append(f"abandoned, its block took {took:.1f}s to end, waiting for its tasks")
+        problems.append(f"its block took {took:.1f}s to end, waiting for its tasks")
     ran = [f.result(30) for f in futures if not f.cancelled()]
     if sorted(started) != sorted(ran) or len(started) != 2:
-        problems.append(f"abandoned, it started tasks {sorted(started)}, and ran {sorted(ran)}")
-    done: list[int] = []
-    with common.pool(2) as workers:
-        for n in range(10):
-            workers.submit(done.append, n)
-    if sorted(done) != list(range(10)):
-        problems.append(f"left as usual, it had run only tasks {sorted(done)} of 10 as it ended")
-    return outcome(problems, f"abandoned, it cancelled 8 queued tasks, and ended in {took:.1f}s")
+        problems.append(f"it started tasks {sorted(started)}, and ran {sorted(ran)}")
+    return problems, took
 
 
 # What `confined` finds read-only, under the top of the checkout: the

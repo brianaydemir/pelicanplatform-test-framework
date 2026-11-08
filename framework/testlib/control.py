@@ -355,7 +355,10 @@ def restart_with(svc: str, files: Mapping[str, str], serves: bool = True) -> Gen
 
     That layer wins over every other. Afterward, even on failure, remove
     the files and restart svc again, so that what comes later sees the
-    shape as it was.
+    shape as it was. If the restart or the block raised, a failed
+    restore is only warned of, so as not to replace what was raised: a
+    suite would catch a ControlError in place of test.py's Stalled, and
+    carry on with a pass it was told to abandon.
 
     Args:
         svc: The Pelican server to restart.
@@ -380,6 +383,13 @@ def restart_with(svc: str, files: Mapping[str, str], serves: bool = True) -> Gen
         if not CONFIG_FILE.fullmatch(name):
             raise ControlError(f"not a configuration file's name: {name!r}")
     written: list[str] = []
+
+    def restore() -> None:
+        for path in written:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(path)
+        restart(svc)
+
     try:
         for name, text in files.items():
             path = os.path.join(directory, name)
@@ -391,11 +401,13 @@ def restart_with(svc: str, files: Mapping[str, str], serves: bool = True) -> Gen
         else:
             _ask("restart", svc)
         yield
-    finally:
-        for path in written:
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(path)
-        restart(svc)
+    except BaseException:
+        try:
+            restore()
+        except ControlError as e:
+            common.warn(f"restoring {svc}: {e}")
+        raise
+    restore()
 
 
 @contextlib.contextmanager

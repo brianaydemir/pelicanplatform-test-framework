@@ -42,10 +42,11 @@ a [shape](../glossary.md#shape) that does not export `/protected-a`.
   cache-0.
 - `pool`: [`testlib.common.pool()`](../../framework/testlib/common.py) must
   drop the tasks it has not started when an exception that no suite catches,
-  such as the [watchdog](../glossary.md#watchdog)'s, leaves its block. With
-  ten tasks queued on two workers, such an exception must cancel the eight
-  waiting at once, and let the two running end; a normal exit must wait for
-  all ten. WLCG pass only.
+  such as the [watchdog](../glossary.md#watchdog)'s, leaves its block, or
+  interrupts the block's wait for its tasks as it ends. With ten tasks queued
+  on two workers, such an exception, raised by a signal in either place,
+  must cancel the eight waiting at once, and let the two running end; a
+  normal exit must wait for all ten. WLCG pass only.
 - `confined`: the [dev container](../glossary.md#dev-container) must not
   write what the host runs or the framework's own code
   ([Isolation](../development.md#isolation)). Opening `fed.sh` or
