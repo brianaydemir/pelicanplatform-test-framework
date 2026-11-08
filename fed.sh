@@ -215,7 +215,7 @@ fi
 # knobs that shape the federation are not: only presets set them, and
 # the caller's values are ignored.
 
-fed_knobs="IMAGE_HUB PELICAN_TAG PELICAN_DEV_TAG PELICAN_SRC_DIR
+fed_knobs="IMAGE_HUB IMAGE_DEV_HUB PELICAN_TAG PELICAN_DEV_TAG PELICAN_SRC_DIR
            PELICAN_LOG_LEVEL TZ_SERVICES TZ_STORAGE
            ORIGIN_MEM CACHE_MEM DIRECTOR_MEM REGISTRY_MEM TRANSFER_MEM DEV_MEM FED_MEM
            IMAGE_ORIGIN IMAGE_CACHE IMAGE_DIRECTOR IMAGE_REGISTRY IMAGE_DEV"
@@ -326,7 +326,7 @@ fi
 export ORIGIN_0_NETWORK CACHES_BLACKHOLE
 
 # Each image not named otherwise is the published one for its tag.
-: "${IMAGE_DEV:=${IMAGE_HUB}/pelican-dev:${PELICAN_DEV_TAG}}"
+: "${IMAGE_DEV:=${IMAGE_DEV_HUB}/pelican-dev:${PELICAN_DEV_TAG}}"
 : "${IMAGE_ORIGIN:=${IMAGE_HUB}/origin:${PELICAN_TAG}}"
 : "${IMAGE_CACHE:=${IMAGE_HUB}/cache:${PELICAN_TAG}}"
 : "${IMAGE_DIRECTOR:=${IMAGE_HUB}/director:${PELICAN_TAG}}"

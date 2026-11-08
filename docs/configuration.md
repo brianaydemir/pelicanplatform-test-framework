@@ -144,17 +144,18 @@ Pelican setting, use a [configuration file](#pelican-configuration).
 
 The knobs that you set:
 
-| Knob                | Default                            | Sets                                                                                    |
-| ------------------- | ---------------------------------- | --------------------------------------------------------------------------------------- |
-| `PELICAN_TAG`       | see `framework/environment.cfg`    | release for images and binaries                                                         |
-| `IMAGE_<SERVICE>`   | `${IMAGE_HUB}/<service>:<tag>`     | one service's image (`ORIGIN`, ..., `DEV`); `DEV`'s is `pelican-dev:${PELICAN_DEV_TAG}` |
-| `IMAGE_HUB`         | `hub.osg-htc.org/pelican_platform` | image registry                                                                          |
-| `PELICAN_DEV_TAG`   | `latest-itb`                       | dev container tag                                                                       |
-| `PELICAN_SRC_DIR`   | empty                              | a Pelican checkout to mount, read-write, at `/app` in the dev container; empty, none    |
-| `PELICAN_LOG_LEVEL` | `info`                             | `Logging.Level`                                                                         |
-| `TZ_SERVICES`       | `UTC`                              | central services' timezone                                                              |
-| `TZ_STORAGE`        | `America/Chicago`                  | origins' and caches' timezone                                                           |
-| `<SERVICE>_MEM`     | see `framework/presets/default.sh` | memory limits                                                                           |
+| Knob                | Default                            | Sets                                                                                                     |
+| ------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `PELICAN_TAG`       | see `framework/environment.cfg`    | release for images and binaries                                                                          |
+| `IMAGE_<SERVICE>`   | `${IMAGE_HUB}/<service>:<tag>`     | one service's image (`ORIGIN`, ..., `DEV`); `DEV`'s is `${IMAGE_DEV_HUB}/pelican-dev:${PELICAN_DEV_TAG}` |
+| `IMAGE_HUB`         | `hub.osg-htc.org/pelican_platform` | release images' registry                                                                                 |
+| `IMAGE_DEV_HUB`     | `hub.osg-htc.org/pelican-ci`       | dev image's registry                                                                                     |
+| `PELICAN_DEV_TAG`   | `latest-itb`                       | dev container tag                                                                                        |
+| `PELICAN_SRC_DIR`   | empty                              | a Pelican checkout to mount, read-write, at `/app` in the dev container; empty, none                     |
+| `PELICAN_LOG_LEVEL` | `info`                             | `Logging.Level`                                                                                          |
+| `TZ_SERVICES`       | `UTC`                              | central services' timezone                                                                               |
+| `TZ_STORAGE`        | `America/Chicago`                  | origins' and caches' timezone                                                                            |
+| `<SERVICE>_MEM`     | see `framework/presets/default.sh` | memory limits                                                                                            |
 
 `local/environment.cfg` can set only those that `default.sh` doesn't:
 `PELICAN_TAG`, `IMAGE_*`, `PELICAN_DEV_TAG`, and `PELICAN_SRC_DIR`. Set the
