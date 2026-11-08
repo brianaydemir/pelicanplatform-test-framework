@@ -32,10 +32,6 @@ COMPOSE_PROFILES = (os.environ.get("COMPOSE_PROFILES") or "").split(",")
 
 # How many objects each origin holds in each namespace (see transfers.LOAD).
 OBJECTS = transfers.LOAD.objects
-# The namespaces of origin-2, another owner (`topo-multi-owner`), which
-# mirror /protected-a and /public; and /public/secret, a protected prefix
-# inside /public (fed_owner_exports in fed.sh).
-OWNER_NAMESPACES = ("other", "public/other", "public/secret")
 # The collections that init makes under each namespace's data/: the
 # areas of the suites that write there (testlib/suite.py), and `put`,
 # the transfers suite's. Other suites make their own.
@@ -217,7 +213,8 @@ def main() -> None:
 
     os.makedirs(common.VAR, exist_ok=True)
     common.enter_var()
-    exports = common.Federation().exports
+    fed = common.Federation()
+    exports = fed.exports
 
     if args == ["--print-shape"]:
         print(shape(exports))
@@ -228,7 +225,8 @@ def main() -> None:
     # Where objects go. A pstore origin's store is encrypted, so its
     # objects go beside the store as a plain copy, which the transfers
     # suite uploads; and there, /public reads /protected-a's storage.
-    # origin-2, another owner (`topo-multi-owner`), has objects of its own.
+    # origin-2, another owner (`topo-multi-owner`), has objects of its own,
+    # in its exports (fed_owner_exports in fed.sh).
     pstore = ORIGIN_VARIANT == "pstore"
     namespaces = list(dict.fromkeys(common.storage_namespace(ns, pstore) for ns in credentials.NAMESPACES))
     prime_origin_0 = ORIGIN_VARIANT != "ssh"
@@ -252,8 +250,8 @@ def main() -> None:
         print(f"Skipping origin-1: {skip_reason}.")
 
     if prime_origin_2:
-        print(f"Creating {OBJECTS} objects for origin-2 in each namespace ...")
-        make_objects("data/origin/2", ["2"], OWNER_NAMESPACES)
+        print(f"Creating {OBJECTS} objects for origin-2 in each of its exports ...")
+        make_objects("data/origin/2", ["2"], [e.path for owner in fed.owners for e in owner.exports])
 
     if prime_lab:
         # Named like origin-0's, so the same batches work against either.

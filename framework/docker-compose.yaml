@@ -831,9 +831,9 @@ services:
 
   # The backend of s3 and s3v2 origins (`-p origin-s3`, `-p origin-s3v2`):
   # rclone serving, over S3, each origin's store as bucket origin-<N>;
-  # for an s3 origin, which takes a bucket per export (fed_s3_bucket in
-  # fed.sh), each export's directory in it as bucket
-  # origin-<N>-<directory>; and ./var/data/tier as bucket `tier`
+  # for an s3 origin, which takes a bucket per export, each export's
+  # directory in it as bucket origin-<N>-<directory>, which fed.sh lists
+  # (fed_s3_export_buckets); and ./var/data/tier as bucket `tier`
   # (`-p cache-tiered`). The credentials are the origins', which fed.sh
   # copies from framework/etc/ or local/etc/. It keeps the directories
   # that init-data.py made, writable by any uid, even when their last
@@ -855,17 +855,8 @@ services:
       - >-
         exec rclone serve s3 :combine: --addr=:8444
         --combine-upstreams="origin-0=/srv/origin-0 origin-1=/srv/origin-1
-        origin-2=/srv/origin-2
-        origin-0-public=/srv/origin-0/public
-        origin-0-protected-a=/srv/origin-0/protected-a
-        origin-0-protected-b=/srv/origin-0/protected-b
-        origin-1-public=/srv/origin-1/public
-        origin-1-protected-a=/srv/origin-1/protected-a
-        origin-1-protected-b=/srv/origin-1/protected-b
-        origin-2-other=/srv/origin-2/other
-        origin-2-public-other=/srv/origin-2/public-other
-        origin-2-public-secret=/srv/origin-2/public-secret
-        tier=/srv/tier"
+        origin-2=/srv/origin-2 tier=/srv/tier
+        ${S3_EXPORT_BUCKETS?run through ./fed.sh}"
         --cert=/certs/tls.crt --key=/certs/tls.key
         --auth-key="$$(cat /fed/s3-access-key),$$(cat /fed/s3-secret-key)"
         --dir-cache-time=0s --no-cleanup

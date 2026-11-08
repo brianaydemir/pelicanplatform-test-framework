@@ -83,9 +83,10 @@ STARTUP_WAIT, PING_WAIT = 10, 15
 # (docker-compose.yaml), and a cache waits for its origin.
 SERVE_WAIT = 180
 
-# The Pelican servers, each of which is the host of its name, with its
-# web port at 8444 (config.d/base/20-server.yaml); `fed` is the tiny
-# topology's, and `transfer` a transfer server of its own.
+# The Pelican servers (fed.sh's fed_services), each of which is the host
+# of its name, with its web port at 8444 (config.d/base/20-server.yaml);
+# `fed` is the tiny topology's, and `transfer` a transfer server of its
+# own.
 PELICAN_SERVER = re.compile(r"(?:director|origin|cache)-\d+|registry|transfer|fed")
 
 # What a file of restart_with() may be named.

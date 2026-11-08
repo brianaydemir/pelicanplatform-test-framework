@@ -360,8 +360,9 @@ tests()         { ./fed.sh test --part "${part}/${parts}"; }
 tests_rotated() { RESULTS_TAG=rotated-keys ./fed.sh test --part "${part}/${parts}"; }
 
 # Every service is still running (none is meant to exit), and every
-# Pelican server, and the discovery host, answers on its published port
-# over TLS with the framework's CA.
+# Pelican server (fed.sh's fed_services), the directors' load balancer,
+# and the discovery host answer on their published ports over TLS with
+# the framework's CA.
 check_ports() {
   states=$(./fed.sh ps --all --format '{{.Service}} {{.State}}') || return 1
   printf '%s\n' "${states}"

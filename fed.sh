@@ -53,7 +53,9 @@ usage() {
 #---------------------------------------------------------------------------
 # Every Pelican server the framework can start (`fed` is the `tiny`
 # topology). Each owns framework/var/issuer-keys/<svc> and
-# framework/var/state/<svc>.
+# framework/var/state/<svc>. smoke.sh's check_ports and
+# framework/testlib/control.py's PELICAN_SERVER tell these by their
+# names' patterns, so a new kind of server needs adding there too.
 #
 # The members of a group share a key. The `origins` export the same
 # prefixes, and the registry binds one keyset per prefix; origin-2
@@ -66,6 +68,14 @@ fed_services="${fed_services} transfer fed"
 fed_groups="origins directors"
 fed_group_origins="origin-0 origin-1"
 fed_group_directors="director-0 director-1"
+
+# True if Compose service $1 is a Pelican server.
+fed_is_server() {
+  case " ${fed_services} " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
 
 # Key holders that are not Pelican servers: `issuer` is the external token
 # issuer that the discovery host serves (`auth-external-issuer`).
@@ -1039,6 +1049,21 @@ fed_owner_caps_of() {
   esac
 }
 
+# Each export of origin-0, origin-1, and origin-2, whether or not the
+# shape runs them, one per line: the service and the federation prefix.
+# origin-0 and origin-1 export the namespaces, and origin-2 its own (see
+# fed_owner_exports).
+fed_all_exports() {
+  for svc in origin-0 origin-1; do
+    for ns in ${fed_namespaces}; do
+      printf '%s /%s\n' "${svc}" "${ns}"
+    done
+  done
+  fed_owner_exports | while read -r prefix like; do
+    printf 'origin-2 %s\n' "${prefix}"
+  done
+}
+
 # Make directory $2 hold a copy of what directory $1 holds, or nothing if
 # $1 is missing. $2 is emptied rather than replaced, because a running
 # container's bind mount refers to it by inode, and only if it differs,
@@ -1141,6 +1166,21 @@ fed_storage_prefix() {
 fed_s3_bucket() {
   printf '%s-%s\n' "$1" "$(fed_storage_dir "$2")"
 }
+
+# Under `origin-s3`, each export's bucket (fed_s3_bucket) as an upstream
+# of the s3 service's `combine` remote, `<bucket>=<directory>`, separated
+# by spaces, where the service mounts each origin's store at /srv/<svc>
+# (see docker-compose.yaml); empty otherwise. Compose takes it from the
+# environment, and so recreates the service when it changes.
+fed_s3_export_buckets() {
+  [ "${ORIGIN_VARIANT}" = s3 ] || return 0
+  fed_all_exports | while read -r svc prefix; do
+    printf '%s=/srv/%s/%s\n' "$(fed_s3_bucket "${svc}" "${prefix}")" "${svc}" \
+        "$(fed_storage_dir "${prefix}")"
+  done | paste -s -d ' ' -
+}
+S3_EXPORT_BUCKETS=$(fed_s3_export_buckets)
+export S3_EXPORT_BUCKETS
 
 # One entry of Origin.Exports: federation prefix $1, with namespace $2's
 # capabilities (see fed_namespace_caps) and storage prefix $3. If Pelican
@@ -1964,28 +2004,27 @@ fed_prepare_dirs() {
       framework/var/bin/host
   # Written over SSH by `alice`, whose uid is unrelated to yours.
   chmod 0777 framework/var/data/lab-server
-  # Each export's storage (fed_storage_dir), which the s3 service mounts
-  # as a bucket under `origin-s3`, and which an origin writes in as
-  # whatever user it runs as.
-  for store in framework/var/data/origin/0 framework/var/data/origin/1 \
-      framework/var/data/lab-server; do
-    fed_prepare_storage "${store}" public protected-a protected-b
+  # Each export's storage, which an origin writes in as whatever user it
+  # runs as, and which the s3 service serves as a bucket under
+  # `origin-s3` (fed_s3_export_buckets). Under `origin-ssh`, the origins'
+  # store is the lab server's.
+  fed_all_exports | while read -r svc prefix; do
+    fed_prepare_storage "framework/var/data/origin/${svc#origin-}" "${prefix}"
   done
-  fed_prepare_storage framework/var/data/origin/2 other public-other public-secret
+  for ns in ${fed_namespaces}; do
+    fed_prepare_storage framework/var/data/lab-server "/${ns}"
+  done
 }
 
-# Make directories $2... in store $1, writable by any user, unless they
-# are there. The containers write the store, so one that is a symlink
-# is left alone rather than followed.
+# Make the directory of export $2's storage (fed_storage_dir) in store
+# $1, writable by any user, unless it is there. The containers write the
+# store, so one that is a symlink is left alone rather than followed.
 fed_prepare_storage() {
-  store=$1
-  shift
-  for dir in "$@"; do
-    if [ ! -d "${store}/${dir}" ] && [ ! -L "${store}/${dir}" ]; then
-      mkdir "${store}/${dir}"
-      chmod 0777 "${store}/${dir}"
-    fi
-  done
+  dir="$1/$(fed_storage_dir "$2")"
+  if [ ! -d "${dir}" ] && [ ! -L "${dir}" ]; then
+    mkdir "${dir}"
+    chmod 0777 "${dir}"
+  fi
 }
 
 # Services read their configuration only at startup. Mark a change to
@@ -2454,36 +2493,6 @@ fed_keys() {
 #---------------------------------------------------------------------------
 # Preflight checks for `up` and `restart`.
 
-# The Pelican services that the shape runs, one per line.
-fed_running_services() {
-  case "${fed_topology}" in
-    tiny)       printf '%s\n' fed; return 0 ;;
-    standalone) printf '%s\n' origin-0; return 0 ;;
-  esac
-  printf '%s\n' director-0 registry origin-0
-  if fed_has_profile cache; then
-    printf '%s\n' cache-0
-  fi
-  if fed_has_profile multi-director; then
-    printf '%s\n' director-1
-  fi
-  if fed_has_profile multi-origin; then
-    printf '%s\n' origin-1
-  fi
-  if fed_has_profile multi-owner; then
-    printf '%s\n' origin-2
-  fi
-  if fed_has_profile multi-cache; then
-    printf '%s\n' cache-1
-  fi
-  if fed_has_profile site-local-cache; then
-    printf '%s\n' cache-2
-  fi
-  if fed_has_profile transfer; then
-    printf '%s\n' transfer
-  fi
-}
-
 # True if every certificate exists and none expires within a day.
 fed_certs_fresh() {
   for cert in ${fed_certs}; do
@@ -2516,12 +2525,14 @@ fed_require_certs() {
   fi
 }
 
-# Die unless every running service, and the external issuer if used, has
-# an issuer key, and every test key's JWKS exists.
+# Die unless every Pelican server that the shape runs, and the external
+# issuer if used, has an issuer key, and every test key's JWKS exists.
 fed_require_keys() {
+  services=$(docker compose config --services) \
+      || die "cannot list the shape's services"
   missing=""
-  for svc in $(fed_running_services); do
-    if ! fed_key_dir_has_key "${svc}"; then
+  for svc in ${services}; do
+    if fed_is_server "${svc}" && ! fed_key_dir_has_key "${svc}"; then
       missing="${missing} ${svc}"
     fi
   done
@@ -2869,11 +2880,10 @@ fed_up() {
   if [ -n "${before}" ]; then
     # shellcheck disable=SC2086  # one container ID per word
     for ctr in $(fed_container_services ${before} 2>/dev/null); do
-      case " ${fed_services} " in
-        *" ${ctr#*/} "*)
-            stale="${stale} ${ctr#*/}"
-            stale_ids="${stale_ids} ${ctr%%/*}" ;;
-      esac
+      if fed_is_server "${ctr#*/}"; then
+        stale="${stale} ${ctr#*/}"
+        stale_ids="${stale_ids} ${ctr%%/*}"
+      fi
     done
   fi
   if [ -z "${stale}" ]; then
