@@ -12,7 +12,8 @@
                host's writing, without following symlinks, where a
                container writes
   control      restarting, stopping, or reconfiguring a service mid-run,
-               through framework/control.py on the host
+               and counting what its container has sent, through
+               framework/control.py on the host
   credentials  the credentials the tests present, what each allows, and
                the token profiles they come in
   digests      checksums as a Digest header reports them

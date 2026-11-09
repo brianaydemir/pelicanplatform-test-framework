@@ -3,8 +3,8 @@
 A test may restart, stop, start, pause, unpause, or kill a service, or
 restart one with configuration of its own. It may stop and resume the
 XRootD daemons in a service, leaving the rest of it running. It may ask
-what state a service's container is in, and which servers have exited
-on their own.
+what state a service's container is in, which servers have exited on
+their own, and how many bytes a service's container has sent.
 
 The dev container has no Docker, so a helper on the host,
 framework/control.py, acts for the tests: `./fed.sh test` runs one
@@ -54,11 +54,14 @@ CONFIG = os.path.join(DIR, "config")
 SIGNALS = {"freeze-xrootd": "STOP", "thaw-xrootd": "CONT"}
 # What the helper does, each by `docker compose <action> <service>` but
 # `ping`, which only answers; `state` and `exited`, which only look
-# (`docker compose ps`); and those of SIGNALS.
+# (`docker compose ps`); `net-bytes`, which reads the kernel's count of
+# what the service's container has moved on each network interface
+# (`docker compose exec` of `cat /proc/net/dev`); and those of SIGNALS.
 ACTIONS = (
     "ping",
     "state",
     "exited",
+    "net-bytes",
     "restart",
     "stop",
     "start",
@@ -348,6 +351,48 @@ def state(svc: str) -> str:
         ControlError: The helper did not answer, or could not look.
     """
     return _ask("state", svc).split("\n", maxsplit=1)[0].strip()
+
+
+def sent_bytes(services: Sequence[str]) -> int:
+    """Return how many bytes the services' containers have sent, in all.
+
+    It is the kernel's count, on every network interface but the
+    loopback (/proc/net/dev in each container): what the servers sent,
+    headers and TLS included, as no counter of their own can misstate
+    it.
+
+    Raises:
+        ControlError: The helper did not answer, or could not read a
+            container's count, as of one that is not running.
+    """
+    total = 0
+    for svc in services:
+        output = _ask("net-bytes", svc)
+        for line in output.splitlines()[2:]:
+            interface, _, fields = line.partition(":")
+            values = fields.split()
+            if interface.strip() != "lo" and len(values) > 8 and values[8].isdigit():
+                total += int(values[8])
+    return total
+
+
+def origins_sent(fed: common.Federation) -> int | None:
+    """Return how many bytes the origins' containers have sent, in all.
+
+    See sent_bytes(). It counts a check's own requests of an origin too,
+    such as for /metrics, so a check takes it outside them.
+
+    Returns:
+        The count; None where the tests can't tell: without a control
+        helper, or in the tiny topology, whose one container holds every
+        server.
+
+    Raises:
+        ControlError: The helper could not read a container's count.
+    """
+    if fed.tiny or unavailable():
+        return None
+    return sent_bytes([o.svc for o in fed.origins])
 
 
 @contextlib.contextmanager

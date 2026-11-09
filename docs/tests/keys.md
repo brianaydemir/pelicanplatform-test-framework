@@ -54,7 +54,9 @@ named `<scenario> <case>`.
   (`sealed-after-restart`). The suite adds a verify-only key first if the
   cache has only one. Then, destructively, with every key but the newest
   removed, the restarted cache must still open its store and serve the probe
-  from it, with `Age`, fetching nothing (`retired`). That row is
+  from it, with `Age`, fetching nothing: the origins' containers send less
+  than the probe meanwhile
+  ([origins' bytes](../glossary.md#origins-bytes); `retired`). That row is
   `INCONCLUSIVE` if the cache will not serve the probe beforehand. Afterward
   the keys and the master key file are put back; if the cache does not
   recover, the note says to run [`./reset.sh`](../../reset.sh). Needs a

@@ -15,9 +15,10 @@ every other suite but [`keys`](keys.md). It needs a
 ([token profiles](README.md#token-profiles)).
 
 - `cache-restart`: Each cache, [site-local](site-local-cache.md) included,
-  restarted, must serve the objects it held from its store, intact:
-  [native](../glossary.md#native-and-xrootd) origins send under an object's
-  worth of bytes (`pelican_http_bytes_total`), and a V2 cache sends `Age`.
+  restarted, must serve the objects it held from its store, intact: the
+  origins' containers send under an object's worth of bytes meanwhile
+  ([origins' bytes](../glossary.md#origins-bytes)), and a V2 cache sends
+  `Age`.
   Every director must name a federated cache again within 150 seconds. A row
   per cache.
 
@@ -80,3 +81,17 @@ every other suite but [`keys`](keys.md). It needs a
   must list only itself at `/api/v1.0/director/directors` within
   `Server.AdLifetime` and 30 more, and both within 150 seconds of the
   second's restart.
+
+- `director-failover`: Under
+  [`-p director-ha`](../../framework/presets/director-ha.sh), each director
+  in turn is killed, so its port refuses connections, which the load
+  balancer then sends to the other. Meanwhile (`<director> down`), the
+  Pelican client, `stash_plugin`, and a plain HTTP client, which asks the
+  load balancer for the bare path and follows the redirect with its token,
+  must each get an object through the load balancer, and, where
+  `/protected-a` takes writes, put one, which some origin must then hold.
+  Started again, the director must name origin-0 and the first federated
+  cache within 150 seconds, and the clients must do the same again
+  (`<director> back`). No director is paused: its port would still take
+  connections, which a balancer that passes TLS through cannot tell from a
+  slow director's.

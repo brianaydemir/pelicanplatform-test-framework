@@ -38,6 +38,7 @@ SCENARIOS = {
         " jwt.verify() finds its key in the origins' JWKS, and in no other"
     ),
     "metrics": "a GET straight to a native origin raises its pelican_http_requests_total",
+    "net-bytes": "testlib.control.sent_bytes() counts what an origin sends for a GET, and little more",
     "restart-cache": (
         "cache-0, restarted mid-run, is named by every director again, and serves what"
         " it held from its store"
@@ -245,6 +246,40 @@ def http_requests(test: Test) -> suite.Row:
         if rise < 1:
             return FAIL, f"{origin.svc}: {REQUESTS} for a GET rose by {rise:g}, not 1 or more"
         notes.append(f"{origin.svc} +{rise:g}")
+    return PASS, ", ".join(notes)
+
+
+# How much more than an object an origin's container may send for a GET of
+# it (`net-bytes`): headers, TLS, and whatever else it sends meanwhile.
+NET_SLACK = 64 << 10
+
+
+def net_bytes(test: Test) -> suite.Row:
+    """Check that testlib.control counts the bytes a container sends.
+
+    A GET of the object straight to each origin must raise the kernel's
+    count of what its container sent (control.sent_bytes()) by at least
+    the object's size, and by no more than NET_SLACK beyond it.
+    """
+    fed = test.fed
+    if fed.tiny:
+        return SKIP, "the tiny topology's origin shares its container with every other server"
+    if not test.direct:
+        return SKIP, f"/{NAMESPACE} takes no direct clients"
+    why = control.unavailable()
+    if why:
+        return SKIP, why
+    notes: list[str] = []
+    for origin in fed.origins:
+        before = control.sent_bytes([origin.svc])
+        answer = web.request("GET", test.url(origin.url, test.object), token=test.read_token)
+        why = web.served(answer, test.data)
+        if why:
+            return FAIL, f"{origin.svc}: GET of the object got {why}"
+        rise = control.sent_bytes([origin.svc]) - before
+        if not len(test.data) <= rise <= len(test.data) + NET_SLACK:
+            return FAIL, f"{origin.svc} sent {rise} bytes for a GET of {len(test.data)}"
+        notes.append(f"{origin.svc} +{rise}")
     return PASS, ", ".join(notes)
 
 
@@ -486,6 +521,7 @@ RUN = {
     "trailers": trailers,
     "jwt": jwt_tokens,
     "metrics": http_requests,
+    "net-bytes": net_bytes,
     "restart-cache": restart_cache,
     "pool": pool,
     "confined": confined,

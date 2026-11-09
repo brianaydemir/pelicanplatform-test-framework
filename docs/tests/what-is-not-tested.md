@@ -159,17 +159,12 @@ would catch a fault:
   the tunnel is used; the lab server can reach the origin without it.
 - [`origin-short-tokens`](../../framework/presets/origin-short-tokens.sh): a
   transfer that outlives its token, or a cache shown an expired one.
-- [`origin-export-templates`](../../framework/presets/origin-export-templates.sh):
-  a read with such a token; only the scopes the issuer grants are checked
-  ([issuer](issuer.md)).
 - [`auth-external-issuer`](../../framework/presets/auth-external-issuer.sh):
   a token of the origins' own keys or issuers, and a token of the trusted
   key that names another issuer.
 - [`auth-no-issuer`](../../framework/presets/auth-no-issuer.sh): a token of
   the origin's key that names another issuer; [`auth`](authorization.md)'s
   `wrong-iss` skips.
-- [`director-ha`](../../framework/presets/director-ha.sh): a read or write
-  through the load balancer with a director down.
 - [`registry-approval`](../../framework/presets/registry-approval.sh): a
   request for a pending server's data; the directors' routing is checked
   instead ([federation](federation.md)).

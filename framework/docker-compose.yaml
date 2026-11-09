@@ -700,6 +700,11 @@ services:
       # The stores, which the tests write straight to disk, and the
       # backends' and receivers' logs, which they read and clear.
       - ./var/data/origin/0:/scratch/framework/var/data/origin/0
+      # origin-0's store again, where origin-0 has it: a pstore's catalog
+      # names its storage directories by the paths that the origin used,
+      # and the offline CLI (`pelican-server origin pstore`) looks for the
+      # block files there, whatever --location says.
+      - ./var/data/origin/0:/data
       - ./var/data/origin/1:/scratch/framework/var/data/origin/1
       - ./var/data/origin/2:/scratch/framework/var/data/origin/2
       - ./var/data/cache/0:/scratch/framework/var/data/cache/0

@@ -31,8 +31,10 @@ need them [skip](../glossary.md#skip). A scenario with several
 - `only-if-cached`: Asked by `Cache-Control: only-if-cached`
   ([RFC 9111, section 5.2.1.7](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.1.7))
   or `X-Pelican-NoDownload: true`, a V2 cache must serve what it holds, and
-  answer a GET or HEAD of what it lacks with 504, fetching nothing
-  (`pelican_http_bytes_total`). A plain HEAD must fetch nothing either.
+  answer a GET or HEAD of what it lacks with 504, fetching nothing: the
+  origins' containers send less than the object meanwhile
+  ([origins' bytes](../glossary.md#origins-bytes)). A plain HEAD must fetch
+  nothing either.
 
 - `no-negative-cache`: An object no origin holds must get 404 at each cache
   (a V2 cache's JSON `error` naming `not_found`) and director. Once every

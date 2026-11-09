@@ -151,17 +151,21 @@ RECLAIM_WAIT = 90
 # backups: where the restart has the origin write them, in its state
 # (/var/lib/pelican, framework/var/state/<service>), a directory per run;
 # how often; and how many it keeps. The scheduled-pass metrics name their
-# pass METADATA_BACKUP.
+# pass METADATA_BACKUP. The interval must outlast the origin's startup,
+# which takes half a minute on a busy host, so that the startup backup is
+# told from the first scheduled one by when it came.
 BACKUPS = "pstore-backups"
 STATE = "/var/lib/pelican"
-BACKUP_INTERVAL = 20
+BACKUP_INTERVAL = 45
 BACKUPS_KEPT = 3
 METADATA_BACKUP = "metadata_backup"
 # How long after the restart the startup backup may take to appear; how
 # far past an interval the next may come, since an interval is the gap
 # between the end of one and the start of the next.
-STARTUP_WAIT = 60
+STARTUP_WAIT = BACKUP_INTERVAL + 15
 INTERVAL_SLACK = 10
+# How long a backup under way may take to be renamed into place.
+PARTIAL_WAIT = 30
 # A backup's name and its first bytes, the format's magic and version 1
 # (snapshotOnce in pstore/backup.go; backupMagic in backup_crypto.go).
 BACKUP_NAME = re.compile(r"pstore-metadata-(\d{8}T\d{6}Z)\.pmb")
@@ -184,6 +188,10 @@ MASTER_KEY = "masterkey.json"
 # restore prints (runPStoreRestore in Pelican's cmd/origin_pstore.go).
 CLI_TIMEOUT = 300
 RESTORED = "Restored the catalog from"
+# Where origin-0 has its store (Origin.PStoreLocation), and so has the dev
+# container, for the CLI (Restore.cli()).
+ORIGIN_STORE = "/data/pstore"
+ORIGIN_0_STORE = "data/origin/0"
 
 # A small object that shows the federation serves the namespace again.
 PROBE = "probe"
@@ -1007,13 +1015,19 @@ def chunked_at(test: Test, origin: common.Origin, case: str) -> Row:
     largest chunk. The store must hold a block file for each chunk
     (chunk_files()), and the origin must serve the object whole, and
     each range at and across each chunk edge, byte for byte. Afterward
-    the object is deleted.
+    the object is deleted, and its space must be reclaimed within
+    RECLAIM_WAIT seconds, or capacity, which bounds the store at what it
+    then holds, would find it that much roomier.
     """
     declared, size = CHUNKED[case]
     chunk = blocks.chunk_size(size if declared else None)
     rel = test.rel("chunks", f"{origin.svc}{'-' + case if case else ''}")
     data = os.urandom(size)
     known = set(blocks.pstore_block_files(origin))
+    found, why = usage(test, origin)
+    if found is None:
+        return FAIL, f"before the put, {why}"
+    used = int(found["usedBytes"])
     why = stores.put(origin, test.namespace, rel, data, test.setup, chunked=not declared)
     if why:
         return FAIL, why
@@ -1042,6 +1056,14 @@ def chunked_at(test: Test, origin: common.Origin, case: str) -> Row:
         why = stores.delete(origin, test.namespace, rel, test.setup)
         if why:
             warn(why)
+        elif not common.wait_for(lambda: used_bytes(test, origin) <= used, RECLAIM_WAIT, interval=3):
+            warn(f"{origin.svc} did not reclaim {suite.leaf(rel)} within {RECLAIM_WAIT}s of its delete")
+
+
+def used_bytes(test: Test, origin: common.Origin) -> float:
+    """Return what origin's storage API says it uses, or infinity if it won't say."""
+    found, _ = usage(test, origin)
+    return float(found["usedBytes"]) if found is not None else float("inf")
 
 
 def chunks(test: Test) -> dict[str, Row]:
@@ -1456,8 +1478,10 @@ class Backups:
         problems: list[str] = []
         names = self.names()
         if any(n.endswith(".partial") for n in names):
-            # One may be under way; a moment later it is not.
-            time.sleep(2)
+            # One may be under way, until it is renamed into place.
+            common.wait_for(
+                lambda: not any(n.endswith(".partial") for n in self.names()), PARTIAL_WAIT, interval=1
+            )
             names = self.names()
         kept = [n for n in names if backup_time(n) is not None]
         problems += [f"{n} is no backup" for n in names if backup_time(n) is None]
@@ -1581,7 +1605,10 @@ class Restore:
     def cli(self, *args: str) -> tuple[int, str, str]:
         """Run `pelican-server origin pstore <args>` on the store.
 
-        It runs with the origin's keys.
+        It runs with the origin's keys, on the store at ORIGIN_STORE, where
+        the origin has it, and so the dev container has origin-0's
+        (framework/docker-compose.yaml): the catalog names the storage
+        directories by the origin's paths.
 
         Returns:
             Its exit status, stdout, and stderr.
@@ -1592,7 +1619,7 @@ class Restore:
             "pstore",
             *args,
             "--location",
-            os.path.abspath(self.store),
+            ORIGIN_STORE,
             env={**session.env, **keys_env(self.test, self.origin)},
             cwd=self.test.tmp,
             timeout=CLI_TIMEOUT,
@@ -1809,6 +1836,13 @@ def run_restarted(test: Test, wanted: Sequence[str], results: common.Results) ->
     if "restore" in wanted and test.session.pelican_server is None:
         suite.record(
             results, "restore", (SKIP, "no pelican-server, which has `origin pstore`; run ./fed.sh init")
+        )
+        wanted = [s for s in wanted if s != "restore"]
+    if "restore" in wanted and origin.store != ORIGIN_0_STORE:
+        suite.record(
+            results,
+            "restore",
+            (SKIP, f"the dev container has only {ORIGIN_0_STORE}'s store at {ORIGIN_STORE}"),
         )
         wanted = [s for s in wanted if s != "restore"]
     bound: int | None = None

@@ -91,7 +91,11 @@ client (`Issuer.PublicClientID`) has no secret and uses
   else. Where the namespace takes writes, a PUT works in a home and a
   project, and fails in `archive`, the share, and `gamma` for
   `test-stranger`. Through the federation and at each federated cache,
-  `test-member` reads `archive/obj` and `test-stranger` does not.
+  `test-member` reads `archive/obj` and `test-stranger` does not. Under
+  `-p origin-export-templates`, `test-stranger`'s token of `/protected-b`'s
+  issuer reads `export/obj` there, and not `archive/obj`, and
+  `test-member`'s reads neither: at every origin, at each federated cache,
+  and by `pelican object get` through the federation.
 
 - `refresh`: A refresh gives an active access token with the same scopes,
   subject, issuer, and groups and the configured `expires_in`, and a new,

@@ -379,8 +379,9 @@ from environment variables, which files can't override.
 ## Service control
 
 Some tests restart, stop, start, pause, or kill a service mid-run, restart
-one with configuration of their own, or freeze the XRootD daemons in one.
-The dev container can't control Docker, so `./fed.sh test` runs a
+one with configuration of their own, freeze the XRootD daemons in one, or
+read what its container has sent on its networks. The dev container can't
+reach Docker, so `./fed.sh test` runs a
 [helper](docs/glossary.md#service-control-helper) on the host
 ([`framework/control.py`](framework/control.py)) that does this for them.
 The tests ask it through files in `framework/var/control/`. It acts only on

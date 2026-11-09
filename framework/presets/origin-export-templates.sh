@@ -7,7 +7,8 @@
 # /data/issuer/export for test-stranger, and nothing else (fed.sh writes
 # them). The issuer suite's `templates` scenario checks that
 # /protected-b's issuer grants only that, while /protected-a's grants
-# what the global templates say. fed.sh refuses a shape that does not
+# what the global templates say, and its `data` scenario that the
+# servers honor only that. fed.sh refuses a shape that does not
 # export /protected-b (`origin-https`, `origin-httpsv2`,
 # `origin-no-direct`, `origin-broker`, and `origin-public`), and
 # `auth-no-issuer` and `auth-external-issuer`, under which the origins'

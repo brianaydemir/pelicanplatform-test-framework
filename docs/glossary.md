@@ -234,8 +234,20 @@ twin of its row in the WLCG pass.
 
 [`framework/control.py`](../framework/control.py), which runs on the host
 beside the tests, and restarts, stops, starts, pauses, and kills services
-for them, since the dev container can't control Docker. Without it, the
+for them, and reads what their containers have sent, since the dev
+container can't reach Docker. Without it, the
 scenarios that need it skip ([README](../README.md#service-control)).
+
+### Origins' bytes
+
+What the origins' containers have sent on their networks, by the kernel's
+count (`/proc/net/dev` in each container, but the loopback), which the
+[service-control helper](#service-control-helper) reads. Unlike a server's
+own counters, it holds for every kind of origin, and no fault of Pelican's
+can misstate it; but it counts everything sent, so a check that a cache
+fetched nothing allows for the origins' ads and the directors' health
+tests. Not under [`-p topo-tiny`](../framework/presets/topo-tiny.sh), whose
+one container holds every server.
 
 ### Watchdog
 

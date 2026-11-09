@@ -38,6 +38,7 @@ from testlib import (
     blocks,
     cacheapi,
     common,
+    control,
     credentials,
     digests,
     director,
@@ -847,11 +848,10 @@ def cache_whole_first(test: Test) -> Row:
     """Check each cache: a cold whole read, a warm one, then every range.
 
     Each cache reads every object of its set whole, cold, and then again,
-    warm. The warm reads must come from what the cache stored: at native
-    origins, which count what they serve, the origins must serve none of
-    them (warm_fetches()), as they would if the cache could not read back
-    a block it wrote, and fetched it again. A V2 cache must then keep
-    each object as its size says (stored_files()).
+    warm. The warm reads must come from what the cache stored, not the
+    origins (warm_fetches()), as they would not if the cache could not
+    read back a block it wrote, and fetched it again. A V2 cache must
+    then keep each object as its size says (stored_files()).
     """
     if why := test.not_uploaded(True):
         return FAIL, why
@@ -862,16 +862,16 @@ def cache_whole_first(test: Test) -> Row:
             if why:
                 found.fail(f"{cache.svc} (cold): {why}")
         before = settled_metrics(test) if test.fed.native_origins else None
+        sent = control.origins_sent(test.fed)
         for size in blocks.SIZES:
             why = test.read(cache.url, "whole", size, None)
             if why:
                 found.fail(f"{cache.svc} (warm): {why}")
-        if before is not None:
-            why = warm_fetches(test, before)
-            if why:
-                found.fail(f"{cache.svc}: for its warm reads, {why}")
-            else:
-                found.note(f"{cache.svc}'s warm reads fetched nothing")
+        why = warm_fetches(test, before, sent_since(test, sent))
+        if why:
+            found.fail(f"{cache.svc}: for its warm reads, {why}")
+        elif before is not None or sent is not None:
+            found.note(f"{cache.svc}'s warm reads fetched nothing")
         if cache.kind == "v2":
             wrong = stored_files(test, cache, "whole")
             found.problems += [f"{cache.svc}: {p}" for p in wrong]
@@ -879,7 +879,7 @@ def cache_whole_first(test: Test) -> Row:
                 found.note(f"{cache.svc} stored {len(blocks.SIZES)} objects as their sizes say")
         found.problems += [f"{cache.svc}: {p}" for p in test.read_all(cache.url, "whole")]
     if not test.fed.native_origins:
-        found.note("XRootD serves the origins, which count nothing that the warm reads might fetch")
+        found.note("XRootD serves the origins, which count no GETs")
     return found.row(f"{len(test.caches)} cache(s)")
 
 
@@ -932,24 +932,31 @@ def settled_metrics(test: Test) -> list[metrics.Snapshot] | None:
     return last
 
 
-def warm_fetches(test: Test, before: list[metrics.Snapshot] | None) -> str | None:
-    """Return what the origins served since before, if the warm reads need none.
+def warm_fetches(test: Test, before: list[metrics.Snapshot] | None, sent: int | None) -> str | None:
+    """Return what the origins served for reads that should need nothing.
 
-    The origins may serve no GET of the tests' own (OUR_GETS), and send
-    no more than WARM_SLACK bytes, which the directors' health tests
-    account for.
+    The origins' containers may send no more than WARM_SLACK bytes, by
+    the kernel's count (sent; see control.origins_sent()), and native
+    origins, by their metrics since before, may serve no GET of the
+    tests' own (OUR_GETS). Each check is made where its count is known.
+
+    Args:
+        test: The test.
+        before: The native origins' metrics before the reads, or None.
+        sent: What their containers sent during the reads, or None.
     """
-    if before is None:
-        return "an origin's /metrics did not answer"
-    time.sleep(1)
-    now = origin_metrics(test)
-    if now is None:
-        return "an origin's /metrics did not answer"
-    sent = risen(before, now, SENT_BYTES, SENT)
-    served = sum(risen(before, now, GETS, {**OUR_GETS, "code": c}) for c in ("200", "206"))
-    if served or sent > WARM_SLACK:
-        return f"the origins served {served:g} GETs and sent {sent:.0f} bytes"
-    return None
+    problems: list[str] = []
+    if sent is not None and sent > WARM_SLACK:
+        problems.append(f"the origins' containers sent {sent} bytes")
+    if before is not None:
+        time.sleep(1)
+        now = origin_metrics(test)
+        if now is None:
+            return "an origin's /metrics did not answer"
+        served = sum(risen(before, now, GETS, {**OUR_GETS, "code": c}) for c in ("200", "206"))
+        if served:
+            problems.append(f"the origins served {served:g} GETs of the tests'")
+    return "; ".join(problems) or None
 
 
 def director_read(test: Test) -> Row:
@@ -1319,10 +1326,11 @@ OUR_GETS = {"server_type": "origin", "method": "GET", "username": credentials.SU
 # client it fetches through ranks the origins by a one-byte GET at each
 # (sortAttempts in client/handle_http.go).
 COALESCE_GETS = 2
-# How many bytes the origins may send while the reads are warm: the
-# directors' health tests fetch a small object from each origin every 15
-# seconds (Director.OriginCacheHealthTestInterval).
-WARM_SLACK = 64 << 10
+# How many bytes the origins' containers may send while the reads are
+# warm: the directors' health tests fetch a small object from each origin
+# every 15 seconds (Director.OriginCacheHealthTestInterval), and the
+# origins advertise, each over TLS.
+WARM_SLACK = 128 << 10
 # How long the origins' count of the tests' GETs may take to hold still
 # after the reads that made them (settled_metrics()).
 SETTLE_METRICS = 15
@@ -1337,6 +1345,15 @@ def origin_metrics(test: Test) -> list[metrics.Snapshot] | None:
             return None
         found.append(snapshot)
     return found
+
+
+def sent_since(test: Test, before: int | None) -> int | None:
+    """Return how much more the origins' containers have sent than before.
+
+    None if before is None (control.origins_sent()).
+    """
+    now = None if before is None else control.origins_sent(test.fed)
+    return None if now is None or before is None else now - before
 
 
 def risen(
@@ -1367,14 +1384,73 @@ def read_at_once(test: Test, cache: common.Cache, rel: str, data: bytes) -> str 
 
 def coalesced(test: Test, cache: common.Cache, rel: str, data: bytes, found: Findings) -> None:
     """Run coalescing at one cache, of rel, which holds data."""
-    cold = origin_metrics(test)
-    if cold is None:
+    cold = origin_metrics(test) if test.fed.native_origins else None
+    if test.fed.native_origins and cold is None:
         found.fail("an origin's /metrics did not answer")
         return
+    sent = control.origins_sent(test.fed)
     why = read_at_once(test, cache, rel, data)
     if why:
         found.fail(f"{cache.svc}: a cold read: {why}")
         return
+    sent = sent_since(test, sent)
+    reads = f"for {COALESCE_READERS} cold reads at once"
+    notes: list[str] = []
+    if sent is not None:
+        copies = sent / len(data)
+        if sent < len(data):
+            found.fail(
+                f"{cache.svc}: {reads}, the origins' containers sent {sent} bytes, less than the object"
+            )
+        elif copies >= 2:
+            found.fail(
+                f"{cache.svc}: {reads}, the origins' containers sent {copies:.1f} objects' worth, not one"
+            )
+        notes.append(f"the origins' containers sent {copies:.2f} objects")
+    warm = cold
+    if cold is not None:
+        warm = counted_gets(test, cache, cold, len(data), reads, found, notes)
+    found.note(f"{cache.svc}: cold, {', '.join(notes)}")
+    sent = control.origins_sent(test.fed)
+    why = read_at_once(test, cache, rel, data)
+    if why:
+        found.fail(f"{cache.svc}: a warm read: {why}")
+        return
+    why = warm_fetches(test, warm, sent_since(test, sent))
+    if why:
+        found.fail(
+            f"{cache.svc}: for {COALESCE_READERS} warm reads at once, though it held the object, {why}"
+        )
+
+
+def counted_gets(
+    test: Test,
+    cache: common.Cache,
+    cold: list[metrics.Snapshot],
+    size: int,
+    reads: str,
+    found: Findings,
+    notes: list[str],
+) -> list[metrics.Snapshot] | None:
+    """Judge the cold reads by the native origins' own counts.
+
+    They must have sent about one object (SENT_BYTES) for GETs, and a V2
+    cache made no more than COALESCE_GETS of the tests' username (GETS),
+    besides one at each origin.
+
+    Args:
+        test: The test.
+        cache: The cache read through.
+        cold: The origins' metrics before the reads.
+        size: The object's size.
+        reads: What the reads were, for a problem.
+        found: Where the findings go.
+        notes: Where the counts go.
+
+    Returns:
+        The origins' metrics once they counted the reads; None if they
+        did not answer.
+    """
     # An origin counts a request once its handler returns, which may be
     # just after the cache has handed the last reader its bytes.
     after = [cold]
@@ -1383,69 +1459,52 @@ def coalesced(test: Test, cache: common.Cache, rel: str, data: bytes, found: Fin
         now = origin_metrics(test)
         if now is not None:
             after[0] = now
-        return risen(cold, after[0], SENT_BYTES, SENT) >= len(data)
+        return risen(cold, after[0], SENT_BYTES, SENT) >= size
 
     common.wait_for(counted, 10, interval=1)
     sent = risen(cold, after[0], SENT_BYTES, SENT)
     gets = risen(cold, after[0], GETS, OUR_GETS)
-    copies = sent / len(data)
-    if sent < len(data):
+    if sent < size:
         found.doubt(
             f"{cache.svc}: the origins counted {sent:.0f} bytes sent for GETs, less than the"
             + " object, so they did not count the cache's fetch"
         )
-        return
-    if copies >= 2:
+    elif sent / size >= 2:
         found.fail(
-            f"{cache.svc}: for {COALESCE_READERS} cold reads at once, the origins sent"
-            + f" {copies:.1f} objects' worth, not one"
+            f"{cache.svc}: {reads}, the origins counted {sent / size:.1f} objects' worth sent, not one"
         )
     elif cache.kind == "v2" and gets > COALESCE_GETS + len(test.fed.origins):
         found.fail(
-            f"{cache.svc}: for {COALESCE_READERS} cold reads at once, the origins served"
-            + f" {gets:g} GETs, more than {COALESCE_GETS} and one at each origin"
+            f"{cache.svc}: {reads}, the origins served {gets:g} GETs, more than"
+            + f" {COALESCE_GETS} and one at each origin"
         )
     unnamed = " (none under the tests' username)" if not gets else ""
-    note = f"{cache.svc}: cold, {copies:.2f} objects in {gets:g} GETs{unnamed}"
-    warm = after[0]
-    why = read_at_once(test, cache, rel, data)
-    if why:
-        found.fail(f"{cache.svc}: a warm read: {why}")
-        return
-    time.sleep(1)
-    now = origin_metrics(test)
-    if now is None:
-        found.fail("an origin's /metrics did not answer")
-        return
-    sent = risen(warm, now, SENT_BYTES, SENT)
-    served = sum(risen(warm, now, GETS, {**OUR_GETS, "code": c}) for c in ("200", "206"))
-    if served or sent > WARM_SLACK:
-        found.fail(
-            f"{cache.svc}: for {COALESCE_READERS} warm reads at once, the origins served"
-            + f" {served:g} GETs and sent {sent:.0f} bytes, though it held the object"
-        )
-    found.note(f"{note}; warm, {sent:.0f} bytes")
+    notes.append(f"the origins counted {sent / size:.2f} objects in {gets:g} GETs{unnamed}")
+    return after[0]
 
 
 def coalescing(test: Test) -> Row:
     """Check that concurrent cold reads of an object fetch it only once.
 
     Each federated cache gets COALESCE_READERS cold whole reads of an
-    object of its own, all at once. The origins' counters (SENT_BYTES)
-    must show it sent about once, not once per reader: a cache is there
-    to spare the origins. A V2 cache may make no more than COALESCE_GETS
-    under the tests' username (GETS), besides one at each origin. An
-    XRootD cache fetches block by block, so only its bytes are judged.
-    Then as many warm reads must have the origins serve no GET of the
-    tests', and send no more than the directors' health tests do
-    (WARM_SLACK). Only a native origin keeps the counters. A site-local
-    cache reads through another cache, and is passed over.
+    object of its own, all at once. The origins' containers must send
+    about one object, not one per reader, by the kernel's count
+    (control.origins_sent()): a cache is there to spare the origins. Native
+    origins must count as much (SENT_BYTES), and a V2 cache may make no
+    more than COALESCE_GETS under the tests' username (GETS), besides one
+    at each origin; an XRootD cache fetches block by block, so only its
+    bytes are judged. Then as many warm reads must fetch nothing
+    (warm_fetches()). A site-local cache reads through another cache, and
+    is passed over.
     """
-    if not test.fed.native_origins:
-        return SKIP, f"XRootD serves the origins ({test.fed.origin_variant}), not Pelican"
     caches = test.fed.federated_caches
     if not caches:
         return SKIP, "this shape has no federated cache"
+    if not test.fed.native_origins and (test.fed.tiny or control.unavailable()):
+        return SKIP, (
+            f"XRootD serves the origins ({test.fed.origin_variant}), which count nothing,"
+            + " and without a control helper, nor does the kernel"
+        )
     return each_cache(test, "coalescing", COALESCE_SIZE, caches, functools.partial(coalesced, test))
 
 
@@ -3628,15 +3687,22 @@ def etag_agreement(test: Test) -> Row:
 
 # How many PUTs conditional-edges races to create one object.
 RACERS = 8
+# How a racing PUT that lost may be refused: 412 if its condition was
+# evaluated once the winner's object existed; otherwise, since its
+# condition held, as conflicting with the write in progress (409, or 423
+# from a native origin's WebDAV locks, which serialize same-path PUTs).
+RACE_REFUSALS = (409, 412, 423)
 
 
 def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
     """Race RACERS PUTs that create rel at origin.
 
     Each has If-None-Match: * and bytes of its own, and rel does not
-    exist: exactly one must succeed, and the rest be refused with 412
-    (RFC 9110, section 13.1.2); and the store must then hold the
-    winner's bytes.
+    exist: exactly one must succeed, and the rest be refused
+    (RACE_REFUSALS); and the store must then hold the winner's bytes.
+    RFC 9110, section 13.1.2, requires 412 only of a condition that is
+    false when evaluated, which it is not for a PUT that arrives while the
+    winner's is still in progress.
 
     Returns:
         What is wrong.
@@ -3661,9 +3727,9 @@ def race(test: Test, origin: common.Origin, rel: str) -> list[str]:
             f"{len(won)} of {RACERS} PUTs at once with If-None-Match: * of a new object"
             + " succeeded, not 1"
         )
-    other = [a for a in answers if not a.ok and a.status != 412]
+    other = [a for a in answers if not a.ok and a.status not in RACE_REFUSALS]
     if other:
-        problems.append(f"a racing PUT that lost: {other[0].describe()}, not 412")
+        problems.append(f"a racing PUT that lost: {other[0].describe()}, not 409, 412, or 423")
     held = stores.held(origin, test.namespace, rel, test.setup)
     if not any(held == common.digest(bodies[n]) for n in won):
         problems.append("after the racing PUTs, the store holds no winner's bytes")
@@ -3881,8 +3947,8 @@ class Versions:
         return counts, wrong
 
 
-def cache_control_problem(test: Test, rel: str, control: str) -> str | None:
-    """Return why an origin does not send Cache-Control control for rel.
+def cache_control_problem(test: Test, rel: str, wanted: str) -> str | None:
+    """Return why an origin does not send Cache-Control wanted for rel.
 
     Returns:
         Why, or None if every origin sends it.
@@ -3892,8 +3958,8 @@ def cache_control_problem(test: Test, rel: str, control: str) -> str | None:
             "GET", test.url(origin.url, rel), token=test.token, headers={"Range": "bytes=0-0"}
         )
         sent = answer.header("Cache-Control")
-        if sent != control:
-            return f"{origin.svc} sends Cache-Control '{sent}', not ORIGIN_CACHE_CONTROL's '{control}'"
+        if sent != wanted:
+            return f"{origin.svc} sends Cache-Control '{sent}', not ORIGIN_CACHE_CONTROL's '{wanted}'"
     return None
 
 
@@ -3918,9 +3984,9 @@ def overwrite(test: Test, range_first: bool) -> Row:
     versions = Versions(test, test.rel(f"overwrite-{kind}"))
     if why := put_under(test, versions.base, versions.v1):
         return FAIL, why
-    control = test.fed.sent_cache_control
-    if control and test.direct:
-        why = cache_control_problem(test, f"{versions.base}/{next(iter(versions.v1))}", control)
+    sent_control = test.fed.sent_cache_control
+    if sent_control and test.direct:
+        why = cache_control_problem(test, f"{versions.base}/{next(iter(versions.v1))}", sent_control)
         if why:
             return FAIL, why
     cached_at: dict[str, float] = {}
@@ -3936,7 +4002,7 @@ def overwrite(test: Test, range_first: bool) -> Row:
     if why := put_under(test, versions.base, versions.v2):
         return FAIL, why
 
-    fresh = blocks.freshness(control) if control else None
+    fresh = blocks.freshness(sent_control) if sent_control else None
     problems: list[str] = []
     notes: list[str] = []
     for cache in test.caches:

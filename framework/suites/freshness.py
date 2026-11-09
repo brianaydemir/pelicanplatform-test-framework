@@ -37,7 +37,6 @@ from testlib import (
     common,
     control,
     director,
-    metrics,
     stores,
     suite,
     web,
@@ -307,8 +306,9 @@ def only_if_cached(test: Test, _value: str) -> suite.Row:
 
     At each V2 cache, an object it lacks: a GET and a HEAD with
     only-if-cached, and with X-Pelican-NoDownload, get 504, and again 2
-    seconds later; and a native origin sends fewer bytes for GETs
-    meanwhile than one such object (pelican_http_bytes_total). A plain
+    seconds later; and the origins' containers send fewer bytes meanwhile
+    than one such object, by the kernel's count
+    (control.origins_sent()). A plain
     HEAD of another such object gets its Content-Length, and leaves the
     cache lacking it. An object the cache holds comes back with either.
     """
@@ -324,7 +324,7 @@ def only_if_cached(test: Test, _value: str) -> suite.Row:
     problems: list[str] = []
     asks = [("GET", web.ONLY_IF_CACHED), ("HEAD", web.ONLY_IF_CACHED), ("GET", NO_DOWNLOAD)]
     asks += [("HEAD", NO_DOWNLOAD), ("GET", web.ONLY_IF_CACHED)]
-    before = metrics.origins_sent_bytes(test.fed)
+    before = control.origins_sent(test.fed)
     for wait, plan in ((0, asks), (2, asks[:1])):
         time.sleep(wait)
         for cache in test.v2:
@@ -337,17 +337,17 @@ def only_if_cached(test: Test, _value: str) -> suite.Row:
                         f"{cache.svc}: {method} with {asked} of an object it lacks got"
                         + f" {answer.describe()}, not 504{later}"
                     )
-    after = metrics.origins_sent_bytes(test.fed)
+    after = control.origins_sent(test.fed)
     notes: list[str] = []
     if before is None or after is None:
-        notes.append("no origin's byte counter to read")
+        notes.append("no count of the origins' bytes to read")
     elif after - before >= UNFETCHED_SIZE:
         problems.append(
-            f"the origins sent {after - before:.0f} bytes for GETs meanwhile, as much as an"
+            f"the origins' containers sent {after - before} bytes meanwhile, as much as an"
             + f" object of {UNFETCHED_SIZE} that the caches were asked only for if they held it"
         )
     else:
-        notes.append(f"the origins sent {after - before:.0f} bytes meanwhile")
+        notes.append(f"the origins' containers sent {after - before} bytes meanwhile")
 
     for cache in test.v2:
         rel = head[cache.svc]

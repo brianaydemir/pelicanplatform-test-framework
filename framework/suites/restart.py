@@ -2,8 +2,9 @@
 
 That is a cache's store; every server's identity and database; the
 issuer's refresh tokens and clients; the directors' view of a server
-that has gone; and an origin's answers while its storage is
-unreachable. See docs/tests/restarts.md.
+that has gone; an origin's answers while its storage is unreachable;
+and the clients' reads and writes while a cache, an origin, or a
+director behind the load balancer is away. See docs/tests/restarts.md.
 
 The suite controls the services through the control helper
 (testlib/control.py), so it needs one, and skips the tiny topology,
@@ -38,8 +39,8 @@ from testlib import (
     credentials,
     director,
     issuer,
-    metrics,
     registry,
+    stores,
     suite,
     transfers,
     web,
@@ -76,6 +77,10 @@ SCENARIOS = {
         " paused, or killed, before the directors drop it and after (several origins)"
     ),
     "peer-director": "a director killed drops from its peer's list, and returns (several directors)",
+    "director-failover": (
+        "every client gets and puts through the directors' load balancer while each director is"
+        " killed, and once it is back (`-p director-ha`)"
+    ),
 }
 
 # The scenarios that present no storage token (see suites/__init__.py).
@@ -204,10 +209,9 @@ def cache_restart(test: Test) -> list[CaseRow]:
     Each cache holds HELD_OBJECTS objects read whole (a V2 cache says so
     with Age). Restarted, and once every director names it again, it
     must serve each from its store, intact, with Age for a V2 cache, and
-    the native origins must have sent less than an object for GETs
-    meanwhile. Age is checked at a V2 cache alone; at an XRootD cache,
-    the origins' counters alone tell, and over XRootD origins, which
-    keep none, only the bytes are checked.
+    the origins' containers must have sent less than an object meanwhile,
+    by the kernel's count (control.sent_bytes()). Age is checked at a V2
+    cache alone; at an XRootD cache, the origins' count alone tells.
     """
     rows: list[CaseRow] = []
     for cache in test.fed.caches:
@@ -237,7 +241,8 @@ def cache_restart(test: Test) -> list[CaseRow]:
                 )
             )
             continue
-        before = metrics.origins_sent_bytes(test.fed)
+        origins = [o.svc for o in test.fed.origins]
+        before = control.sent_bytes(origins)
         try:
             control.restart(cache.svc)
         except control.ControlError as e:
@@ -265,17 +270,14 @@ def cache_restart(test: Test) -> list[CaseRow]:
                     problems.append(f"after the restart, {name} came with no Age, so not from its store")
                 else:
                     ages.append(age)
-        after = metrics.origins_sent_bytes(test.fed)
-        if before is not None and after is not None and after - before >= OBJECT_SIZE:
+        sent = control.sent_bytes(origins) - before
+        if sent >= OBJECT_SIZE:
             problems.append(
-                f"the origins sent {after - before:.0f} bytes for GETs across the restart,"
-                + " an object's worth or more"
+                f"the origins' containers sent {sent} bytes across the restart, an object's worth or more"
             )
         note = f"named again {took:.0f}s after its restart; {len(names)} objects from its store"
         if ages:
             note += f" (Age {min(ages)}..{max(ages)})"
-        if before is None:
-            note += "; the origins keep no byte counters"
         rows.append((cache.svc, *outcome(problems, note)))
     if not rows:
         return [("", SKIP, "this shape has no cache")]
@@ -1323,6 +1325,174 @@ def peer_director(test: Test) -> list[CaseRow]:
 
 
 # --------------------------------------------------------------------------
+# director-failover
+
+
+def put_pelican(test: Test, name: str, data: bytes) -> str | None:
+    """Put data as object name by `pelican object put` through the federation.
+
+    Returns:
+        Why it failed, or None.
+    """
+    source = test.local(f"up/{name}", data)
+    status, out, err = test.session.pelican_cmd(
+        "object", "put", "--token", test.token_file, source, test.pelican_url(test.rel(name))
+    )
+    return None if status == 0 else f"exit {status}: {last_line(out + err)}"
+
+
+def put_plugin(test: Test, name: str, data: bytes) -> str | None:
+    """Put data as object name by stash_plugin's upload through the federation.
+
+    Returns:
+        Why it failed, or None.
+    """
+    source = test.local(f"up/{name}", data)
+    _, out, err, ads = test.session.plugin_run(
+        f"{test.area}/{name}",
+        [(test.pelican_url(test.rel(name)), source)],
+        creds={"scitokens.use": test.token_file},
+        upload=True,
+    )
+    return None if transfers.plugin_passed(ads) else last_line(ads or err or out)
+
+
+def http_hops(test: Test, method: str, rel: str, data: bytes | None = None) -> web.Response:
+    """Send method for rel's bare path to the load balancer, and follow it.
+
+    A redirect is followed, presenting the token again, and with the body
+    again for a PUT, as `curl -L --location-trusted` does.
+
+    Returns:
+        The last answer.
+    """
+    answer = web.request(method, test.url(test.fed.director_url, rel), token=test.token, upload=data)
+    for _ in range(transfers.HTTP_HOPS):
+        if answer.status not in (301, 302, 307, 308) or not answer.header("Location"):
+            break
+        answer = web.request(method, answer.header("Location"), token=test.token, upload=data)
+    return answer
+
+
+def put_http(test: Test, name: str, data: bytes) -> str | None:
+    """Put data as object name by a plain HTTP PUT through the load balancer.
+
+    Returns:
+        Why it failed, or None.
+    """
+    answer = http_hops(test, "PUT", test.rel(name), data)
+    return None if answer.ok else answer.describe()
+
+
+def through_balancer(test: Test, label: str) -> tuple[list[str], list[str]]:
+    """Get and put an object by each client, through the load balancer.
+
+    `pelican object get` and stash_plugin get an object of their own
+    through the federation, whose director is the load balancer, and a
+    plain HTTP client GETs one's bare path there; each must get its
+    bytes. Where /protected-a takes writes, each client puts one, which
+    some origin must then hold.
+
+    Args:
+        test: The test.
+        label: What the objects are named after, e.g. `director-0-down`.
+
+    Returns:
+        What went wrong, each `<client> <op>: <why>`, and what was tried.
+    """
+    clients = ("pelican", "plugin", "http")
+    gets = {client: os.urandom(OBJECT_SIZE) for client in clients}
+    for client, data in gets.items():
+        test.place(f"{label}-get-{client}", data)
+    problems: list[str] = []
+    for client, fetch in (("pelican", get_pelican), ("plugin", get_plugin)):
+        name = f"{label}-get-{client}"
+        got = fetch(test, name, test.pelican_url(test.rel(name)))
+        problems += [f"{client} get: {p}" for p in failover_problems(got, gets[client], "", client)]
+    answer = http_hops(test, "GET", test.rel(f"{label}-get-http"))
+    why = web.served(answer, gets["http"])
+    if why:
+        problems.append(f"http get: {why}")
+    tried = ["gets"]
+    if test.writes:
+        puts = {client: os.urandom(OBJECT_SIZE) for client in clients}
+        for client, put in (("pelican", put_pelican), ("plugin", put_plugin), ("http", put_http)):
+            name = f"{label}-put-{client}"
+            why = put(test, name, puts[client])
+            if not why:
+                held = stores.held_anywhere(
+                    test.fed.origins, NAMESPACE, test.rel(name), {NAMESPACE: test.setup}
+                )
+                if common.digest(puts[client]) not in held:
+                    why = "no origin holds the object"
+            if why:
+                problems.append(f"{client} put: {why}")
+        tried.append("puts")
+    return problems, tried
+
+
+def director_failover(test: Test) -> list[CaseRow]:
+    """Check that the clients reach the federation with a director killed.
+
+    Under `-p director-ha`, the clients ask the load balancer in front
+    of the directors. Each director in turn is killed, so that its port
+    refuses connections, which the load balancer then sends to another.
+    Meanwhile (`<director> down`), every client must get, and where
+    /protected-a takes writes put, an object through the load balancer
+    (through_balancer()). The director is then started again; once it
+    names the first origin, and the first federated cache, if any, the
+    clients must do so again (`<director> back`), the load balancer now
+    sending some of them to it. A paused director is not tried: its port
+    still takes connections, which a balancer that passes TLS through
+    cannot tell from a slow director's, so it would hand clients to one
+    that never answers.
+    """
+    fed = test.fed
+    if not fed.director_ha:
+        return [("", SKIP, "the directors have no load balancer ('-p director-ha')")]
+    probe = os.urandom(4096)
+    test.place("director-probe", probe)
+    path = test.path(test.rel("director-probe"))
+    origin = director.host(fed.origins[0].url)
+    cache = director.host(fed.federated_caches[0].url) if fed.federated_caches else None
+    rows: list[CaseRow] = []
+    problems, _ = through_balancer(test, "director-up")
+    if problems:
+        return [("", FAIL, f"with every director up, {first(problems)}")]
+    for url in fed.directors:
+        svc = director.host(url)
+        try:
+            control.kill(svc)
+        except control.ControlError as e:
+            rows.append((f"{svc} down", FAIL, str(e)))
+            continue
+        try:
+            problems, tried = through_balancer(test, f"{svc}-down")
+            rows.append((f"{svc} down", *outcome(problems, f"{' and '.join(tried)} by every client")))
+        finally:
+            unstarted = None
+            try:
+                control.start(svc)
+            except control.ControlError as e:
+                unstarted = str(e)
+        if unstarted:
+            rows.append((f"{svc} back", FAIL, unstarted))
+            continue
+        started = time.monotonic()
+        why = director.wait_named([url], "origin", path, origin, NAMED_WAIT)
+        if not why and cache:
+            why = director.wait_named([url], "object", path, cache, NAMED_WAIT)
+        if why:
+            rows.append((f"{svc} back", FAIL, f"{NAMED_WAIT}s after it started again, {why}"))
+            continue
+        took = time.monotonic() - started
+        problems, tried = through_balancer(test, f"{svc}-back")
+        note = f"named the servers {took:.0f}s after it started; {' and '.join(tried)} by every client"
+        rows.append((f"{svc} back", *outcome(problems, note)))
+    return rows
+
+
+# --------------------------------------------------------------------------
 
 RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
     "cache-restart": cache_restart,
@@ -1333,6 +1503,7 @@ RUN: dict[str, Callable[[Test], list[CaseRow]]] = {
     "cache-failover": cache_failover,
     "origin-failover": origin_failover,
     "peer-director": peer_director,
+    "director-failover": director_failover,
 }
 
 

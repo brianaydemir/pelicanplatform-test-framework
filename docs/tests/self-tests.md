@@ -29,6 +29,15 @@ a [shape](../glossary.md#shape) that does not export `/protected-a`.
   origin must raise its `pelican_http_requests_total`
   (`server_type="origin"`, `method="GET"`, `code="200"`). Skips an XRootD
   origin, and where the origins take no direct clients.
+- `net-bytes`:
+  [`testlib.control.sent_bytes()`](../../framework/testlib/control.py) must
+  count what a container sends, by the kernel's count of its network
+  interfaces, which no server's own counters can misstate. A GET of the
+  object straight to each origin must raise its container's count by at
+  least the object's size, and by no more than 64 KiB beyond it. Skips
+  without a [control helper](../glossary.md#service-control-helper), under
+  [`-p topo-tiny`](../../framework/presets/topo-tiny.sh), and where the
+  origins take no direct clients.
 - `restart-cache`:
   [`framework/testlib/control.py`](../../framework/testlib/control.py) must
   restart a service mid-run

@@ -124,6 +124,10 @@ answers again. It also has:
 
 - `state()`: the state of a service's container, for noticing a server that
   exited on its own;
+- `sent_bytes()` and `origins_sent()`: what containers have sent on their
+  networks, by the kernel's count
+  ([origins' bytes](glossary.md#origins-bytes)), for checking that a cache
+  fetched nothing, independently of the servers' own counters;
 - `restart_with()`: configuration for a service for the length of a `with`
   block;
 - `unavailable()`: why the tests can't control services here, if they can't;

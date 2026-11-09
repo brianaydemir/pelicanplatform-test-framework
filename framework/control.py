@@ -19,8 +19,9 @@ the shape's services but `dev`:
 - `state` and `exited` with `docker compose ps`, which says what state
   a container is in, and which exited without the tests' stopping or
   killing them;
-- `freeze-xrootd` and `thaw-xrootd` by signaling the XRootD daemons in
-  the service's container, with `docker compose exec`.
+- `net-bytes` by reading /proc/net/dev in the service's container, and
+  `freeze-xrootd` and `thaw-xrootd` by signaling the XRootD daemons
+  there, with `docker compose exec`.
 
 On stopping, the helper puts back what the tests left: it removes their
 configuration from control/config/, and restarts each running service
@@ -151,6 +152,8 @@ class Helper:
             )
         if action == "state":
             return compose("ps", "--all", "--format", "{{.State}}", svc)
+        if action == "net-bytes":
+            return compose("exec", "-T", svc, "cat", "/proc/net/dev")
         say(f"{action} {svc}")
         ok, output = compose(*compose_args(action, svc))
         if ok:

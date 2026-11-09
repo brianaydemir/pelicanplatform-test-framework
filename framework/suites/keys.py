@@ -34,7 +34,6 @@ from testlib import (
     director,
     issuer,
     jwt,
-    metrics,
     registry,
     stores,
     suite,
@@ -98,7 +97,7 @@ BACKUP_MAGIC = b"-----BEGIN "
 SQLITE_MAGIC = b"SQLite format 3"
 # The probe's name, in the run's collection, and size.
 PROBE = "probe"
-PROBE_SIZE = 200_000
+PROBE_SIZE = 1 << 20
 
 
 def skip(fed: common.Federation) -> str | None:
@@ -882,8 +881,8 @@ def master_key(test: Test) -> list[CaseRow]:
     # The destructive part: keep the newest key alone.
     newest = keys[-1]
     retired = [k for k in keys if k != newest]
+    before = control.sent_bytes([o.svc for o in fed.origins])
     kept = set_aside(test, cache.svc, retired, path)
-    before = metrics.origins_sent_bytes(fed)
     problems: list[str] = []
     try:
         control.stop(cache.svc)
@@ -899,9 +898,12 @@ def master_key(test: Test) -> list[CaseRow]:
                 age = held_with_age(test, cache)
                 if age is None:
                     problems.append("with the old keys retired, it does not serve the probe from its store")
-                after = metrics.origins_sent_bytes(fed)
-                if before is not None and after is not None and after - before >= PROBE_SIZE:
-                    problems.append("with the old keys retired, the origins sent the probe again")
+                sent = control.sent_bytes([o.svc for o in fed.origins]) - before
+                if sent >= PROBE_SIZE:
+                    problems.append(
+                        f"with the old keys retired, the origins' containers sent {sent} bytes,"
+                        + " the probe's worth or more"
+                    )
         except control.ControlError as e:
             problems.append(f"with the old keys retired, {e}")
     finally:

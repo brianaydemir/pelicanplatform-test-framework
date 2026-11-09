@@ -170,6 +170,8 @@ class Test(suite.Test):
         gamma: The collection's ID.
         share: The share's ID, or "" if the origin refuses shares.
         data: The objects' bytes, by rel.
+        export_data: /protected-b's objects' bytes, by rel, under
+            `-p origin-export-templates`.
         doomed: The tokens that `expiry` leaves to expire, and when they
             were minted; or None.
         clients: The suite's clients, by kind and namespace.
@@ -190,6 +192,7 @@ class Test(suite.Test):
         self.gamma = ""
         self.share = ""
         self.data: dict[str, bytes] = {}
+        self.export_data: dict[str, bytes] = {}
         self.doomed: tuple[Tokens, float] | None = None
         self.clients: dict[tuple[str, str], issuer.Client] = {}
         self._minted = 0
@@ -261,12 +264,15 @@ class Test(suite.Test):
         """
         return issuer.device_tokens(self.client(kind, namespace), self.user(role), wanted)
 
-    def data_token_file(self, role: str) -> str:
-        """Return the file of a fresh token of all role's user may have."""
+    def data_token_file(self, role: str, namespace: str | None = None) -> str:
+        """Return the file of a fresh token of all role's user may have.
+
+        The token is of namespace's issuer; the suite's by default.
+        """
         self._minted += 1
         path = self.session.path(f"tokens/issuer.{role}.{self._minted}")
         with open(path, "w", encoding="utf-8") as f:
-            f.write(self.tokens(role, DATA_SCOPES).access)
+            f.write(self.tokens(role, DATA_SCOPES, namespace=namespace).access)
         return path
 
     def allowed(self, role: str) -> frozenset[str]:
@@ -386,18 +392,16 @@ def prepare(test: Test) -> None:
 def seed(test: Test, namespace: str, prefixes: Sequence[str]) -> None:
     """Put an object, obj, in each prefix within namespace, at every origin.
 
-    Each object has bytes of its own. test.data keeps the suite's
-    namespace's, by rel: another namespace's (/protected-b's, under
-    `-p origin-export-templates`) share the rels, and no check reads
-    their bytes.
+    Each object has bytes of its own: test.data keeps the suite's
+    namespace's, by rel, and test.export_data /protected-b's (under
+    `-p origin-export-templates`), whose rels are the same.
     """
     caps = test.fed.exports[namespace]
     token = test.session.setup_token(namespace)
     for prefix in prefixes:
         rel = f"{prefix}/obj"
         content = os.urandom(OBJECT_SIZE)
-        if namespace == test.namespace:
-            test.data[rel] = content
+        (test.data if namespace == test.namespace else test.export_data)[rel] = content
         errors = stores.seed_everywhere(test.fed.origins, namespace, rel, content, token, caps)
         if errors:
             die(f"could not put /{namespace}/{rel} in place: {errors[0]}")
@@ -891,7 +895,8 @@ def data(test: Test) -> tuple[str, str]:
     """Check what the tokens allow.
 
     Read and write straight at every origin, and read through the
-    federation and at each cache.
+    federation and at each cache; and under `-p origin-export-templates`,
+    read /protected-b with its issuer's tokens (export_problems()).
     """
     problems: list[str] = []
     tokens = {role: test.tokens(role, DATA_SCOPES).access for role in ROLES}
@@ -932,6 +937,9 @@ def data(test: Test) -> tuple[str, str]:
     if not test.fed.standalone:
         problems += federation_problems(test, tokens)
         notes.append(f"through the federation and {len(test.fed.federated_caches)} cache(s)")
+    if test.export_data:
+        problems += export_problems(test)
+        notes.append("/protected-b's own templates")
     return outcome(problems, ", ".join(notes))
 
 
@@ -995,6 +1003,58 @@ def federation_problems(test: Test, tokens: dict[str, str]) -> list[str]:
         answer = web.request("GET", target, token=tokens["stranger"])
         if answer.status not in REFUSED:
             problems.append(f"GET {target} as test-stranger: {answer.describe()}, not refused")
+    return problems
+
+
+def export_problems(test: Test) -> list[str]:
+    """Return what is wrong with /protected-b's tokens, of its own templates.
+
+    test-stranger's token, of read on export alone, must read
+    export/obj, but not archive/obj; test-member's, of nothing, must read
+    neither. Each is tried straight at every origin, where /protected-b
+    takes direct clients, at each federated cache, and by `pelican object
+    get` through the federation, where there is a director.
+    """
+    fed = test.fed
+    namespace = "protected-b"
+    reads = [
+        ("stranger", f"{EXPORT}/obj", True),
+        ("stranger", f"{ARCHIVE}/obj", False),
+        ("member", f"{EXPORT}/obj", False),
+    ]
+    tokens = {
+        role: test.tokens(role, DATA_SCOPES, namespace=namespace).access for role in ("stranger", "member")
+    }
+    servers = [c.url for c in fed.federated_caches]
+    if "DirectReads" in fed.exports[namespace]:
+        servers = [o.url for o in fed.origins] + servers
+    problems: list[str] = []
+    for url in servers:
+        for role, rel, allowed in reads:
+            target = f"{url}/{namespace}/{rel}"
+            answer = web.request("GET", target, token=tokens[role])
+            if allowed and (answer.status != 200 or answer.body != test.export_data[rel]):
+                problems.append(f"GET {target} as {username(role)}: {answer.describe()}, or wrong bytes")
+            if not allowed and answer.status not in REFUSED:
+                problems.append(f"GET {target} as {username(role)}: {answer.describe()}, not refused")
+    if fed.standalone:
+        return problems
+    for role, rel, allowed in reads:
+        dest = os.path.join(test.tmp, f"get-{namespace}-{role}-{rel.rsplit('/', 2)[-2]}")
+        status, _, err = test.session.pelican_cmd(
+            "object",
+            "get",
+            test.pelican_url(rel, namespace=namespace),
+            dest,
+            "--token",
+            test.data_token_file(role, namespace),
+        )
+        if allowed and (status != 0 or not common.file_holds(dest, test.export_data[rel])):
+            problems.append(
+                f"`object get` of /{namespace}/{rel} as {username(role)}: exit {status}: {last_line(err)}"
+            )
+        if not allowed and status == 0:
+            problems.append(f"`object get` of /{namespace}/{rel} as {username(role)} succeeded")
     return problems
 
 

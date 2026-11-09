@@ -79,14 +79,15 @@ takes writes, and skips where neither does. At other
   must serve it whole, and every byte in ranges at and across each chunk
   edge. So too an object of 64 MiB and a byte, put with its length
   (`capped`), which takes a chunk of the largest size, 67,107,840 bytes,
-  and a second of the rest. Runs in the WLCG [pass](../glossary.md#pass)
-  only.
+  and a second of the rest. Each is deleted afterward, and the suite waits
+  up to 90 seconds for its space to be reclaimed, which `capacity` relies
+  on. Runs in the WLCG [pass](../glossary.md#pass) only.
 
 `capacity`, `backups`, and `restore` restart the first origin, as the last
 of its [configuration layers](../glossary.md#configuration-layer)
 ([service control](../../README.md#service-control)): its storage bounded at
 what it holds plus 8 MiB (`Origin.PStoreStorageDirs`), and its catalog
-backed up every 20 seconds, keeping 3 (`Origin.PStoreMetadataBackup*`). This
+backed up every 45 seconds, keeping 3 (`Origin.PStoreMetadataBackup*`). This
 needs a [control helper](../glossary.md#service-control-helper) and a
 [topology](../glossary.md#topology) other than
 [`tiny`](../../framework/presets/topo-tiny.sh); elsewhere the three skip.
@@ -114,9 +115,10 @@ needs a [control helper](../glossary.md#service-control-helper) and a
   `.partial` file, keeping the newest
   ([section 11.4](https://github.com/PelicanPlatform/pelican/blob/main/docs/pstore-design.md#114-metadata-backup-and-restore)).
 
-  - `startup`: A backup within 60 seconds of the restart, its pass counted
-    in `pelican_pstore_scheduled_passes_total{pass="metadata_backup"}`.
-  - `schedule`: After four passes, backups 20 to 30 seconds apart, and no
+  - `startup`: A backup within an interval of the origin's start, its
+    pass counted in
+    `pelican_pstore_scheduled_passes_total{pass="metadata_backup"}`.
+  - `schedule`: After four passes, backups 45 to 55 seconds apart, and no
     pass failed.
   - `files`: Three backups, each starting `PELICAN-PSTORE-BACKUP\0\1`, and
     nothing else; `pelican_pstore_metadata_backup_last_size_bytes` the
@@ -127,8 +129,11 @@ needs a [control helper](../glossary.md#service-control-helper) and a
   [11.4](https://github.com/PelicanPlatform/pelican/blob/main/docs/pstore-design.md#114-metadata-backup-and-restore)
   and
   [11.5](https://github.com/PelicanPlatform/pelican/blob/main/docs/pstore-design.md#115-recovery-export)).
-  Destructive: the origin is stopped and its catalog (`db/`) set aside.
-  Skips without `pelican-server`.
+  Destructive: the origin is stopped and its catalog (`db/`) set aside. The
+  CLI runs in the [dev container](../glossary.md#dev-container), on the
+  store at `/data/pstore`, where origin-0 has it too: the catalog names the
+  storage directories by the origin's paths. Skips without `pelican-server`,
+  and where the first origin is not origin-0.
 
   - `objects`: Five objects are written, and the next backup kept. A sixth,
     written after it, must be served.

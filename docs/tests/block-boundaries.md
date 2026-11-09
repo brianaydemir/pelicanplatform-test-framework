@@ -54,9 +54,12 @@ scenarios skip where it reports none.
   `Client.PreferredCaches`). Only the named cache may serve, as the client's
   transfer statistics and the plugin's result ads must say.
 - `cache-whole-first`: Each cache reads its set cold and whole, then warm,
-  then in every range. At native origins, which count what they serve, the
-  warm reads must fetch nothing from them: no GET of the tests' own, and no
-  more than 64 KiB in all, which the directors' health tests account for. A
+  then in every range. The warm reads must fetch nothing from the origins:
+  their containers may send no more than 128 KiB meanwhile, by the kernel's
+  count ([origins' bytes](../glossary.md#origins-bytes)), which the
+  directors' health tests and the origins' ads account for; and
+  [native](../glossary.md#native-and-xrootd) origins, which count what they
+  serve, may serve no GET of the tests' own. A
   V2 cache must then hold each object under 4,096 bytes inline, and each
   other in a file of its own, named by the instance hash that its
   introspection gives, whose size on disk is the object's blocks and a
@@ -77,12 +80,14 @@ scenarios skip where it reports none.
   fetched and blocks not yet fetched, at both block sizes, then overlapping
   ranges at once. The whole object must come back intact after each.
 - `coalescing`: 16 clients at once read a 4 MiB object cold through each
-  federated cache, which must fetch it from the origins about once: less
-  than two objects' worth of GET bytes at the native origins
-  (`pelican_http_bytes_total`), and, for a V2 cache, at most two GETs under
-  the tests' username, besides a one-byte GET per origin. Then 16 warm reads
-  must cause no such GET, and the origins send at most 64 KiB. Skips where
-  XRootD serves the origins.
+  federated cache, which must fetch it from the origins about once: their
+  containers must send at least one object's worth, and less than two
+  ([origins' bytes](../glossary.md#origins-bytes)). Native origins must
+  count as much (`pelican_http_bytes_total`), and, for a V2 cache, at most
+  two GETs under the tests' username, besides a one-byte GET per origin.
+  Then 16 warm reads must fetch nothing, as for `cache-whole-first`. Skips
+  where XRootD serves the origins and there is no control helper, or under
+  [`-p topo-tiny`](../../framework/presets/topo-tiny.sh).
 - `cache-assemble`: Each cache reads unaligned, overlapping ranges that
   cover an object, out of order. After the first range, it must hold its
   blocks and none before them but block 0; within 10 seconds of the last,
@@ -200,8 +205,11 @@ scenarios skip where it reports none.
     the object;
   - a PUT with `If-None-Match: *, "junk"` over an object must get 412;
   - of 8 PUTs at once of a new object with `If-None-Match: *`, exactly one
-    may succeed, and the store hold its bytes; the rest must get 412
-    ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-13.1.2)).
+    may succeed, and the store hold its bytes; the rest must get 412, or,
+    if they arrived while the winner's was in progress, when the condition
+    still held
+    ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-13.1.2)), 409
+    or 423.
 - `mixed-version`: An object is overwritten at the origins once each cache
   holds its first block. Later reads, of a range in its third XRootD block
   and of the whole, must succeed, and be entirely one version, the same for
