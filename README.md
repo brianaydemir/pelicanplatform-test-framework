@@ -82,18 +82,19 @@ answer.
 After every run, pass or fail, `./fed.sh test` saves these in
 `framework/var/logs/<time>/`:
 
-| File                                     | Contents                                                                    |
-| ---------------------------------------- | --------------------------------------------------------------------------- |
-| `<service>.log`                          | the service's log since its container was created                           |
-| `shape.txt`                              | presets, topology, profiles, tag, and images                                |
-| `ps.txt`, `containers.txt`               | each container's state and exit code, and whether it was killed for memory  |
-| `stats.txt`                              | each container's memory use against its limit                               |
-| `config/`                                | the configuration that [`fed.sh`](fed.sh) generated, without secrets        |
-| `results/`                               | the run's [results](docs/ci.md#results)                                     |
-| `commands.log`, `commands-scitokens.log` | each pass's client commands, with exit status, output, and the plugin's ads |
-| `dev/`                                   | what the suites keep in `framework/var/dev/` ([below](#where-things-live))  |
-| `test.log`                               | everything the tests printed                                                |
-| `control.log`                            | what the [control helper](#service-control) did                             |
+| File                                     | Contents                                                                                                                                                                                                                         |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<service>.log`                          | the service's log since its container was created                                                                                                                                                                                |
+| `shape.txt`                              | presets, topology, profiles, tag, and images                                                                                                                                                                                     |
+| `provenance.txt`                         | how the run came about: the tests' command, the framework's commit and changes, each [knob](docs/configuration.md#knobs) and where it was set, each container's image and Pelican, and each Pelican binary's SHA-256 and version |
+| `ps.txt`, `containers.txt`               | each container's state and exit code, and whether it was killed for memory                                                                                                                                                       |
+| `stats.txt`                              | each container's memory use against its limit                                                                                                                                                                                    |
+| `config/`                                | the configuration that [`fed.sh`](fed.sh) generated, without secrets                                                                                                                                                             |
+| `results/`                               | the run's [results](docs/ci.md#results)                                                                                                                                                                                          |
+| `commands.log`, `commands-scitokens.log` | each pass's client commands, with exit status, output, and the plugin's ads                                                                                                                                                      |
+| `dev/`                                   | what the suites keep in `framework/var/dev/` ([below](#where-things-live))                                                                                                                                                       |
+| `test.log`                               | everything the tests printed                                                                                                                                                                                                     |
+| `control.log`                            | what the [control helper](#service-control) did                                                                                                                                                                                  |
 
 Tokens in these files lack their signatures. The tests restart
 [services](docs/glossary.md#service) but never recreate them, so each log

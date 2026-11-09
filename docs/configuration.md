@@ -137,6 +137,9 @@ layer, and restore them afterward.
 4. the `-p` presets, in order
 5. your environment, e.g. `PELICAN_LOG_LEVEL=debug ./fed.sh up`
 
+Each run's `provenance.txt` ([logs](../README.md#logs)) records the value
+of each knob that you set, and the last of these sources to change it.
+
 `default.sh` declares every knob that shapes the federation. Only presets
 may set those; `fed.sh` ignores them in your environment. For a shape the
 presets don't offer, write a [preset](#presets) of your own; for any other

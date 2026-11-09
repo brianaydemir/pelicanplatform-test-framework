@@ -11,8 +11,9 @@ scripts on the host ([`control.py`](../framework/control.py),
 [`report.py`](../framework/report.py),
 [`matrix.py`](../framework/matrix.py),
 [`init-data.py`](../framework/init-data.py),
-[`check-mounts.py`](../framework/check-mounts.py), and
-[`put-file.py`](../framework/put-file.py)) get it from
+[`check-mounts.py`](../framework/check-mounts.py),
+[`put-file.py`](../framework/put-file.py), and
+[`provenance.py`](../framework/provenance.py)) get it from
 [uv](https://docs.astral.sh/uv/), by their `#!` lines and
 [`fed.sh`](../fed.sh). The tests get it from the
 [dev container](glossary.md#dev-container), which has no uv, so
@@ -28,6 +29,7 @@ scripts on the host ([`control.py`](../framework/control.py),
 | [`framework/testlib/`](../framework/testlib/)                                                                                                             | what the suites share; `__init__.py` indexes its modules                                                                         |
 | `framework/control.py`                                                                                                                                    | the helper on the host that restarts, stops, and pauses services for the tests ([service control](../README.md#service-control)) |
 | `framework/report.py`                                                                                                                                     | merges results and converts them to JUnit XML and Markdown ([Results](ci.md#results))                                            |
+| `framework/provenance.py`                                                                                                                                 | what each run's `provenance.txt` says of how it came about ([Logs](../README.md#logs))                                           |
 | `framework/matrix.py`                                                                                                                                     | the choices the presets make, and the pairs of them that the smoke shapes don't make ([the smoke matrix](#the-smoke-matrix))     |
 | [`framework/smoke-shapes.tsv`](../framework/smoke-shapes.tsv)                                                                                             | the shapes that `smoke.sh` runs, picked by hand                                                                                  |
 | `framework/init-data.py`, [`framework/init-certs.sh`](../framework/init-certs.sh)                                                                         | the test objects and the certificates, which `./fed.sh init` makes                                                               |

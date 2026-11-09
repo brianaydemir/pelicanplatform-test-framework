@@ -25,14 +25,16 @@
 # It runs in N copies of the checkout (-j N; 1 by default), made in
 # DIR/.work/: the files that Git does not ignore, local/, and
 # framework/var/bin/, so that your changes, settings, images, and client
-# are what get tested. No copy mounts a Pelican checkout at /app in the
-# dev container, whatever PELICAN_SRC_DIR says: the tests use the
-# binaries in framework/var/bin/. Copy n is a Compose project of its own,
-# pelican-<n>, with its ports 100*n above those that README.md names
-# (PORT_OFFSET), so that the copies, and a federation in the checkout,
-# run side by side. Two runs of smoke.sh at once would clash. Each copy
-# takes the next shape in turn, and starts it from scratch. With fewer
-# shapes than copies, each shape's suites are shared out among
+# are what get tested. Since Git knows nothing of a copy, each also gets
+# what Git says of the checkout, local/framework-source.txt, which each
+# run's provenance.txt records. No copy mounts a Pelican checkout at
+# /app in the dev container, whatever PELICAN_SRC_DIR says: the tests
+# use the binaries in framework/var/bin/. Copy n is a Compose project of
+# its own, pelican-<n>, with its ports 100*n above those that README.md
+# names (PORT_OFFSET), so that the copies, and a federation in the
+# checkout, run side by side. Two runs of smoke.sh at once would clash.
+# Each copy takes the next shape in turn, and starts it from scratch.
+# With fewer shapes than copies, each shape's suites are shared out among
 # N/<shapes> copies, rounded up (see --part in test.py), each running
 # the shape, and their results are put together as one run's. At the
 # end, each copy is reset and removed.
@@ -231,12 +233,15 @@ copy_list() {
 }
 
 # Make copy $1, a Compose project of its own, with ports of its own (see
-# fed.sh).
+# fed.sh). Git knows nothing of a copy, so it gets what Git says of the
+# checkout, for its runs' provenance (see framework/provenance.py).
 make_copy() {
   copy="${work}/copy-$1"
   mkdir -p "${copy}" || return 1
   copy_list | tar -cf - -T - | (cd -- "${copy}" && tar -xf -)
   [ -x "${copy}/fed.sh" ] && mkdir -p "${copy}/local" || return 1
+  framework/provenance.py source >"${copy}/local/framework-source.txt" \
+      || warn "cannot record in copy $1 what Git says of the checkout"
   printf '\n# Added by smoke.sh, for copy %s of the checkout.\n' "$1" \
       >>"${copy}/local/environment.cfg"
   printf 'COMPOSE_PROJECT_NAME=pelican-%s\nPORT_OFFSET=%s\nPELICAN_SRC_DIR=\n' \

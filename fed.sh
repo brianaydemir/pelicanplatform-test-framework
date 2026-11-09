@@ -234,17 +234,45 @@ for fed_knob in ${fed_knobs}; do
   eval "fed_caller_${fed_knob}=\${${fed_knob}:-}"
 done
 
+# The knobs that a run's provenance records (framework/provenance.py):
+# those you may set, and where each got its value.
+fed_noted_knobs="${fed_knobs} COMPOSE_PROJECT_NAME PORT_OFFSET PUBLISH_ADDRESS"
+
+# Note $1 as where each of fed_noted_knobs got its value, if $1 changed
+# it, so that each knob's is the last source to change it. One that a
+# source sets to the value it already had keeps the earlier source.
+fed_note_knobs() {
+  for fed_nk in ${fed_noted_knobs}; do
+    eval "fed_nk_now=\${${fed_nk}:-} fed_nk_was=\${fed_seen_${fed_nk}:-}"
+    # shellcheck disable=SC2154  # both assigned by the eval above
+    [ "${fed_nk_now}" != "${fed_nk_was}" ] || continue
+    eval "fed_seen_${fed_nk}=\${fed_nk_now} fed_from_${fed_nk}=\$1"
+  done
+}
+
+# Print each of fed_noted_knobs, for provenance.py: its name, where it
+# got its value, and the value, separated by tabs.
+fed_print_knobs() {
+  fed_note_knobs fed.sh
+  for fed_nk in ${fed_noted_knobs}; do
+    eval "printf '%s\t%s\t%s\n' \"\${fed_nk}\" \"\${fed_from_${fed_nk}:-}\" \"\${${fed_nk}:-}\""
+  done
+}
+
 # Presets are sourced into this shell, so the loops below name their
 # variables fed_*, which no preset sets.
 set -a
 # shellcheck disable=SC1091
 . ./framework/environment.cfg
+fed_note_knobs framework/environment.cfg
 if [ -f ./local/environment.cfg ]; then
   # shellcheck disable=SC1091
   . ./local/environment.cfg
+  fed_note_knobs local/environment.cfg
 fi
 # shellcheck disable=SC1091
 . ./framework/presets/default.sh
+fed_note_knobs framework/presets/default.sh
 for fed_preset_name in ${presets}; do
   fed_find_preset "${fed_preset_name}"
   for fed_knob in ${fed_exclusive_knobs}; do
@@ -269,10 +297,14 @@ for fed_preset_name in ${presets}; do
                      "${fed_knob}; choose one"
     eval "fed_chosen_by_${fed_knob}=\${fed_preset_name}"
   done
+  fed_note_knobs "${fed_preset}"
 done
+# A caller's knob may equal what a file set it to, or be one that none
+# set, so its source is noted outright.
 for fed_knob in ${fed_knobs}; do
   eval "[ -n \"\${fed_caller_${fed_knob}}\" ]" || continue
   eval "${fed_knob}=\${fed_caller_${fed_knob}}"
+  eval "fed_seen_${fed_knob}=\${${fed_knob}} fed_from_${fed_knob}='your environment'"
 done
 set +a
 export COMPOSE_PROFILES
@@ -332,6 +364,7 @@ export ORIGIN_0_NETWORK CACHES_BLACKHOLE
 : "${IMAGE_DIRECTOR:=${IMAGE_HUB}/director:${PELICAN_TAG}}"
 : "${IMAGE_REGISTRY:=${IMAGE_HUB}/registry:${PELICAN_TAG}}"
 export IMAGE_DEV IMAGE_ORIGIN IMAGE_CACHE IMAGE_DIRECTOR IMAGE_REGISTRY
+fed_note_knobs "fed.sh's default"
 
 # Each published port, as PORT_<port>: the port that README.md names,
 # PORT_OFFSET above it, on PUBLISH_ADDRESS. Docker takes only an IP
@@ -2652,6 +2685,8 @@ fed_test_interrupt() {
 #                   kernel killed it for want of memory
 #   stats.txt       each container's memory use against its limit
 #   shape.txt       the presets, topology, profiles, and images
+#   provenance.txt  how the run came about, which the `test` command
+#                   writes as the tests start (framework/provenance.py)
 #   config/         what fed.sh generated for the shape
 #                   (framework/var/generated/), less keys, tokens, and
 #                   the OIDC client's secret
@@ -2997,6 +3032,12 @@ case "${cmd}" in
       mkdir -p "${log_dir}"
       # The results that this run writes are those newer than this.
       : >"${log_dir}/.started"
+      # How the run came about, recorded as the tests start (see
+      # framework/provenance.py).
+      fed_require_python
+      fed_print_knobs \
+          | "${fed_python}" framework/provenance.py write "${log_dir}" "$@" \
+          || warn "cannot record the run's provenance in ${log_dir}/provenance.txt"
     fi
     fed_control_start "${log_dir:+${log_dir}/control.log}"
     trap 'fed_control_stop' EXIT
