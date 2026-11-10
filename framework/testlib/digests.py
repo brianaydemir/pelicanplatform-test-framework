@@ -19,6 +19,10 @@ from .blocks import crc32c
 
 # What the tests ask for, one at a time, in Want-Digest.
 ALGORITHMS = ("crc32c", "crc32", "adler32", "md5", "sha", "sha-256")
+# Those the Pelican client knows (ChecksumType in client/handle_http.go):
+# what it asks a server for, checks a transfer by, and takes for
+# --checksum-algorithm and `stat --checksums`.
+CLIENT_ALGORITHMS = ("md5", "crc32c", "crc32", "sha")
 # Those in base64; the rest are 32-bit sums in hex.
 BASE64 = ("md5", "sha", "sha-256")
 # Each byte with its bits reversed, for cksum().

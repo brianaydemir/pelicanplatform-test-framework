@@ -14,21 +14,28 @@ local_cache/schema.go). Beyond that:
   one (Content-Length) under 1 MiB, and streams anything larger in
   chunks: 8,388,480 bytes for an unknown length, which is what `pelican
   object put` sends, or sized from the declared length, e.g. 2,097,120
-  bytes for up to 2 MiB (local_cache/chunking.go). So a declared 2 MiB
-  object spills 32 bytes into a second chunk.
+  bytes for up to 2 MiB, and 4,194,240 for up to 4 MiB
+  (local_cache/chunking.go). So a declared 2 MiB object spills 32 bytes
+  into a second chunk.
 - The V2 cache fetches the blocks that each read is missing, and Go's
   http.ServeContent reads 32 KiB at a time, so it fills a range miss at
   most 8 blocks at a time. The block store that pstore and the V2 cache
   share reads 16 blocks per read of its disk, and writes 64 per write
   (local_cache/range_reader.go, storage.go).
+- Go's http.ServeContent, which answers a V2 cache's and a native
+  origin's ranges, ignores a Range of more than 200 ranges, or of
+  ranges that total more than the object, and sends the object whole
+  (net/http/fs.go).
 - An s3v2 origin uploads an object of unknown length to the S3 service
   in parts of 5 MiB once it outgrows one (S3_PART in stores.py).
 - The XRootD cache uses 128 KiB blocks (xrootd/resources/xrootd-cache.cfg).
 - XRootD's HTTP server, in front of an XRootD origin or cache, reads a
   single range by reads of up to 8 MiB, and several ranges by vector
-  reads, a round at a time: each of at most 512 chunks, of at most
-  512 KiB each, and 8 MiB in all (XrdHttpReadRangeHandler::splitRanges
-  in XRootD).
+  reads, a round at a time: each of at most 1,024 chunks, of at most 16
+  bytes under 2 MiB each, and 8 MiB in all
+  (XrdHttpReadRangeHandler::splitRanges in XRootD). Those limits are
+  the xrootd protocol's, which it takes at startup (XRD_READV_LIMITS)
+  in place of its own, 512 chunks of 512 KiB.
 - The V2 cache marks an object complete once it holds every block, and
   only then sends Age (local_cache/storage.go, persistent_cache_api.go).
   The XRootD cache records the blocks it holds in a bitmap in
@@ -57,13 +64,17 @@ TAG = 16
 INLINE = 4096
 SPILL = 1 << 20
 CHUNK_DECLARED_2M = 2097120
+CHUNK_DECLARED_4M = 4194240
 CHUNK_UNDECLARED = 8388480
 WRITE_BATCH = 64 * BLOCK
 S3_PART = 5 << 20
 XROOTD_BLOCK = 128 << 10
-READV_CHUNKS = 512
-READV_CHUNK = 512 << 10
+# A vector read's chunks, and a chunk's bytes: XrdHttp's own limits, and
+# the xrootd protocol's.
+READV_CHUNKS = (512, 1024)
+READV_CHUNK = (512 << 10, (2 << 20) - 16)
 READ_MAX = 8 << 20
+GO_RANGES = 200
 
 SIZES = (
     0,
@@ -89,6 +100,9 @@ SIZES = (
     CHUNK_DECLARED_2M,
     CHUNK_DECLARED_2M + 1,
     2 << 20,
+    (2 << 20) + 1,
+    CHUNK_DECLARED_4M + 1,
+    S3_PART - 1,
     S3_PART,
     S3_PART + 1,
     CHUNK_UNDECLARED,
@@ -111,6 +125,7 @@ EDGES = (
     (SPILL // BLOCK) * BLOCK,
     SPILL,
     CHUNK_DECLARED_2M,
+    CHUNK_DECLARED_4M,
     S3_PART,
     CHUNK_UNDECLARED,
 )
@@ -263,33 +278,48 @@ def requests(size: int) -> list[Request]:
         found.append(((size - 1, size - 1), (0, 0)))
     if size > BLOCK + 10:
         found.append(((BLOCK - 10, BLOCK + 10), (BLOCK - 5, BLOCK + 5)))
+    # Two ranges that total the object's size, which Go's
+    # http.ServeContent serves, and a byte more, for which it sends the
+    # object whole.
+    if size > 2:
+        found += [((0, size - 2), (size - 1, size - 1)), ((0, size - 1), (size - 1, size - 1))]
     found += readv_edges(size)
     return list(dict.fromkeys(found))
 
 
 def readv_edges(size: int) -> list[Request]:
-    """Return requests at the edges of XRootD's reads of an object of size.
+    """Return requests at the edges of the servers' reads of an object of size.
 
     They are, where the object is big enough: several ranges, of which the
-    first fills one vector read chunk (READV_CHUNK), and then one byte
-    more; as many one-byte ranges as one vector read holds
-    (READV_CHUNKS), and one more; two ranges a byte more than one round's
-    worth (READ_MAX) between them; and one range a byte more than a
+    first fills one of XRootD's vector read chunks (each of READV_CHUNK),
+    and then one byte more; as many one-byte ranges as one vector read
+    holds (each of READV_CHUNKS), or as Go's http.ServeContent takes
+    (GO_RANGES), and one more; two ranges a byte more than one round's
+    worth (READ_MAX) between them; a range of a read's worth, alone and
+    in a set, and of a byte more; and one range a byte more than a
     read's worth, short of the whole object.
     """
     found: list[Request] = []
-    if size > READV_CHUNK + 1:
-        found += [
-            ((0, READV_CHUNK - 1), (size - 1, size - 1)),
-            ((0, READV_CHUNK), (size - 1, size - 1)),
-        ]
-    for count in (READV_CHUNKS, READV_CHUNKS + 1):
-        step = size // count
-        if step >= 2:
-            found.append(tuple((n * step, n * step) for n in range(count)))
+    for chunk in READV_CHUNK:
+        if size > chunk + 1:
+            found += [((0, chunk - 1), (size - 1, size - 1)), ((0, chunk), (size - 1, size - 1))]
+    for limit in (GO_RANGES, *READV_CHUNKS):
+        for count in (limit, limit + 1):
+            # Over a thousand ranges stay within the first megabyte, so
+            # that their Range header fits XrdHttp's limit on a line,
+            # 16 KiB.
+            step = (min(size, 999_999) if count > 1000 else size) // count
+            if step >= 2:
+                found.append(tuple((n * step, n * step) for n in range(count)))
     if size >= READ_MAX + 2:
         middle = size // 2
-        found += [((0, middle), (middle + 2, size - 1)), ((1, None),)]
+        found += [
+            ((0, middle), (middle + 2, size - 1)),
+            ((1, None),),
+            ((0, READ_MAX - 1),),
+            ((0, READ_MAX - 1), (size - 1, size - 1)),
+            ((0, READ_MAX), (size - 1, size - 1)),
+        ]
     return found
 
 
@@ -407,8 +437,12 @@ def check(data: bytes, request: Request, answer: web.Response) -> str | None:
 
 
 def past_end(size: int) -> list[Request]:
-    """Return ranges that start at or after the end of an object of size."""
-    return [((size, None),), ((size, size),), ((size + 1000, size + 2000),)]
+    """Return ranges that ask for no byte of an object of size.
+
+    They are those that start at or after its end, and a suffix of no
+    bytes.
+    """
+    return [((size, None),), ((size, size),), ((size + 1000, size + 2000),), ((None, 0),)]
 
 
 def unsatisfiable(size: int, request: Request) -> bool:

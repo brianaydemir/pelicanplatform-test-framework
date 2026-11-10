@@ -40,7 +40,8 @@
   suite        what a suite's Test builds on: its pass, its collection,
                and its namespace's tokens
   transfers    the transfers suite's scenarios, batches, and verdicts
-  web          HTTP(S) requests straight to a server
+  web          HTTP(S) requests straight to a server, and the log of
+               them
   webapi       every server's web API, and the admin's and a user's
                credentials for it
   webdav       PROPFIND, and reading the listings it gets; COPY and MOVE

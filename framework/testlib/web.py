@@ -4,6 +4,9 @@ Like curl without -L: a redirect is an answer, not something to follow.
 Unlike http.client, it keeps a chunked body's trailers, such as the
 X-Transfer-Status that a V2 cache sends, when asked (`X-Transfer-Status:
 true` and `TE: trailers`), to report a failure after its headers.
+
+Each exchange is logged, once log_to() says where, as `curl -v` shows
+one: the request and its headers (`>`), then the answer's (`<`).
 """
 
 import functools
@@ -12,7 +15,7 @@ import json
 import socket
 import ssl
 import time
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 from urllib.parse import SplitResult, urlencode, urlsplit
@@ -22,6 +25,9 @@ CA_FILE = "/certs/ca.crt"
 
 # What asks a cache to answer only from what it holds, and otherwise 504.
 ONLY_IF_CACHED = {"Cache-Control": "only-if-cached"}
+
+# How much of an answer's body its log entry shows, in bytes.
+LOGGED_BODY = 512
 
 
 @functools.lru_cache(maxsize=None)
@@ -201,6 +207,71 @@ def _target(parts: SplitResult) -> str:
     return (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
 
 
+# What log_to() was last given, if anything: it is called with each
+# exchange's entry.
+_LOGS: list[Callable[[str], None]] = []
+
+
+def log_to(write: Callable[[str], None] | None) -> None:
+    """Log each exchange from here on by calling write with its entry.
+
+    An entry holds the request and its headers; what came of it, and how
+    long that took; and the answer's headers, trailers, and the start of
+    its body, if that is text. None logs nothing.
+    """
+    _LOGS[:] = [] if write is None else [write]
+
+
+def _excerpt(body: bytes) -> str:
+    """Return the start of body, for a log entry; "" if it is not text."""
+    head = body[:LOGGED_BODY]
+    if any(byte < 0x20 and byte not in b"\t\n\r" for byte in head):
+        return ""
+    text = head.decode(errors="replace").rstrip()
+    return f"{text} ..." if len(body) > LOGGED_BODY else text
+
+
+def _log_exchange(
+    method: str,
+    url: str,
+    sent: Mapping[str, str],
+    began: float,
+    outcome: str,
+    answer: Response | None = None,
+) -> None:
+    """Log an exchange, if log_to() said where.
+
+    Args:
+        method: The request's method.
+        url: Where it went.
+        sent: Its headers.
+        began: When it was sent (time.time()).
+        outcome: What came of it.
+        answer: The answer, if one is to be shown.
+    """
+    if not _LOGS:
+        return
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(began))
+    lines = [
+        f"==> {stamp}.{int(began % 1 * 1000):03d} {method} {url}",
+        f"    {outcome} after {time.time() - began:.2f}s",
+    ]
+    lines += [f"> {name}: {value}" for name, value in sent.items()]
+    if answer is not None:
+        lines += [f"< {name}: {value}" for name, value in answer.headers]
+        lines += [f"< {name}: {value} (trailer)" for name, value in answer.trailers]
+        text = _excerpt(answer.body)
+        if text:
+            lines += ["--- body", text]
+    for write in list(_LOGS):
+        write("\n".join(lines) + "\n\n")
+
+
+def _received(answer: Response) -> str:
+    """Return what came of an exchange, for its log entry."""
+    return f"{answer.describe()}, with {len(answer.body)} bytes"
+
+
 def _connect(url: str, timeout: float) -> tuple[http.client.HTTPConnection, str]:
     """Return a connection to url's server, and the target to ask it for."""
     parts = urlsplit(url)
@@ -257,17 +328,23 @@ def request(
     if chunked and data is not None:
         body = _pieces(data)
     status: int | None = None
+    began = time.time()
     try:
         conn.request(method, target, body=body, headers=sent, encode_chunked=chunked)
         answer = conn.getresponse()
         status = answer.status
         body = answer.read()
         trailers = answer.trailers if isinstance(answer, _Answer) else ()
-        return Response(answer.status, body, tuple(answer.getheaders()), trailers)
+        found = Response(answer.status, body, tuple(answer.getheaders()), trailers)
     except (OSError, http.client.HTTPException) as e:
-        return Response(None, error=_failure(status, e))
+        found = Response(None, error=_failure(status, e))
     finally:
         conn.close()
+    outcome = _received(found)
+    if data is not None:
+        outcome = f"sent {len(data)} bytes{' in chunks' if chunked else ''}; {outcome}"
+    _log_exchange(method, url, sent, began, outcome, found)
+    return found
 
 
 @dataclass
@@ -305,8 +382,10 @@ def timed_get(
     """
     conn, target = _connect(url, timeout)
     sent = _with_token(headers, token)
+    began = time.time()
     started = time.monotonic()
     head: float | None = None
+    whole: float | None = None
     status: int | None = None
     try:
         conn.request("GET", target, headers=sent)
@@ -317,11 +396,16 @@ def timed_get(
             head = time.monotonic() - started
         body += answer.read()
         whole = time.monotonic() - started
-        return Timed(Response(answer.status, body, tuple(answer.getheaders())), head, whole)
+        found = Response(answer.status, body, tuple(answer.getheaders()))
     except (OSError, http.client.HTTPException) as e:
-        return Timed(Response(None, error=_failure(status, e)), head, None)
+        found = Response(None, error=_failure(status, e))
     finally:
         conn.close()
+    outcome = _received(found)
+    if head is not None:
+        outcome += f", the first {first} after {head:.2f}s"
+    _log_exchange("GET", url, sent, began, outcome, found)
+    return Timed(found, head, whole)
 
 
 def statuses_before_body(
@@ -352,6 +436,7 @@ def statuses_before_body(
         lines.append(f"Authorization: Bearer {token}")
     lines += [f"{name}: {value}" for name, value in (headers or {}).items()]
     found: list[int] = []
+    began = time.time()
     try:
         raw = socket.create_connection((host, port), timeout=timeout)
         try:
@@ -376,6 +461,8 @@ def statuses_before_body(
                 pending += more
     except (OSError, ValueError, IndexError):
         pass
+    statuses = ", ".join(str(status) for status in found) or "no status"
+    _log_exchange(method, url, _with_token(headers, token), began, f"with no body sent, {statuses}")
     return tuple(found)
 
 
@@ -398,12 +485,15 @@ def read_part(
     conn, target = _connect(url, timeout)
     sent = _with_token(headers, token)
     status: int | None = None
+    began = time.time()
     try:
         conn.request("GET", target, headers=sent)
         answer = conn.getresponse()
         status = answer.status
-        return Response(answer.status, answer.read(size), tuple(answer.getheaders()))
+        found = Response(answer.status, answer.read(size), tuple(answer.getheaders()))
     except (OSError, http.client.HTTPException) as e:
-        return Response(None, error=_failure(status, e))
+        found = Response(None, error=_failure(status, e))
     finally:
         conn.close()
+    _log_exchange("GET", url, sent, began, f"{_received(found)}, and no more read", found)
+    return found

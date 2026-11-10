@@ -35,9 +35,6 @@ What it cannot learn, it says so, and goes on: no run is stopped for
 want of its provenance.
 """
 
-# A script, which fed.sh and smoke.sh name as it is.
-# pylint: disable=invalid-name
-
 import hashlib
 import os
 import platform

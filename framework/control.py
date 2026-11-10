@@ -60,8 +60,13 @@ POLL = 0.2
 
 
 def say(message: str) -> None:
-    """Print message, as the helper's."""
-    print(f"{common.PROG}: {message}", file=sys.stderr, flush=True)
+    """Print message, as the helper's, with the time, in UTC.
+
+    The services' logs give times in UTC too, so that what the helper did
+    to a service can be found in its log.
+    """
+    now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+    print(f"{now} {common.PROG}: {message}", file=sys.stderr, flush=True)
 
 
 def compose(*args: str) -> tuple[bool, str]:

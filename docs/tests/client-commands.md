@@ -23,9 +23,9 @@ exit status.
   (`ls-protected-a`, `ls-public`). `ls -r` must list every object once, by
   its path (`ls-recursive`).
 - `stat`: `stat --json --checksums` must report the size, the modification
-  time (within a minute), and the storage's `crc32c` and `md5`
-  (`stat-protected-a`, `stat-public`); of a collection, that it is one
-  (`stat-collection`).
+  time (within a minute), and each digest that the storage reports and the
+  client knows, of `crc32c`, `crc32`, `md5`, and `sha` (`stat-protected-a`,
+  `stat-public`); of a collection, that it is one (`stat-collection`).
 - `delete`: Must remove an object (`delete-object`), and with `-r` a
   collection (`delete-recursive`). Must refuse, removing nothing, a
   non-empty collection without `-r` (`delete-nonempty`), a read-only token

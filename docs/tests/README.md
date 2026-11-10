@@ -12,10 +12,11 @@
 [token profile](#token-profiles) that the shape has.
 
 These are [functional checks](../glossary.md#functional-check), not stress
-tests: each moves a few objects, the largest about 16 MiB. The exception is
-[`blocks`](block-boundaries.md)'s `cache-evicted`, which under
+tests: each moves a few objects, the largest about 16 MiB. The exceptions
+are [`blocks`](block-boundaries.md)'s `cache-evicted`, which under
 [`-p cache-small`](../../framework/presets/cache-small.sh) moves about 200
-MiB through each cache.
+MiB through each cache, and [`pstore`](pstore.md)'s `chunks`, which puts one
+object of 64 MiB.
 
 ## Suites
 

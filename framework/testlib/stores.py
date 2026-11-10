@@ -42,9 +42,19 @@ LIMITS: dict[str, dict[str, str]] = {
     "s3v2": {"crc32c": "the s3v2 backend reports only the MD5 that the S3 service holds"},
 }
 
-# What an origin reports of an object, as `pelican object stat --checksums`
-# asks, where its storage can.
-ORIGIN_DIGESTS = ("crc32c", "md5")
+# The digests an origin reports of an object, by ORIGIN_VARIANT, crc32c,
+# the clients' default, first: a posixv2 origin computes each that
+# Origin.DefaultChecksumTypes may name (origin_serve/backend.go in
+# Pelican); a pstore origin keeps three of every object
+# (pstore/checksum.go); an XRootD posix origin computes those of its
+# `xrootd.chksum` (xrootd/resources/xrootd-origin.cfg); and LIMITS says
+# why the rest report fewer, or none.
+ORIGIN_DIGESTS: dict[str, tuple[str, ...]] = {
+    "posixv2": ("crc32c", "crc32", "md5", "sha"),
+    "pstore": ("crc32c", "md5", "sha"),
+    "posix": ("crc32c", "crc32", "adler32", "md5"),
+    "s3v2": ("md5",),
+}
 
 # An upload to an s3v2 origin with no Content-Length, as the clients
 # upload, goes to the S3 service in parts of the AWS SDK's default size
@@ -82,22 +92,22 @@ def not_native(fed: common.Federation) -> str | None:
 
 
 def digests(fed: common.Federation) -> tuple[tuple[str, ...], str | None]:
-    """Return which digests the origins' storage reports, and why not all.
+    """Return which digests the origins' storage reports, and why not more.
 
     An XRootD origin's multiuser checksum path has no crc32c
     (xrootd/resources/xrootd-origin.cfg in Pelican).
 
     Returns:
-        The algorithms of ORIGIN_DIGESTS that the storage reports; and why
-        not the rest, or None if it lacks none.
+        The algorithms that the storage reports (ORIGIN_DIGESTS); and why
+        it reports none, or no crc32c, or None if it lacks neither.
     """
     limits = dict(LIMITS.get(fed.origin_variant, {}))
     if fed.origin_variant == "posix" and fed.multiuser:
         limits["crc32c"] = "XRootD's multiuser checksum path computes no crc32c"
     if "checksum" in limits:
         return (), limits["checksum"]
-    lacking = [limits[a] for a in ORIGIN_DIGESTS if a in limits]
-    return tuple(a for a in ORIGIN_DIGESTS if a not in limits), lacking[0] if lacking else None
+    reported = tuple(a for a in ORIGIN_DIGESTS.get(fed.origin_variant, ()) if a not in limits)
+    return reported, limits.get("crc32c")
 
 
 def has_digests(fed: common.Federation, size: int, declared: bool) -> bool:

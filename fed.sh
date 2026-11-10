@@ -2693,6 +2693,8 @@ fed_test_interrupt() {
 #   results/        the rows of the suites that this run ran
 #   commands*.log   every client command of each pass of the tests,
 #                   with all it printed
+#   http*.log       every HTTP exchange of the tests' own in each pass,
+#                   with its headers
 #   dev/            what the suites kept of their own (see "Where things
 #                   live" in README.md): the transfers suite's batches,
 #                   downloads, verdicts, and plain HTTP exchanges, and
@@ -2740,7 +2742,8 @@ fed_save_logs() {
     find framework/var/results -maxdepth 1 -type f -name '*.tsv' \
         -newer "${dir}/.started" \
         -exec "${fed_python}" framework/put-file.py {} "${dir}/results/" \;
-    find framework/var/dev -maxdepth 1 -type f -name 'commands*.log' \
+    find framework/var/dev -maxdepth 1 -type f \
+        \( -name 'commands*.log' -o -name 'http*.log' \) \
         -newer "${dir}/.started" \
         -exec "${fed_python}" framework/put-file.py {} "${dir}/" \;
     # Each suite empties its directory as it starts, so one newer than

@@ -8,16 +8,17 @@ tests' tokens are of the session's profile.
 Tokens are minted once and kept: the server's own, for a suite's
 checks; those of the credential table (credentials.CREDENTIALS), which
 the auth and transfers suites both present; and those of each server's
-web API (web_token()). A suite's setup, and
-its checks of what the stores hold, use the server's own WLCG tokens
-whatever the session's profile (setup_token()), so that a scenario's
-twin in the other pass differs only in the token it presents. The
-expired tokens are minted as the session starts, so that they are long
-expired by the time those suites, which run late, present them.
+web API (web_token()). A suite's setup, and its checks of what the
+stores hold, use the server's own WLCG tokens whatever the session's
+profile (setup_token()), so that a scenario's twin in the other pass
+differs only in the token it presents. The expired tokens are minted as
+the session starts, so that they are long expired by the time those
+suites, which run late, present them.
 
 Each client command, with all it printed, goes in the pass's
-commands_log. last_line() and the json_* functions read what a client
-printed.
+commands_log, and each of the tests' own HTTP exchanges (testlib.web)
+in its http_log. last_line() and the json_* functions read what a
+client printed.
 """
 
 import json
@@ -41,6 +42,9 @@ TIMED_OUT = 124
 # How long before a web API token expires a Session mints it anew, in
 # seconds: a suite that keeps one it was handed may use it this long.
 WEB_TOKEN_RENEW = 3000
+# How much of a line the HTTP log keeps, in characters: a Range header of
+# a thousand ranges runs to 14,000.
+LOGGED_LINE = 1024
 
 
 def timed_out(seconds: float) -> str:
@@ -87,6 +91,8 @@ class Session:
         commands_log: Where each client command is logged, under
             framework/var: dev/commands.log, or
             dev/commands-<profile>.log in another profile's pass.
+        http_log: Where each HTTP exchange is logged (log_exchange()),
+            likewise: dev/http.log, or dev/http-<profile>.log.
     """
 
     def __init__(
@@ -123,9 +129,12 @@ class Session:
         self._web: dict[tuple[str, str, tuple[str, ...], str], tuple[str, float]] = {}
         self.stale_at: float | None = None
         self.commands_log = f"{self.var_dir('dev/commands')}.log"
-        with open(self.commands_log, "w", encoding="utf-8"):
-            pass
+        self.http_log = f"{self.var_dir('dev/http')}.log"
+        for log in (self.commands_log, self.http_log):
+            with open(log, "w", encoding="utf-8"):
+                pass
         self._log_lock = threading.Lock()
+        self._logged_tokens: dict[str, int] = {}
         # Suites ask for tokens from worker threads.
         self._mint_lock = threading.Lock()
         for cred in credentials.CREDENTIALS:
@@ -469,6 +478,19 @@ class Session:
         )
         with self._log_lock, open(self.commands_log, "a", encoding="utf-8") as f:
             f.write(report.redact(entry))
+
+    def log_exchange(self, entry: str) -> None:
+        """Append an HTTP exchange's entry (web.log_to()) to http_log.
+
+        Each token's signature is cut out, and a token that the log
+        already holds is cut to its number there (report.number_tokens());
+        then a line over LOGGED_LINE characters is cut short.
+        """
+        with self._log_lock, open(self.http_log, "a", encoding="utf-8") as f:
+            for line in report.number_tokens(entry, self._logged_tokens).split("\n")[:-1]:
+                if len(line) > LOGGED_LINE:
+                    line = f"{line[:LOGGED_LINE]} ... ({len(line) - LOGGED_LINE} more characters)"
+                f.write(line + "\n")
 
 
 def last_line(text: str) -> str:

@@ -75,7 +75,7 @@ Each suite writes a row per case to `framework/var/results/`
 ([Results](docs/ci.md#results)). A [watchdog](docs/glossary.md#watchdog)
 abandons a pass that prints nothing for 20 minutes, or runs for 90, and
 records it as `aborted`; the run stops there if the servers no longer
-answer.
+answer, or once it has gone on for six hours.
 
 ### Logs
 
@@ -92,11 +92,13 @@ After every run, pass or fail, `./fed.sh test` saves these in
 | `config/`                                | the configuration that [`fed.sh`](fed.sh) generated, without secrets                                                                                                                                                             |
 | `results/`                               | the run's [results](docs/ci.md#results)                                                                                                                                                                                          |
 | `commands.log`, `commands-scitokens.log` | each pass's client commands, with exit status, output, and the plugin's ads                                                                                                                                                      |
+| `http.log`, `http-scitokens.log`         | each pass's HTTP exchanges of the tests' own, as `curl -v` shows one: the request, what came of it, both sides' headers, and the start of a body that is text                                                                    |
 | `dev/`                                   | what the suites keep in `framework/var/dev/` ([below](#where-things-live))                                                                                                                                                       |
 | `test.log`                               | everything the tests printed                                                                                                                                                                                                     |
-| `control.log`                            | what the [control helper](#service-control) did                                                                                                                                                                                  |
+| `control.log`                            | what the [control helper](#service-control) did, and when (UTC, as in the services' logs)                                                                                                                                        |
 
-Tokens in these files lack their signatures. The tests restart
+Tokens in these files lack their signatures; `http.log` gives each once,
+and `(token N)` after that, and cuts a long line short. The tests restart
 [services](docs/glossary.md#service) but never recreate them, so each log
 covers the whole run; `./fed.sh up` and `restart` start a recreated
 container's log afresh.
@@ -432,6 +434,7 @@ Everything the framework creates is in plain directories under
 | `dev/auth-test/`     | the responses the [`auth`](docs/tests/authorization.md) suite got; `auth-test-scitokens/` for its SciTokens pass                     |
 | `dev/owners-test/`   | the responses the [`owners`](docs/tests/another-owner.md) suite got; `owners-test-scitokens/` for its SciTokens pass                 |
 | `dev/commands.log`   | the client commands the tests ran, with exit status and output; `commands-scitokens.log` for the SciTokens pass                      |
+| `dev/http.log`       | the tests' own HTTP exchanges, with their headers; `http-scitokens.log` for the SciTokens pass                                       |
 | `results/`           | a row per test case, by suite ([Results](docs/ci.md#results))                                                                        |
 | `logs/<time>/`       | each `./fed.sh test` run's [logs](#logs)                                                                                             |
 | `control/`           | the tests' requests to [control services](#service-control), and their configuration of a service (`config/<svc>/`)                  |

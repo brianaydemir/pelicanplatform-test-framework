@@ -102,6 +102,29 @@ def redact(text: str) -> str:
     return _JWT.sub(lambda m: m.group(0).rsplit(".", 1)[0] + ".<signature>", text)
 
 
+def number_tokens(text: str, seen: dict[str, int]) -> str:
+    """Return redact(text), with each JWT numbered, and its repeats cut.
+
+    A log of requests would otherwise be mostly the tokens they carry.
+    The first time a JWT appears, `(token N)` follows it; after that,
+    `(token N)` stands in for it.
+
+    Args:
+        text: The text.
+        seen: Each JWT's number, by the JWT without its signature, which
+            this adds to.
+    """
+
+    def numbered(match: re.Match[str]) -> str:
+        token = match.group(0).rsplit(".", 1)[0]
+        if token in seen:
+            return f"(token {seen[token]})"
+        seen[token] = len(seen) + 1
+        return f"{token}.<signature> (token {seen[token]})"
+
+    return _JWT.sub(numbered, text)
+
+
 @dataclass(frozen=True)
 class Row:
     """A case, as recorded.

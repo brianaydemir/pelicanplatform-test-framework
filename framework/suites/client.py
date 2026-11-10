@@ -28,10 +28,10 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from testlib import (
-    blocks,
     cacheapi,
     common,
     credentials,
+    digests,
     director,
     issuer,
     jwt,
@@ -407,11 +407,6 @@ class Test(suite.Test):
         return (self.age(cache, rel) or 0) >= 1
 
 
-def crc32c_hex(data: bytes) -> str:
-    """Return data's CRC-32C, as `stat --checksums` and the ads print it."""
-    return f"{blocks.crc32c(data):08x}"
-
-
 def attempt_failed(attempt: Mapping[str, Any]) -> bool:
     """Return whether the stats say an attempt failed.
 
@@ -467,7 +462,8 @@ def last_attempt(ad: Ad) -> int:
 def checksum_problems(fed: common.Federation, ad: Ad, data: bytes, cache: str | None) -> list[str]:
     """Return what is wrong with an ad's ServerChecksums.
 
-    Whichever digests it reports must be the object's, and after a whole
+    Whichever digests it reports, of those the client knows
+    (digests.CLIENT_ALGORITHMS), must be the object's, and after a whole
     read through a V2 cache there must be a crc32c, which the cache relays
     from the origin or computes itself (local_cache/persistent_cache.go).
 
@@ -481,7 +477,7 @@ def checksum_problems(fed: common.Federation, ad: Ad, data: bytes, cache: str | 
     sums = developer_data(ad).get_ci("ServerChecksums")
     reported = {k.lower(): str(v) for k, v in sums.items()} if isinstance(sums, Ad) else {}
     problems: list[str] = []
-    want = {"crc32c": crc32c_hex(data)}
+    want = {kind: digests.compute(kind, data).hex() for kind in digests.CLIENT_ALGORITHMS}
     for kind, value in reported.items():
         if kind in want and value.lower() != want[kind]:
             problems.append(f"{name}: ServerChecksums.{kind} {value}, not {want[kind]}")

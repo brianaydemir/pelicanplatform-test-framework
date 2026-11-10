@@ -45,7 +45,8 @@ printed, and the pass is recorded as `aborted` (or `setup`, if it
 recorded no case). If its cleanup takes over GRACE_SECONDS, that is
 interrupted too. The run then goes on only if every Pelican server
 answers on its web port within control.SERVE_WAIT seconds, since every
-later pass would otherwise stall in turn.
+later pass would otherwise stall in turn. The run itself stops, its
+pass under way abandoned likewise, once it has gone on for RUN_SECONDS.
 """
 
 import contextlib
@@ -82,6 +83,10 @@ RESULTS = os.path.join(common.VAR, "results")
 # minutes), or once it has run for this long, however much it prints.
 STALL_SECONDS = 20 * 60
 BUDGET_SECONDS = 90 * 60
+# The run stops once it has gone on for this long, several times what
+# every suite takes in one shape: slow passes that each keep within
+# their budget would otherwise take days between them.
+RUN_SECONDS = 6 * 60 * 60
 # Once abandoned, how long its cleanup (the suite's `finally` blocks,
 # which put back what it restarted or wrote) may take before it is
 # interrupted again, and again.
@@ -126,18 +131,23 @@ class Activity:
 
 
 @contextlib.contextmanager
-def watched(name: str) -> Generator[None, None, None]:
+def watched(name: str, deadline: float) -> Generator[None, None, None]:
     """Abandon the pass of suite name within the block if it stalls.
 
     A thread watches the output and the clock; when the pass has printed
-    nothing for STALL_SECONDS, or has run for BUDGET_SECONDS, it prints
-    where every thread is, for the log, and sends the process SIGALRM,
-    whose handler raises Stalled in the main thread, wherever it is: a
-    blocked read or join included, since a signal interrupts those. The
-    suite's cleanup runs as for any other error; if the pass is still
-    going GRACE_SECONDS later, as when the cleanup waits on the same
-    server, it is interrupted again, until it ends. SIGALRM is ignored
-    outside the block, so a late one does no harm.
+    nothing for STALL_SECONDS, or has run for BUDGET_SECONDS, or the
+    run's time is up, it prints where every thread is, for the log, and
+    sends the process SIGALRM, whose handler raises Stalled in the main
+    thread, wherever it is: a blocked read or join included, since a
+    signal interrupts those. The suite's cleanup runs as for any other
+    error; if the pass is still going GRACE_SECONDS later, as when the
+    cleanup waits on the same server, it is interrupted again, until it
+    ends. SIGALRM is ignored outside the block, so a late one does no
+    harm.
+
+    Args:
+        name: The suite, as its pass is reported.
+        deadline: When the run's time is up (time.monotonic()).
     """
     why: list[str] = []
     stop = threading.Event()
@@ -147,7 +157,9 @@ def watched(name: str) -> Generator[None, None, None]:
     def watch() -> None:
         while not stop.wait(5):
             now = time.monotonic()
-            if now - started > BUDGET_SECONDS:
+            if now > deadline:
+                why.append(f"the run has gone on for {RUN_SECONDS}s, so {name} was abandoned")
+            elif now - started > BUDGET_SECONDS:
                 why.append(f"{name} ran for {BUDGET_SECONDS}s, and was abandoned")
             elif now - Activity.last_write > STALL_SECONDS:
                 why.append(f"{name} printed nothing for {STALL_SECONDS}s, and was abandoned")
@@ -319,8 +331,16 @@ def not_serving(fed: common.Federation) -> str | None:
     return control.settle(silent, control.SERVE_WAIT)
 
 
-def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report, str | None]:
+def run_suite(
+    name: str, selected: list[str], session: Session, deadline: float
+) -> tuple[Report, str | None]:
     """Run one suite's selected scenarios in session's pass; write its results.
+
+    Args:
+        name: The suite.
+        selected: Its scenarios to run.
+        session: The pass, whose http_log takes the suite's exchanges.
+        deadline: When the run's time is up (time.monotonic()).
 
     Returns:
         The pass's report, and None if the suite finished; otherwise
@@ -331,6 +351,7 @@ def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report,
     report = Report(suite_name(name, session.profile), RESULTS)
     results = common.Results(list(module.SCENARIOS), report)
     print(f"\n==> {report.suite}\n")
+    web.log_to(session.log_exchange)
     error: str | None = None
     ended: str | None = None
     try:
@@ -340,7 +361,7 @@ def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report,
             for scenario in selected:
                 report.add(scenario, SKIP, why, seconds=None)
         else:
-            with watched(report.suite):
+            with watched(report.suite, deadline):
                 module.run(session, selected, results)
     except common.Died as e:
         error = e.message
@@ -362,12 +383,17 @@ def run_suite(name: str, selected: list[str], session: Session) -> tuple[Report,
     return report, ended
 
 
-def run_passes(chosen: dict[str, list[str]], sessions: list[Session]) -> list[Report]:
+def run_passes(chosen: dict[str, list[str]], sessions: list[Session], deadline: float) -> list[Report]:
     """Run each chosen suite's pass in each of sessions, in turn.
 
     Stops once a suite with REQUIRED scenarios does not finish in the
-    first session's pass, or once a pass is abandoned and the federation
-    no longer serves (not_serving()).
+    first session's pass, or once a pass is abandoned and the run's time
+    is up, or the federation no longer serves (not_serving()).
+
+    Args:
+        chosen: Each suite's scenarios to run, by suite.
+        sessions: Each pass's session.
+        deadline: When the run's time is up (time.monotonic()).
 
     Returns:
         Each pass's report, in the order the passes ran.
@@ -378,12 +404,18 @@ def run_passes(chosen: dict[str, list[str]], sessions: list[Session]) -> list[Re
             scenarios = in_pass(name, selected, session.profile)
             if not scenarios:
                 continue
-            report, ended = run_suite(name, scenarios, session)
+            report, ended = run_suite(name, scenarios, session, deadline)
             reports.append(report)
             # The first pass shows whether the federation serves at all.
             if ended and required(name) and session is sessions[0]:
                 print(
                     f"\n{common.PROG}: stopping: {name} did not finish, so nothing else can pass",
+                    file=sys.stderr,
+                )
+                return reports
+            if ended == "stalled" and time.monotonic() > deadline:
+                print(
+                    f"\n{common.PROG}: stopping: the run has gone on for {RUN_SECONDS}s",
                     file=sys.stderr,
                 )
                 return reports
@@ -521,7 +553,7 @@ def main() -> int:
         first = Session(tmp, profiles[0], run=stamp)
         sessions = [first] + [Session(tmp, p, first.fed, stamp) for p in profiles[1:]]
         print(f"Testing {first.fed.url}: {describe(first.fed)}")
-        reports = run_passes(chosen, sessions)
+        reports = run_passes(chosen, sessions, started + RUN_SECONDS)
     summarize(reports, time.monotonic() - started)
     status = 1 if any(r.failed for r in reports) else 0
     left = lingering()

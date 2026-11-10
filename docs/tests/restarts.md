@@ -44,14 +44,13 @@ every other suite but [`keys`](keys.md). It needs a
   GET, HEAD, or PUT at origin-0 (`direct`, where it takes direct clients),
   and a cache miss through the first federated cache (`cache`), must get a
   server error, never 404, 405, or the object. Both Pelican clients, asking
-  the director for an object that no cache holds, must fail, leaving no
-  file, but not as not found (error 5011; `clients`). An `ssh` origin's
-  health must report `ssh-backend` not ok within 60 seconds (`health`). With
-  the service
-  back, the origin must serve again within 120 seconds, without a restart,
-  and its health say ok (`recovered`); if the origin exited, the suite
-  restarts it, and `recovered` fails. Skips where the origin stores on its
-  own disk.
+  the director for an object that no cache holds, and then for an origin
+  (where it takes direct clients), must fail, leaving no file, but not as
+  not found (error 5011; `clients`). An `ssh` origin's health must report
+  `ssh-backend` not ok within 60 seconds (`health`). With the service back,
+  the origin must serve again within 120 seconds, without a restart, and its
+  health say ok (`recovered`); if the origin exited, the suite restarts it,
+  and `recovered` fails. Skips where the origin stores on its own disk.
 
 - `xrootd-wedged`: A server whose XRootD answers no liveness probe for
   `Xrootd.LivenessMaxUnresponsiveTime` must shut XRootD down and exit.

@@ -21,7 +21,9 @@ such as the namespaces it exports, is in the
   (`osdf-server`): they differ from Pelican's by their defaults
   (`osdf_default` in Pelican's
   [`docs/parameters.yaml`](https://github.com/PelicanPlatform/pelican/blob/main/docs/parameters.yaml)),
-  which point at services that only the OSDF runs.
+  which point at services that only the OSDF runs, among them OSG Topology
+  (`Federation.TopologyNamespaceUrl`), from which its directors and registry
+  take the namespaces and servers that predate Pelican.
 - **A local cache on the client's host**
   (`pelican-server serve --module localcache`, `LocalCache.*`), which
   listens on a Unix socket that a client names (`--cache unix:///...`). It

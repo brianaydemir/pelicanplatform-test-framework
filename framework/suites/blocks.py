@@ -88,6 +88,7 @@ SCENARIOS = {
     "digest-relay": "each federated V2 cache relays the origins' digests to HEAD, GET, and the client",
     "digest-range-first": "each federated V2 cache relays digests of an object it first read in a range",
     "stale-origin-digest": "each federated V2 cache keeps and passes on nothing that fails its digests",
+    "stale-digest-direct": "neither client keeps a download, straight from an origin, that fails its digests",
     "past-end": "a range that starts at or past an object's end: 416, not bytes",
     "empty": "a 0-byte object: 200 with no body; a range of it gets no bytes",
     "huge-ranges": "an object past 4 GiB: its length, and ranges across 2 and 4 GiB, everywhere",
@@ -163,7 +164,9 @@ class Test(suite.Test):
         data: Each set's object of each size, by set and size.
         uploads: How each kind of upload went, by "declared" or "chunked".
         digests: The digests the origins' storage reports.
-        no_digests: Why the storage does not report the rest, or None.
+        relayed: Those of them that a V2 cache relays: the ones that its
+            client knows to ask an origin for.
+        no_digests: Why the storage reports none, or no crc32c, or None.
     """
 
     def __init__(self, session: Session):
@@ -174,6 +177,7 @@ class Test(suite.Test):
         self.data = {(s, size): os.urandom(size) for s in SETS for size in blocks.SIZES}
         self.uploads: dict[str, Row] = {}
         self.digests, self.no_digests = stores.digests(self.fed)
+        self.relayed = tuple(a for a in self.digests if a in digests.CLIENT_ALGORITHMS)
         # Minted now, since the reads that first present it may be
         # concurrent.
         self.session.token_file(self.namespace)
@@ -620,12 +624,14 @@ def put_checksum(test: Test) -> Row:
     """Check `pelican object put --require-checksum` of every size.
 
     The client checks each upload against a digest that the origin
-    reports after the PUT, by the first algorithm the origins' storage
-    reports (--checksum-algorithm; crc32c otherwise). The command must
-    succeed, leaving the objects intact, where the storage reports the
-    object's digest (stores.has_digests(); the client declares no
-    length). Elsewhere it must fail, rather than report an unverified
-    upload as a success.
+    reports after the PUT, naming each algorithm in turn that the
+    origins' storage reports and the client knows (--checksum-algorithm;
+    crc32c, unnamed, where it reports none). An origin may answer with
+    another (RFC 3230 has Want-Digest state a preference), which the
+    client then checks by. The command must succeed, leaving the objects
+    intact, where the storage reports the object's digest
+    (stores.has_digests(); the client declares no length). Elsewhere it
+    must fail, rather than report an unverified upload as a success.
     """
     return checked_put(test, "put-checksum", configured=False)
 
@@ -633,7 +639,7 @@ def put_checksum(test: Test) -> Row:
 def put_checksum_config(test: Test) -> Row:
     """Check `pelican object put` of every size, with its algorithm configured.
 
-    Client.DefaultChecksumAlgo, given in the environment, names the
+    Client.DefaultChecksumAlgo, given in the environment, names each
     algorithm that put_checksum() names with --checksum-algorithm (crc32c
     where the storage reports none), and, with neither flag given, must
     require a checksum as --require-checksum does.
@@ -642,58 +648,67 @@ def put_checksum_config(test: Test) -> Row:
 
 
 def checked_put(test: Test, name: str, configured: bool) -> Row:
-    """Upload every size into collection name, requiring a checksum.
+    """Upload every size into collections under name, requiring a checksum.
 
-    With configured, the algorithm comes from Client.DefaultChecksumAlgo,
-    and no flag asks for a checksum; otherwise --require-checksum does,
-    and --checksum-algorithm names the algorithm, if the storage reports
-    any.
+    Each algorithm that the storage reports and the client knows gets a
+    collection of its own. With configured, the algorithm comes from
+    Client.DefaultChecksumAlgo, and no flag asks for a checksum;
+    otherwise --require-checksum does, and --checksum-algorithm names the
+    algorithm. Where the storage reports none, crc32c stands in, unnamed.
     """
     if not test.writes:
         return SKIP, NO_WRITES
-    collection = test.rel(name)
-    if why := test.make(collection):
-        return FAIL, why
     directory, files = local_sizes(test, name)
     verifiable = {
         size: data for size, data in files.items() if stores.has_digests(test.fed, size, declared=False)
     }
-    algorithm = test.digests[0] if test.digests else "crc32c"
-    if configured:
-        flags: list[str] = []
-        env = dict(test.session.env, PELICAN_CLIENT_DEFAULTCHECKSUMALGO=algorithm)
-    else:
-        flags = ["--require-checksum", *(["--checksum-algorithm", algorithm] if test.digests else [])]
-        env = None
-    notes: list[str] = []
-    for sizes, verified in ((verifiable, True), (set(files) - set(verifiable), False)):
-        if not sizes:
-            continue
-        code, out, err = test.session.pelican_cmd(
-            "object",
-            "put",
-            *flags,
-            "--token",
-            test.token_file,
-            *(os.path.join(directory, str(size)) for size in sorted(sizes)),
-            test.pelican_url(collection) + "/",
-            env=env,
-        )
-        if verified:
-            if code != 0:
-                return FAIL, f"exit {code}: {last_line(err or out)}"
-            why = uploaded(test, verifiable, collection)
+    unverifiable = set(files) - set(verifiable)
+    unverified = test.no_digests or f"the storage holds no digest of an object over {stores.S3_PART} bytes"
+    algorithms = [a for a in test.digests if a in digests.CLIENT_ALGORITHMS]
+    problems: list[str] = []
+    for algorithm in algorithms or ["crc32c"]:
+        collection = test.rel(name, algorithm)
+        if why := test.make(collection):
+            return FAIL, why
+        if configured:
+            flags: list[str] = []
+            env = dict(test.session.env, PELICAN_CLIENT_DEFAULTCHECKSUMALGO=algorithm)
+        else:
+            flags = ["--require-checksum", *(["--checksum-algorithm", algorithm] if algorithms else [])]
+            env = None
+        for sizes, verified in ((verifiable, True), (unverifiable, False)):
+            if not sizes:
+                continue
+            code, out, err = test.session.pelican_cmd(
+                "object",
+                "put",
+                *flags,
+                "--token",
+                test.token_file,
+                *(os.path.join(directory, str(size)) for size in sorted(sizes)),
+                test.pelican_url(collection) + "/",
+                env=env,
+            )
+            if verified:
+                why = (
+                    f"exit {code}: {last_line(err or out)}"
+                    if code
+                    else uploaded(test, verifiable, collection)
+                )
+            elif code == 0:
+                why = f"succeeded, though {unverified}, so nothing was verified"
+            elif not re.search(r"checksum", out + err, re.I):
+                why = f"failed, but not for want of a checksum: {last_line(err or out)}"
+            else:
+                why = None
             if why:
-                return FAIL, why
-            notes.append(f"{len(sizes)} objects verified by {algorithm}")
-            continue
-        why = test.no_digests or f"the storage holds no digest of an object over {stores.S3_PART} bytes"
-        if code == 0:
-            return FAIL, f"succeeded, though {why}, so nothing was verified"
-        if not re.search(r"checksum", out + err, re.I):
-            return FAIL, f"failed, but not for want of a checksum: {last_line(err or out)}"
-        notes.append(f"{len(sizes)} refused, since {why}")
-    return PASS, "; ".join(notes)
+                problems.append(f"by {algorithm}: {why}")
+    notes: list[str] = []
+    if verifiable:
+        notes.append(f"{len(verifiable)} objects verified, with each of {', '.join(algorithms)} named")
+    if unverifiable:
+        notes.append(f"{len(unverifiable)} refused, since {unverified}")
+    return outcome(problems, "; ".join(notes))
 
 
 def origin_read(test: Test) -> Row:
@@ -1875,12 +1890,14 @@ def origin_transfer_status(test: Test) -> Row:
     return outcome(problems, f"{len(test.origins)} origin(s): '{STATUS_OK}'")
 
 
-def get_from(test: Test, cache: common.Cache, rel: str, target: str, *flags: str) -> tuple[int, str, str]:
+def get_from(
+    test: Test, cache: common.Cache | None, rel: str, target: str, *flags: str
+) -> tuple[int, str, str]:
     """Run `pelican object get` of rel through cache alone (--cache).
 
     Args:
         test: The test.
-        cache: The cache.
+        cache: The cache; None to read straight from an origin (--direct).
         rel: The object.
         target: The file to write.
         *flags: More of the client's flags.
@@ -1891,8 +1908,7 @@ def get_from(test: Test, cache: common.Cache, rel: str, target: str, *flags: str
     return test.session.pelican_cmd(
         "object",
         "get",
-        "--cache",
-        cache.url,
+        *(["--cache", cache.url] if cache else ["--direct"]),
         "--token",
         test.token_file,
         *flags,
@@ -1901,11 +1917,12 @@ def get_from(test: Test, cache: common.Cache, rel: str, target: str, *flags: str
     )
 
 
-def client_failed(test: Test, cache: common.Cache, rel: str, name: str) -> tuple[str | None, str]:
+def client_failed(test: Test, cache: common.Cache | None, rel: str, name: str) -> tuple[str | None, str]:
     """Check that `pelican object get` of rel through cache alone fails.
 
     It reads into a directory of its own, name, and must fail, by
-    something other than a refusal, and leave nothing.
+    something other than a refusal, and leave nothing. With no cache, it
+    reads straight from an origin (get_from()).
 
     Returns:
         What is wrong, or None; and how it failed.
@@ -1923,21 +1940,22 @@ def client_failed(test: Test, cache: common.Cache, rel: str, name: str) -> tuple
     return None, f"Error code {found.group(1)}" if found else f"exit {code}"
 
 
-def plugin_failed(test: Test, cache: common.Cache, rel: str, name: str) -> tuple[str | None, str]:
+def plugin_failed(test: Test, cache: common.Cache | None, rel: str, name: str) -> tuple[str | None, str]:
     """Check that stash_plugin's download of rel through cache alone fails.
 
     It reads into a directory of its own, name, and must say that the
     transfer failed, and leave nothing. Its ad must say that the failure
     may be retried, since it came after the transfer began, unless the
     plugin found no such object (as where the director, asking every
-    origin, found none).
+    origin, found none). With no cache, it reads straight from an origin
+    (?directread).
 
     Returns:
         What is wrong, or None; and how it failed.
     """
     directory = test.directory(name)
-    url = test.pelican_url(rel)
-    passed, said = plugin(test, name, [url], directory, upload=False, cache=cache.url)
+    url = test.pelican_url(rel) + ("" if cache else transfers.DIRECT_QUERY)
+    passed, said = plugin(test, name, [url], directory, upload=False, cache=cache.url if cache else None)
     if passed:
         return "stash_plugin succeeded", ""
     if "TransferSuccess = false" not in said:
@@ -2165,8 +2183,9 @@ def server_digests(
     sets. The server is asked by HEAD for each of digests.ALGORITHMS in
     turn, and by GET for crc32c, the client's default. An origin must
     report each digest its storage holds of the object (test.digests,
-    where stores.has_digests() says so for its size and upload). So must
-    a server that relays the origins' (a V2 cache), of the `whole` set.
+    where stores.has_digests() says so for its size and upload). A server
+    that relays the origins' (a V2 cache) must report each it relays
+    (test.relayed), of the `whole` set.
 
     Args:
         test: The test.
@@ -2185,7 +2204,7 @@ def server_digests(
             wrong, right = reported(test, server_url, rel, data, digests.ALGORITHMS)
             problems += [f"{set_name}/{size}: {w}" for w in wrong]
             given |= right
-            lacking = sorted(set(test.digests) - right)
+            lacking = sorted(set(test.digests if origin else test.relayed) - right)
             must = (origin or (relays and set_name == "whole")) and stores.has_digests(
                 test.fed, size, SETS[set_name]
             )
@@ -2206,15 +2225,17 @@ def digests_scenario(test: Test) -> Row:
     """Check that every digest that a server reports is the object's.
 
     Every digest a server reports must be the object's, as the client
-    checks it (server_digests()). Each origin must report
-    stores.ORIGIN_DIGESTS of each object, but for those its storage
-    cannot (stores.digests()). So must a federated V2 cache, of the
-    `whole` set, since it relays the origins' (digest_relay()). The
+    checks it (server_digests()). Each origin must report each digest
+    that its storage does (stores.digests()) of each object. A federated
+    V2 cache must report those it relays, of the `whole` set
+    (digest_relay()). The
     `ranged` set, which a V2 cache first read through a range, is
     digest_range_first's to judge; of it, as of any object at an XRootD
     or site-local cache, a cache need report none. The note names the
     servers that report none. The origins are asked only if they take
-    direct clients.
+    direct clients; `pelican object get --direct` must then get from one
+    each digest that its storage reports and the client knows
+    (client_digests()).
     """
     if why := test.not_uploaded(True, False):
         return FAIL, why
@@ -2227,6 +2248,11 @@ def digests_scenario(test: Test) -> Row:
         problems += [f"{svc}: {w}" for w in wrong]
         if not given:
             silent.append(svc)
+    size = blocks.SPILL + 1
+    if test.direct and test.relayed and stores.has_digests(test.fed, size, SETS["whole"]):
+        why = client_digests(test, None, test.set_rel("whole", size), test.data[("whole", size)])
+        if why:
+            problems.append(f"direct: {why}")
     notes = [f"{len(asked)} server(s)"]
     if silent:
         notes.append(f"no digest from {', '.join(silent)}")
@@ -2312,9 +2338,6 @@ def digest_overwrite(test: Test) -> Row:
     return each_origin(test, "digest-overwrite", functools.partial(digests_after_writes, test))
 
 
-# The algorithms the client knows (ChecksumType in client/handle_http.go).
-# Each is told by its digest, not by the number the client's stats give it.
-CLIENT_ALGORITHMS = ("md5", "crc32c", "crc32", "sha")
 # How long a V2 cache may take to record the origins' digests of an object
 # it has read whole: it asks an origin for them once the body has come.
 DIGEST_WAIT = 10
@@ -2346,9 +2369,9 @@ def relayed(answer: web.Response, data: bytes, want: tuple[str, ...]) -> str | N
 def relay_problem(test: Test, server_url: str, rel: str, data: bytes, method: str) -> str | None:
     """Return what is wrong with the digests a server reports, or None.
 
-    It is asked by Want-Digest for each of stores.ORIGIN_DIGESTS in turn:
-    it must report those the origins' storage does (test.digests; see
-    relayed()), and a GET must bring the object.
+    It is asked by Want-Digest for each of test.relayed in turn: it must
+    report them all each time (see relayed()), and a GET must bring the
+    object.
 
     Args:
         test: The test.
@@ -2357,9 +2380,9 @@ def relay_problem(test: Test, server_url: str, rel: str, data: bytes, method: st
         data: Its bytes.
         method: HEAD or GET.
     """
-    for algorithm in stores.ORIGIN_DIGESTS:
+    for algorithm in test.relayed:
         answer = test.ask(method, server_url, rel, {"Want-Digest": algorithm})
-        why = relayed(answer, data, test.digests)
+        why = relayed(answer, data, test.relayed)
         if not why and method == "GET" and answer.body != data:
             why = f"{len(answer.body)} bytes, not the object"
         if why:
@@ -2382,8 +2405,9 @@ def stats_checksums(path: str) -> tuple[list[bytes], str]:
 
     Returns:
         The values that the client's --transfer-stats file says a server
-        gave it (ChecksumInfo.Value), each told by its digest alone (see
-        CLIENT_ALGORITHMS), and ""; or nothing, and why.
+        gave it (ChecksumInfo.Value), and ""; or nothing, and why. Each
+        is told by its digest alone, not by the number that the stats
+        give its algorithm.
     """
     stats = transfers.read_stats(path)
     if stats is None:
@@ -2398,17 +2422,19 @@ def stats_checksums(path: str) -> tuple[list[bytes], str]:
     return values, ""
 
 
-def client_digests(test: Test, cache: common.Cache, rel: str, data: bytes) -> str | None:
+def client_digests(test: Test, cache: common.Cache | None, rel: str, data: bytes) -> str | None:
     """Check the digests that `pelican object get` gets from cache alone.
 
     The client reads rel, which holds data: it must bring the object, and
     its transfer statistics show the digests that it then asked the cache
-    for, which must be the object's, and include each of test.digests.
+    for, which must be the object's, and include each of test.relayed.
+    With no cache, it reads straight from an origin (get_from()), which
+    must give it as much.
 
     Returns:
         What is wrong, or None.
     """
-    name = f"relay-get-{cache.svc}"
+    name = f"relay-get-{cache.svc if cache else 'direct'}"
     target = os.path.join(test.directory(name), "object")
     stats = os.path.join(test.tmp, f"{name}.json")
     code, out, err = get_from(test, cache, rel, target, "--transfer-stats", stats)
@@ -2421,11 +2447,11 @@ def client_digests(test: Test, cache: common.Cache, rel: str, data: bytes) -> st
         return why
     found: set[str] = set()
     for value in got:
-        names = [a for a in CLIENT_ALGORITHMS if digests.compute(a, data) == value]
+        names = [a for a in digests.CLIENT_ALGORITHMS if digests.compute(a, data) == value]
         if not names:
             return f"the client got a digest from it that is not the object's ({value.hex()})"
         found.update(names)
-    lacking = [a for a in test.digests if a not in found]
+    lacking = [a for a in test.relayed if a not in found]
     if lacking:
         return (
             f"the client got no {', '.join(lacking)} from it"
@@ -2474,8 +2500,9 @@ def digest_relay(test: Test) -> Row:
     a client can check what it downloads through the cache. Of an object
     of each federated V2 cache's own, a cold HEAD, and once the cache has
     read the object whole, a HEAD and a GET, must each report the digests
-    that the origins' storage holds (test.digests), each the object's,
-    whatever Want-Digest asks for (relay_problem()). A cold GET may come
+    that the origins' storage holds and the cache's client knows
+    (test.relayed), each the object's, whichever of them Want-Digest
+    asks for (relay_problem()). A cold GET may come
     before the cache knows them; the note says whether it carried them.
     Then `pelican object get --cache` must get them from the cache
     (client_digests()). A site-local cache reads through another cache,
@@ -2496,7 +2523,7 @@ def digest_relay(test: Test) -> Row:
             problems.append(f"{cache.svc}: {why}")
         if note:
             notes.append(f"{cache.svc}: {note}")
-    return outcome(problems, "; ".join([f"{', '.join(test.digests)} relayed"] + notes))
+    return outcome(problems, "; ".join([f"{', '.join(test.relayed)} relayed"] + notes))
 
 
 def digest_range_first(test: Test) -> Row:
@@ -2532,7 +2559,7 @@ def digest_range_first(test: Test) -> Row:
         why = relayed_soon(test, cache.url, rel, data)
         if why:
             problems.append(f"{cache.svc}: once it held it all, {why}")
-    return outcome(problems, f"{len(caches)} V2 cache(s): {', '.join(test.digests)} relayed")
+    return outcome(problems, f"{len(caches)} V2 cache(s): {', '.join(test.relayed)} relayed")
 
 
 # The extended attributes in which a posixv2 origin keeps an object's
@@ -2674,7 +2701,13 @@ def stale_digest(test: Test, cache: common.Cache, rel: str, a: bytes, found: Fin
     if why:
         found.fail(f"{cache.svc}: {why}")
         return
-    found.note(f"{cache.svc}: {how}; kept nothing; the client failed ({client})")
+    why, plugin_kind = plugin_failed(test, cache, rel, f"stale-plugin-{cache.svc}")
+    if why:
+        found.fail(f"{cache.svc}: {why}")
+        return
+    found.note(
+        f"{cache.svc}: {how}; kept nothing; the client failed ({client}), the plugin too ({plugin_kind})"
+    )
 
 
 def stale_origin_digest(test: Test) -> Row:
@@ -2690,35 +2723,97 @@ def stale_origin_digest(test: Test) -> Row:
     (stale_trap()). A GET through the cache, asking for the transfer's
     status, must then report a failure in its trailer, or fail; within
     10 seconds, a GET with only-if-cached must get 504; and
-    `pelican object get --cache` must fail, by something other than a
-    refusal, and leave nothing. Where the store keeps no extended
-    attributes, or the origin notices the overwrite, the row is
-    inconclusive. The origins are asked first, directly, so it skips
-    where they take no direct clients.
+    `pelican object get --cache` and stash_plugin, through that cache
+    alone, must each fail, by something other than a refusal, and leave
+    nothing. Where the store keeps no extended attributes, or the origin
+    notices the overwrite, the row is inconclusive. The origins are
+    asked first, directly, so it skips where they take no direct
+    clients.
     """
-    if test.fed.origin_variant != "posixv2":
-        return SKIP, (
-            "only a posixv2 origin keeps digests by modification time in its store,"
-            + f" not {test.fed.origin_variant}"
-        )
+    if why := untrappable(test):
+        return SKIP, why
     if not test.federated_v2:
         return SKIP, "no federated V2 cache, which alone checks the origins' digests"
-    if not test.direct:
-        return SKIP, f"{NO_DIRECT}, so no origin can be asked first"
     check = functools.partial(stale_digest, test)
     return each_cache(test, "stale-digest", STATUS_SIZE, test.federated_v2, check)
 
 
-# What digest-defaults asks for in one Want-Digest: two algorithms, and the
-# same weighed by q-values (RFC 3230, section 4.3.1), preferring crc32c.
-WANT_BOTH = "crc32c, md5"
+# What the client calls a download whose digest is not the server's
+# (Transfer.ChecksumMismatch in Pelican's docs/error_codes.yaml, which
+# says it may be retried).
+CHECKSUM_MISMATCH = "Error code 6006"
+
+
+def untrappable(test: Test) -> str | None:
+    """Return why no origin here can be made to report stale digests, or None."""
+    if test.fed.origin_variant != "posixv2":
+        return (
+            "only a posixv2 origin keeps digests by modification time in its store,"
+            + f" not {test.fed.origin_variant}"
+        )
+    if not test.direct:
+        return f"{NO_DIRECT}, so no origin can be asked first"
+    return None
+
+
+def stale_digest_direct(test: Test) -> Row:
+    """Check that neither client keeps a direct download that fails its digests.
+
+    The origins serve an object with digests of another version, as for
+    stale_origin_digest (stale_trap()). Read straight from an origin,
+    where no cache stands between, only the client's own check of what
+    it downloaded can tell: `pelican object get --direct` must fail as a
+    checksum mismatch (CHECKSUM_MISMATCH), and stash_plugin
+    (?directread) with an ad that says the transfer may be retried, and
+    each must leave nothing. Inconclusive, and skipped, as there.
+    """
+    if why := untrappable(test):
+        return SKIP, why
+    rel, a = test.rel("stale-digest-direct"), os.urandom(STATUS_SIZE)
+    if why := test.put({rel: a}):
+        return FAIL, why
+    found = Findings()
+    for origin in test.origins:
+        why, doubt = stale_trap(test, origin, rel, a, bytes(x ^ 0xFF for x in a))
+        if why:
+            return FAIL, why
+        if doubt:
+            found.doubt(doubt)
+            return found.verdict()
+    why, how = client_failed(test, None, rel, "stale-direct-get")
+    if not why and how != CHECKSUM_MISMATCH:
+        why = f"`pelican object get` failed, but not as a checksum mismatch: {how}"
+    if why:
+        found.fail(why)
+    else:
+        found.note(f"the client failed ({how})")
+    why, how = plugin_failed(test, None, rel, "stale-direct-plugin")
+    if why:
+        found.fail(why)
+    else:
+        found.note(f"the plugin failed ({how})")
+    return found.verdict()
+
+
+# What digest-defaults asks for with q-values in one Want-Digest (RFC
+# 3230, section 4.3.1), preferring crc32c.
 WANT_WEIGHTED = "md5;q=0.5, crc32c;q=1"
-# Where a posixv2 origin keeps each digest of stores.ORIGIN_DIGESTS (see
+# Where a posixv2 origin keeps each digest that it reports (see
 # CHECKSUM_XATTRS), as XRootD's XrdCksData lays it out: a 16-byte name,
 # the file's modification time (8 bytes), a time (4), reserved (3), the
 # value's length (1, at XRDCKS_LENGTH), and the value.
-DIGEST_XATTRS = {"crc32c": "user.XrdCks.crc32c", "md5": "user.XrdCks.md5"}
+DIGEST_XATTRS = {
+    "crc32c": "user.XrdCks.crc32c",
+    "crc32": "user.XrdCks.crc32",
+    "md5": "user.XrdCks.md5",
+    "sha": "user.XrdCks.sha1",
+}
 XRDCKS_LENGTH = 31
+
+
+def want_each(test: Test) -> str:
+    """Return a Want-Digest naming each digest the origins' storage reports."""
+    return ", ".join(test.digests)
 
 
 def xattr_digests(path: str) -> dict[str, bytes | None] | None:
@@ -2751,11 +2846,12 @@ def defaults_at(test: Test, origin: common.Origin, rel: str, data: bytes, found:
     """Send digest_defaults's HEADs of rel, which holds data, at origin.
 
     Each HEAD asks for digests in its own way: with no Want-Digest, with
-    WANT_BOTH, and with WANT_WEIGHTED. Every digest it
-    reports must be the object's, in one Digest field, which is all the
-    Pelican client reads. Unasked, a native origin must report crc32c, the
-    first of Origin.DefaultChecksumTypes, which the framework leaves at
-    its default. Asked for both, a native origin must report each, and an
+    one naming each digest that the storage reports (want_each()), and
+    with WANT_WEIGHTED. Every digest it reports must be the object's, in
+    one Digest field, which is all the Pelican client reads. Unasked, a
+    native origin must report crc32c, the first of
+    Origin.DefaultChecksumTypes, which the framework leaves at its
+    default. Asked for each, a native origin must report each, and an
     XRootD origin, which reports the one it prefers, at least one. Asked
     with q-values, every origin must report at least one. Each only of
     what its storage reports (test.digests).
@@ -2763,7 +2859,7 @@ def defaults_at(test: Test, origin: common.Origin, rel: str, data: bytes, found:
     native = test.fed.native_origins
     asks = (
         ("unasked", None, ("crc32c",) if native else (), False),
-        ("asked for both", WANT_BOTH, test.digests if native else (), not native),
+        ("asked for each", want_each(test), test.digests if native else (), not native),
         ("weighed", WANT_WEIGHTED, (), True),
     )
     said: list[str] = []
@@ -2836,7 +2932,7 @@ def digests_rewritten(test: Test, origin: common.Origin, rel: str, data: bytes, 
     if error:
         found.fail(f"{origin.svc}: {error}")
         return
-    answer = send_head(test, origin.url, rel, WANT_BOTH)
+    answer = send_head(test, origin.url, rel, want_each(test))
     what = f"{origin.svc}: after a rewrite in the store with its modification time kept"
     if answer.status != 200:
         found.fail(f"{what}, a HEAD: {answer.describe()}")
@@ -2879,7 +2975,7 @@ def xattrs_at(test: Test, origin: common.Origin, rel: str, data: bytes, found: F
                     + f" {DIGEST_XATTRS[algorithm]} is still the old version's"
                 )
         data = new
-        answer = send_head(test, origin.url, rel, WANT_BOTH)
+        answer = send_head(test, origin.url, rel, want_each(test))
         wrong, right = digests.check(answer.header("Digest"), data)
         if answer.status != 200 or wrong or set(right) != set(test.digests):
             found.fail(
@@ -2894,7 +2990,7 @@ def digest_defaults(test: Test) -> Row:
     """Check the digests each origin reports unasked, and asked in two ways.
 
     Each origin, of an object of its own: the digests it reports unasked,
-    asked for two, and asked with q-values (defaults_at()). On a posixv2
+    asked for each, and asked with q-values (defaults_at()). On a posixv2
     origin, it must then keep them in its file's extended attributes, and
     follow a PUT; and after a rewrite in the store that keeps the file's
     modification time, it may report the old digests, but no others
@@ -2932,11 +3028,11 @@ def past_end(test: Test) -> Row:
     """Check each server's answer to a range at or past an object's end.
 
     Each server, asked for ranges that start at or past the end of objects
-    of PAST_END_SIZES in the `whole` and `ranged` sets
-    (blocks.past_end()): 416, with Content-Range `bytes */<size>` if it
-    says; or, if it ignores Range, as RFC 9110 lets it, 200 with the
-    whole object. The origins are asked only if they take direct
-    clients.
+    of PAST_END_SIZES in the `whole` and `ranged` sets, and for a suffix
+    of no bytes (blocks.past_end()): 416, with Content-Range
+    `bytes */<size>` if it says; or, if it ignores Range, as RFC 9110
+    lets it, 200 with the whole object. The origins are asked only if
+    they take direct clients.
     """
     if why := test.not_uploaded(True, False):
         return FAIL, why
@@ -2964,9 +3060,12 @@ def past_end(test: Test) -> Row:
 def empty(test: Test) -> Row:
     """Check that every server answers an empty object's GET with no body.
 
-    It must answer with 200, and a range of it with 200 and no body
-    (RFC 9110 lets it ignore Range) or with 416, since no range of it is
-    satisfiable. The origins are asked only if they take direct clients.
+    It must answer with 200, and a range of it (its first byte, and a
+    suffix of one byte and of none) with 200 and no body (RFC 9110 lets
+    it ignore Range) or with 416: it has no byte to send, and no 206 can
+    say so, since a Content-Range's last byte may not come before its
+    first (RFC 9110, section 14.4). The origins are asked only if they
+    take direct clients.
     """
     if why := test.not_uploaded(True, False):
         return FAIL, why
@@ -2977,15 +3076,14 @@ def empty(test: Test) -> Row:
             answer = web.request("GET", target, token=test.token)
             if answer.status != 200 or answer.body:
                 return FAIL, f"{svc}: {set_name}/0: {answer.describe()}, {len(answer.body)} bytes"
-            answer = web.request("GET", target, token=test.token, headers={"Range": "bytes=0-0"})
-            if answer.status not in (200, 416):
-                return FAIL, f"{svc}: a range of {set_name}/0 got {answer.describe()}, not 200 or 416"
-            # A 416's body explains it; a success's must be empty.
-            if answer.status == 200 and answer.body:
-                return FAIL, (
-                    f"{svc}: a range of {set_name}/0 got {answer.describe()}"
-                    f" with {len(answer.body)} bytes"
-                )
+            for asked in ("bytes=0-0", "bytes=-1", "bytes=-0"):
+                answer = web.request("GET", target, token=test.token, headers={"Range": asked})
+                what = f"{svc}: {asked} of {set_name}/0"
+                if answer.status not in (200, 416):
+                    return FAIL, f"{what} got {answer.describe()}, not 200 or 416"
+                # A 416's body explains it; a success's must be empty.
+                if answer.status == 200 and answer.body:
+                    return FAIL, f"{what} got {answer.describe()} with {len(answer.body)} bytes"
         notes.append(f"{svc} ok")
     return PASS, ", ".join(notes)
 
@@ -2994,20 +3092,33 @@ def empty(test: Test) -> Row:
 # huge-ranges: an object past 4 GiB.
 
 # The object is zeros, but for MARKER bytes of a pattern of their own at
-# its start, around 2 GiB and 4 GiB, and at its end (huge_pattern()); the
-# rest is holes in a sparse file, which costs little to keep, and which
-# a cache fetches no more of than a range reads.
+# its start, around BITMAP_EDGE, 2 GiB, and 4 GiB, and at its end
+# (huge_pattern()); the rest is holes in a sparse file, which costs
+# little to keep, and which a cache fetches no more of than a range
+# reads.
 MARKER = 1 << 16
+# Where an object's block 65,536 starts: the V2 cache keeps the blocks it
+# holds in a roaring bitmap (local_cache/block_state.go in Pelican),
+# whose containers hold 65,536 each.
+BITMAP_EDGE = (1 << 16) * blocks.BLOCK
 # Its size: two markers past 4 GiB, rounded up to a block boundary, and a
 # byte more, so that 2^32 falls inside a block (no power of two is a
 # multiple of BLOCK), the last block is one byte, and the end marker
 # clears the 4 GiB one: a size or an offset kept in 32 bits, signed or
 # not, goes wrong somewhere in it.
 HUGE_SIZE = -(-((1 << 32) + 2 * MARKER) // blocks.BLOCK) * blocks.BLOCK + 1
-HUGE_MARKERS = (0, (1 << 31) - MARKER // 2, (1 << 32) - MARKER // 2, HUGE_SIZE - MARKER)
-# The ranges asked for, each within a marker: across, just before, and
-# at each power of two; the last byte; a suffix; and an open-ended tail.
+HUGE_MARKERS = (
+    0,
+    BITMAP_EDGE - MARKER // 2,
+    (1 << 31) - MARKER // 2,
+    (1 << 32) - MARKER // 2,
+    HUGE_SIZE - MARKER,
+)
+# The ranges asked for, each within a marker: across BITMAP_EDGE; across,
+# just before, and at each power of two; the last byte; a suffix; and an
+# open-ended tail.
 HUGE_RANGES: tuple[blocks.Range, ...] = (
+    (BITMAP_EDGE - 1, BITMAP_EDGE),
     ((1 << 31) - 100, (1 << 31) + 99),
     ((1 << 31) - 1, 1 << 31),
     (1 << 31, 1 << 31),
@@ -4427,6 +4538,7 @@ RUN = {
     "digest-relay": digest_relay,
     "digest-range-first": digest_range_first,
     "stale-origin-digest": stale_origin_digest,
+    "stale-digest-direct": stale_digest_direct,
     "past-end": past_end,
     "empty": empty,
     "huge-ranges": huge_ranges,

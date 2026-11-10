@@ -235,8 +235,8 @@ twin of its row in the WLCG pass.
 [`framework/control.py`](../framework/control.py), which runs on the host
 beside the tests, and restarts, stops, starts, pauses, and kills services
 for them, and reads what their containers have sent, since the dev
-container can't reach Docker. Without it, the
-scenarios that need it skip ([README](../README.md#service-control)).
+container can't reach Docker. Without it, the scenarios that need it skip
+([README](../README.md#service-control)).
 
 ### Origins' bytes
 
@@ -255,15 +255,17 @@ one container holds every server.
 nothing for 20 minutes, or runs for 90, records it as `aborted` (or `setup`,
 if it recorded no case), and goes on to the next, but only if every Pelican
 server still answers within three minutes. Otherwise the run stops, since
-every later pass would stall too.
+every later pass would stall too. It also stops a run that has gone on for
+six hours, abandoning the pass under way.
 
 ### Smoke tests
 
 What `smoke.sh` runs: every suite, in each of its shapes, each from a clean
 start. It runs them in copies of the checkout, as many at once as `-j` says,
 and leaves the checkout alone ([CI and results](ci.md)). With fewer shapes
-than copies, it shares each shape's suites out among them (`test.py --part`), each running the shape, and puts their results together as one
-run's.
+than copies, it shares each shape's suites out among them
+(`test.py --part`), each running the shape, and puts their results together
+as one run's.
 
 ### Smoke matrix
 
@@ -278,7 +280,7 @@ offer; `framework/matrix.py check` lists the pairs that none makes
 ### Functional check
 
 What every test is: whether Pelican does what it should, moving a few
-objects, the largest about 16 MiB. The tests are no stress test or
+objects, nearly all of 16 MiB or less. The tests are no stress test or
 benchmark.
 
 ### Every combination

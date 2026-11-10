@@ -981,21 +981,24 @@ def outage_clients(test: Test, rel: str, backend: str) -> tuple[str, str]:
     """Check that both Pelican clients fail to get rel while backend is stopped.
 
     `pelican object get` and stash_plugin each ask the director, which
-    sends them where it would, for an object that no cache holds. Each
+    sends them where it would, for an object that no cache holds, and
+    then, where the namespace takes direct clients, for an origin. Each
     must fail, leaving no file, but not as not found (error 5011, which
     Pelican's error codes call not retryable): the object exists, and
     only the storage behind its origin is away.
     """
     problems: list[str] = []
-    for client, fetch in (("pelican", get_pelican), ("plugin", get_plugin)):
-        got = fetch(test, f"outage-{client}", test.pelican_url(rel))
-        passed = got.status == 0 if client == "pelican" else transfers.plugin_passed(got.said)
-        if passed:
-            problems.append(f"{client}: succeeded with {backend} stopped")
-        elif re.search(r"\b5011\b|FileNotFound|not found", got.said, re.I):
-            problems.append(f"{client}: failed as not found: {last_line(got.said)}")
-        if os.path.exists(os.path.join(got.directory, "object")):
-            problems.append(f"{client}: left a file with {backend} stopped")
+    for direct in (False, True) if test.direct else (False,):
+        for client, fetch in (("pelican", get_pelican), ("plugin", get_plugin)):
+            who = f"{client}, direct" if direct else client
+            got = fetch(test, f"outage-{who.replace(', ', '-')}", test.pelican_url(rel), direct)
+            passed = got.status == 0 if client == "pelican" else transfers.plugin_passed(got.said)
+            if passed:
+                problems.append(f"{who}: succeeded with {backend} stopped")
+            elif re.search(r"\b5011\b|FileNotFound|not found", got.said, re.I):
+                problems.append(f"{who}: failed as not found: {last_line(got.said)}")
+            if os.path.exists(os.path.join(got.directory, "object")):
+                problems.append(f"{who}: left a file with {backend} stopped")
     return outcome(problems, f"both failed with {backend} stopped, neither as not found")
 
 

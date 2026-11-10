@@ -164,7 +164,8 @@ class Access:
         wait = self._last_login.get(server.web_url, 0) + accounts.LOGIN_SPACING - time.time()
         if spaced and wait > 0:
             time.sleep(wait)
-        if early and time.time() % 1 > EARLY:
+        # Again, should the clock have been set back meanwhile.
+        while early and time.time() % 1 > EARLY:
             time.sleep(1.01 - time.time() % 1)
         answer = web.request("POST", server.web_url + accounts.LOGIN, headers=headers, form=fields)
         self._last_login[server.web_url] = time.time()

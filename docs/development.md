@@ -94,7 +94,10 @@ an exception in the suite, wherever it is. So a suite:
   once if a Pelican server has exited on its own;
 - runs the clients with `session.pelican_cmd()` and `session.plugin_cmd()`
   or `plugin_run()`, which kill a run that outlasts its timeout, and log
-  every run in the pass's `commands.log`.
+  every run in the pass's `commands.log`;
+- sends its own HTTP requests with
+  [`testlib.web`](../framework/testlib/web.py), which logs every exchange
+  in the pass's `http.log` ([Logs](../README.md#logs)).
 
 ### Results
 

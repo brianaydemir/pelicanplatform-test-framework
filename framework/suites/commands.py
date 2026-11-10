@@ -32,7 +32,6 @@ See docs/tests/client-commands.md.
 """
 
 import binascii
-import hashlib
 import os
 import re
 import time
@@ -42,7 +41,7 @@ from functools import partial
 from typing import Any
 from urllib.parse import urlsplit
 
-from testlib import blocks, common, credentials, stores, suite, transfers
+from testlib import common, credentials, digests, stores, suite, transfers
 from testlib.common import die, first
 from testlib.report import FAIL, PASS, SKIP
 from testlib.session import Session, json_object, json_objects, last_line, not_refused
@@ -180,13 +179,21 @@ def digest_bytes(value: str) -> bytes | None:
 
 
 def checksum_matches(kind: str, value: str, data: bytes) -> bool:
-    """Return whether a reported checksum of kind is data's."""
+    """Return whether a reported checksum of kind is data's.
+
+    Args:
+        kind: One of digests.CLIENT_ALGORITHMS.
+        value: The checksum, in hex.
+        data: The object's bytes.
+    """
     got = digest_bytes(value)
     if got is None:
         return False
-    if kind == "crc32c":
-        return int.from_bytes(got, "big") == blocks.crc32c(data)
-    return got == hashlib.md5(data, usedforsecurity=False).digest()
+    want = digests.compute(kind, data)
+    if kind in digests.BASE64:
+        return got == want
+    # A 32-bit sum may come without its leading zeros.
+    return int.from_bytes(got, "big") == int.from_bytes(want, "big")
 
 
 # How far `stat`'s ModTime may be from when the stores wrote the object,
@@ -542,10 +549,12 @@ def modified_problem(test: Test, namespace: str, info: dict[str, Any]) -> str | 
 def stat_object(test: Test, namespace: str) -> Row:
     """Check what `stat` says of an object's size, ModTime, and checksums.
 
-    The checksums are those that the origins' storage can report.
+    The checksums are those that the origins' storage can report and the
+    client knows to ask for.
     """
     data = test.trees[namespace]["b"]
-    kinds, no_digests = stores.digests(test.fed)
+    reports, no_digests = stores.digests(test.fed)
+    kinds = [kind for kind in reports if kind in digests.CLIENT_ALGORITHMS]
     args = ["object", "stat", "--json"]
     for kind in kinds:
         args += ["--checksums", kind]
