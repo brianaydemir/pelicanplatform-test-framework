@@ -70,7 +70,7 @@ SCENARIOS = {
     ),
     "share-url": (
         "`pelican object share` hands out a URL whose token reads the collection: through a"
-        " director as curl, and by both clients; with --write, the client puts with it"
+        " director as curl, and by both clients; with --write, each client puts with it"
     ),
     "director-decision": "the plugin records the director's decision when asked",
     "skipstat-failover": (
@@ -403,7 +403,7 @@ class Test(suite.Test):
         return self.creds(name, {"scitokens.use": self.token})
 
     def aged(self, cache: common.Cache, rel: str) -> bool:
-        """Return whether a V2 cache says it has held rel a second or more."""
+        """Return whether a cache says it has held rel a second or more."""
         return (self.age(cache, rel) or 0) >= 1
 
 
@@ -496,8 +496,8 @@ def served_by(ad: Ad) -> str:
 def cache_hit_problems(fed: common.Federation, ad: Ad, cold_host: str | None) -> list[str]:
     """Return what is wrong with an ad's DataAge and CacheHit.
 
-    Those of its last attempt, which a V2 cache's Age gives, must say: on
-    a cold read (cold_host is None), no hit; on a warm one at the cache
+    Those of its last attempt, which a cache's Age gives, must say: on a
+    cold read (cold_host is None), no hit; on a warm one at the cache
     that the cold read filled (cold_host), a hit, with an age. A warm read
     sent to another cache is cold there, and says nothing.
     """
@@ -505,7 +505,7 @@ def cache_hit_problems(fed: common.Federation, ad: Ad, cold_host: str | None) ->
     data_ad = developer_data(ad)
     n = last_attempt(ad)
     host = served_by(ad)
-    if not any(c.kind == "v2" and c.svc == host for c in fed.caches):
+    if not any(c.svc == host for c in fed.caches):
         return []
     hit, age = data_ad.get_ci(f"CacheHit{n}"), data_ad.get_ci(f"DataAge{n}")
     if cold_host is None and hit is True:
@@ -590,14 +590,15 @@ def failed_ad_row(case: str, fetch: Fetched, want_type: str, want_code: int | No
 
 
 def wait_aged(test: Test, cold_hosts: Mapping[str, str]) -> list[str]:
-    """Wait until each V2 cache that served a cold read has held it a second.
+    """Wait until each cache that served a cold read has held it a second.
 
-    A V2 cache says it holds an object, with Age, a moment after serving
-    it whole; a read before then is cold there again. The plugin counts a
+    A cache says it holds an object, with Age, a moment after serving it
+    whole; a read before then is cold there again. The plugin counts a
     hit only once Age is above 0 (cmd/plugin.go), so wait for a second
     of it.
 
     Args:
+        test: The run.
         cold_hosts: The host that served each object's cold read, by the
             object's name.
 
@@ -608,7 +609,7 @@ def wait_aged(test: Test, cold_hosts: Mapping[str, str]) -> list[str]:
     problems: list[str] = []
     for name, host in cold_hosts.items():
         for cache in test.fed.federated_caches:
-            if cache.kind != "v2" or director.host(cache.url) != host:
+            if director.host(cache.url) != host:
                 continue
             if not common.wait_for(partial(test.aged, cache, test.rel(name)), suite.HELD_WAIT, interval=1):
                 problems.append(
@@ -618,17 +619,97 @@ def wait_aged(test: Test, cold_hosts: Mapping[str, str]) -> list[str]:
     return problems
 
 
+def download_ads(
+    test: Test, name: str, urls: Sequence[str], objects: Mapping[str, bytes], env: Mapping[str, str]
+) -> tuple[list[str], dict[str, Ad]] | str:
+    """Have stash_plugin download a batch, and check its ads.
+
+    Each of urls must have one ad (ads_by_url()), which must agree with
+    its transfer (ad_problems()) and report the object's digests
+    (checksum_problems()); the file must be the object; and the exit
+    status must agree with the ads (exit_problem()).
+
+    Args:
+        test: The run.
+        name: The name of the plugin's directory.
+        urls: Each object's URL, in objects' order.
+        objects: Each object's content, by name.
+        env: The plugin's environment.
+
+    Returns:
+        The problems, and the ad of each download that succeeded, by its
+        object's name; or, if the ads cannot be read, why.
+    """
+    fetch = test.plugin(name, urls, env)
+    try:
+        ads = parse_ads(fetch.said)
+    except ValueError as e:
+        return f"unreadable ads ({e}): {last_line(fetch.said)}"
+    by_url, problems = ads_by_url(ads, urls)
+    succeeded: dict[str, Ad] = {}
+    for url, (obj, data) in zip(urls, objects.items()):
+        ad = by_url.get(url)
+        if ad is None:
+            continue
+        problems += ad_problems(ad, url, data)
+        if ad.get_ci("TransferSuccess") is True:
+            succeeded[obj] = ad
+            problems += checksum_problems(test.fed, ad, data, served_by(ad))
+            if not common.file_holds(os.path.join(fetch.directory, obj), data):
+                problems.append(f"{obj}: the file is not the object")
+    why = exit_problem(fetch, ads)
+    if why:
+        problems.append(why)
+    return problems, succeeded
+
+
+def routed_ads(
+    test: Test, case: str, objects: Mapping[str, bytes], env: Mapping[str, str], query: str, servers: str
+) -> CaseRow:
+    """Return case's row: the ads of a batch that the client routes itself.
+
+    Each download must be served by one of the case's servers, and one
+    served by an origin may not count as a cache hit.
+
+    Args:
+        test: The run.
+        case: The row's case, and what the plugin's directory is named
+            after.
+        objects: Each object's content, by name.
+        env: The plugin's environment.
+        query: Each URL's query, if any.
+        servers: Which servers must serve: `origin`, or the first
+            federated cache's service.
+    """
+    urls = [test.pelican_url(test.rel(name), query) for name in objects]
+    found = download_ads(test, f"ads-{case}", urls, objects, env)
+    if isinstance(found, str):
+        return (case, FAIL, found)
+    problems, ads = found
+    origins = {director.host(o.url) for o in test.fed.origins}
+    hosts = origins if servers == "origin" else {servers}
+    for name, ad in ads.items():
+        host = served_by(ad)
+        if host not in hosts:
+            problems.append(f"{name}: served by {host!r}, not {sorted(hosts)}")
+        hit = developer_data(ad).get_ci(f"CacheHit{last_attempt(ad)}")
+        if host in origins and hit is True:
+            problems.append(f"{name}: served by {host}, an origin, but CacheHit is true")
+    served = sorted({served_by(ad) for ad in ads.values()})
+    return (case, *outcome(problems, f"{len(ads)} ads agree with the transfers ({served})"))
+
+
 def plugin_ads(test: Test) -> list[CaseRow]:
     """Check that stash_plugin's result ads agree with its transfers.
 
     The ads (cmd/plugin.go), which HTCondor reads, are those of a batch of
-    two objects through a cache, cold and then warm; of an object that
-    does not exist; of a refused download; of a batch with one of each;
-    and, where /protected-a takes writes, of an upload of two files, and
-    of one refused.
+    two objects by the director's choice, cold and then warm; of the same
+    batch from an origin (?directread), and from the first federated
+    cache, named (Client.PreferredCaches); of an object that does not
+    exist; of a refused download; of a batch with one of each; and, where
+    /protected-a takes writes, of an upload of two files, and of one
+    refused.
     """
-    if not test.fed.federated_caches:
-        return [("", SKIP, "this shape has no cache for a download to go through")]
     objects = {name: os.urandom(OBJECT_SIZE) for name in ("ads-a", "ads-b")}
     for name, data in objects.items():
         test.place(name, data)
@@ -638,35 +719,30 @@ def plugin_ads(test: Test) -> list[CaseRow]:
     rows: list[CaseRow] = []
     cold_hosts: dict[str, str] = {}
     for case in ("cold", "warm"):
-        problems: list[str] = wait_aged(test, cold_hosts) if case == "warm" else []
-        fetch = test.plugin(f"ads-{case}", urls, env)
-        try:
-            ads = parse_ads(fetch.said)
-        except ValueError as e:
-            rows.append((case, FAIL, f"unreadable ads ({e}): {last_line(fetch.said)}"))
+        waited = wait_aged(test, cold_hosts) if case == "warm" else []
+        found = download_ads(test, f"ads-{case}", urls, objects, env)
+        if isinstance(found, str):
+            rows.append((case, FAIL, found))
             continue
-        by_url, amiss = ads_by_url(ads, urls)
-        problems += amiss
-        for url, name in zip(urls, names):
-            ad = by_url.get(url)
-            if ad is None:
-                continue
-            data = objects[name]
-            problems += ad_problems(ad, url, data)
-            if ad.get_ci("TransferSuccess") is True:
-                problems += checksum_problems(test.fed, ad, data, served_by(ad))
-                problems += cache_hit_problems(
-                    test.fed, ad, cold_hosts.get(name) if case == "warm" else None
-                )
-                if case == "cold":
-                    cold_hosts[name] = served_by(ad)
-                if not common.file_holds(os.path.join(fetch.directory, name), data):
-                    problems.append(f"{name}: the file is not the object")
-        why = exit_problem(fetch, ads)
-        if why:
-            problems.append(why)
-        served = sorted({served_by(ad) for ad in ads if ad.get_ci("TransferSuccess") is True})
+        problems, ads = found
+        problems = waited + problems
+        for name, ad in ads.items():
+            problems += cache_hit_problems(test.fed, ad, cold_hosts.get(name) if case == "warm" else None)
+            if case == "cold":
+                cold_hosts[name] = served_by(ad)
+        served = sorted({served_by(ad) for ad in ads.values()})
         rows.append((case, *outcome(problems, f"{len(ads)} ads agree with the transfers ({served})")))
+
+    if test.direct:
+        rows.append(routed_ads(test, "direct", objects, env, "directread", "origin"))
+    else:
+        rows.append(("direct", SKIP, "/protected-a takes no direct reads"))
+    if test.fed.federated_caches:
+        cache = test.fed.federated_caches[0]
+        named_env = {**env, "PELICAN_CLIENT_PREFERREDCACHES": cache.url}
+        rows.append(routed_ads(test, "named", objects, named_env, "", director.host(cache.url)))
+    else:
+        rows.append(("named", SKIP, "this shape has no federated cache to name"))
 
     rows.append(
         failed_ad_row(
@@ -1453,6 +1529,7 @@ def share_once(
         issuer.client_env(test.session.env, store),
         test.tmp,
         approver,
+        log=test.session.log_command,
     )
 
 
@@ -1465,14 +1542,15 @@ def share_url(test: Test) -> list[CaseRow]:
     be the collection's with `?authz=<token>`, whose scope is the
     collection's read alone, and with --write its create (`url`,
     `url-write`); a GET of the object in it at a director's object
-    route, with the token in the query as curl sends it, must redirect
+    route, and at its origin route where /protected-a takes direct
+    reads, with the token in the query as curl sends it, must redirect
     with `authz` in Location and no token in Link, and the redirect
     followed must serve the object (`curl`); and `pelican object get` of
     the URL, with no other token, must serve it too (`get`), as must
     stash_plugin, with its credentials directory empty, as a job given
     the URL would run it (`plugin`). With the --write URL's token in its
-    query, `pelican object put` of a new object in the collection must
-    land it (`put`).
+    query, each client must land a new object in the collection
+    (share_put()).
     """
     if not test.fed.embedded_issuer or test.fed.external_issuer:
         return [("", SKIP, "the share's token comes from the origins' embedded issuer")]
@@ -1522,22 +1600,25 @@ def share_url(test: Test) -> list[CaseRow]:
     token = tokens["url"]
     path = test.path(test.rel(name))
     problems = []
+    routes = ["object", "origin"] if test.direct else ["object"]
     for director_url in test.fed.directors:
-        target = f"{director_url}/api/v1.0/director/object{path}?authz={quote(token, safe='')}"
-        answer = web.request("GET", target)
-        host = director.host(director_url)
-        if answer.status != 307:
-            problems.append(f"{host}: {answer.describe()}, not 307")
-            continue
-        location = answer.header("Location")
-        if f"authz={token}" not in location and f"authz={quote(token, safe='')}" not in location:
-            problems.append(f"{host}: Location carries no authz: {location[:80]}")
-        if token in answer.header("Link"):
-            problems.append(f"{host}: Link carries the token")
-        served = web.request("GET", location)
-        if served.status != 200 or served.body != data:
-            problems.append(f"{host}: following Location got {served.describe()}")
-    rows.append(("curl", *outcome(problems, f"{len(test.fed.directors)} director(s)")))
+        for route in routes:
+            target = f"{director_url}/api/v1.0/director/{route}{path}?authz={quote(token, safe='')}"
+            answer = web.request("GET", target)
+            what = f"{director.host(director_url)} ({route})"
+            if answer.status != 307:
+                problems.append(f"{what}: {answer.describe()}, not 307")
+                continue
+            location = answer.header("Location")
+            if f"authz={token}" not in location and f"authz={quote(token, safe='')}" not in location:
+                problems.append(f"{what}: Location carries no authz: {location[:80]}")
+            if token in answer.header("Link"):
+                problems.append(f"{what}: Link carries the token")
+            served = web.request("GET", location)
+            if served.status != 200 or served.body != data:
+                problems.append(f"{what}: following Location got {served.describe()}")
+    note = f"{len(test.fed.directors)} director(s), by the {' and '.join(routes)} route(s)"
+    rows.append(("curl", *outcome(problems, note)))
     fetch = test.pelican(
         "share-get", ["object", "get", f"{test.pelican_url(test.rel(name))}?authz={token}", "object"]
     )
@@ -1557,31 +1638,63 @@ def share_url(test: Test) -> list[CaseRow]:
         rows.append(("plugin", FAIL, "the file is not the object"))
     else:
         rows.append(("plugin", PASS, "stash_plugin read the token from the URL"))
-    rows.append(("put", *share_put(test, tokens.get("url-write"))))
+    rows += share_put(test, tokens.get("url-write"))
     return rows
 
 
-def share_put(test: Test, token: str | None) -> tuple[str, str]:
-    """Check `pelican object put` to a URL that carries a --write share's token.
+def share_put(test: Test, token: str | None) -> list[CaseRow]:
+    """Check each client's put to a URL with a --write share's token.
 
     With no other token, a new object in the shared collection, put to
-    its URL with ?authz=<token>, must land in an origin's store.
+    its URL with ?authz=<token>, must land in an origin's store: by
+    `pelican object put` (`put`); by stash_plugin, with its credentials
+    directory empty (`plugin-put`); and by a PUT of its bare path at
+    each director, followed as curl follows it (`curl-put`).
     """
+    cases = ("put", "plugin-put", "curl-put")
     if token is None:
-        return SKIP, "no --write share's token to put with"
+        return [(case, SKIP, "no --write share's token to put with") for case in cases]
     if not test.writes:
-        return SKIP, "/protected-a takes no writes"
-    rel = test.rel("share/put")
+        return [(case, SKIP, "/protected-a takes no writes") for case in cases]
+    rows: list[CaseRow] = []
     data = os.urandom(OBJECT_SIZE)
     source = os.path.join(test.directory("share-put-source"), "put")
     with open(source, "wb") as f:
         f.write(data)
+
+    rel = test.rel("share/put")
     put = test.pelican("share-put", ["object", "put", source, f"{test.pelican_url(rel)}?authz={token}"])
     if put.status != 0:
-        return FAIL, f"exit {put.status}: {last_line(put.said)}"
-    if not test.somewhere(rel, data):
-        return FAIL, "succeeded, but no origin holds the object"
-    return PASS, "the client read the --write share's token from the URL"
+        rows.append(("put", FAIL, f"exit {put.status}: {last_line(put.said)}"))
+    elif not test.somewhere(rel, data):
+        rows.append(("put", FAIL, "succeeded, but no origin holds the object"))
+    else:
+        rows.append(("put", PASS, "the client read the --write share's token from the URL"))
+
+    rel = test.rel("share/plugin-put")
+    shared = f"{test.pelican_url(rel)}?authz={token}"
+    env = test.creds_env(test.creds("share-plugin-put", {}))
+    put = test.plugin("share-plugin-put", [shared], env, upload=True, sources=[source])
+    if not transfers.plugin_passed(put.said):
+        why = transfers.plugin_error(put.said) or last_line(put.said)
+        rows.append(("plugin-put", FAIL, f"exit {put.status}: {why}"))
+    elif not test.somewhere(rel, data):
+        rows.append(("plugin-put", FAIL, "succeeded, but no origin holds the object"))
+    else:
+        rows.append(("plugin-put", PASS, "stash_plugin read the --write share's token from the URL"))
+
+    problems: list[str] = []
+    for n, director_url in enumerate(test.fed.directors):
+        rel = test.rel(f"share/curl-put-{n}")
+        target = f"{director_url}{test.path(rel)}?authz={quote(token, safe='')}"
+        _, answer = web.follow("PUT", target, upload=data)[-1]
+        host = director.host(director_url)
+        if not answer.ok:
+            problems.append(f"{host}: the PUT, followed, got {answer.describe()}")
+        elif not test.somewhere(rel, data):
+            problems.append(f"{host}: the PUT succeeded, but no origin holds the object")
+    rows.append(("curl-put", *outcome(problems, f"{len(test.fed.directors)} director(s)")))
+    return rows
 
 
 # --------------------------------------------------------------------------

@@ -165,6 +165,10 @@ class Test(suite.Test):
         """
         return Api(web_url, self.session.web_token(web_url))
 
+    def answers(self, cache: common.Cache, rel: str) -> bool:
+        """Return whether cache answers a HEAD of rel on its data port."""
+        return self.ask("HEAD", cache.url, rel).status is not None
+
     def named_by(self, route: str, path: str, host: str) -> list[str]:
         """Return the directors that would send a GET of path to host.
 
@@ -206,12 +210,11 @@ class Test(suite.Test):
 def cache_restart(test: Test) -> list[CaseRow]:
     """Check that each cache, restarted, serves what it held from its store.
 
-    Each cache holds HELD_OBJECTS objects read whole (a V2 cache says so
-    with Age). Restarted, and once every director names it again, it
-    must serve each from its store, intact, with Age for a V2 cache, and
-    the origins' containers must have sent less than an object meanwhile,
-    by the kernel's count (control.sent_bytes()). Age is checked at a V2
-    cache alone; at an XRootD cache, the origins' count alone tells.
+    Each cache holds HELD_OBJECTS objects read whole. Restarted, and once
+    every director names it again, it must serve each from its store,
+    intact, with Age, and the origins' containers must have sent less
+    than an object meanwhile, by the kernel's count
+    (control.sent_bytes()).
     """
     rows: list[CaseRow] = []
     for cache in test.fed.caches:
@@ -258,13 +261,19 @@ def cache_restart(test: Test) -> list[CaseRow]:
                 )
             )
             continue
+        # A server's web port, which control.restart() waits for, answers
+        # before an XRootD cache's data port does.
+        answers = partial(test.answers, cache, test.rel(names[0]))
+        if not common.wait_for(answers, NAMED_WAIT, interval=1):
+            rows.append((cache.svc, FAIL, f"{NAMED_WAIT}s after the restart, it did not answer a HEAD"))
+            continue
         ages: list[int] = []
         for name, data in objects.items():
             answer = test.ask("GET", cache.url, test.rel(name))
             why = web.served(answer, data)
             if why:
                 problems.append(f"after the restart, a GET of {name} got {why}")
-            elif cache.kind == "v2":
+            else:
                 age = web.age(answer)
                 if age is None:
                     problems.append(f"after the restart, {name} came with no Age, so not from its store")
@@ -636,13 +645,8 @@ def ad_expiry(test: Test) -> list[CaseRow]:
             )
             continue
         try:
-            control.kill(svc)
-        except control.ControlError as e:
-            rows.append((svc, FAIL, str(e)))
-            continue
-        dropped = test.wait_unnamed(route, path, host, AD_LIFETIME + EXPIRY_SLACK)
-        try:
-            control.start(svc)
+            with control.down(svc):
+                dropped = test.wait_unnamed(route, path, host, AD_LIFETIME + EXPIRY_SLACK)
         except control.ControlError as e:
             rows.append((svc, FAIL, str(e)))
             continue
@@ -1111,8 +1115,13 @@ def failover_rows(
     must name it again.
 
     Args:
-        naming: The route by which the directors name dead for probe,
-            an object of the run's: `object` or `origin`.
+        test: The run.
+        dead: The server.
+        naming: The route by which the directors name dead for probe:
+            `object` or `origin`.
+        probe: An object of the run's.
+        prefix: What the clients' objects are named after, first.
+        routes: The routes by which the clients get.
     """
     host = director.host(dead.url)
     path = test.path(test.rel(probe))
@@ -1289,14 +1298,12 @@ def peer_director(test: Test) -> list[CaseRow]:
     if listed_directors(first_url) != {me, peer}:
         return [("", FAIL, f"before the peer was killed, {me} lists {listed_directors(first_url)}")]
     try:
-        control.kill(peer)
-    except control.ControlError as e:
-        return [("", FAIL, str(e))]
-    started = time.monotonic()
-    dropped = common.wait_for(lambda: listed_directors(first_url) == {me}, AD_LIFETIME + EXPIRY_SLACK, 5)
-    took_drop = time.monotonic() - started
-    try:
-        control.start(peer)
+        with control.down(peer):
+            started = time.monotonic()
+            dropped = common.wait_for(
+                lambda: listed_directors(first_url) == {me}, AD_LIFETIME + EXPIRY_SLACK, 5
+            )
+            took_drop = time.monotonic() - started
     except control.ControlError as e:
         return [("", FAIL, str(e))]
     started = time.monotonic()
@@ -1370,7 +1377,7 @@ def http_hops(test: Test, method: str, rel: str, data: bytes | None = None) -> w
         The last answer.
     """
     answer = web.request(method, test.url(test.fed.director_url, rel), token=test.token, upload=data)
-    for _ in range(transfers.HTTP_HOPS):
+    for _ in range(web.HOPS):
         if answer.status not in (301, 302, 307, 308) or not answer.header("Location"):
             break
         answer = web.request(method, answer.header("Location"), token=test.token, upload=data)

@@ -112,6 +112,10 @@ RECONCILE_CASES = ("reconcile-cancelled", "reconcile-rejected", "reconcile-obser
 # its record of objects (Origin.Metadata.TrackAccess, which the metadata
 # presets turn on).
 QUEUE = "/api/v1.0/origin_ui/metadata_queue"
+# How many pages of the queue, 1000 rows each, Test.queue_rows() reads at
+# most: far more than the tests queue, so that an origin that ignores
+# `offset` cannot keep it reading.
+QUEUE_PAGES = 100
 STATUS_ROUTE = "/api/v1.0/origin_ui/metadata_publish/"
 OBJECTS = "/api/v1.0/origin_ui/object_metadata"
 
@@ -232,10 +236,11 @@ class Test(suite.Test):
         page at a time.
 
         Raises:
-            suite.SetupError: The origin won't list them.
+            suite.SetupError: The origin won't list them, or lists more
+                pages than a queue of the tests' making could fill.
         """
         rows: list[dict[str, Any]] = []
-        while True:
+        for _ in range(QUEUE_PAGES):
             query = urlencode({"namespace": NAMESPACE_PATH, "limit": 1000, "offset": len(rows)})
             answer = self.api("GET", f"{QUEUE}?{query}", self.admin())
             if answer.status != 200:
@@ -244,6 +249,7 @@ class Test(suite.Test):
             rows += page
             if len(page) < 1000:
                 return rows
+        raise suite.SetupError(f"the publish queue lists over {QUEUE_PAGES} pages of 1000 rows")
 
     def rows_for(self, path: str) -> list[dict[str, Any]]:
         """Return queue_rows() for object path."""
@@ -547,6 +553,7 @@ def fault(test: Test, scenario: str, name: str, eventual_status: str) -> Row:
     mode it must succeed, with X-Pelican-Metadata-Status eventual_status.
 
     Args:
+        test: The run.
         scenario: `retry`, for a delivery that fails once, or `reject`.
         name: The object's name.
         eventual_status: The X-Pelican-Metadata-Status that eventual
@@ -1051,6 +1058,7 @@ def refusals(test: Test, routes: Sequence[tuple[str, str]]) -> list[str]:
     With no token, each must get 401, and as USER, an ordinary user, 403.
 
     Args:
+        test: The run.
         routes: Each a method, and a route of the origin's web API.
     """
     problems: list[str] = []
@@ -1128,6 +1136,7 @@ def objects_api(test: Test, path: str, size: int) -> Row:
     size, and its history a `commit`.
 
     Args:
+        test: The run.
         path: A tracked object's path (see tracked_object()).
         size: Its size, in bytes.
     """
@@ -1170,6 +1179,7 @@ def objects_cli(test: Test, path: str) -> Row:
     print what the route it asks answers the admin.
 
     Args:
+        test: The run.
         path: A tracked object's path (see tracked_object()).
     """
     if test.session.pelican_server is None:
@@ -1361,6 +1371,7 @@ def queue_admin(test: Test, unrestarted: str | None) -> dict[str, Row]:
     event's next delivery is seconds away, and the retry row skips.
 
     Args:
+        test: The run.
         unrestarted: Why the first origin was not restarted so, or None
             if it was.
     """
@@ -1412,6 +1423,7 @@ def past_cap(test: Test, name: str, limit: str, state: str) -> Row:
     limit.
 
     Args:
+        test: The run.
         name: The object's name.
         limit: The cap reached: `rows` or `bytes`.
         state: How the queue is at its cap, for the note.
@@ -1440,6 +1452,7 @@ def cap_rows(test: Test, cap: int, filled: list[str]) -> Row:
     (past_cap()).
 
     Args:
+        test: The run.
         cap: The cap on the namespace's pending rows.
         filled: Gets the objects' names.
     """
@@ -1471,6 +1484,7 @@ def cap_bytes(test: Test, filled: list[str], blobs: list[str]) -> Row:
     must be refused (past_cap()).
 
     Args:
+        test: The run.
         filled: The objects whose rows cap_rows() filled.
         blobs: Gets the name of the upload with the blob.
     """

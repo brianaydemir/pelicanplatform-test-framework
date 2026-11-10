@@ -19,9 +19,20 @@ A command must be refused, and change nothing, where its
 gives it writes. Failures are judged by what the command prints, not by its
 exit status.
 
+`copy-download`, `sync-download`, and `get-recursive` also read by each
+[route](../glossary.md#route) that the client can name, each time a
+collection that nothing has read: with `--direct`, where `/protected-a`
+takes direct reads, no federated cache may then hold its objects, by its
+`Age`; with `--cache` naming the first federated cache, that cache alone
+must.
+
 - `ls`: `ls -l --json` must list names, sizes, and collections
   (`ls-protected-a`, `ls-public`). `ls -r` must list every object once, by
   its path (`ls-recursive`).
+- `--collections-url`: Each origin with a store of its own holds one object
+  that the others lack. `ls` and `du`, given an origin's URL, must report
+  that origin's object alone, and given a URL where nothing listens, must
+  fail (`ls-collections-url`, `du-collections-url`).
 - `stat`: `stat --json --checksums` must report the size, the modification
   time (within a minute), and each digest that the storage reports and the
   client knows, of `crc32c`, `crc32`, `md5`, and `sha` (`stat-protected-a`,

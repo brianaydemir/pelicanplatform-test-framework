@@ -1326,7 +1326,9 @@ def client_scenario(test: Test) -> tuple[str, str]:
     def get(name: str) -> tuple[issuer.ClientRun, bool]:
         dest = os.path.join(test.tmp, f"client-{name}")
         args = ["object", "get", test.pelican_url(rel), dest]
-        done = issuer.run_approving(session.pelican, args, env, session.tmp, approve_as_member)
+        done = issuer.run_approving(
+            session.pelican, args, env, session.tmp, approve_as_member, log=session.log_command
+        )
         problems.extend(done.problems)
         right = done.status == 0 and common.file_holds(dest, test.data[rel])
         if not right:

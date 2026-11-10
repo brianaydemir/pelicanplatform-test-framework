@@ -135,12 +135,14 @@ needs a [control helper](../glossary.md#service-control-helper) and a
   storage directories by the origin's paths. Skips without `pelican-server`,
   and where the first origin is not origin-0.
 
-  - `objects`: Five objects are written, and the next backup kept. A sixth,
-    written after it, must be served.
+  - `objects`: Objects are written, most of them small enough to be kept in
+    the catalog, and the next backup kept, which must be of more than one of
+    its 64 KiB sealed chunks. One more object, written after it, must be
+    served.
   - `cli`: `metadata-restore` must restore that backup, given the origin's
     issuer keys.
   - `export`: `export --verify` must write out every object the backup held,
-    byte for byte, and not the sixth.
+    byte for byte, and not the late one.
   - `served`: Started on the restored catalog, the origin must serve the
-    five objects and answer 404 for the sixth. If it does not, the original
+    objects and answer 404 for the late one. If it does not, the original
     catalog is put back.

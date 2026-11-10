@@ -730,6 +730,7 @@ def admin_authz(test: Test, results: common.Results) -> None:
     route, as where Cache.EnableChaosAPI is off.
 
     Args:
+        test: The run.
         results: Where to record a row per cache and route.
     """
     nowhere = quote(test.object_url(test.rel("admin-authz", "nowhere")), safe="")

@@ -41,7 +41,19 @@ from dataclasses import dataclass
 from functools import partial
 from urllib.parse import quote
 
-from testlib import common, control, credentials, jwt, registry, stores, suite, transfers, web, webdav
+from testlib import (
+    common,
+    control,
+    credentials,
+    director,
+    jwt,
+    registry,
+    stores,
+    suite,
+    transfers,
+    web,
+    webdav,
+)
 from testlib.common import Findings, die, first, outcome, warn
 from testlib.recorder import index
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
@@ -241,6 +253,9 @@ class Test(suite.Test):
         """Return what is wrong with what origin holds at rel in namespace.
 
         Args:
+            origin: The origin.
+            namespace: The namespace.
+            rel: The object.
             want: What origin should hold there; None for nothing.
             what: What the answer calls the object.
 
@@ -1169,72 +1184,97 @@ def unregister(test: Test, prefix: str) -> str | None:
     return f"DELETE of {prefix}'s registration got {answer.describe()}"
 
 
-def nested_get(test: Test, origin: common.Origin, name: str, token: str | None) -> web.Response:
-    """GET object name of the nested export's collection at origin, in /public."""
-    return web.request("GET", stores.url(origin, "public", test.rel(name)), token=token)
+def nested_gets(test: Test, name: str, token: str | None) -> list[tuple[str, web.Response]]:
+    """GET object name of the nested export's collection everywhere.
+
+    A plain HTTP client asks each origin, each federated cache, and each
+    director, for the object's bare path, following its redirect as curl
+    does (web.follow()).
+
+    Returns:
+        Who was asked, and the answer, or the last of those followed.
+    """
+    fed = test.fed
+    rel = test.rel(name)
+    answers = [(o.svc, web.request("GET", stores.url(o, "public", rel), token=token)) for o in fed.origins]
+    answers += [
+        (c.svc, web.request("GET", f"{c.url}/public/{rel}", token=token)) for c in fed.federated_caches
+    ]
+    for url in fed.directors:
+        hops = web.follow("GET", f"{url}/public/{rel}", token)
+        answers.append((f"through {director.host(url)}", hops[-1][1]))
+    return answers
+
+
+def nested_everywhere(test: Test) -> str:
+    """Return how a note names who nested_gets() asks."""
+    fed = test.fed
+    return (
+        f"at {len(fed.origins)} origin(s) and {len(fed.federated_caches)} cache(s), and through"
+        f" {len(fed.directors)} director(s)"
+    )
 
 
 def nested_served(test: Test, prefix: str, data: Mapping[str, bytes], _token: str, _wrong: str) -> Row:
-    """Check that each origin serves OPEN, beside the nested export, to anyone.
+    """Check that OPEN, beside the nested export, is served to anyone.
 
-    /public is as it was, so a GET with no token must get the object.
+    /public is as it was, so a GET with no token must get the object,
+    wherever it is asked (nested_gets()).
     """
     found = Findings()
-    for origin in test.fed.origins:
-        answer = nested_get(test, origin, OPEN, None)
+    for who, answer in nested_gets(test, OPEN, None):
         if answer.status != 200:
-            found.problems.append(f"{origin.svc}: a GET of {OPEN} with no token got {answer.describe()}")
+            found.problems.append(f"{who}: a GET of {OPEN} with no token got {answer.describe()}")
         elif answer.body != data[OPEN]:
-            found.problems.append(f"{origin.svc}: a GET of {OPEN} with no token got other bytes")
-    return found.row(f"/public beside {prefix}, at {len(test.fed.origins)} origin(s)")
+            found.problems.append(f"{who}: a GET of {OPEN} with no token got other bytes")
+    return found.row(f"/public beside {prefix}, {nested_everywhere(test)}")
 
 
 def nested_with_token(test: Test, prefix: str, data: Mapping[str, bytes], token: str, _wrong: str) -> Row:
-    """Check that each origin serves the nested export's object to its token.
+    """Check that the nested export's object is served to its token.
 
     A GET of NESTED/obj with a read token for the export, from its
-    issuer, must get the object.
+    issuer, must get the object, wherever it is asked (nested_gets()).
     """
     found = Findings()
-    for origin in test.fed.origins:
-        answer = nested_get(test, origin, f"{NESTED}/obj", token)
+    for who, answer in nested_gets(test, f"{NESTED}/obj", token):
         if answer.status != 200:
-            found.problems.append(f"{origin.svc}: a GET with the export's token got {answer.describe()}")
+            found.problems.append(f"{who}: a GET with the export's token got {answer.describe()}")
         elif answer.body != data[f"{NESTED}/obj"]:
-            found.problems.append(f"{origin.svc}: a GET with the export's token got other bytes")
-    return found.row(f"{prefix}, with its token, at {len(test.fed.origins)} origin(s)")
+            found.problems.append(f"{who}: a GET with the export's token got other bytes")
+    return found.row(f"{prefix}, with its token, {nested_everywhere(test)}")
 
 
 def nested_refused(test: Test, token: str | None, data: Mapping[str, bytes], how: str) -> Findings:
-    """Return what is wrong with each origin's answer to a GET it must refuse.
+    """Return what is wrong with the answers to a GET that must be refused.
 
     A GET of NESTED/obj with token (how says what it is) must be refused
-    (401 or 403), with none of the object's bytes.
+    (401 or 403), with none of the object's bytes, wherever it is asked
+    (nested_gets()).
     """
     found = Findings()
-    for origin in test.fed.origins:
-        answer = nested_get(test, origin, f"{NESTED}/obj", token)
+    for who, answer in nested_gets(test, f"{NESTED}/obj", token):
         if answer.status not in REFUSED:
-            found.problems.append(f"{origin.svc}: a GET {how} got {answer.describe()}, not 401 or 403")
+            found.problems.append(f"{who}: a GET {how} got {answer.describe()}, not 401 or 403")
         if data[f"{NESTED}/obj"] in answer.body:
-            found.problems.append(f"{origin.svc}: a GET {how} got the object's bytes")
+            found.problems.append(f"{who}: a GET {how} got the object's bytes")
     return found
 
 
 def nested_wrong_scope(test: Test, prefix: str, data: Mapping[str, bytes], _token: str, wrong: str) -> Row:
     """Check that a token of the export's issuer scoped elsewhere is refused."""
     found = nested_refused(test, wrong, data, "with a token for /elsewhere/ in the export")
-    return found.row(f"{prefix}, with a token scoped elsewhere, at {len(test.fed.origins)} origin(s)")
+    return found.row(f"{prefix}, with a token scoped elsewhere, {nested_everywhere(test)}")
 
 
 def nested_protected(test: Test, prefix: str, data: Mapping[str, bytes], _token: str, _wrong: str) -> Row:
-    """Check that no origin serves the nested export's object to no token.
+    """Check that the nested export's object is not served with no token.
 
     The export takes a token, though it is nested in /public, which
     anyone may read.
     """
     found = nested_refused(test, None, data, "with no token")
-    return found.row(f"{prefix}, with no token, at {len(test.fed.origins)} origin(s)")
+    return found.row(f"{prefix}, with no token, {nested_everywhere(test)}")
 
 
 def nested_by(test: Test, prefix: str, data: Mapping[str, bytes], token: str, plugin: bool) -> Row:
@@ -1315,7 +1355,7 @@ def nested_check(test: Test, prefix: str, data: Mapping[str, bytes], case: str) 
 
 
 def nested_export(test: Test) -> dict[str, Row]:
-    """Check an export nested in /public, which takes a token, at each origin.
+    """Check an export nested in /public, which takes a token.
 
     An operator may nest a protected prefix in a public one on one
     origin, as another owner may register one inside it (the `auth`
@@ -1324,11 +1364,13 @@ def nested_export(test: Test) -> dict[str, Row]:
     XRootD's too, is restarted with the shape's exports and one more,
     nested in /public, /public/<the run's collection>/secret, with
     /protected-a's capabilities (nested_files()), after the objects it
-    serves are put in /public's storage (seed_nested()). Each origin
-    must then serve /public as before (`served`), and the export's
-    object to a token for the export (`token`), but not to a token of
-    its issuer scoped elsewhere (`wrong-scope`), nor to no token
-    (`protected`). Both Pelican clients must read it with the token, by
+    serves are put in /public's storage (seed_nested()). A plain HTTP
+    client, at each origin, at each federated cache, and through each
+    director (nested_gets()), must then get /public as before
+    (`served`), and the export's object with a token for the export
+    (`token`), but not with a token of its issuer scoped elsewhere
+    (`wrong-scope`), nor with no token (`protected`). Both Pelican
+    clients must read it with the token, by
     every route (`client`, `plugin`; nested_by()), which the director
     must say takes one. Afterward the origins are restored, and the export's
     registration, which they made as they started, is removed
@@ -1373,6 +1415,7 @@ def ungated(test: Test, passthrough: bool) -> str | None:
     """Return why the origins cannot reach their backend through the gate.
 
     Args:
+        test: The run.
         passthrough: Whether they are to forward the client's token.
 
     Returns:
@@ -1578,6 +1621,7 @@ def log_problems(
     seen a GET, a PUT, and a DELETE.
 
     Args:
+        test: The run.
         entries: What the gate logged since the origins were restarted.
         static: The static token.
         passthrough: Whether the origins forward the client's token.
@@ -1628,6 +1672,7 @@ def gated_checks(test: Test, passthrough: bool, static: str, before: int) -> Row
     (gated_clients()), then judge what the gate logged (log_problems()).
 
     Args:
+        test: The run.
         passthrough: Whether the origins forward the client's token.
         static: The static token.
         before: How many lines the gate had logged before the restart.
@@ -1694,6 +1739,7 @@ def run_restarted(test: Test, rows: Sequence[str], record: Callable[[str, Row], 
     """Run the RESTARTED rows with the origins restarted, then restore them.
 
     Args:
+        test: The run.
         rows: The rows to run.
         record: Takes each row, and its result.
     """

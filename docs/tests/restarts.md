@@ -17,7 +17,7 @@ every other suite but [`keys`](keys.md). It needs a
 - `cache-restart`: Each cache, [site-local](site-local-cache.md) included,
   restarted, must serve the objects it held from its store, intact: the
   origins' containers send under an object's worth of bytes meanwhile
-  ([origins' bytes](../glossary.md#origins-bytes)), and a V2 cache sends
+  ([origins' bytes](../glossary.md#origins-bytes)), and the cache sends
   `Age`.
   Every director must name a federated cache again within 150 seconds. A row
   per cache.

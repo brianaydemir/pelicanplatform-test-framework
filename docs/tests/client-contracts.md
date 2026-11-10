@@ -12,15 +12,18 @@ the URL `pelican object share` hands out. It needs `/protected-a`. Its
 and `auth` suites. `stash_plugin stage` is not tested.
 
 - `plugin-ads`: `stash_plugin`'s result ads, one per transfer.
-  [Skips](../glossary.md#skip) without a federated cache.
 
-  - `cold`, `warm`: Of a read through a cache, each ad must report the
-    transfer's success, size, name, URL, type, and times, and
-    `DeveloperData` its attempts. At a
-    [V2 cache](../glossary.md#native-and-xrootd), `CacheHit` must be false
-    when cold, and true when warm, with a `DataAge` above 0, and
-    `ServerChecksums` must hold the object's `crc32c`. Every digest reported
-    must be the object's.
+  - `cold`, `warm`: Of a read by the director's choice, each ad must report
+    the transfer's success, size, name, URL, type, and times, and
+    `DeveloperData` its attempts. Served by a cache, `CacheHit` must be
+    false when cold, and true when warm, with a `DataAge` above 0; by a
+    [V2 cache](../glossary.md#native-and-xrootd), `ServerChecksums` must
+    hold the object's `crc32c`. Every digest reported must be the object's.
+  - `direct`: The same batch with `?directread` must be served by an origin,
+    and not count as a cache hit. [Skips](../glossary.md#skip) where
+    `/protected-a` takes no direct reads.
+  - `named`: The same batch with `Client.PreferredCaches` naming the first
+    federated cache must be served by it. Skips without a federated cache.
   - `dne`, `refused`: A failed download must report `TransferSuccess` and
     `TransferRetryable` false, and leave no file. Its error must be of type
     `Specification` (`PelicanErrorCode` 5011) for a missing object, and
@@ -114,13 +117,16 @@ and `auth` suites. `stash_plugin stage` is not tested.
 - `share-url`: `pelican object share` of a collection must print its URL
   with `?authz=<token>`, scoped to its `storage.read` alone (`url`), and
   with `--write`, its `storage.create` (`url-write`). With the `url` token
-  in the query, each director's object route must redirect with `authz` in
+  in the query, each director's object route, and its origin route where
+  `/protected-a` takes direct reads, must redirect with `authz` in
   `Location` and no token in `Link`, and lead to the object (`curl`).
   `pelican object get` of the URL must get it (`get`), and so must
   [`stash_plugin`](../glossary.md#stash_plugin), with its credentials
   directory empty, as a job handed the URL would run it (`plugin`). With the
-  `url-write` token in its query, `pelican object put` of a new object in
-  the collection must land it (`put`). Skips without the
+  `url-write` token in its query, a new object in the collection must land:
+  by `pelican object put` (`put`), by `stash_plugin` (`plugin-put`), and by
+  a PUT of its bare path at each director, followed as curl follows it
+  (`curl-put`). Skips without the
   origins' embedded issuer, and at a standalone origin. Runs in the WLCG
   [pass](../glossary.md#pass) only
   ([token profiles](README.md#token-profiles)).

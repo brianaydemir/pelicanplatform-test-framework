@@ -256,7 +256,9 @@ nothing for 20 minutes, or runs for 90, records it as `aborted` (or `setup`,
 if it recorded no case), and goes on to the next, but only if every Pelican
 server still answers within three minutes. Otherwise the run stops, since
 every later pass would stall too. It also stops a run that has gone on for
-six hours, abandoning the pass under way.
+six hours, abandoning the pass under way. Should the watchdog itself fail,
+`./fed.sh test` interrupts the tests half an hour after that, and keeps the
+run's logs as usual.
 
 ### Smoke tests
 

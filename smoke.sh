@@ -10,6 +10,8 @@
 #                           only these shapes
 #   ./smoke.sh -p origin-pstore -p topo-multi-cache
 #                           the shape of these presets (and any named)
+#   ./smoke.sh -t blocks -t 'client/plugin-*' ...
+#                           only these suites and scenarios, in each shape
 #   ./smoke.sh -j 3 ...     run three copies at once
 #   ./smoke.sh -o DIR ...   put logs and results in DIR
 #   ./smoke.sh -l           list the shapes and what each runs
@@ -20,7 +22,9 @@
 # which are picked by hand (see "The smoke matrix" in
 # docs/development.md). Some shapes also rotate every key, restart, and
 # run every suite again. The shape of -p's presets, named
-# +<preset>+<preset>..., does not.
+# +<preset>+<preset>..., does not. Given -t, each shape runs only what
+# its arguments select, as test.py's do (`./fed.sh test -l` lists them),
+# beside federation's required scenarios.
 #
 # It runs in N copies of the checkout (-j N; 1 by default), made in
 # DIR/.work/: the files that Git does not ignore, local/, and
@@ -34,10 +38,11 @@
 # names (PORT_OFFSET), so that the copies, and a federation in the
 # checkout, run side by side. Two runs of smoke.sh at once would clash.
 # Each copy takes the next shape in turn, and starts it from scratch.
-# With fewer shapes than copies, each shape's suites are shared out among
-# N/<shapes> copies, rounded up (see --part in test.py), each running
-# the shape, and their results are put together as one run's. At the
-# end, each copy is reset and removed.
+# With fewer shapes than copies, each shape's suites (those that -t
+# selects, if given) are shared out among N/<shapes> copies, rounded up
+# (see --part in test.py), but no more copies than suites, each running
+# the shape, and their results are put together as one run's. At the end,
+# each copy is reset and removed.
 #
 # Logs and results go to DIR (default: $SMOKE_LOG_DIR, or
 # smoke-logs/<timestamp>): <shape>.log, results/<shape>/*.tsv, the
@@ -45,9 +50,9 @@
 # -part<i> after <time> for a shape shared out), and, merged over every
 # shape, results.tsv, junit.xml, and summary.md. A shape that fails also
 # leaves <shape>.compose.log, every service's log when it failed. Exits
-# non-zero if any shape fails. On SIGINT or SIGTERM, it stops the copies
-# at once, and puts what they had done in DIR, failing each shape, or
-# part of one, that they had not finished.
+# non-zero if any shape fails. On SIGHUP, SIGINT, or SIGTERM, it stops
+# the copies at once, and puts what they had done in DIR, failing each
+# shape, or part of one, that they had not finished.
 
 set -u
 
@@ -107,6 +112,12 @@ shape_notes() {
 # The number of words in $@.
 count() { printf '%s\n' "$#"; }
 
+# What -t selects of the tests, one argument of test.py's per line, so
+# that a pattern reaches it as given; empty for every suite.
+selected=""
+newline='
+'
+
 log_dir=${SMOKE_LOG_DIR:-}
 jobs=1
 while [ $# -gt 0 ]; do
@@ -139,6 +150,9 @@ while [ $# -gt 0 ]; do
     -p) [ $# -ge 2 ] || die_usage "-p needs a preset name"
         custom_presets="${custom_presets}${custom_presets:+ }$2"; shift 2 ;;
     -p*) custom_presets="${custom_presets}${custom_presets:+ }${1#-p}"; shift ;;
+    -t) [ $# -ge 2 ] || die_usage "-t needs a suite, or <suite>/<scenario>"
+        selected="${selected}${selected:+${newline}}$2"; shift 2 ;;
+    -t*) selected="${selected}${selected:+${newline}}${1#-t}"; shift ;;
     --) shift; break ;;
     -*) die_usage "unknown option: $1" ;;
     *) break ;;
@@ -174,6 +188,22 @@ for cmd in docker curl uv git tar pgrep; do
 done
 docker info >/dev/null 2>&1 || die "cannot reach the Docker daemon"
 
+# Refuse a selection that test.py would, before any copy starts, and
+# count the suites it selects: a line of test.py's listing per suite
+# begins with the suite's name.
+selected_suites=""
+if [ -n "${selected}" ]; then
+  selected_suites=$(
+    set --
+    while IFS= read -r selection; do
+      set -- "$@" "${selection}"
+    done <<EOF
+${selected}
+EOF
+    uv run --quiet --frozen --no-dev python test.py --list "$@" | grep -c '^[a-z]'
+  ) || exit 2
+fi
+
 if [ -n "${custom_shape}" ]; then
   set --
   for preset in ${custom_presets}; do
@@ -193,10 +223,14 @@ work="${log_dir}/.work"
            "in each copy-<n>/ there, then remove it"
 
 # Each shape is shared out among this many copies, as parts 1 to ${parts}
-# of its suites. The items to run are each shape's parts, as
-# <shape>.<part>.
+# of its suites, but among no more than -t selects suites, since a part
+# with none would start a federation for nothing. The items to run are
+# each shape's parts, as <shape>.<part>.
 # shellcheck disable=SC2086  # one shape per word
 parts=$(( (jobs + $(count ${shapes}) - 1) / $(count ${shapes}) ))
+if [ -n "${selected_suites}" ] && [ "${parts}" -gt "${selected_suites}" ]; then
+  parts=${selected_suites}
+fi
 items=""
 for shape in ${shapes}; do
   part=1
@@ -205,6 +239,9 @@ for shape in ${shapes}; do
     part=$(( part + 1 ))
   done
 done
+# No more copies than there are items for them to run.
+# shellcheck disable=SC2086  # one item per word
+[ "${jobs}" -le "$(count ${items})" ] || jobs=$(count ${items})
 
 #---------------------------------------------------------------------------
 # The copies, ${work}/copy-<n>/
@@ -284,13 +321,38 @@ descendants() {
   done
 }
 
+# Keep what part $1 (<shape>.<part>) had done when it was cut short, as
+# for a part that failed: every service's log, and, unless it was cut
+# short before its reset, its results and the logs of its runs of the
+# tests. The tests under way were killed before fed.sh kept their
+# commands and HTTP exchanges with the run's logs (see its
+# fed_save_logs), so those are put there first.
+salvage() (
+  shape=${1%.*}
+  out="${work}/$1"
+  steps="${out}/results/${shape}/smoke.tsv"
+  read -r copy <"${out}/copy" && cd -- "${work}/copy-${copy}" || exit 0
+  ./fed.sh ps --all >"${out}/${shape}.compose.log" 2>&1
+  ./fed.sh logs --no-color --timestamps 2>&1 \
+      | framework/report.py redact >>"${out}/${shape}.compose.log"
+  grep -q "$(printf 'smoke\treset\tPASS')" "${steps}" 2>/dev/null || exit 0
+  for run in framework/var/logs/*/; do
+    [ -f "${run}.started" ] || continue
+    for file in framework/var/dev/commands*.log framework/var/dev/http*.log; do
+      [ -f "${file}" ] && [ ! -L "${file}" ] || continue
+      framework/put-file.py "${file}" "${run}"
+    done
+  done
+  save_results
+)
+
 # On an interrupt: kill each worker, and everything it runs, then finish
 # with what the parts left, and exit with status $1. They are killed
-# outright, since whatever they would put back is in the copies: a part
-# cut short leaves only its log and its steps so far.
+# outright, since whatever they would put back is in the copies; a part
+# cut short leaves what salvage keeps of it.
 workers=""
 stop() {
-  trap '' INT TERM
+  trap '' HUP INT TERM
   printf '\n%s: stopping, putting together what has run, and discarding the copies ...\n' \
       "${progname}" >&2
   if [ -n "${workers}" ]; then
@@ -302,6 +364,10 @@ stop() {
     kill -KILL ${pids} 2>/dev/null
     # Quietly: some shells report each job that was killed.
     wait 2>/dev/null
+    for item in ${items}; do
+      [ -f "${work}/${item}/copy" ] && [ ! -f "${work}/${item}/result" ] || continue
+      salvage "${item}"
+    done
   fi
   finish
   exit "$1"
@@ -358,8 +424,16 @@ restart() { ./fed.sh restart --wait --wait-timeout 300; }
 # The tests of this part, in the dev container (see test.py). A rerun's
 # suites are recorded as <suite>-<tag> (see RESULTS_TAG in
 # framework/testlib/report.py), beside the first run's.
-tests()         { ./fed.sh test --part "${part}/${parts}"; }
-tests_rotated() { RESULTS_TAG=rotated-keys ./fed.sh test --part "${part}/${parts}"; }
+tests() {
+  set -- --part "${part}/${parts}"
+  while IFS= read -r selection; do
+    [ -z "${selection}" ] || set -- "$@" "${selection}"
+  done <<EOF
+${selected}
+EOF
+  ./fed.sh test "$@"
+}
+tests_rotated() { ( RESULTS_TAG=rotated-keys; export RESULTS_TAG; tests ); }
 
 # Every service is still running (none is meant to exit), and every
 # Pelican server (fed.sh's fed_services), the directors' load balancer,
@@ -478,6 +552,8 @@ title() {
 # that the copies' output does not interleave.
 run_item() {
   mkdir -p "${work}/$1" || return 1
+  # For salvage, should the item be cut short.
+  printf '%s\n' "$2" >"${work}/$1/copy"
   printf '%s: started in copy %s\n' "$(title "$1")" "$2"
   {
     printf '\n%s (%s)\n' "$(title "$1")" "$(shape_presets "${1%.*}")"
@@ -581,6 +657,7 @@ finish() {
 
 printf 'Logs and results: %s/\n' "${shown_dir}"
 
+trap 'stop 129' HUP
 trap 'stop 130' INT
 trap 'stop 143' TERM
 
@@ -602,5 +679,5 @@ workers=""
 
 # Not to be interrupted, since stop() would put the parts together again,
 # without the services' logs that assemble has already moved.
-trap '' INT TERM
+trap '' HUP INT TERM
 finish

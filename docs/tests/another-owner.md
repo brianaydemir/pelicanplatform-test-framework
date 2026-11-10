@@ -44,5 +44,14 @@ suite's `nested-protected` check. `ready`, `keys`, and `routing` run in the
   its credentials directory and no `scitokens.use`, so that it picks, for
   each object, the token whose issuer the director names. It runs twice,
   with the tokens' files in either order.
+- `plugin-direct-get` and `plugin-cache-get`: The same with `?directread`,
+  from each side's origins, for the sides that take direct reads; and from
+  each federated cache, named (`Client.PreferredCaches`).
+- `plugin-put`: `stash_plugin` must put an object to both sides of each pair
+  that takes writes in one run, with both owners' tokens likewise; a store
+  of each side must hold its object.
 - `cross-get` and `cross-put`: Each owner's token must be refused in the
   other's namespace, storing nothing.
+- `plugin-cross-get` and `plugin-cross-put`: So must `stash_plugin` be,
+  given the other owner's token as `scitokens.use`; a get must leave no
+  file.

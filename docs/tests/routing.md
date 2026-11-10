@@ -110,8 +110,7 @@ to name every server.
     20 times, must put each cache first at least once.
   - `adaptive-presence`: With `adaptive`, once cache-1 alone holds an
     object, each director, asked with the token, must give cache-1 an
-    `availabilityWeight` of 2, and cache-0 0.5 (`X-Pelican-Debug`). Skips
-    with an [XRootD](../glossary.md#native-and-xrootd) cache.
+    `availabilityWeight` of 2, and cache-0 0.5 (`X-Pelican-Debug`).
   - `adaptive-no-token`: Asked with no token, each director must weigh the
     caches alike.
   - `adaptive-unchecked`: So must each director with

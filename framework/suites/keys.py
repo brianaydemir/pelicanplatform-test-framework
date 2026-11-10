@@ -786,19 +786,22 @@ def put_keys_back(
         control.stop(svc)
     except control.ControlError as e:
         warn(str(e))
-    for key in retired:
-        for key_dir in dirs:
-            shutil.copyfile(
-                os.path.join(kept, os.path.basename(key)),
-                os.path.join(key_dir, os.path.basename(key)),
-            )
-            os.chmod(os.path.join(key_dir, os.path.basename(key)), 0o640)
-    shutil.copyfile(os.path.join(kept, "masterkey.json"), key_file)
+    unstarted: str | None = None
     try:
-        control.start(svc)
-    except control.ControlError as e:
-        return f"once its keys were put back, {e}; run ./reset.sh if {svc} does not recover"
-    return None
+        for key in retired:
+            for key_dir in dirs:
+                shutil.copyfile(
+                    os.path.join(kept, os.path.basename(key)),
+                    os.path.join(key_dir, os.path.basename(key)),
+                )
+                os.chmod(os.path.join(key_dir, os.path.basename(key)), 0o640)
+        shutil.copyfile(os.path.join(kept, "masterkey.json"), key_file)
+    finally:
+        try:
+            control.start(svc)
+        except control.ControlError as e:
+            unstarted = f"once its keys were put back, {e}; run ./reset.sh if {svc} does not recover"
+    return unstarted
 
 
 def held_with_age(test: Test, cache: common.Cache) -> int | None:

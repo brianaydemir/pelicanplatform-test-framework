@@ -774,6 +774,7 @@ def run_approving(
     approver: Callable[[str, str], None],
     timeout: float = 180.0,
     *,
+    log: Callable[[list[str], str, float, int, str, str], None],
     announces: Callable[[str], tuple[str, str] | None] = approval_url,
     on_stdout: bool = False,
 ) -> ClientRun:
@@ -789,11 +790,14 @@ def run_approving(
             it cannot approve it.
         timeout: How long, in seconds, the run may last before it is
             killed.
+        log: Takes the run for the pass's log of commands
+            (Session.log_command).
         announces: Returns the issuer URL and user code of the flow
             that a line of the client's output announces, or None.
         on_stdout: Whether the client announces flows on its stdout,
             rather than its stderr.
     """
+    began = time.monotonic()
     with subprocess.Popen(
         [pelican, *args],
         env=env,
@@ -829,4 +833,6 @@ def run_approving(
         done.stdout, done.stderr = (announced, collected) if on_stdout else (collected, announced)
         if done.status < 0:
             done.problems.append(f"the client was killed after {timeout:.0f}s")
+        command = [os.path.basename(pelican), *args]
+        log(command, cwd, time.monotonic() - began, done.status, done.stdout, done.stderr)
         return done

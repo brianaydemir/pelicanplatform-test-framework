@@ -173,12 +173,23 @@ BACKUP_MAGIC = b"PELICAN-PSTORE-BACKUP\x00\x01"
 
 # restore: the objects it writes before the backup that it restores, of
 # sizes the store keeps in its catalog (up to blocks.INLINE) and in block
-# files, one past the spill threshold (blocks.SPILL); how long a backup
+# files, one past the spill threshold (blocks.SPILL), with enough in the
+# catalog (RESTORE_INLINE objects) that its backup outgrows one sealed
+# chunk (BACKUP_CHUNK; backupChunkSize in Pelican's
+# pstore/backup_crypto.go); how long a backup
 # taken after them may take to come (an interval, its slack, and the
 # pass itself); and the object written after that backup, which the
 # restored catalog must lack. Then the store's parts, which the CLI needs
 # side by side: the catalog, the block files, and the master key.
-RESTORE_SIZES = (100, blocks.INLINE, blocks.INLINE + 1, 100000, blocks.SPILL + 5)
+RESTORE_INLINE = 20
+BACKUP_CHUNK = 64 << 10
+RESTORE_SIZES = (
+    100,
+    *range(blocks.INLINE - RESTORE_INLINE, blocks.INLINE + 1),
+    blocks.INLINE + 1,
+    100000,
+    blocks.SPILL + 5,
+)
 RESTORE_WAIT = BACKUP_INTERVAL + INTERVAL_SLACK + 30
 LATE = "late"
 CATALOG_DIR = "db"
@@ -1630,8 +1641,9 @@ class Restore:
 
         Write an object of each of RESTORE_SIZES, with its length,
         straight to the origin, and wait for a backup taken after them,
-        which is copied under test.tmp before anything else is written;
-        then write LATE, which the origin must serve.
+        which is copied under test.tmp before anything else is written,
+        and must be of more than one sealed chunk (BACKUP_CHUNK); then
+        write LATE, which the origin must serve.
         """
         for size in RESTORE_SIZES:
             data = os.urandom(size)
@@ -1651,6 +1663,9 @@ class Restore:
         name = next(n for n in self.backups.snapshots() if (backup_time(n) or 0) >= after)
         self.copied = os.path.join(self.test.tmp, f"restore-{name}")
         shutil.copyfile(os.path.join(self.backups.outside, name), self.copied)
+        kept = os.path.getsize(self.copied)
+        if kept <= BACKUP_CHUNK:
+            return FAIL, f"backup {name} is {kept} bytes, though the catalog holds more than that inline"
         late = os.urandom(5000)
         why = self.test.upload(self.origin, self.rel(LATE), late)
         if why:
@@ -1658,7 +1673,7 @@ class Restore:
         answer = self.test.ask("GET", self.origin.url, self.rel(LATE), timeout=60)
         if answer.status != 200 or answer.body != late:
             return FAIL, f"{LATE}, written after the backup, {answer.describe()}"
-        return PASS, f"{len(RESTORE_SIZES)} objects, backup {name}, then {LATE}"
+        return PASS, f"{len(RESTORE_SIZES)} objects, backup {name} ({kept} bytes), then {LATE}"
 
     def set_aside(self) -> str | None:
         """Set the stopped origin's catalog aside.
@@ -1799,9 +1814,8 @@ class Restore:
         if rows["served"][0] != PASS:
             # Leave the rest of the run the catalog that served before.
             try:
-                control.stop(self.origin.svc)
-                self.put_back()
-                control.start(self.origin.svc)
+                with control.down(self.origin.svc, control.stop):
+                    self.put_back()
             except control.ControlError as e:
                 warn(f"putting {self.origin.svc}'s catalog back: {e}")
         elif self.aside:

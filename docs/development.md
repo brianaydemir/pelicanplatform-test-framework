@@ -97,7 +97,8 @@ an exception in the suite, wherever it is. So a suite:
   every run in the pass's `commands.log`;
 - sends its own HTTP requests with
   [`testlib.web`](../framework/testlib/web.py), which logs every exchange
-  in the pass's `http.log` ([Logs](../README.md#logs)).
+  in the pass's `http.log` ([Logs](../README.md#logs)), and follows a
+  redirect as curl does with `web.follow()`.
 
 ### Results
 
@@ -135,6 +136,8 @@ answers again. It also has:
   fetched nothing, independently of the servers' own counters;
 - `restart_with()`: configuration for a service for the length of a `with`
   block;
+- `down()`: a service killed, or stopped, for the length of a `with` block,
+  and started again whatever happens in it;
 - `unavailable()`: why the tests can't control services here, if they can't;
 - `unrestartable()`: the same, or, under
   [`topo-tiny`](../framework/presets/topo-tiny.sh), that an origin can't

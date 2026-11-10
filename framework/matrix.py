@@ -672,6 +672,7 @@ def check(shapes: Sequence[SmokeShape], valid: set[Pair]) -> tuple[list[str], li
     """Return what is wrong with smoke.sh's shapes, and what they leave out.
 
     Args:
+        shapes: smoke_shapes().
         valid: valid_pairs().
 
     Returns:

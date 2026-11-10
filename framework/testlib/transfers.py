@@ -23,7 +23,7 @@ which it sends to a cache (or, under `-p director-default-origin`, to an
 origin), or for the path with `?directread`, which it sends to an
 origin. It asks a named cache straight, and PUTs to the bare path,
 which the director sends to an origin. It follows each redirect as curl
-does (see HTTP_HOPS): to the Location as given, whose `authz` carries
+does (web.follow()): to the Location as given, whose `authz` carries
 the token, without the Authorization header, which curl drops when the
 host changes.
 
@@ -587,10 +587,6 @@ HTTP_RULES: dict[tuple[str, int], str] = {
     ("server", 403): "server",
     ("server", 404): "not found",
 }
-# How many redirects a plain HTTP client follows, as curl -L does, if
-# fewer than curl's default of 50 (--max-redirs): a director's redirect
-# is one, and a tiering cache's one more.
-HTTP_HOPS = 5
 
 
 def http_category(status: int | None, at_director: bool) -> str:

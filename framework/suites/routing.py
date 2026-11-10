@@ -110,8 +110,8 @@ CACHE_HOSTNAME = "caches.routing.invalid"
 RANDOM_ASKS = 20
 FILTERED_ASKS = 5
 PERMITTED_ASKS = 5
-# How long a V2 cache may take, after it has fetched an object, to give
-# it an Age of a second or more, which a director takes as its copy.
+# How long a cache may take, after it has fetched an object, to give it
+# an Age of a second or more, which a director takes as its copy.
 AGE_WAIT = 10
 
 CONFIG_FILE = "90-routing.yaml"
@@ -1192,8 +1192,6 @@ def adaptive_presence(test: Test) -> tuple[str, str]:
     cache's LACKS (availabilityWeightFn in Pelican's
     director/sort_algorithms.go).
     """
-    if any(c.kind != "v2" for c in test.caches):
-        return SKIP, "a director takes a cache's copy by its Age, which V2 caches send"
     why = warm_last_cache(test)
     if why:
         return FAIL, why

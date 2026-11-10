@@ -85,7 +85,10 @@ skip where the storage reports none.
   an XRootD cache.
 - `cache-overlap`: Each cache reads ranges that each cover blocks already
   fetched and blocks not yet fetched, at both block sizes, then overlapping
-  ranges at once. The whole object must come back intact after each.
+  ranges at once. Two more objects are first read by ranges that a V2 cache
+  answers with the whole object, having prepared to fetch the ranges alone:
+  two that total more than the object, and 201 of a byte each. The whole
+  object must come back intact after each.
 - `coalescing`: 16 clients at once read a 4 MiB object cold through each
   federated cache, which must fetch it from the origins about once: their
   containers must send at least one object's worth, and less than two

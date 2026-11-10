@@ -1095,6 +1095,7 @@ def check_problems(test: Test, prefixes: Mapping[str, int], complete: bool, page
     registration.
 
     Args:
+        test: The run.
         prefixes: The prefixes, with their registrations' IDs.
         complete: Whether each must be complete.
         page: The page each URL must be of (claim/, or origin/edit/), or ""
@@ -1735,6 +1736,7 @@ def remove_downtime(test: Test, downtime_id: str, record: Mapping[str, Any]) -> 
     server, by its token.
 
     Args:
+        test: The run.
         downtime_id: The downtime's ID.
         record: The downtime, as the registry has it.
 

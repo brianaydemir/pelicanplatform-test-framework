@@ -423,6 +423,7 @@ def register_with_identity(test: Test, env: dict[str, str], prefix: str, approve
         test.session.tmp,
         approve,
         REGISTER_TIMEOUT,
+        log=test.session.log_command,
         announces=oidc.device_flow_in,
         on_stdout=True,
     )
@@ -704,6 +705,7 @@ def client_rows(test: Test, made: Restarted) -> list[CaseRow]:
         env,
         test.session.tmp,
         lambda issuer_url, code: issuer.approve(issuer_url, code, user),
+        log=test.session.log_command,
     )
     problems = list(done.problems)
     if done.status != 0:

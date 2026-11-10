@@ -25,6 +25,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -429,7 +430,13 @@ class Session:
         cwd: str | None,
         timeout: float,
     ) -> tuple[int, str, str]:
-        """Run command, for pelican_cmd(), server_cmd(), or plugin_cmd()."""
+        """Run command, for pelican_cmd(), server_cmd(), or plugin_cmd().
+
+        A run cut short because its pass was abandoned, or the tests
+        interrupted, is killed; it goes in commands_log here, since its
+        caller then logs nothing.
+        """
+        started = time.monotonic()
         try:
             done = subprocess.run(
                 command,
@@ -445,6 +452,16 @@ class Session:
             return done.returncode, done.stdout, done.stderr
         except subprocess.TimeoutExpired as e:
             return TIMED_OUT, _text(e.stdout), _text(e.stderr) + f"\n{timed_out(timeout)}\n"
+        except BaseException:
+            self.log_command(
+                [os.path.basename(command[0]), *command[1:]],
+                cwd or self.tmp,
+                time.monotonic() - started,
+                -signal.SIGKILL,
+                "",
+                "killed: the tests were abandoned or interrupted while it ran\n",
+            )
+            raise
 
     def log_command(
         self,

@@ -383,9 +383,10 @@ class Test:
         """Return which of versions a read of rel through cache came back as.
 
         The read is of rel whole, or of request's ranges (see
-        blocks.which_version()). A whole read asks for a digest too
-        (Want-Digest), which, if one comes, must be that version's: a stale
-        one would fail the client's check of bytes that are right.
+        blocks.which_version()). A whole read asks for the digests that
+        the client knows too (Want-Digest), crc32c, its default, first;
+        each that comes must be that version's: a stale one would fail
+        the client's check of bytes that are right.
 
         Args:
             cache: The cache to read through.
@@ -396,7 +397,8 @@ class Test:
         Returns:
             The version's name and ""; or None, and why it is none.
         """
-        headers = {"Range": blocks.range_header(request)} if request else {"Want-Digest": "crc32c"}
+        want = ", ".join(sorted(digests.CLIENT_ALGORITHMS, key=lambda a: a != "crc32c"))
+        headers = {"Range": blocks.range_header(request)} if request else {"Want-Digest": want}
         answer = self.ask("GET", cache.url, rel, headers)
         version, why = blocks.which_version(dict(versions), request, answer)
         if version and request is None:
@@ -406,10 +408,10 @@ class Test:
         return version, why
 
     def age(self, cache: common.Cache, rel: str) -> int | None:
-        """Return the Age with which a V2 cache says it holds all of rel.
+        """Return the Age with which a cache says it holds rel.
 
-        It is asked with setup. A cache's Age starts at 0 once it holds
-        the whole object.
+        It is asked with setup. A V2 cache's Age starts at 0 once it holds
+        the whole object; an XRootD cache's, once it holds any of it.
 
         Returns:
             The Age, or None if it gives none, or does not answer 200.

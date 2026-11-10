@@ -330,6 +330,7 @@ def issuer_refusals(test: Test, user: User, refresh: str) -> list[str]:
     or honor the user's refresh token (it should say invalid_grant).
 
     Args:
+        test: The run.
         user: How the issuer knows the user.
         refresh: The user's unused refresh token, or "" if they hold none.
     """

@@ -396,6 +396,32 @@ def origins_sent(fed: common.Federation) -> int | None:
 
 
 @contextlib.contextmanager
+def down(svc: str, how: Callable[[str], None] | None = None) -> Generator[None, None, None]:
+    """Take svc down for the length of the block, and then start it.
+
+    It is started even if the block raised; a failed start is then only
+    warned of, so as not to replace what was raised (see restart_with()).
+
+    Args:
+        svc: The service.
+        how: What takes it down, stop() say; by default, kill().
+
+    Raises:
+        ControlError: svc could not be taken down, or started again.
+    """
+    (how or kill)(svc)
+    try:
+        yield
+    except BaseException:
+        try:
+            start(svc)
+        except ControlError as e:
+            common.warn(f"starting {svc} again: {e}")
+        raise
+    start(svc)
+
+
+@contextlib.contextmanager
 def restart_with(svc: str, files: Mapping[str, str], serves: bool = True) -> Generator[None, None, None]:
     """Restart svc with files as the last of its configuration layers.
 

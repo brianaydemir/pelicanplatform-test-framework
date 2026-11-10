@@ -39,7 +39,7 @@ import sys
 import time
 from collections import Counter
 from concurrent.futures import as_completed
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 from testlib import common, credentials, stores, transfers, web
 from testlib.common import die, warn
@@ -336,49 +336,12 @@ def redact(url: str) -> str:
     return re.sub(r"([?&]authz=)[^&]*", r"\1<token>", url)
 
 
-def http_fetch(
-    method: str, url: str, token: str | None, upload: str | None = None
-) -> list[tuple[str, web.Response]]:
-    """Send method to url, and follow its redirects, as `curl -L` does.
-
-    The Authorization header goes with the first request, and with a
-    redirect to the same host; curl drops it when the host changes (since
-    7.58.0, unless told --location-trusted), as Go's and Python's HTTP
-    clients do, so a redirect to another host is followed as given, with
-    the token in its authz query parameter if the director put it there.
-    The body goes again with each PUT.
-
-    Args:
-        method: `GET` or `PUT`.
-        url: Where to send it first.
-        token: The bearer token to present, if any.
-        upload: For a PUT, the file to send.
-
-    Returns:
-        Each request's URL and answer, in order, up to transfers.HTTP_HOPS
-        of them.
-    """
-    hops: list[tuple[str, web.Response]] = []
-    current, send_token = url, token
-    for _ in range(transfers.HTTP_HOPS):
-        answer = web.request(method, current, token=send_token, upload=upload, timeout=120)
-        hops.append((current, answer))
-        location = answer.header("Location")
-        if answer.status not in (301, 302, 307, 308) or not location:
-            break
-        following = urljoin(current, location)
-        if urlsplit(following).hostname != urlsplit(current).hostname:
-            send_token = None
-        current = following
-    return hops
-
-
 def http_transfer(session: Session, plan: Plan, batch: Batch) -> None:
     """Run batch as a plain HTTP client, one request per object.
 
     A get asks the director for the object's bare path (with ?directread
     for a direct read), or, for a named get, the named cache itself, and
-    follows the redirect (see http_fetch()); what comes back with 200
+    follows the redirect (web.follow()); what comes back with 200
     goes in the batch's directory, under the object's name, as `curl -o`
     would put it. A put PUTs the file to its bare path at the director,
     and follows the redirect with the file again. The log keeps each
@@ -400,7 +363,7 @@ def http_transfer(session: Session, plan: Plan, batch: Batch) -> None:
             target = transfers.http_target(s, url, fed.url, fed.director_url, cache)
             method = "GET" if s.op == "get" else "PUT"
             upload = f"{directory}/{name}" if s.op == "put" else None
-            hops = http_fetch(method, target, token, upload)
+            hops = web.follow(method, target, token, upload)
             for asked, answer in hops:
                 log.write(f"{method} {redact(asked)}: {answer.describe()}")
                 if answer.header("Location"):

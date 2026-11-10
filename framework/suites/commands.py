@@ -53,6 +53,7 @@ SCENARIOS = {
     "ls-recursive": "`ls -r` lists every object in the tree, by its path in it",
     "ls-missing": "`ls` of a missing path: not found",
     "ls-no-token": "`ls` of /protected-a with no token: the client refuses (Error code 4010)",
+    "ls-collections-url": "`ls --collections-url` lists what the server it names holds, or fails",
     "stat-protected-a": "`stat --json --checksums ...`: size, modification time, and checksums",
     "stat-public": "the same in /public, with no token",
     "stat-collection": "`stat` of a collection says so",
@@ -69,14 +70,17 @@ SCENARIOS = {
     ),
     "get-existing-file": ("`get` over a larger local file leaves only the object; a failed one, the file"),
     "get-collection": "`get` of a collection without -r: refused, and nothing written (G4)",
-    "get-recursive": "`get -r` lays the tree out flat, in an existing directory or a new one",
+    "get-recursive": (
+        "`get -r` lays the tree out flat, in an existing directory or a new one; and by --direct"
+        " and --cache"
+    ),
     "put-exists": "with overwrites off, `put` to an existing object: refused, nothing changed",
     "put-overwrite": "with overwrites on, `put` of a smaller file over an object replaces it",
     "put-into-collection": "`put` of a file to a collection lands in it, by the file's name",
     "put-directory": "`put` of a directory without -r: refused, and nothing uploaded (P4)",
     "put-recursive": "`put -r` of a tree, empty file and all, lays it out flat (P5, P6)",
     "copy-upload": "`copy` of a local file to /protected-a",
-    "copy-download": "`copy` of an object to a local file",
+    "copy-download": "`copy` of an object to a local file; and by --direct and --cache",
     "copy-tpc": "`copy` from /protected-a to /protected-a: a third-party copy",
     "copy-tpc-public": "`copy` from /public to /protected-a: a third-party copy",
     "copy-tpc-direct": "`copy --direct`: a third-party copy from an origin",
@@ -86,13 +90,14 @@ SCENARIOS = {
     "sync-upload": "`sync` of a local tree to a new collection",
     "sync-unchanged": "`sync --dry-run` of a tree the origins already hold lists nothing",
     "sync-changed": "a local file whose size changed is the one `sync` uploads again",
-    "sync-download": "`sync` of a collection to a local directory",
+    "sync-download": "`sync` of a collection to a local directory; and by --direct and --cache",
     "sync-tpc": "`sync` of a collection to another: third-party copies",
     "du-protected-a": (
         "`du --json`, and `du --count`'s text: bytes, objects, and collections per collection"
     ),
     "du-public": "the same in /public, with no token",
     "du-summarize": "`du -s` gives only the total",
+    "du-collections-url": "`du --collections-url` sums what the server it names holds, or fails",
     "du-no-token": "`du` of /protected-a with no token: the client refuses (Error code 4010)",
 }
 
@@ -115,6 +120,7 @@ NEEDS: dict[str, frozenset[str]] = {
     "ls-public": LISTS,
     "ls-recursive": LISTS,
     "ls-missing": LISTS,
+    "ls-collections-url": LISTS,
     "delete-object": WRITES,
     "delete-recursive": WRITES | LISTS,
     "delete-nonempty": WRITES,
@@ -137,6 +143,7 @@ NEEDS: dict[str, frozenset[str]] = {
     "du-protected-a": LISTS,
     "du-public": LISTS,
     "du-summarize": LISTS,
+    "du-collections-url": LISTS,
 }
 
 
@@ -160,6 +167,12 @@ DELETES = ("delete-object", "delete-recursive", "delete-nonempty", "delete-missi
 
 # The tree the read-only commands work on, under data/commands/<run>/tree/.
 TREE = {"a": 1000, "b": 5000, "sub/c": 300, "sub/deeper/d": 7000}
+# The collection that a download by a route the client names reads, one
+# per command and route, so that no cache holds it beforehand.
+ROUTED = {"x": 2000, "sub/y": 3000}
+# The size of the object that the first origin alone holds, for
+# --collections-url; each origin after it holds one a byte larger.
+MARKER_SIZE = 1100
 
 
 # --------------------------------------------------------------------------
@@ -316,6 +329,10 @@ class Test(suite.Test):
         for namespace in dict.fromkeys(self.fed.storage_namespace(ns) for ns in self.namespaces):
             for path, data in self.trees[namespace].items():
                 self.seed(namespace, self.rel("tree", path), data)
+
+    def holders(self, rel: str) -> list[str]:
+        """Return the federated caches that say they hold rel (age())."""
+        return [c.svc for c in self.fed.federated_caches if self.age(c, rel) is not None]
 
     # Running the client.
 
@@ -798,6 +815,93 @@ def temporary_files(path: str) -> list[str]:
     return sorted(n for n in os.listdir(directory) if n.startswith(f".{name}."))
 
 
+def read_routes(test: Test) -> dict[str, list[str]]:
+    """Return the arguments by which a command names where it reads from.
+
+    Returns:
+        By route: `direct`, an origin (--direct), where /protected-a takes
+        direct reads; and `named`, the first federated cache (--cache),
+        where there is one.
+    """
+    routes: dict[str, list[str]] = {}
+    if test.direct:
+        routes["direct"] = ["--direct"]
+    if test.fed.federated_caches:
+        routes["named"] = ["--cache", test.fed.federated_caches[0].url]
+    return routes
+
+
+def routed(
+    test: Test,
+    name: str,
+    fetch: Callable[[list[str], str, str], tuple[int, str, str]],
+    files: Callable[[str], dict[str, str]],
+) -> tuple[str | None, list[str]]:
+    """Check a download command by each route that the client can name.
+
+    Each route reads a collection of its own, of ROUTED's objects, which
+    nothing has read. The local files must be the objects. Afterward, by
+    the caches' own account (Test.holders()), the cache that --cache
+    named must hold each object read, and no other federated cache any;
+    and no federated cache may hold any that --direct read.
+
+    Args:
+        test: What every scenario needs.
+        name: The command's name, for its collections and local targets.
+        fetch: Runs the command, given the route's arguments, the
+            collection's rel, and a local target that does not exist;
+            returns its exit status, stdout, and stderr.
+        files: Returns, given the target, the local file of each object
+            that the command reads, by its path in the collection.
+
+    Returns:
+        What went wrong, or None; and the routes checked.
+    """
+    routes = read_routes(test)
+    read: dict[str, list[str]] = {}
+    for route, args in routes.items():
+        rel = test.rel("routes", f"{name}-{route}")
+        objects = {path: os.urandom(size) for path, size in ROUTED.items()}
+        for path, data in objects.items():
+            test.seed("protected-a", f"{rel}/{path}", data)
+        target = os.path.join(test.tmp, f"{name}-{route}")
+        code, out, err = fetch(args, rel, target)
+        if code != 0:
+            return f"{args[0]}: exit {code}: {last_line(err or out)}", list(routes)
+        local = files(target)
+        wrong = sorted(p for p, path in local.items() if not common.file_holds(path, objects[p]))
+        if wrong:
+            return f"{args[0]}: missing or different locally: {', '.join(wrong)}", list(routes)
+        read[route] = [f"{rel}/{path}" for path in local]
+    if "named" in read:
+        cache = test.fed.federated_caches[0]
+        for rel in read["named"]:
+            if not common.wait_for(lambda rel=rel: test.age(cache, rel) is not None, suite.HELD_WAIT, 1):
+                return f"--cache: {cache.svc} does not hold {suite.leaf(rel)}, so did not serve it", list(
+                    routes
+                )
+            others = [svc for svc in test.holders(rel) if svc != cache.svc]
+            if others:
+                return f"--cache: {', '.join(others)} hold {suite.leaf(rel)}, not {cache.svc} alone", list(
+                    routes
+                )
+    # Last, so that a cache that did serve one has had time to say so.
+    for rel in read.get("direct", []):
+        held = test.holders(rel)
+        if held:
+            return (
+                f"--direct: {', '.join(held)} hold {suite.leaf(rel)}, so an origin did not serve it",
+                list(routes),
+            )
+    return None, list(routes)
+
+
+def routed_note(routes: list[str]) -> str:
+    """Return how a note names the routes that routed() checked."""
+    flags = {"direct": "--direct", "named": "--cache"}
+    return "".join(f", and by {flags[r]}" for r in routes)
+
+
 def get_existing_file(test: Test) -> Row:
     """Check that `get` replaces a larger local file with the object (G1).
 
@@ -873,7 +977,8 @@ def get_recursive(test: Test) -> Row:
     The target is an existing directory (G5), and then a path that does
     not exist (G6): either way, the tree's objects must land flat under
     it, as the tree holds them, and nothing else. Where the namespace
-    cannot be listed, it must fail, and write nothing.
+    cannot be listed, it must fail, and write nothing. Then a collection
+    by each route that the client can name (routed()).
     """
     want = {path: common.digest(data) for path, data in test.trees["protected-a"].items()}
     for label, exists in (("an existing directory", True), ("a new one", False)):
@@ -904,7 +1009,16 @@ def get_recursive(test: Test) -> Row:
             return FAIL, f"into {label}: {', '.join(wrong)} differ from the objects"
     if test.lacks:
         return PASS, f"failed: no {', '.join(sorted(test.lacks))}"
-    return PASS, f"{len(want)} objects, flat, both ways"
+
+    def fetch(args: list[str], rel: str, target: str) -> tuple[int, str, str]:
+        return test.pelican_cmd(
+            "object", "get", "-r", *args, *test.token_args("protected-a"), test.pelican_url(rel), target
+        )
+
+    why, routes = routed(test, "get-recursive", fetch, lambda t: {p: os.path.join(t, p) for p in ROUTED})
+    if why:
+        return FAIL, why
+    return PASS, f"{len(want)} objects, flat, both ways{routed_note(routes)}"
 
 
 def put_exists(test: Test) -> Row:
@@ -1072,7 +1186,10 @@ def copy_upload(test: Test) -> Row:
 
 
 def copy_download(test: Test) -> Row:
-    """Check `copy` of an object to a local file."""
+    """Check `copy` of an object to a local file.
+
+    Then of an object by each route that the client can name (routed()).
+    """
     target = os.path.join(test.tmp, "copy-down")
     code, out, err = test.pelican_cmd(
         "object",
@@ -1085,7 +1202,16 @@ def copy_download(test: Test) -> Row:
         return FAIL, f"exit {code}: {last_line(err or out)}"
     if not common.file_holds(target, test.trees["protected-a"]["b"]):
         return FAIL, "the local file differs from the object"
-    return PASS, ""
+
+    def fetch(args: list[str], rel: str, target: str) -> tuple[int, str, str]:
+        return test.pelican_cmd(
+            "object", "copy", *args, *test.token_args("protected-a"), test.pelican_url(f"{rel}/x"), target
+        )
+
+    why, routes = routed(test, "copy-download", fetch, lambda t: {"x": t})
+    if why:
+        return FAIL, why
+    return PASS, routed_note(routes).removeprefix(", and ")
 
 
 def copy_tpc(test: Test, name: str, source_ns: str, path: str, direct: bool = False) -> Row:
@@ -1291,7 +1417,11 @@ def sync_changed(test: Test) -> Row:
 
 
 def sync_download(test: Test) -> Row:
-    """Check `sync` of a collection to a local directory."""
+    """Check `sync` of a collection to a local directory.
+
+    Then of a collection by each route that the client can name
+    (routed()).
+    """
     target = os.path.join(test.tmp, "sync-down")
     code, out, err = test.pelican_cmd(
         "object",
@@ -1302,6 +1432,17 @@ def sync_download(test: Test) -> Row:
         env=test.sync_env,
     )
 
+    def fetch(args: list[str], rel: str, target: str) -> tuple[int, str, str]:
+        return test.pelican_cmd(
+            "object",
+            "sync",
+            *args,
+            *test.token_args("protected-a"),
+            test.pelican_url(rel),
+            target,
+            env=test.sync_env,
+        )
+
     def passed() -> Row:
         wrong = [
             p
@@ -1310,7 +1451,12 @@ def sync_download(test: Test) -> Row:
         ]
         if wrong:
             return FAIL, f"missing or different locally: {', '.join(wrong)}"
-        return PASS, f"{len(test.trees['protected-a'])} files"
+        why, routes = routed(
+            test, "sync-download", fetch, lambda t: {p: os.path.join(t, p) for p in ROUTED}
+        )
+        if why:
+            return FAIL, why
+        return PASS, f"{len(test.trees['protected-a'])} files{routed_note(routes)}"
 
     return test.outcome(code, out, err, passed)
 
@@ -1509,6 +1655,74 @@ def du_no_token(test: Test) -> Row:
     return PASS, f"refused ({transfers.refused(out + err)}): no token"
 
 
+# --------------------------------------------------------------------------
+# --collections-url
+
+
+def collections_url(test: Test, command: str) -> Row:
+    """Check that `ls` or `du` asks the server that --collections-url names.
+
+    The option overrides the server that the director names for
+    listings. Each origin with a store of its own holds, in a collection
+    of the command's, one object that the others lack, of a size of its
+    own. Given an origin's URL, the command must report that origin's
+    object alone; given a URL where nothing listens, it must fail.
+
+    Args:
+        test: What every scenario needs.
+        command: `ls` or `du`.
+    """
+    rel = test.rel("collections-url", command)
+    origins = stores.unique(test.origins)
+    sizes = {o.svc: MARKER_SIZE + n for n, o in enumerate(origins)}
+    for origin in origins:
+        errors = stores.put_in_place(
+            test.session, [origin], "protected-a", f"{rel}/{origin.svc}", os.urandom(sizes[origin.svc])
+        )
+        if errors:
+            raise suite.SetupError(f"could not put {rel}/{origin.svc} in place: {first(errors)}")
+    flags = ["-l", "--json"] if command == "ls" else ["--json", "-s"]
+    url = test.pelican_url(rel)
+
+    def ask(server: str) -> tuple[int, str, str]:
+        return test.pelican_cmd(
+            "object", command, *flags, "--collections-url", server, *test.token_args("protected-a"), url
+        )
+
+    for origin in origins:
+        code, out, err = ask(origin.url)
+        if test.lacks:
+            return test.outcome(code, out, err, lambda: (PASS, ""))
+        if code != 0:
+            return FAIL, f"naming {origin.svc}: exit {code}: {last_line(err or out)}"
+        try:
+            rows = json_objects(out)
+        except ValueError as e:
+            return FAIL, f"naming {origin.svc}: unreadable output ({e}): {last_line(out)}"
+        if command == "ls":
+            got: Any = sorted((basename(str(e.get("Name"))), e.get("Size")) for e in rows)
+            want: Any = [(origin.svc, sizes[origin.svc])]
+        else:
+            got, want = [row.get("bytes") for row in rows], [sizes[origin.svc]]
+        if got != want:
+            return FAIL, f"naming {origin.svc}: reported {got}, not {want}, its own object's"
+    dead = f"https://{urlsplit(origins[0].url).hostname}:1"
+    code, out, err = ask(dead)
+    if code == 0:
+        return FAIL, f"naming {dead}, where nothing listens: succeeded: {last_line(out)}"
+    return PASS, f"{len(origins)} origin(s), each its own object; fails naming {dead}"
+
+
+def ls_collections_url(test: Test) -> Row:
+    """Run collections_url() for `ls`."""
+    return collections_url(test, "ls")
+
+
+def du_collections_url(test: Test) -> Row:
+    """Run collections_url() for `du`."""
+    return collections_url(test, "du")
+
+
 # The scenarios, by name: each takes the Test, and returns its status
 # and note.
 RUN = {
@@ -1517,6 +1731,7 @@ RUN = {
     "ls-recursive": ls_recursive,
     "ls-missing": ls_missing,
     "ls-no-token": ls_no_token,
+    "ls-collections-url": ls_collections_url,
     "stat-protected-a": stat_protected_a,
     "stat-public": stat_public,
     "stat-collection": stat_collection,
@@ -1550,6 +1765,7 @@ RUN = {
     "du-protected-a": du_protected_a,
     "du-public": du_public,
     "du-summarize": du_summarize,
+    "du-collections-url": du_collections_url,
     "du-no-token": du_no_token,
 }
 

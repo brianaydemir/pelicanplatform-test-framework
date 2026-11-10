@@ -10,8 +10,11 @@ such as the namespaces it exports, is in the
 
 ## Not offered as presets
 
-- **[Globus](https://www.globus.org/) origins** (`globus` and `globusv2`),
-  **`s3v2` in front of GCS or Azure** (`Origin.ObjectProviderURL`), and
+- **[Globus](https://www.globus.org/) origins** (`globus` and `globusv2`):
+  they need Globus's Auth and Transfer services and a collection there, or a
+  stand-in for each (`Origin.GlobusIssuerURL`,
+  `Origin.GlobusTransferAPIBaseUrl`), which the framework lacks.
+- **`s3v2` in front of GCS or Azure** (`Origin.ObjectProviderURL`), and
   **tiering to either** (`Cache.TieringTargets`): each needs the provider's
   own service and credentials.
 - **The `xroot` origin**, which relays to another
@@ -63,7 +66,14 @@ such as the namespaces it exports, is in the
   each server's own metrics instead.
 - **X.509 and VOMS at XRootD servers** (`Origin.EnableTLSClientAuth`,
   `Origin.EnableVoms`, and the caches' own), **and macaroons**
-  (`Origin.EnableMacaroons`): no Pelican client presents either.
+  (`Origin.EnableMacaroons`): no Pelican client presents either. An XRootD
+  cache can present its host certificate to the origins
+  (`Cache.DisableClientX509` off), but only one issued for client
+  authentication, which the framework's is not.
+- **XRootD's TLS key kept from it** (`Server.EnablePKCS11`): XRootD signs
+  through Pelican rather than read the key. Nothing a server serves differs
+  by it, and Pelican falls back to the key file, with a warning in its log,
+  where the helper cannot start.
 - **Sorting by GeoIP** (`Director.GeoIPLocation`), which needs
   [MaxMind](https://www.maxmind.com/)'s database and clients at public
   addresses. The servers declare their locations (`GeoLocation`) instead
@@ -93,8 +103,11 @@ such as the namespaces it exports, is in the
   port 443**: every server here listens on 8444, and
   [`director-ha`](../../framework/presets/director-ha.sh)'s load balancer
   passes TLS through.
-- **A cache behind a firewall** (`Cache.EnableBroker`): it would serve only
-  its site's own clients, which nothing here stands in for.
+- **A cache behind a firewall**: a cache takes the director's connections
+  through the broker wherever the federation names one
+  (`Cache.EnableBroker`, on by default), but no shape keeps the director
+  from reaching a cache otherwise. Such a cache would serve only its site's
+  own clients, which nothing here stands in for.
   [`origin-firewalled`](../../framework/presets/origin-firewalled.sh) puts
   an origin there.
 - **XRootD clustering** (`Origin.EnableCmsd`, `Xrootd.ManagerHost`): the
@@ -108,8 +121,21 @@ such as the namespaces it exports, is in the
   when a cache fetches blocks, not what it serves.
 - **A server without its web UI** (`Server.EnableUI` off): only the pages
   go; the [`webapi`](web-api.md) suite checks the API, login, and issuer.
-- **Virtual-host-style S3 URLs** (`Origin.S3UrlStyle` `virtual`): the `s3`
-  [service](../glossary.md#helper-service) serves path style.
+- **Virtual-host-style S3 URLs** (`Origin.S3UrlStyle` `virtual`), and **an
+  XRootD `s3` export of a whole endpoint**, whose bucket is the first
+  segment of a path below the prefix: the `s3`
+  [service](../glossary.md#helper-service) serves path style, and each
+  export here names its bucket.
+- **An `ssh` origin that logs in without a key, or through a jump host**
+  (`Origin.SSH.AuthMethods` `password`, `keyboard-interactive`, or `agent`;
+  `Origin.SSH.ProxyJump`): only how the origin reaches its host differs, and
+  [`origin-ssh`](../../framework/presets/origin-ssh.sh) tests what it serves
+  from there.
+- **Logging in through GitHub** (`Issuer.GroupSource` `github`): Pelican
+  asks GitHub itself for a user's organizations, so no stand-in can serve.
+  It would be a preset like
+  [`auth-oidc-cilogon`](../../framework/presets/auth-oidc-cilogon.sh), for
+  trying by hand, where no suite can log in.
 
 ## Not exercised
 

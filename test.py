@@ -165,15 +165,19 @@ def watched(name: str, deadline: float) -> Generator[None, None, None]:
                 why.append(f"{name} printed nothing for {STALL_SECONDS}s, and was abandoned")
             else:
                 continue
-            print(f"\n{common.PROG}: {why[0]}; where each thread was:", file=sys.stderr)
-            print_stacks()
+            # The pass is abandoned whether or not this can be said: an
+            # output that cannot be written to must not keep it going.
+            with contextlib.suppress(Exception):
+                print(f"\n{common.PROG}: {why[0]}; where each thread was:", file=sys.stderr)
+                print_stacks()
             os.kill(os.getpid(), signal.SIGALRM)
             while not stop.wait(GRACE_SECONDS):
-                print(
-                    f"\n{common.PROG}: {name} has not ended {GRACE_SECONDS}s after being"
-                    + " abandoned; interrupting its cleanup",
-                    file=sys.stderr,
-                )
+                with contextlib.suppress(Exception):
+                    print(
+                        f"\n{common.PROG}: {name} has not ended {GRACE_SECONDS}s after being"
+                        + " abandoned; interrupting its cleanup",
+                        file=sys.stderr,
+                    )
                 os.kill(os.getpid(), signal.SIGALRM)
             return
 
@@ -548,7 +552,8 @@ def main() -> int:
                 with contextlib.suppress(FileNotFoundError):
                     os.remove(Report(suite_name(name, profile), RESULTS).path)
     started = time.monotonic()
-    with tempfile.TemporaryDirectory() as tmp:
+    # An abandoned pass may have left a client writing there (lingering()).
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         first = Session(tmp, profiles[0], run=stamp)
         sessions = [first] + [Session(tmp, p, first.fed, stamp) for p in profiles[1:]]

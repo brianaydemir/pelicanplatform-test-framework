@@ -313,7 +313,9 @@ def run_approving(
     session = test.session
     env = issuer.client_env(session.env, session.path(f"credentials/{role}"))
     env.update(extra_env or {})
-    return issuer.run_approving(pelican or session.pelican, args, env, session.tmp, approve_as_role)
+    return issuer.run_approving(
+        pelican or session.pelican, args, env, session.tmp, approve_as_role, log=session.log_command
+    )
 
 
 def cli_json(out: str) -> Any:
@@ -528,37 +530,56 @@ def tokens(test: Test) -> tuple[str, str]:
     return outcome(problems, "each token has its collections' scopes; collection.create test-curator's")
 
 
+# What data() reads: as which role, which object, and whether it may.
+READS = (
+    ("reader", "alpha/obj", True),
+    ("reader", "beta/obj", True),
+    ("reader", "decoy/obj", False),
+    ("outsider", "alpha/obj", False),
+    ("outsider", "beta/obj", True),
+    ("writer", "decoy/obj", False),
+)
+
+
+def read_problems(test: Test, server_url: str, token: dict[str, str]) -> list[str]:
+    """Return what is wrong with READS' GETs straight to a server.
+
+    With the tokens, by role, each must get its object from the server at
+    server_url, or be refused.
+    """
+    problems: list[str] = []
+    for role, name, allowed in READS:
+        url = test.url(server_url, test.rel(name))
+        answer = web.request("GET", url, token=token[role])
+        if allowed and (answer.status != 200 or answer.body != test.data[name]):
+            problems.append(f"GET {url} as {username(role)}: {answer.describe()}, or wrong bytes")
+        if not allowed and answer.status not in REFUSED:
+            problems.append(f"GET {url} as {username(role)}: {answer.describe()}, not refused")
+    return problems
+
+
 def data(test: Test) -> tuple[str, str]:
     """Check what the tokens allow.
 
-    Try them straight at every origin and through the federation.
+    Try them straight at every origin and federated cache, and through
+    the federation.
     """
     problems: list[str] = []
     token = {role: test.data_token(role) for role in ("writer", "reader", "outsider")}
     writes = test.writes
-    reads = (
-        ("reader", "alpha/obj", True),
-        ("reader", "beta/obj", True),
-        ("reader", "decoy/obj", False),
-        ("outsider", "alpha/obj", False),
-        ("outsider", "beta/obj", True),
-        ("writer", "decoy/obj", False),
-    )
     notes: list[str] = []
     if test.direct:
         for origin in test.fed.origins:
-            for role, name, allowed in reads:
-                url = test.url(origin.url, test.rel(name))
-                answer = web.request("GET", url, token=token[role])
-                if allowed and (answer.status != 200 or answer.body != test.data[name]):
-                    problems.append(f"GET {url} as {username(role)}: {answer.describe()}, or wrong bytes")
-                if not allowed and answer.status not in REFUSED:
-                    problems.append(f"GET {url} as {username(role)}: {answer.describe()}, not refused")
+            problems += read_problems(test, origin.url, token)
             if writes:
                 problems += write_problems(test, origin, token)
         notes.append(f"at {len(test.fed.origins)} origin(s)")
     else:
         notes.append("no direct reads")
+    for cache in test.fed.federated_caches:
+        problems += read_problems(test, cache.url, token)
+    if test.fed.federated_caches:
+        notes.append(f"at {len(test.fed.federated_caches)} cache(s)")
     if not test.fed.standalone:
         problems += federation_problems(test, writes)
         notes.append("through the federation")

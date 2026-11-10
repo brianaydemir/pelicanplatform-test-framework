@@ -1,6 +1,7 @@
 """HTTP(S) requests straight to a server, bypassing the Pelican client.
 
-Like curl without -L: a redirect is an answer, not something to follow.
+request() is like curl without -L: a redirect is an answer, not
+something to follow; follow() follows them, as curl -L does.
 Unlike http.client, it keeps a chunked body's trailers, such as the
 X-Transfer-Status that a V2 cache sends, when asked (`X-Transfer-Status:
 true` and `TE: trailers`), to report a failure after its headers.
@@ -18,7 +19,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
-from urllib.parse import SplitResult, urlencode, urlsplit
+from urllib.parse import SplitResult, urlencode, urljoin, urlsplit
 
 # The federation's CA, in the dev container.
 CA_FILE = "/certs/ca.crt"
@@ -28,6 +29,11 @@ ONLY_IF_CACHED = {"Cache-Control": "only-if-cached"}
 
 # How much of an answer's body its log entry shows, in bytes.
 LOGGED_BODY = 512
+
+# How many requests follow() makes at most, if fewer than curl's default
+# of 50 redirects (--max-redirs): a director's redirect is one, and a
+# tiering cache's one more.
+HOPS = 5
 
 
 @functools.lru_cache(maxsize=None)
@@ -345,6 +351,49 @@ def request(
         outcome = f"sent {len(data)} bytes{' in chunks' if chunked else ''}; {outcome}"
     _log_exchange(method, url, sent, began, outcome, found)
     return found
+
+
+def follow(
+    method: str,
+    url: str,
+    token: str | None = None,
+    upload: bytes | str | None = None,
+    headers: Mapping[str, str] | None = None,
+    timeout: float = 120,
+) -> list[tuple[str, Response]]:
+    """Send method to url, and follow its redirects, as `curl -L` does.
+
+    The Authorization header goes with the first request, and with a
+    redirect to the same host; curl drops it when the host changes (since
+    7.58.0, unless told --location-trusted), as Go's and Python's HTTP
+    clients do, so a redirect to another host is followed as given, with
+    the token in its authz query parameter if the director put it there.
+    The other headers, and a body, go again with each request.
+
+    Args:
+        method: The HTTP method.
+        url: Where to send it first.
+        token: The bearer token to present, if any.
+        upload: The body, as for request().
+        headers: More headers to send.
+        timeout: As for request().
+
+    Returns:
+        Each request's URL and answer, in order, up to HOPS of them.
+    """
+    hops: list[tuple[str, Response]] = []
+    current, send_token = url, token
+    for _ in range(HOPS):
+        answer = request(method, current, token=send_token, upload=upload, headers=headers, timeout=timeout)
+        hops.append((current, answer))
+        location = answer.header("Location")
+        if answer.status not in (301, 302, 307, 308) or not location:
+            break
+        following = urljoin(current, location)
+        if urlsplit(following).hostname != urlsplit(current).hostname:
+            send_token = None
+        current = following
+    return hops
 
 
 @dataclass

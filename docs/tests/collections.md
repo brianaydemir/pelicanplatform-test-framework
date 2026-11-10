@@ -39,8 +39,9 @@ both `test-owner`'s; and `decoy/obj` beside them.
   storage scopes alone. The local issuer grants `collection.read:/` to all,
   and `collection.create:/` only to a collection administrator, whose token
   creates a collection (201); another user's is 403.
-- `data`: At every origin taking direct reads, and through the federation,
-  tokens read and write within their collections and nothing beside:
+- `data`: At every origin taking direct reads, at every federated cache,
+  and through the federation, tokens read and write within their collections
+  and nothing beside:
   `test-reader` reads `alpha` and `beta` but may not write; `test-outsider`
   reads `beta` alone; `test-writer` writes in `alpha`; none reaches `decoy`.
 - `client`: `pelican object get` of `alpha/obj` with no token acquires one,

@@ -20,3 +20,9 @@ to `smoke-logs/<time>/`, or `-o DIR`.
 
 To check one area instead, name it: `./fed.sh test SUITE` or
 `./fed.sh test 'SUITE/SCENARIO*'` (`./fed.sh test -l` lists them).
+`smoke.sh` takes the same after `-t`, and shares what they select out among
+the copies:
+
+```sh
+./smoke.sh -j 4 -p director-discovery -t blocks -t 'client/plugin-*'
+```

@@ -626,6 +626,7 @@ def interrupted(test: Test, scenario: str, mode: str, total: int, send: int) -> 
     nothing may be left of it, and the answer, if any, may not be a success.
 
     Args:
+        test: The run.
         scenario: The scenario's name, which names the object.
         mode: As for partial_put().
         total: As for partial_put().
@@ -795,6 +796,7 @@ def killed(test: Test, which: str) -> Row:
     log_file = os.path.join(test.tmp, f"{which}.log")
     command, env = upload_command(test, which, source, test.pelican_url(f"data/posc/{name}"))
     test.mark()
+    started = time.monotonic()
     with (
         open(log_file, "wb") as log,
         subprocess.Popen(
@@ -821,6 +823,16 @@ def killed(test: Test, which: str) -> Row:
             seen = unseen_but_judged = True
         code = upload.poll()
         upload.kill()
+        status = upload.wait()
+    with open(log_file, encoding="utf-8", errors="replace") as f:
+        test.session.log_command(
+            [os.path.basename(command[0]), *command[1:]],
+            test.tmp,
+            time.monotonic() - started,
+            status,
+            "",
+            f.read(),
+        )
     os.remove(source)
     time.sleep(3)
     path = test.found(name)
@@ -970,6 +982,7 @@ def reaped(test: Test, age: float, timeout: str) -> list[str]:
     in POSC_EXPIRED, since it is older than Origin.Posc.FileTimeout.
 
     Args:
+        test: The run.
         age: How long ago the file was last modified, in seconds.
         timeout: Origin.Posc.FileTimeout, as a note shows it.
     """

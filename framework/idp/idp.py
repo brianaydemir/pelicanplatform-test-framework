@@ -267,6 +267,7 @@ class Users:
         claim that Issuer.OIDCGroupClaim names.
 
         Args:
+            username: The user.
             scope: The scopes granted.
         """
         user = self.load().get(username, {})

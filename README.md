@@ -75,7 +75,8 @@ Each suite writes a row per case to `framework/var/results/`
 ([Results](docs/ci.md#results)). A [watchdog](docs/glossary.md#watchdog)
 abandons a pass that prints nothing for 20 minutes, or runs for 90, and
 records it as `aborted`; the run stops there if the servers no longer
-answer, or once it has gone on for six hours.
+answer, or once it has gone on for six hours. An interrupt (Ctrl-C) stops
+the tests, puts back what they changed, and keeps the logs.
 
 ### Logs
 
@@ -94,6 +95,7 @@ After every run, pass or fail, `./fed.sh test` saves these in
 | `commands.log`, `commands-scitokens.log` | each pass's client commands, with exit status, output, and the plugin's ads                                                                                                                                                      |
 | `http.log`, `http-scitokens.log`         | each pass's HTTP exchanges of the tests' own, as `curl -v` shows one: the request, what came of it, both sides' headers, and the start of a body that is text                                                                    |
 | `dev/`                                   | what the suites keep in `framework/var/dev/` ([below](#where-things-live))                                                                                                                                                       |
+| `metadata/`                              | every request the [metadata recorder](framework/metadata-server/recorder.py) has received, where the shape runs it                                                                                                               |
 | `test.log`                               | everything the tests printed                                                                                                                                                                                                     |
 | `control.log`                            | what the [control helper](#service-control) did, and when (UTC, as in the services' logs)                                                                                                                                        |
 
@@ -362,22 +364,22 @@ from environment variables, which files can't override.
 
 ## Commands
 
-| Command                                                | Does                                                            |
-| ------------------------------------------------------ | --------------------------------------------------------------- |
-| `./fed.sh [-p PRESET]... init`                         | create what's missing: certs, binaries, keys, data              |
-| `./fed.sh up` / `down`                                 | start / stop everything                                         |
-| `./fed.sh restart [SERVICE]...`                        | recreate containers so they reread configuration                |
-| `./fed.sh test [ARG]...`                               | the tests: `test.py` in the dev container                       |
-| `./fed.sh control`                                     | [service control](#service-control) for a `test.py` run by hand |
-| `./fed.sh dev [CMD]...`                                | a shell (or `CMD`) in the dev container                         |
-| `./fed.sh status`                                      | containers, presets, and images                                 |
-| `./fed.sh [-p PRESET]... check`                        | exit 0 if it accepts the presets                                |
-| `./fed.sh keys [...]`                                  | [issuer keys](docs/configuration.md#issuer-keys)                |
-| `./fed.sh <other>`                                     | passed to `docker compose`, e.g. `logs -f cache-0`              |
-| `./test.py [SUITE[/SCENARIO]]...`                      | the tests (in the dev container); `-l` lists them               |
-| `./reset.sh`                                           | discard everything generated                                    |
-| `./smoke.sh [-j N] [-o DIR] [-p PRESET]... [SHAPE]...` | the smoke tests, over every shape, in N copies of the checkout  |
-| [`framework/report.py`](framework/report.py)           | merge [results](docs/ci.md#results); JUnit XML; Markdown        |
+| Command                                                             | Does                                                                                                            |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `./fed.sh [-p PRESET]... init`                                      | create what's missing: certs, binaries, keys, data                                                              |
+| `./fed.sh up` / `down`                                              | start / stop everything                                                                                         |
+| `./fed.sh restart [SERVICE]...`                                     | recreate containers so they reread configuration                                                                |
+| `./fed.sh test [ARG]...`                                            | the tests: `test.py` in the dev container                                                                       |
+| `./fed.sh control`                                                  | [service control](#service-control) for a `test.py` run by hand                                                 |
+| `./fed.sh dev [CMD]...`                                             | a shell (or `CMD`) in the dev container                                                                         |
+| `./fed.sh status`                                                   | containers, presets, and images                                                                                 |
+| `./fed.sh [-p PRESET]... check`                                     | exit 0 if it accepts the presets                                                                                |
+| `./fed.sh keys [...]`                                               | [issuer keys](docs/configuration.md#issuer-keys)                                                                |
+| `./fed.sh <other>`                                                  | passed to `docker compose`, e.g. `logs -f cache-0`                                                              |
+| `./test.py [SUITE[/SCENARIO]]...`                                   | the tests (in the dev container); `-l` lists them                                                               |
+| `./reset.sh`                                                        | discard everything generated                                                                                    |
+| `./smoke.sh [-j N] [-o DIR] [-p PRESET]... [-t TEST]... [SHAPE]...` | the smoke tests, over every shape, in N copies of the checkout; `-t` runs only the suites or scenarios it names |
+| [`framework/report.py`](framework/report.py)                        | merge [results](docs/ci.md#results); JUnit XML; Markdown                                                        |
 
 ## Service control
 

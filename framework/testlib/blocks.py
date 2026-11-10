@@ -562,7 +562,11 @@ def overlap_plans() -> dict[str, list[Request]]:
     Each plan's reads go in order, on an object of its own. Every read
     after a plan's first covers both blocks that earlier ones fetched and
     blocks that they did not, at both block sizes; but `inside` asks only
-    for what its first read fetched.
+    for what its first read fetched. `oversum` and `many` are one cold
+    read each, of ranges that Go's http.ServeContent passes over, sending
+    the object whole: two that total more than the object, and one more
+    than GO_RANGES. A V2 cache has by then told its reader to fill only
+    within the ranges (LimitFill in Pelican's local_cache/range_reader.go).
     """
     return {
         "head": [((140001, 150000),), ((125001, 141000),)],
@@ -577,6 +581,8 @@ def overlap_plans() -> dict[str, list[Request]]:
             ((264001, 394449),),
         ],
         "multi": [((140001, 150000),), ((141001, 142000), (300001, 301000))],
+        "oversum": [((1001, 300000), (2001, 301000))],
+        "many": [tuple((n * 1900 + 7, n * 1900 + 7) for n in range(GO_RANGES + 1))],
     }
 
 

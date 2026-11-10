@@ -37,9 +37,17 @@ CLIENT = {
         "stash_plugin's get of an object on each side of each pair at once, with both owners'"
         " tokens in its credentials directory, in either order"
     ),
+    "plugin-direct-get": "the same with ?directread, from each side's origins, where the side allows it",
+    "plugin-cache-get": "the same from each federated cache, named (Client.PreferredCaches)",
     "put": "`pelican object put` to each of origin-2's exports with its token, where it takes writes",
+    "plugin-put": (
+        "stash_plugin's put to both sides of each pair at once, with both owners' tokens,"
+        " where both take writes"
+    ),
     "cross-get": "`pelican object get` with each owner's token in the other's namespace: refused",
+    "plugin-cross-get": "stash_plugin's get likewise, the token its scitokens.use: refused",
     "cross-put": "`pelican object put` likewise: refused, and nothing stored",
+    "plugin-cross-put": "stash_plugin's put likewise: refused, and nothing stored",
 }
 
 SCENARIOS = {
@@ -590,7 +598,9 @@ def client_get(
     return None
 
 
-def plugin_get(test: Test, pair: Pair, tag: str) -> list[str]:
+def plugin_get(
+    test: Test, pair: Pair, tag: str, direct: bool = False, cache: common.Cache | None = None
+) -> list[str] | None:
     """Run stash_plugin's get of an object on each side of pair at once.
 
     Its credentials directory holds each side's reader's token, with no
@@ -599,41 +609,140 @@ def plugin_get(test: Test, pair: Pair, tag: str) -> list[str]:
     (tokenIsAcceptable in client/acquire_token.go). It runs twice, with
     the tokens' files in either order, since it tries them in order.
 
+    Args:
+        test: The run.
+        pair: The pair.
+        tag: What its files are named after.
+        direct: Whether to get each from an origin (?directread): only
+            the sides that take direct reads are read.
+        cache: The cache to get them from alone
+            (Client.PreferredCaches), if any.
+
     Returns:
-        What went wrong.
+        What went wrong; None if no side takes the read.
     """
     fed = test.fed
     readers = {
         "owner": reader(pair),
         "origins": owners.BY_NAME["origins" if pair.like in credentials.PROTECTED else "none"],
     }
+    sides = [s for s in owners.SIDES if owners.expected(fed, readers[s], pair, s, "get", direct) == ALLOW]
+    if not sides:
+        return None
     files = {side: test.credential_token(readers[side], pair, side)[1] for side in owners.SIDES}
-    objects = {side: test.object_rel(side, 1) for side in owners.SIDES}
+    objects = {side: test.object_rel(side, 1) for side in sides}
+    query = transfers.DIRECT_QUERY if direct else ""
     problems: list[str] = []
     for order in (owners.SIDES, owners.SIDES[::-1]):
         creds = {f"{n}-{side}.use": path for n, side in enumerate(order) if (path := files[side])}
         into = test.directory(f"{tag}-{order[0]}-first")
-        urls = {side: f"{fed.url}/{pair.namespace(side)}/{objects[side]}" for side in owners.SIDES}
+        urls = {side: f"{fed.url}/{pair.namespace(side)}/{objects[side]}{query}" for side in sides}
         status, out, err, ads = test.session.plugin_run(
             f"owners/{tag}-{order[0]}-first",
-            [(urls[side], os.path.join(into, objects[side].rsplit("/", 1)[-1])) for side in owners.SIDES],
+            [(urls[side], os.path.join(into, objects[side].rsplit("/", 1)[-1])) for side in sides],
             creds=creds,
+            cache=cache.url if cache else None,
             cwd=into,
         )
         what = f"{order[0]}'s token first"
         if not transfers.plugin_passed(ads):
             problems.append(f"{what}: exit {status}: {last_line(ads or err or out)}")
             continue
-        for side in owners.SIDES:
+        for side in sides:
             local = os.path.join(into, objects[side].rsplit("/", 1)[-1])
             want = common.sha256(test.store_path(test.stores_of(pair, side)[0], pair, side, objects[side]))
             if common.sha256(local) != want:
                 problems.append(f"{what}: /{pair.namespace(side)}/{objects[side]} is not the object")
         hosts = set(transfers.plugin_endpoints(ads))
-        servers = serving(test, pair, "owner", False) | serving(test, pair, "origins", False)
+        servers = {director.host(cache.url)} if cache else set[str]()
+        for side in sides if not cache else []:
+            servers |= serving(test, pair, side, direct)
         if not hosts or not hosts <= servers:
             problems.append(f"{what}: served by {sorted(hosts)}, not {sorted(servers)}")
     return problems
+
+
+def plugin_put(test: Test, pair: Pair, tag: str) -> list[str]:
+    """Run stash_plugin's put of a new object to each side of pair at once.
+
+    Its credentials directory holds each side's own token, with no
+    scitokens.use, as for plugin_get(). A store of each side must then
+    hold that side's object.
+
+    Returns:
+        What went wrong.
+    """
+    fed = test.fed
+    writers = {side: owners.BY_NAME[side] for side in owners.SIDES}
+    creds = {
+        f"{n}-{side}.use": path
+        for n, side in enumerate(owners.SIDES)
+        if (path := test.credential_token(writers[side], pair, side)[1])
+    }
+    data = {side: os.urandom(5000) for side in owners.SIDES}
+    rel = test.rel(tag)
+    sources = {side: test.local(f"{tag}-{side}/{tag}", data[side]) for side in owners.SIDES}
+    status, out, err, ads = test.session.plugin_run(
+        f"owners/{tag}",
+        [(f"{fed.url}/{pair.namespace(side)}/{rel}", sources[side]) for side in owners.SIDES],
+        creds=creds,
+        upload=True,
+    )
+    if not transfers.plugin_passed(ads):
+        return [f"put to both sides at {rel}: exit {status}: {last_line(ads or err or out)}"]
+    problems: list[str] = []
+    for side in owners.SIDES:
+        stores_of = test.stores_of(pair, side)
+        if not any(common.file_holds(test.store_path(o, pair, side, rel), data[side]) for o in stores_of):
+            problems.append(f"put to /{pair.namespace(side)}/{rel}: no store of the side holds it")
+    return problems
+
+
+def plugin_cross(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: str, op: str) -> str | None:
+    """Run stash_plugin's get or put on side of pair, with cred's token.
+
+    The token, which side must refuse, is its scitokens.use, the one it
+    tries first. A get must leave no file, and a put no object in any
+    store.
+
+    Args:
+        test: The run.
+        pair: The pair.
+        side: The side whose namespace it reads or writes.
+        cred: The other side's credential.
+        tag: What its files are named after.
+        op: `get` or `put`.
+
+    Returns:
+        What went wrong, or None.
+    """
+    fed = test.fed
+    _, token_file = test.credential_token(cred, pair, side)
+    into = test.directory(tag)
+    ns = pair.namespace(side)
+    if op == "get":
+        rel = test.object_rel(side, 1)
+        local = os.path.join(into, rel.rsplit("/", 1)[-1])
+    else:
+        rel = test.rel(tag)
+        local = test.local(f"{tag}-source/{tag}", os.urandom(5000))
+    status, out, err, ads = test.session.plugin_run(
+        f"owners/{tag}",
+        [(f"{fed.url}/{ns}/{rel}", local)],
+        creds={"scitokens.use": token_file} if token_file else {},
+        upload=op == "put",
+        cwd=into,
+    )
+    what = f"plugin {op} of /{ns}/{rel} ({cred.name})"
+    why = not_refused(status, ads or out, err)
+    if why:
+        return f"{what}: {why}"
+    if op == "get" and os.listdir(into):
+        return f"{what}: refused, but it left {sorted(os.listdir(into))}"
+    held = test.holders(pair, rel) if op == "put" else []
+    if held:
+        return f"{what}: refused, but {', '.join(held)} hold it"
+    return None
 
 
 def client_put(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: str) -> str | None:
@@ -674,8 +783,8 @@ def client_put(test: Test, pair: Pair, side: str, cred: OwnerCredential, tag: st
 def client(test: Test, name: str) -> tuple[str, str]:
     """Check the client scenario name, for each pair.
 
-    It runs the reads of every pair, by each route and by the plugin;
-    the cross-owner reads of the pairs that take a token to read; and the
+    It runs the reads of every pair, by each client and route; the
+    cross-owner reads of the pairs that take a token to read; and the
     puts of those that take writes (/other, and /public/other under
     `-p origin-public-writes`).
     """
@@ -693,27 +802,45 @@ def client(test: Test, name: str) -> tuple[str, str]:
                 found.append(
                     client_get(test, pair, "owner", reader(pair), False, f"{tag}-{cache.svc}", cache)
                 )
-        elif name == "plugin-get":
-            problems += plugin_get(test, pair, tag)
-            done += 2
+        elif name in ("plugin-get", "plugin-direct-get", "plugin-cache-get"):
+            caches = test.fed.federated_caches if name == "plugin-cache-get" else [None]
+            for cache in caches:
+                named = f"{tag}-{cache.svc}" if cache else tag
+                both = plugin_get(test, pair, named, name == "plugin-direct-get", cache)
+                if both is not None:
+                    problems += both
+                    done += 2
             continue
-        elif name == "cross-get":
+        elif name in ("cross-get", "plugin-cross-get"):
             if pair.like not in credentials.PROTECTED:
                 continue
-            found.append(client_get(test, pair, "owner", theirs, False, f"{tag}-owner"))
-            found.append(client_get(test, pair, "origins", owner, False, f"{tag}-origins"))
+            if name == "cross-get":
+                found.append(client_get(test, pair, "owner", theirs, False, f"{tag}-owner"))
+                found.append(client_get(test, pair, "origins", owner, False, f"{tag}-origins"))
+            else:
+                found.append(plugin_cross(test, pair, "owner", theirs, f"{tag}-owner", "get"))
+                found.append(plugin_cross(test, pair, "origins", owner, f"{tag}-origins", "get"))
         elif not writes:
             continue
         elif name == "put":
             found.append(client_put(test, pair, "owner", owner, tag))
-        else:
+        elif name == "plugin-put":
+            problems += plugin_put(test, pair, tag)
+            done += 1
+            continue
+        elif name == "cross-put":
             found.append(client_put(test, pair, "owner", theirs, f"{tag}-owner"))
             found.append(client_put(test, pair, "origins", owner, f"{tag}-origins"))
+        else:
+            found.append(plugin_cross(test, pair, "owner", theirs, f"{tag}-owner", "put"))
+            found.append(plugin_cross(test, pair, "origins", owner, f"{tag}-origins", "put"))
         done += len(found)
         problems += [p for p in found if p]
     if not done:
-        if name == "cache-get":
+        if name in ("cache-get", "plugin-cache-get"):
             return SKIP, "there is no federated cache"
+        if name == "plugin-direct-get":
+            return SKIP, "no side of a pair takes direct reads"
         return SKIP, "origin-2 exports no namespace that takes a token, or writes"
     return outcome(problems, f"{done} command(s)")
 

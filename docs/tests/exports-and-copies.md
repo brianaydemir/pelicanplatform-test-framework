@@ -97,7 +97,9 @@ The scenarios:
 - `nested-export`: Under the nested restart, which adds
   `/public/data/exports/<run>/secret` with `/protected-a`'s capabilities,
   the longest prefix must pick a path's export (compare
-  [another owner](another-owner.md)). At each origin, a GET:
+  [another owner](another-owner.md)). At each origin, at each federated
+  cache, and through each director, whose redirect is followed as curl
+  follows it, a GET:
 
   - `served`: of an object beside the export, with no token: served;
   - `token`: of an object in it, with a read token for it: served;

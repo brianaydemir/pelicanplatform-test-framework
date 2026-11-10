@@ -22,7 +22,9 @@ and the image registries.
   the [shapes](glossary.md#shape), one per line, for a matrix of one shape
   per job. `-j N` runs N copies of the checkout at once, as the host's
   memory allows: a shape each, or, with fewer shapes than copies, each
-  shape's suites shared out among them.
+  shape's suites shared out among them. `-t SUITE` or
+  `-t 'SUITE/SCENARIO*'`, as often as needed, runs only those in each
+  shape, as `./fed.sh test` takes them.
 - **What comes back:** the exit status, non-zero if any shape failed, and in
   `DIR`:
   - each shape's log, and its results in `results/<shape>/`;
@@ -57,7 +59,8 @@ the shapes:
 Each [suite](glossary.md#suite) writes `framework/var/results/<suite>.tsv`,
 and its SciTokens [pass](glossary.md#pass) `<suite>-scitokens.tsv`
 ([token profiles](tests/README.md#token-profiles)): a header row, then one
-row per [case](glossary.md#case).
+row per [case](glossary.md#case), written as the case is recorded, so that a
+run that is killed leaves the rows it had.
 
 ```
 suite   case   status   seconds   note
@@ -76,7 +79,8 @@ abandons a pass that prints nothing for 20 minutes, or runs for 90
 (`STALL_SECONDS` and `BUDGET_SECONDS` in `test.py`), and then stops the run
 if any Pelican server no longer answers, leaving no rows for the suites
 after it. It stops the run likewise, abandoning the pass under way, once the
-run has gone on for six hours (`RUN_SECONDS`). A run of every suite first
+run has gone on for six hours (`RUN_SECONDS`); half an hour after that,
+`./fed.sh test` interrupts tests that still run. A run of every suite first
 removes earlier results with the same tag.
 
 To read one:
@@ -89,7 +93,8 @@ column -t -s "$(printf '\t')" framework/var/results/transfers.tsv
 results in `DIR/results/<shape>/`, and merges them with
 [`framework/report.py`](../framework/report.py). A shape that it did not
 finish, interrupted, say, gets a `FAIL` row named `aborted`, beside the
-rows of what it had done. For a shape whose suites it shared out among
+rows of what it had done, its tests' logs so far, and
+`<shape>.compose.log`. For a shape whose suites it shared out among
 copies, it first combines the copies' results, each case once, with its
 worst status (federation's required scenarios, and its own steps, are each
 copy's):

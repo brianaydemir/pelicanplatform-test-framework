@@ -1,7 +1,7 @@
 """One row per test case, for people and for CI.
 
-test.py records each suite's cases in a Report, which, when the suite
-ends, writes framework/var/results/<suite>.tsv:
+test.py records each suite's cases in a Report, which writes each, as
+it is recorded, to framework/var/results/<suite>.tsv:
 
   suite<TAB>case<TAB>status<TAB>seconds<TAB>note
 
@@ -23,6 +23,7 @@ record_skip().
 
 import os
 import re
+import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -144,12 +145,13 @@ class Report:
     """The cases one suite ran.
 
     A case's duration is, by default, the time since the previous case,
-    or since the Report was made.
+    or since the Report was made. Each case is written to the file as it
+    is recorded, so that a run that is killed leaves those it had.
 
     Attributes:
         suite: The suite's name, with `-<tag>` after it if RESULTS_TAG
             names a tag.
-        path: The file that write() writes.
+        path: The file that the cases are written to.
     """
 
     def __init__(self, suite: str, directory: str):
@@ -158,6 +160,8 @@ class Report:
         self.path = os.path.join(directory, slug(self.suite) + ".tsv")
         self.rows: list[Row] = []
         self._mark = time.monotonic()
+        # A suite may record cases from several threads at once.
+        self._lock = threading.Lock()
 
     def add(self, case: str, status: str, note: str = "", seconds: float | None = -1.0) -> None:
         """Record a case.
@@ -177,10 +181,18 @@ class Report:
         if status not in STATUSES:
             raise ValueError(f"unknown status: {status}")
         now = time.monotonic()
-        if seconds is not None and seconds < 0:
-            seconds = now - self._mark
-        self._mark = now
-        self.rows.append(Row(case, status, seconds, redact(note)))
+        with self._lock:
+            if seconds is not None and seconds < 0:
+                seconds = now - self._mark
+            self._mark = now
+            self.rows.append(Row(case, status, seconds, redact(note)))
+            self._save()
+
+    def _save(self) -> None:
+        """Write the cases to the file, in place of what it held."""
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write(self.table())
 
     @property
     def failed(self) -> int:
@@ -206,7 +218,7 @@ class Report:
         return format_table(COLUMNS, rows)
 
     def write(self, error: str | None = None) -> None:
-        """Write the file.
+        """Write the file, once the suite has ended.
 
         Args:
             error: Why the suite stopped early, if it did, to record as a
@@ -215,9 +227,8 @@ class Report:
         """
         if error:
             self.add("aborted" if self.rows else "setup", FAIL, error)
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        with open(self.path, "w", encoding="utf-8") as f:
-            f.write(self.table())
+        with self._lock:
+            self._save()
 
 
 def label(svc: str, role: str) -> str:

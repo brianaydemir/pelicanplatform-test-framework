@@ -2676,6 +2676,51 @@ fed_test_interrupt() {
       done' || true
 }
 
+# Refuse to run the tests beside a run of them in the dev container, as
+# a `test` command that was killed outright leaves one: the two would
+# share their logs, and the services. Before fed_dev_up, which recreates
+# the container, and so ends that run, if its definition has changed.
+fed_refuse_second_run() {
+  if docker compose -f framework/docker-compose.yaml exec -T dev \
+      sh -c 'pgrep -f "^[^ ]* /scratch/test\.py" >/dev/null' 2>/dev/null; then
+    die "the tests already run in the dev container; wait for them, or stop" \
+        "them: ./${progname} exec dev pkill -f /scratch/test.py"
+  fi
+}
+
+# How long the `test` command lets the tests run, in seconds: half an
+# hour past the limit that test.py sets itself (RUN_SECONDS), so that
+# this one ends only a run whose own watchdog has failed.
+fed_test_limit() {
+  fed_run_seconds=$(sed -n 's/^RUN_SECONDS = \([0-9 *]*\)$/\1/p' test.py)
+  [ -n "${fed_run_seconds}" ] || die "cannot read RUN_SECONDS in test.py"
+  # Expanded as text: the value is a product, not a number.
+  # shellcheck disable=SC2004
+  printf '%s\n' "$(( (${fed_run_seconds}) + 30 * 60 ))"
+}
+
+# In the background, interrupt the tests, as an interrupt of the `test`
+# command does, if they still run after $1 seconds.
+fed_test_timer_start() {
+  (
+    trap 'kill "${fed_nap}" 2>/dev/null; exit 0' TERM
+    sleep "$1" &
+    fed_nap=$!
+    wait "${fed_nap}"
+    warn "the tests have run for $1s, past test.py's own limit; interrupting them"
+    fed_test_interrupt
+  ) &
+  fed_timer_pid=$!
+}
+
+# Stop the timer, if it runs.
+fed_test_timer_stop() {
+  [ -n "${fed_timer_pid:-}" ] || return 0
+  kill "${fed_timer_pid}" 2>/dev/null || true
+  wait "${fed_timer_pid}" 2>/dev/null || true
+  fed_timer_pid=""
+}
+
 # Keep the run's record in framework/var/logs/$1/, once:
 #
 #   <svc>.log       each service's log since its container was created,
@@ -2699,6 +2744,9 @@ fed_test_interrupt() {
 #                   live" in README.md): the transfers suite's batches,
 #                   downloads, verdicts, and plain HTTP exchanges, and
 #                   the responses that the auth and owners suites got
+#   metadata/       every request that the metadata recorder has received
+#                   (framework/var/data/metadata/), where the shape runs
+#                   it, with tokens' signatures cut out
 #
 # test.log and control.log, what the tests and the control helper
 # print, are written there as the tests run (see the `test` command). The
@@ -2753,6 +2801,9 @@ fed_save_logs() {
         -newer "${dir}/.started" \
         -exec sh -c 'exec "$1" framework/put-file.py --tree "$2" "$3/dev/${2##*/}"' \
             sh "${fed_python}" {} "${dir}" \;
+    if fed_has_profile metadata && [ -d framework/var/data/metadata ]; then
+      "${fed_python}" framework/put-file.py --tree framework/var/data/metadata "${dir}/metadata"
+    fi
     rm -f "${dir}/.started"
   fi
   # Each token's signature is cut out, as test.py cuts it out of what the
@@ -3001,6 +3052,10 @@ case "${cmd}" in
   dev|test)
     if [ "${cmd}" = test ]; then
       fed_prepare_var
+      case "${1:-}" in
+        -h|--help|-l|--list) ;;
+        *) fed_refuse_second_run ;;
+      esac
     fi
     fed_dev_up
     logs=""
@@ -3043,18 +3098,24 @@ case "${cmd}" in
           || warn "cannot record the run's provenance in ${log_dir}/provenance.txt"
     fi
     fed_control_start "${log_dir:+${log_dir}/control.log}"
-    trap 'fed_control_stop' EXIT
+    trap 'fed_test_timer_stop; fed_control_stop' EXIT
+    trap 'fed_test_interrupt; fed_control_stop; fed_save_logs "${logs}"; exit 129' HUP
     trap 'fed_test_interrupt; fed_control_stop; fed_save_logs "${logs}"; exit 130' INT
     trap 'fed_test_interrupt; fed_control_stop; fed_save_logs "${logs}"; exit 143' TERM
     status=0
     if [ -n "${logs}" ]; then
+      fed_test_timer_start "$(fed_test_limit)"
       # What the tests print is kept beside the services' logs, as
       # test.log (see fed_save_logs), through a pipe, so the tests get
-      # no TTY, and the subshell leaves the exit status in a file.
+      # no TTY, and the subshell leaves the exit status in a file. The
+      # pipeline runs in the background, so that a signal's trap runs
+      # as the signal comes, not once the tests have ended.
       {
         docker compose -f framework/docker-compose.yaml exec -T dev "$@" 2>&1 \
             || printf '%s\n' "$?" >"${log_dir}/.status"
-      } | tee "${log_dir}/test.log"
+      } | tee "${log_dir}/test.log" &
+      wait $! || true
+      fed_test_timer_stop
       if [ -f "${log_dir}/.status" ]; then
         status=$(cat "${log_dir}/.status")
         rm -f "${log_dir}/.status"
