@@ -21,7 +21,7 @@ from typing import Any
 from testlib import accounts, common, credentials, director, issuer, jwt, registry, suite, web, webapi
 from testlib.common import outcome
 from testlib.director import expected_targets, listing_problems
-from testlib.report import FAIL, PASS, SKIP
+from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
 from testlib.suite import CaseRow
 from testlib.webapi import (
@@ -522,8 +522,8 @@ def login_rows(test: Access, server: Server) -> list[CaseRow]:
     found = set_cookie(good, "login")
     cookie = found[0] if found else ""
     if not cookie:
-        rows.append((f"{name} whoami-admin", SKIP, "the login set no cookie"))
-        rows.append((f"{name} logout", SKIP, "the login set no cookie"))
+        for case in ("whoami-admin", "logout", "logout-replay"):
+            rows.append((f"{name} {case}", INCONCLUSIVE, "the login set no cookie"))
     else:
         rows.append(whoami_row(f"{name} whoami-admin", whoami(server, cookie=cookie), "admin"))
         out = web.request("POST", server.web_url + LOGOUT, headers=cookie_header(login=cookie))

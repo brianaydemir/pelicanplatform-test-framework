@@ -145,8 +145,10 @@ ROOM_SLACK = blocks.stored(blocks.INLINE + 1)
 # How long the server may take to answer a PUT's headers alone.
 HEADERS_WAIT = 10
 # How long a delete may take to give its space back: the janitor
-# reclaims once a sweep.
+# reclaims once a sweep, every JANITOR_INTERVAL seconds (janitorInterval
+# in Pelican's pstore/gc.go).
 RECLAIM_WAIT = 90
+JANITOR_INTERVAL = 30
 
 # backups: where the restart has the origin write them, in its state
 # (/var/lib/pelican, framework/var/state/<service>), a directory per run;
@@ -754,6 +756,9 @@ def wait_metrics(
 ) -> tuple[bool, metrics.Snapshot]:
     """Fetch origin's metrics every 3 seconds until done(), or seconds pass.
 
+    An origin that exited on its own ends the wait, since it does not
+    come back by itself.
+
     Args:
         origin: The origin.
         done: Return whether the metrics show what it waits for.
@@ -767,6 +772,8 @@ def wait_metrics(
         snapshot = fetch_metrics(origin)
         if done(snapshot) or time.time() >= deadline:
             return done(snapshot), snapshot
+        if snapshot is metrics.EMPTY and control.crashed([origin.svc]):
+            return False, snapshot
         time.sleep(3)
 
 
@@ -896,7 +903,8 @@ def corrupted_at(test: Test, origin: common.Origin) -> Row:
     its second block is changed in that file, as a failing disk would
     change it, so that the block's AES-GCM tag no longer matches. The
     origin must no longer serve the object whole, or the change missed
-    it, and the row is inconclusive. The next data scan to begin after
+    it, and the row is inconclusive; and it must not answer a GET with
+    other bytes, whole (200). The next data scan to begin after
     the change, and succeed, must count it
     (pelican_pstore_data_scan_mismatches_total; docs/pstore-design.md,
     section 11.3). Afterward the object is deleted.
@@ -923,9 +931,12 @@ def corrupted_at(test: Test, origin: common.Origin) -> Row:
         answer = web.request("GET", test.url(origin.url, rel), token=test.setup)
         if answer.status == 200 and answer.body == data:
             return INCONCLUSIVE, "with a block of its file changed, the object was served whole"
-        served = answer.describe()
         if answer.status == 200:
-            served += f", with {len(answer.body)} bytes that are not the object"
+            return FAIL, (
+                "with a block of its file changed, a GET got 200 with"
+                + f" {len(answer.body)} bytes that are not the object"
+            )
+        served = answer.describe()
 
         def scanned(s: metrics.Snapshot) -> bool:
             began = pass_counts(s)["data_scan"] > begun
@@ -1071,6 +1082,28 @@ def chunked_at(test: Test, origin: common.Origin, case: str) -> Row:
             warn(f"{origin.svc} did not reclaim {suite.leaf(rel)} within {RECLAIM_WAIT}s of its delete")
 
 
+def settled_usage(test: Test, origin: common.Origin) -> tuple[dict[str, Any] | None, str]:
+    """Return origin's usage once a sweep of its janitor has left it as it was.
+
+    What a suite, or a pass, before this one deleted gives its space
+    back at the janitor's next sweep. So the usage is read until two
+    readings, a sweep and a little apart, agree, for RECLAIM_WAIT seconds
+    at most.
+
+    Returns:
+        As usage() does.
+    """
+    found, why = usage(test, origin)
+    deadline = time.monotonic() + RECLAIM_WAIT
+    while found is not None and time.monotonic() < deadline:
+        time.sleep(JANITOR_INTERVAL + 5)
+        again, why = usage(test, origin)
+        if again is None or again["usedBytes"] == found["usedBytes"]:
+            return again, why
+        found = again
+    return found, why
+
+
 def used_bytes(test: Test, origin: common.Origin) -> float:
     """Return what origin's storage API says it uses, or infinity if it won't say."""
     found, _ = usage(test, origin)
@@ -1130,6 +1163,9 @@ class Capacity:
     """capacity's state, at the first origin, bounded at `bound` bytes.
 
     Attributes:
+        test: The test.
+        origin: The first origin.
+        bound: The bound on its store, in bytes.
         rows: The cases' rows so far, by case.
         fillers: The rels of the fillers put.
     """
@@ -1380,6 +1416,8 @@ class Backups:
     Its backups go to a directory of the run's in its state.
 
     Attributes:
+        test: The test.
+        origin: The first origin.
         asked: When its restart was asked for, in Unix time.
         first: The startup backup's name, once started() has found it.
     """
@@ -1467,7 +1505,9 @@ class Backups:
             wait,
         )
         if not ok:
-            why = f"fewer than {BACKUPS_KEPT + 1} backup passes in {wait}s"
+            why = control.crashed([self.origin.svc]) or (
+                f"fewer than {BACKUPS_KEPT + 1} backup passes in {wait}s"
+            )
             return {"schedule": (FAIL, why), "files": (FAIL, why)}
         kept = self.snapshots()
         problems: list[str] = []
@@ -1584,6 +1624,10 @@ class Restore:
     """restore's state at the first origin.
 
     Attributes:
+        test: The test.
+        origin: The first origin.
+        backups: The `backups` scenario's state, from whose directory
+            the backup comes.
         data: The objects written before the backup, by object name.
         copied: The backup restored, copied under test.tmp.
         aside: Where the catalog that the restore replaces is set aside
@@ -1861,7 +1905,9 @@ def run_restarted(test: Test, wanted: Sequence[str], results: common.Results) ->
         wanted = [s for s in wanted if s != "restore"]
     bound: int | None = None
     if "capacity" in wanted:
-        found, why = usage(test, origin)
+        # Once what earlier deletes freed is reclaimed, or the store
+        # would be that much roomier than the bound allows for.
+        found, why = settled_usage(test, origin)
         if found is None:
             suite.record(results, "capacity", (FAIL, f"before the restart, {why}"))
             wanted = [s for s in wanted if s != "capacity"]

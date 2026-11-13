@@ -26,7 +26,7 @@ from functools import partial
 from urllib.parse import urlsplit
 
 from testlib import blocks, common, digests, director, metrics, stores, suite, transfers, web
-from testlib.common import die, first, outcome
+from testlib.common import first, outcome
 from testlib.report import INCONCLUSIVE, PASS
 from testlib.session import Session, last_line
 from testlib.suite import Row
@@ -119,12 +119,15 @@ class Test(suite.Test):
         caches: The caches that tier.
         tiered: The objects that each cache has tiered (their bytes), by
             cache, then name.
+        untiered: Why each cache did not tier an object that
+            tiered_object() asked of it, by cache, then name.
     """
 
     def __init__(self, session: Session, caches: list[common.Cache]):
         super().__init__(session, "tiering")
         self.caches = caches
         self.tiered: dict[str, dict[str, bytes]] = {c.svc: {} for c in caches}
+        self.untiered: dict[str, dict[str, str]] = {c.svc: {} for c in caches}
 
     def target(self, cache: common.Cache) -> common.TierTarget:
         """Return where cache tiers objects."""
@@ -139,12 +142,15 @@ class Test(suite.Test):
 
         Returns:
             Its bytes.
+
+        Raises:
+            suite.SetupError: The put failed.
         """
         data = os.urandom(size)
         rel = self.object_rel(cache, name)
         why = self.put({rel: data})
         if why:
-            die(f"could not put {rel} in place: {why}")
+            raise suite.SetupError(f"could not put {rel} in place: {why}")
         return data
 
     def fetch(self, cache: common.Cache, name: str) -> web.Response:
@@ -178,16 +184,21 @@ class Test(suite.Test):
     def tiered_object(self, cache: common.Cache, name: str = "big") -> tuple[str, bytes]:
         """Have cache tier object name, of the threshold plus OVER, once.
 
+        A failure stands for the scenarios that follow: the cache may hold
+        the object by then, so another read of it would not be cold.
+
         Returns:
             The object's name and bytes.
 
         Raises:
             NotTiered: The cache could not tier it.
         """
-        if name not in self.tiered[cache.svc]:
+        if name not in self.tiered[cache.svc] and name not in self.untiered[cache.svc]:
             why = self.tier(cache, name, self.target(cache).threshold + OVER)
             if why:
-                raise NotTiered(f"it did not tier an object: {why}")
+                self.untiered[cache.svc][name] = f"it did not tier an object: {why}"
+        if name in self.untiered[cache.svc]:
+            raise NotTiered(self.untiered[cache.svc][name])
         return name, self.tiered[cache.svc][name]
 
     def sole(self, cache: common.Cache) -> bool:

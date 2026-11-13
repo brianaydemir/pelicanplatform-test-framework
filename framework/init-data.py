@@ -32,32 +32,40 @@ COMPOSE_PROFILES = (os.environ.get("COMPOSE_PROFILES") or "").split(",")
 
 # How many objects each origin holds in each namespace (see transfers.LOAD).
 OBJECTS = transfers.LOAD.objects
-# The collections that init makes under each namespace's data/: the
-# areas of the suites that write there (testlib/suite.py), and `put`,
-# the transfers suite's. Other suites make their own.
+# The collections that init makes under each namespace's data/: the area
+# of each suite whose Test has one (testlib/suite.py), in the suites'
+# order, and `put`, the transfers suite's.
 SUITE_DIRS = (
-    "put",
-    "auth",
-    "posc",
-    "metadata",
+    "federation",
     "selftest",
     "commands",
+    "client",
+    "transfer-api",
+    "listings",
+    "names",
     "blocks",
-    "routing",
     "freshness",
     "cache-api",
     "throttling",
     "exports",
-    "collections",
-    "federation",
-    "listings",
-    "names",
+    "pstore",
+    "routing",
+    "director-api",
+    "tiering",
+    "posc",
+    "metadata",
     "users",
     "owners",
     "sitelocal",
-    "tiering",
-    "transfer-api",
-    "client",
+    "collections",
+    "issuer",
+    "accounts",
+    "oidc",
+    "advertise",
+    "observability",
+    "webdav",
+    "auth",
+    "put",
     "restart",
     "keys",
 )

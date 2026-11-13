@@ -18,7 +18,8 @@ bind source.
 --tree is for keeping what the tests write with the logs, which keep no
 token whole (see `redact` in framework/report.py). It skips symlinks, and
 follows none below SRC, which must not be one itself; DIR and what is
-below it are made as needed, and must not be symlinks either.
+below it are made as needed, and must not be symlinks either. A directory
+already there keeps its mode.
 """
 
 # A script, which fed.sh names as it is.
@@ -49,7 +50,7 @@ def copy_tree(src_fd: int, dst_fd: int) -> None:
             if entry.is_dir(follow_symlinks=False):
                 sub = common.open_dir(entry.name, src_fd)
                 try:
-                    out = common.make_dirs(entry.name, dst_fd, 0o755)
+                    out = common.make_dirs(entry.name, dst_fd, 0o755, keep_modes=True)
                     try:
                         copy_tree(sub, out)
                     finally:
@@ -77,7 +78,8 @@ def main() -> None:
             try:
                 base = common.open_dir("/" if os.path.isabs(dst) else ".")
                 try:
-                    dst_fd = common.make_dirs(dst, base, 0o755)
+                    # DIR's parents, as framework/var is, keep their modes.
+                    dst_fd = common.make_dirs(dst, base, 0o755, keep_modes=True)
                 finally:
                     os.close(base)
                 try:

@@ -32,6 +32,8 @@ ES256, RS256, HS256, NONE = "ES256", "RS256", "HS256", "none"
 # The WLCG token profile's audience for any server, which `pelican token
 # create` names unless told otherwise.
 ANY_AUDIENCE = "https://wlcg.cern.ch/jwt/v1/any"
+# How long one run of the openssl command may take, in seconds.
+OPENSSL_TIMEOUT = 60
 
 # DER's object identifiers, as encoded, of the keys key_id() knows.
 _EC_KEY = bytes.fromhex("2a8648ce3d0201")  # id-ecPublicKey
@@ -67,7 +69,9 @@ def _require_openssl() -> None:
 def openssl(args: Sequence[str], data: bytes = b"") -> bytes:
     """Return what `openssl <args>` writes, given data; it must succeed."""
     _require_openssl()
-    done = subprocess.run(["openssl", *args], input=data, capture_output=True, check=False)
+    done = subprocess.run(
+        ["openssl", *args], input=data, capture_output=True, timeout=OPENSSL_TIMEOUT, check=False
+    )
     if done.returncode != 0:
         common.die(f"openssl {args[0]} failed: {done.stderr.decode(errors='replace').strip()}")
     return done.stdout
@@ -400,6 +404,7 @@ def _openssl_verifies(pem: str, signature: bytes, data: bytes) -> bool:
             ["openssl", "dgst", "-sha256", "-verify", key, "-signature", sig],
             input=data,
             capture_output=True,
+            timeout=OPENSSL_TIMEOUT,
             check=False,
         )
     return done.returncode == 0

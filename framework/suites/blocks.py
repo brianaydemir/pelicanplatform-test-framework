@@ -11,8 +11,8 @@ ranges), `client` (first read by `pelican object get`), and `plugin`
 length, as the clients upload; the rest, with a Content-Length. The
 other scenarios put objects of their own, one per cache or origin, so
 that each is cold where it is read. Where /protected-a takes no writes,
-the objects are put straight in each store (stores.seed()), and the
-upload scenarios skip. Where it takes no direct clients, the origins are
+the objects are put straight in each store (stores.write_file()), and
+the upload scenarios skip. Where it takes no direct clients, the origins are
 read only through the caches, and a direct read must be refused.
 
 Requests, client runs, and the uploads of `put-declared` and
@@ -75,6 +75,7 @@ SCENARIOS = {
     "cache-assemble": "each cache: ranges that add up to an object leave it holding all",
     "cache-abandoned": "each cache: a cold read that its client gives up on spoils nothing",
     "cache-corrupted": "each V2 cache: a block corrupted or cut from its store is never served",
+    "cache-file-lost": "each V2 cache: an object whose file is gone from its store is never served wrong",
     "transfer-status": "each federated cache, asked, ends a GET with an X-Transfer-Status trailer, 200: OK",
     "transfer-status-failure": "each federated V2 cache reports a block it cannot repair; the clients fail",
     "cache-memory": (
@@ -114,6 +115,7 @@ CACHE_SCENARIOS = (
     "cache-assemble",
     "cache-abandoned",
     "cache-corrupted",
+    "cache-file-lost",
     "transfer-status",
     "transfer-status-failure",
     "cache-memory",
@@ -178,9 +180,6 @@ class Test(suite.Test):
         self.uploads: dict[str, Row] = {}
         self.digests, self.no_digests = stores.digests(self.fed)
         self.relayed = tuple(a for a in self.digests if a in digests.CLIENT_ALGORITHMS)
-        # Minted now, since the reads that first present it may be
-        # concurrent.
-        self.session.token_file(self.namespace)
 
     def set_rel(self, set_name: str, size: int) -> str:
         """Return the rel of a set's object of size."""
@@ -887,6 +886,8 @@ def cache_whole_first(test: Test) -> Row:
             found.fail(f"{cache.svc}: for its warm reads, {why}")
         elif before is not None or sent is not None:
             found.note(f"{cache.svc}'s warm reads fetched nothing")
+        else:
+            found.doubt(f"{cache.svc}: nothing counts what the origins sent for its warm reads")
         if cache.kind == "v2":
             wrong = stored_files(test, cache, "whole")
             found.problems += [f"{cache.svc}: {p}" for p in wrong]
@@ -1024,7 +1025,8 @@ def cache_stored(test: Test) -> Row:
     from its store on disk rather than through the cache. A V2 cache
     encrypts its store with keys of its own, and is passed over. An
     object whose record is missing, as one the cache has evicted, is not
-    compared; a cache of which none could be is inconclusive.
+    compared; a cache of which none could be, or whose records list no
+    block, is inconclusive.
     """
     if why := test.not_uploaded(True, False):
         return FAIL, why
@@ -1049,6 +1051,9 @@ def cache_stored(test: Test) -> Row:
                 objects += 1
         if not objects:
             doubts.append(f"{cache.svc}: no object's blocks could be read: {first(missing)}")
+            continue
+        if not compared:
+            doubts.append(f"{cache.svc}: its records list no block of {objects} objects yet")
             continue
         notes.append(f"{cache.svc}: {compared} blocks of {objects} objects")
         if missing:
@@ -1423,8 +1428,10 @@ def coalesced(test: Test, cache: common.Cache, rel: str, data: bytes, found: Fin
             )
         notes.append(f"the origins' containers sent {copies:.2f} objects")
     warm = cold
-    if cold is not None:
-        warm = counted_gets(test, cache, cold, len(data), reads, found, notes)
+    if cold is not None and counted_gets(test, cache, cold, len(data), reads, found, notes) is not None:
+        # A cold GET that an origin has yet to count would otherwise be
+        # taken for a warm read's.
+        warm = settled_metrics(test)
     found.note(f"{cache.svc}: cold, {', '.join(notes)}")
     sent = control.origins_sent(test.fed)
     why = read_at_once(test, cache, rel, data)
@@ -1524,7 +1531,8 @@ def coalescing(test: Test) -> Row:
 
 
 # How much of an object cache-abandoned reads before it gives up: part of
-# the first XRootD block, and more than a read batch of V2 blocks.
+# the first XRootD block, and more than the 8 blocks that a V2 cache fills
+# at a time.
 ABANDON_AFTER = 50000
 
 
@@ -1725,6 +1733,110 @@ def cache_corrupted(test: Test) -> Row:
     return outcome(problems, f"{len(caches)} V2 cache(s): {', '.join(op for op, _, _ in trials)}")
 
 
+# How many blocks a V2 cache repairs in one pass (maxRepairBlocks, in
+# Pelican's local_cache/range_reader.go). Once an object's file is gone,
+# it takes every block that it held for corrupt, and fetches again only
+# the first so many, whichever blocks the read was of.
+REPAIR_BLOCKS = (32 << 20) // blocks.BLOCK
+# cache-file-lost's object: two blocks more.
+LOST_SIZE = (REPAIR_BLOCKS + 2) * blocks.BLOCK
+# How long a V2 cache keeps an object's file open after it last read it
+# (openFileTTL, in local_cache/storage.go), and how long past that
+# cache-file-lost waits, in seconds: until the cache closes the file, it
+# still reads one that is gone.
+OPEN_FILE_TTL = 120
+OPEN_FILE_SLACK = 15
+
+
+def lose_file(test: Test, cache: common.Cache, rel: str, data: bytes, found: Findings) -> str | None:
+    """Have a V2 cache hold rel whole, then remove its file from the store.
+
+    Args:
+        test: The test.
+        cache: The V2 cache.
+        rel: The object.
+        data: Its bytes.
+        found: Where what goes wrong is recorded.
+
+    Returns:
+        The file removed, under framework/var; None if none was.
+    """
+    why = read_held(test, cache, rel, data)
+    if why:
+        found.fail(f"{cache.svc}: before its file was removed: {why}")
+        return None
+    url = cacheapi.object_url(test.fed, test.path(rel))
+    path, _, why = cacheapi.object_file(cache, test.admin_token(cache), url)
+    if path is None:
+        found.fail(f"{cache.svc}: {why or 'it holds the object inline, not in a file'}")
+        return None
+    try:
+        os.remove(path)
+    except OSError as e:
+        found.doubt(f"{cache.svc}: cannot remove its file, framework/var/{path}: {e.strerror or e}")
+        return None
+    return path
+
+
+def cache_file_lost(test: Test) -> Row:
+    """Check that a V2 cache never serves other bytes for a file it lost.
+
+    Each V2 cache holds an object of LOST_SIZE bytes whole, whose file is
+    then removed from the cache's store on disk (lose_file()). Once the
+    caches have closed their files (OPEN_FILE_TTL), a read of the object's
+    last 100 bytes, in a block past those that a cache repairs in one
+    pass, and of the whole object, must never be other bytes, and the
+    whole object must come back intact (see never_spoiled()). A cache
+    that by then has made the file anew, or no longer says that it holds
+    the object, has nothing lost to show, which leaves the row
+    inconclusive. A cache that tiers objects of this size
+    (`-p cache-tiered`) is passed over, since it need not keep a file of
+    them, as is an XRootD cache. Afterward, the object is evicted from
+    each cache.
+    """
+    caches = [
+        c
+        for c in test.caches
+        if c.kind == "v2"
+        and (c.svc not in test.fed.tiering or test.fed.tiering[c.svc].threshold > LOST_SIZE)
+    ]
+    if not caches:
+        return SKIP, "no V2 cache that keeps an object of this size in a file of its own"
+    base = test.rel("lost")
+    data = os.urandom(LOST_SIZE)
+    if why := put_under(test, base, {c.svc: data for c in caches}):
+        return FAIL, why
+    found = Findings()
+    # The file removed from each cache's store, by service.
+    lost: dict[str, str] = {}
+    try:
+        for cache in caches:
+            path = lose_file(test, cache, f"{base}/{cache.svc}", data, found)
+            if path is not None:
+                lost[cache.svc] = path
+        if lost:
+            wait = OPEN_FILE_TTL + OPEN_FILE_SLACK
+            print(f"Waiting {wait}s for {', '.join(lost)} to close the files removed")
+            time.sleep(wait)
+        for cache in caches:
+            if cache.svc not in lost:
+                continue
+            rel = f"{base}/{cache.svc}"
+            if os.path.exists(lost[cache.svc]) or not test.held(cache, rel):
+                found.doubt(f"{cache.svc} no longer holds the object without its file")
+                continue
+            tail: blocks.Request = ((LOST_SIZE - 100, LOST_SIZE - 1),)
+            why = never_spoiled(test, cache, rel, data, tail)
+            if why:
+                found.fail(f"{cache.svc}: {why}")
+    finally:
+        for cache in caches:
+            answer = cacheapi.evict(cache, test.path(f"{base}/{cache.svc}"), test.setup, method="DELETE")
+            if answer.status != 200:
+                warn(f"evicting {base}/{cache.svc} from {cache.svc}: {answer.describe()}")
+    return found.row(f"{len(caches)} V2 cache(s): {LOST_SIZE} bytes, the file removed")
+
+
 # What a client sends to learn how a transfer ended once its headers have
 # gone out (docs/pelican-http-headers.md in Pelican's repository). The
 # server then announces `Trailer: X-Transfer-Status`, and ends the body
@@ -1856,7 +1968,7 @@ def transfer_status(test: Test) -> Row:
         url = cacheapi.object_url(test.fed, test.path(f"{base}/{cache.svc}-small"))
         inline, why = cacheapi.held_inline(cache, test.admin_token(cache), url)
         if inline is None:
-            note += f"; {cache.svc} did not say how it holds the small object ({why})"
+            doubts.append(f"{cache.svc} did not say how it holds the small object ({why})")
         elif not inline:
             doubts.append(f"{cache.svc} holds the small object in blocks, not inline")
         else:
@@ -3448,7 +3560,7 @@ def conditions(etag: str, modified: str) -> list[tuple[str, str, bool]]:
 
     Returns:
         Each condition's header, its value, and whether it holds for the
-        object as it is, in which case a server may answer 304.
+        object as it is, in which case a server answers 304.
     """
     found: list[tuple[str, str, bool]] = []
     if etag:
@@ -3470,9 +3582,18 @@ def conditions(etag: str, modified: str) -> list[tuple[str, str, bool]]:
 
 
 def conditional_problems(
-    test: Test, svc: str, server_url: str, rel: str, data: bytes
+    test: Test, svc: str, server_url: str, rel: str, data: bytes, origin: bool
 ) -> tuple[list[str], set[str], set[str]]:
     """Send each of conditions() for rel, which holds data, to a server.
+
+    Args:
+        test: The test.
+        svc: The server's service.
+        server_url: Its URL.
+        rel: The object.
+        data: Its bytes.
+        origin: Whether the server is an origin, which must answer 304
+            where If-None-Match holds.
 
     Returns:
         What is wrong, the headers it honored (304), and those of ETag and
@@ -3497,6 +3618,8 @@ def conditional_problems(
                 problems.append(f"{what}: 304, though the condition does not hold")
         elif reply.status != 200:
             problems.append(f"{what}: {reply.describe()}, not 200 or 304")
+        elif origin and holds and header == "If-None-Match":
+            problems.append(f"{what}: 200, though the condition holds, not 304")
         elif reply.body != data:
             problems.append(f"{what}: the body is not the object")
     return problems, honored, unsent
@@ -3506,25 +3629,28 @@ def conditional(test: Test) -> Row:
     """Check that a server answers 304 only when a GET's condition holds.
 
     Each server, asked for objects of the `whole` set with a condition
-    (RFC 9110, which lets a server ignore a condition on a GET, but never
-    answer 304 to one that does not hold): with If-None-Match naming the
-    ETag it sent, among others, weakened (W/), or as *, and with
-    If-Modified-Since at the Last-Modified it sent or later, it may answer
-    304, or 200 with the whole object; with If-None-Match naming another
-    ETag, or If-Modified-Since long ago, it must answer 200 with the whole
-    object. The origins are asked only if they take direct clients. The
-    note says what each server honored, and what it never sent.
+    (RFC 9110, section 13.1): with If-None-Match naming the ETag it sent,
+    among others, weakened (W/), or as *, an origin must answer 304
+    (section 13.1.2), and a cache, which should (RFC 9111, section
+    4.3.2), may instead answer 200 with the whole object; with
+    If-Modified-Since at the Last-Modified it sent or later, either may
+    answer 304, or 200 with the whole object (section 13.1.3); with
+    If-None-Match naming another ETag, or If-Modified-Since long ago, it
+    must answer 200 with the whole object. The origins are asked only if
+    they take direct clients. The note says what each server honored,
+    and what it never sent.
     """
     if why := test.not_uploaded(True):
         return FAIL, why
     problems: list[str] = []
     notes: list[str] = []
+    origins = {o.svc for o in test.origins}
     for svc, url in servers(test):
         honored: set[str] = set()
         unsent: set[str] = set()
         for size in CONDITIONAL_SIZES:
             wrong, right, missing = conditional_problems(
-                test, svc, url, test.set_rel("whole", size), test.data[("whole", size)]
+                test, svc, url, test.set_rel("whole", size), test.data[("whole", size)], svc in origins
             )
             problems += wrong
             honored |= right
@@ -3587,7 +3713,9 @@ def cas_problems(test: Test, origin: common.Origin, rel: str) -> tuple[list[str]
     )
     current = v1
     etag = send_head(test, origin.url, rel).header("ETag")
-    if etag:
+    # If-Match compares strongly (RFC 9110, section 13.1.1), so a weak
+    # ETag matches nothing.
+    if etag and not etag.startswith("W/"):
         replaced = cas_put(test, origin, rel, v2, "If-Match", etag)
         check("a PUT with If-Match naming its ETag", replaced, True, rel, v2)
         if replaced.ok:
@@ -3996,6 +4124,7 @@ class Versions:
     Attributes:
         CHANGES: How much longer v2 is than v1, by kind of change.
         NAMES: The kinds of change.
+        test: The test.
         base: The objects' collection.
         v1: Each object's first version, by name (<cache>-<kind>).
         v2: Each object's second version, by name: as long as v1, longer,
@@ -4061,12 +4190,14 @@ class Versions:
 def cache_control_problem(test: Test, rel: str, wanted: str) -> str | None:
     """Return why an origin does not send Cache-Control wanted for rel.
 
+    It is asked with the setup token: this checks the shape.
+
     Returns:
         Why, or None if every origin sends it.
     """
     for origin in test.origins:
         answer = web.request(
-            "GET", test.url(origin.url, rel), token=test.token, headers={"Range": "bytes=0-0"}
+            "GET", test.url(origin.url, rel), token=test.setup, headers={"Range": "bytes=0-0"}
         )
         sent = answer.header("Cache-Control")
         if sent != wanted:
@@ -4528,6 +4659,7 @@ RUN = {
     "cache-assemble": cache_assemble,
     "cache-abandoned": cache_abandoned,
     "cache-corrupted": cache_corrupted,
+    "cache-file-lost": cache_file_lost,
     "transfer-status": transfer_status,
     "transfer-status-failure": transfer_status_failure,
     "cache-memory": cache_memory,

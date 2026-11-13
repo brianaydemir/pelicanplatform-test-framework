@@ -38,6 +38,13 @@ framework/var/results/<suite>.tsv (or <suite>-scitokens.tsv). A run of
 everything first removes the results of earlier runs with the same
 RESULTS_TAG.
 
+Each pass also records two rows of its own: `token-leaks clients`, which
+fails if a token came back whole, its signature in the clear, in what
+the pass's answers or client commands gave the tests, and `token-leaks
+logs`, which fails if one is in a Pelican server's log from the pass, or
+from just before it, since the last pass ended
+(framework/testlib/leaks.py).
+
 A pass that prints nothing for STALL_SECONDS, or runs for
 BUDGET_SECONDS, is abandoned, so that a scenario stuck on a server that
 never answers cannot stall the run. Where each of its threads was is
@@ -68,7 +75,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fra
 
 # pylint: disable=wrong-import-position
 from suites import SUITES
-from testlib import common, control, web, webapi
+from testlib import common, control, leaks, web, webapi
 from testlib.credentials import PROFILES, WLCG
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP, Report, redact
 from testlib.session import Session
@@ -87,6 +94,11 @@ BUDGET_SECONDS = 90 * 60
 # every suite takes in one shape: slow passes that each keep within
 # their budget would otherwise take days between them.
 RUN_SECONDS = 6 * 60 * 60
+# How many of a pass's tokens given away check_leaks() prints in full.
+PRINTED_LEAKS = 50
+# Until when the servers' logs have been read for tokens given away
+# (check_leaks()): to begin with, when the run began.
+LOGS_READ = [time.time()]
 # Once abandoned, how long its cleanup (the suite's `finally` blocks,
 # which put back what it restarted or wrote) may take before it is
 # interrupted again, and again.
@@ -281,6 +293,7 @@ def list_suites(chosen: dict[str, list[str]]) -> None:
             noted = f" ({'; '.join(notes)})" if notes else ""
             print(f"  {scenario:<{width}} {module.SCENARIOS[scenario]}{noted}")
         print()
+    print(f"Each pass also records {' and '.join(leaks.ROWS)} (docs/tests/README.md#token-leaks).")
     if fed is None:
         print("Run ./fed.sh init to see which suites apply to the shape.")
 
@@ -353,16 +366,20 @@ def run_suite(
     """
     module = SUITES[name]
     report = Report(suite_name(name, session.profile), RESULTS)
-    results = common.Results(list(module.SCENARIOS), report)
+    results = common.Results([*module.SCENARIOS, *leaks.ROWS], report)
     print(f"\n==> {report.suite}\n")
     web.log_to(session.log_exchange)
     error: str | None = None
     ended: str | None = None
+    # What reached the tests before the pass, as from an abandoned pass's
+    # threads, is not its own.
+    leaks.WATCH.take()
+    why = None
     try:
         why = module.skip(session.fed)
         if why:
             print(f"Skipping every scenario: {why}")
-            for scenario in selected:
+            for scenario in [*selected, *leaks.ROWS]:
                 report.add(scenario, SKIP, why, seconds=None)
         else:
             with watched(report.suite, deadline):
@@ -380,11 +397,73 @@ def run_suite(
         # suite fails, and the rest still run.
         traceback.print_exc()
         error = f"{type(e).__name__}: {e}"
+    if not why:
+        check_leaks(results)
     results.print()
     report.write(error)
     if error is not None and ended is None:
         ended = "error"
     return report, ended
+
+
+def check_leaks(results: common.Results) -> None:
+    """Record whether a pass gave away a token, as leaks.ROWS.
+
+    `token-leaks clients` fails if a token whose signature is whole came
+    back in what leaks.WATCH scanned of an answer, or of a client
+    command's output, since the pass began. `token-leaks logs` fails if
+    one is in a Pelican server's log (control.token_leaks()) from where
+    the last pass to read them left off (LOGS_READ), so that every line
+    logged as the tests run is read once; it skips where no control
+    helper serves the run. Each finding is printed, its signature cut
+    out; each row's note gives the first few.
+
+    Args:
+        results: The pass's results.
+    """
+    found, answers, commands = leaks.WATCH.take()
+    report_leaks("answers and client output", found)
+    if found:
+        results.add(leaks.CLIENTS_ROW, FAIL, leaks.summary(found))
+    else:
+        results.add(leaks.CLIENTS_ROW, PASS, f"none whole in {answers} answer(s) and {commands} command(s)")
+    why = control.unavailable()
+    if why:
+        results.add(leaks.LOGS_ROW, SKIP, why)
+        return
+    since, until = LOGS_READ[0], time.time()
+    # Even if they can't be read: a later pass that read them would report
+    # what is not its own.
+    LOGS_READ[0] = until
+    try:
+        counts, lines = control.token_leaks(since, until)
+    except control.ControlError as e:
+        results.add(leaks.LOGS_ROW, INCONCLUSIVE, f"could not read the servers' logs: {e}")
+        return
+    found = leaks.logs(lines)
+    report_leaks("the Pelican servers' logs", found)
+    if found:
+        results.add(leaks.LOGS_ROW, FAIL, leaks.summary(found))
+    else:
+        total = sum(counts.values())
+        results.add(leaks.LOGS_ROW, PASS, f"none whole in {total} line(s) of {len(counts)} server(s)' logs")
+
+
+def report_leaks(where: str, found: Sequence[leaks.Finding]) -> None:
+    """Print each token whole that where gave away, its signature cut out.
+
+    At most PRINTED_LEAKS of them, and then how many more.
+    """
+    if not found:
+        return
+    print(f"\nTokens whole in {where}:")
+    for finding in found[:PRINTED_LEAKS]:
+        print(f"  {finding.describe()}")
+        print(f"    {finding.token}.<signature>")
+        if finding.quote:
+            print(f"    first line: {finding.quote}")
+    if len(found) > PRINTED_LEAKS:
+        print(f"  and {len(found) - PRINTED_LEAKS} more")
 
 
 def run_passes(chosen: dict[str, list[str]], sessions: list[Session], deadline: float) -> list[Report]:

@@ -161,6 +161,9 @@ class RsaKey:
     """An RSA key pair, and what signs and publishes with it.
 
     Attributes:
+        n: The modulus.
+        e: The public exponent.
+        d: The private exponent.
         size: The modulus's length, in bytes.
         kid: The key's ID: its RFC 7638 thumbprint.
         jwk: The public key, as a JWK.
@@ -222,6 +225,7 @@ class Users:
     Rereading it lets a user added while the provider runs log in.
 
     Attributes:
+        path: The file's path.
         stamp: The file's modification time when last read; None before.
         found: The users as last read, by username.
     """
@@ -302,6 +306,11 @@ class Provider:
     """The key, the users, the client, and what has been issued.
 
     Attributes:
+        key: The key that signs the ID tokens, published in the JWKS.
+        users: The users.
+        client_id: The client's ID, from CLIENT_ID_FILE.
+        client_secret: The client's secret, from CLIENT_SECRET_FILE.
+        lock: Held while what has been issued is read or changed.
         codes: Authorization codes' grants, by code.
         access: Access tokens' grants, by token.
         refresh: Refresh tokens' grants, by token.

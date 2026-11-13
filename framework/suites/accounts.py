@@ -42,7 +42,7 @@ from testlib.collections import create, delete, get, grant, grants, listed, patc
 from testlib.common import die, objects, outcome, warn
 from testlib.credentials import PROTECTED
 from testlib.issuer import IssuerError, Tokens, User
-from testlib.report import FAIL, PASS, SKIP
+from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
 from testlib.suite import CaseRow
 
@@ -381,9 +381,11 @@ def user_status(test: Test) -> list[CaseRow]:
 
     def refused_issuer() -> tuple[str, str]:
         nonlocal refresh
-        problems = issuer_refusals(test, user, refresh)
-        # Honored or not, it may be spent.
-        refresh = ""
+        # Honored or not, the refresh token may be spent.
+        tried, refresh = refresh, ""
+        problems = issuer_refusals(test, user, tried)
+        if not problems and not tried:
+            return INCONCLUSIVE, "no device flow, and no code, but no refresh token was left to try"
         return outcome(problems, "no device flow, no code, and invalid_grant")
 
     def reactivated() -> tuple[str, str]:

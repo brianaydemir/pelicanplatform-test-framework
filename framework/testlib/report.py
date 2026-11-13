@@ -91,6 +91,21 @@ def slug(name: str) -> str:
 # `eyJ`), claims, and signature.
 _JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 
+# What a Pelican server's log has in place of a signature it cut out
+# (config/logging.go in Pelican), which is left as it is.
+PELICAN_REDACTED = "REDACTED"
+
+
+def _unsigned(token: str) -> str:
+    """Return a JWT's header and claims, then what stands for its signature.
+
+    That is `<signature>`, or PELICAN_REDACTED where the token has that,
+    so that a log shows whether Pelican cut the signature out or the
+    framework did.
+    """
+    head, signature = token.rsplit(".", 1)
+    return f"{head}.{signature if signature == PELICAN_REDACTED else '<signature>'}"
+
 
 def redact(text: str) -> str:
     """Return text with the signature of each JWT in it cut out.
@@ -98,9 +113,10 @@ def redact(text: str) -> str:
     A note or a message may quote a URL that carries a token, as a
     director's redirect does, and the results and logs keep it. Without
     its signature the token is of no use to anyone, while its claims
-    still say what it was.
+    still say what it was. A signature that a Pelican server cut out
+    already stays so (_unsigned()).
     """
-    return _JWT.sub(lambda m: m.group(0).rsplit(".", 1)[0] + ".<signature>", text)
+    return _JWT.sub(lambda m: _unsigned(m.group(0)), text)
 
 
 def number_tokens(text: str, seen: dict[str, int]) -> str:
@@ -121,7 +137,7 @@ def number_tokens(text: str, seen: dict[str, int]) -> str:
         if token in seen:
             return f"(token {seen[token]})"
         seen[token] = len(seen) + 1
-        return f"{token}.<signature> (token {seen[token]})"
+        return f"{_unsigned(match.group(0))} (token {seen[token]})"
 
     return _JWT.sub(numbered, text)
 
@@ -131,8 +147,10 @@ class Row:
     """A case, as recorded.
 
     Attributes:
+        case: Its name.
         status: One of STATUSES.
         seconds: Its duration, or None if it has none of its own.
+        note: What is said of it.
     """
 
     case: str
@@ -152,6 +170,7 @@ class Report:
         suite: The suite's name, with `-<tag>` after it if RESULTS_TAG
             names a tag.
         path: The file that the cases are written to.
+        rows: The cases recorded so far.
     """
 
     def __init__(self, suite: str, directory: str):

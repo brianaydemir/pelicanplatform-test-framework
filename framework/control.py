@@ -21,7 +21,15 @@ the shape's services but `dev`:
   killing them;
 - `net-bytes` by reading /proc/net/dev in the service's container, and
   `freeze-xrootd` and `thaw-xrootd` by signaling the XRootD daemons
-  there, with `docker compose exec`.
+  there, with `docker compose exec`;
+- `token-leaks` by reading the Pelican servers' logs between two times
+  with `docker compose logs`, and answering with the lines in which a
+  token's signature is whole, each cut out (testlib.leaks).
+
+While it serves, the helper also says when a container of the shape's
+exits, and when the kernel kills one for want of memory: a server killed
+so says nothing in its own log, and once a test starts it again, Docker
+no longer shows that it had exited.
 
 On stopping, the helper puts back what the tests left: it removes their
 configuration from control/config/, and restarts each running service
@@ -49,7 +57,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # pylint: disable=wrong-import-position
-from testlib import common, control
+from testlib import common, control, leaks
 
 # pylint: enable=wrong-import-position
 
@@ -150,6 +158,8 @@ class Helper:
             return True, "serving"
         if action == "exited":
             return self.exited()
+        if action == "token-leaks":
+            return self.token_leaks(str(request.get("since", "")), str(request.get("until", "")))
         if svc not in self.services:
             return False, (
                 f"the shape has no service {svc!r} that tests may control"
@@ -160,13 +170,15 @@ class Helper:
         if action == "net-bytes":
             return compose("exec", "-T", svc, "cat", "/proc/net/dev")
         say(f"{action} {svc}")
+        if action in control.UNDO:
+            # Before it is tried: an action that fails, as by running too
+            # long, may have acted all the same, and its undo does no harm
+            # to a service left as it was.
+            self.undo[svc] = control.UNDO[action]
         ok, output = compose(*compose_args(action, svc))
-        if ok:
-            if action in control.UNDO:
-                self.undo[svc] = control.UNDO[action]
-            else:
-                self.undo.pop(svc, None)
-        else:
+        if ok and action not in control.UNDO:
+            self.undo.pop(svc, None)
+        if not ok:
             say(output)
         return ok, output
 
@@ -189,6 +201,43 @@ class Helper:
             if svc in self.services and state in ("exited", "dead") and self.undo.get(svc) != "start":
                 found.append(f"{svc} {code}")
         return True, "\n".join(found)
+
+    def token_leaks(self, since: str, until: str) -> tuple[bool, str]:
+        """Say which lines of the Pelican servers' logs give away a token.
+
+        Args:
+            since: From when, as `docker compose logs --since` takes it.
+            until: Until when, likewise.
+
+        Returns:
+            Whether every log could be read, and a JSON object: `lines`,
+            how many lines of each server's log were read, by server;
+            and `found`, each line with a token whole (leaks.scan_log()).
+        """
+        if not since or not until:
+            return False, "token-leaks takes `since` and `until`"
+        servers = [svc for svc in self.services if control.pelican_server(svc)]
+        if not servers:
+            return True, json.dumps({"lines": {}, "found": []})
+        # One call for every server, not one each, which would add seconds
+        # to every pass of every suite. Compose starts each line with its
+        # container's name, `<service>-<index> | ` (padded).
+        ok, output = compose("logs", "--no-color", "--since", since, "--until", until, *servers)
+        if not ok:
+            return False, output
+        texts: dict[str, list[str]] = {svc: [] for svc in servers}
+        for line in output.splitlines():
+            name, sep, rest = line.partition(" | ")
+            name = name.strip()
+            svc = name if name in texts else name.rsplit("-", 1)[0]
+            if sep and svc in texts:
+                texts[svc].append(rest)
+        counts: dict[str, int] = {}
+        found: list[dict[str, Any]] = []
+        for svc, lines in texts.items():
+            counts[svc], quoted = leaks.scan_log(svc, "\n".join(lines))
+            found += quoted
+        return True, json.dumps({"lines": counts, "found": found})
 
     def put_back(self) -> None:
         """Put back what the tests left.
@@ -239,6 +288,64 @@ class Helper:
                 say(output)
 
 
+class Exits:
+    """A watch for the shape's containers that exit while the helper serves.
+
+    Attributes:
+        events: `docker compose events`, which prints each event of the
+            shape's containers as a line of JSON.
+        unread: What it has printed of a line not yet whole.
+    """
+
+    def __init__(self) -> None:
+        # pylint: disable-next=consider-using-with  # until close()
+        self.events = subprocess.Popen(
+            ["docker", "compose", "events", "--json"],
+            cwd=TOP,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        self.unread = b""
+        if self.events.stdout is not None:
+            os.set_blocking(self.events.stdout.fileno(), False)
+
+    def note(self) -> None:
+        """Say which containers Docker has said exited, since the last call.
+
+        The time said is when the helper learns of it: at once, but for
+        an exit during a request, which is said once the request is done.
+        """
+        if self.events.stdout is None:
+            return
+        while True:
+            try:
+                data = os.read(self.events.stdout.fileno(), 65536)
+            except BlockingIOError:
+                break
+            if not data:
+                break
+            self.unread += data
+        *lines, self.unread = self.unread.split(b"\n")
+        for line in lines:
+            try:
+                event = common.as_object(json.loads(line)) or {}
+            except ValueError:
+                continue
+            svc = event.get("service")
+            if event.get("action") == "oom":
+                say(f"the kernel killed {svc}, for want of memory")
+            elif event.get("action") == "die":
+                code = (common.as_object(event.get("attributes")) or {}).get("exitCode")
+                say(f"{svc} exited, with exit code {code}")
+
+    def close(self) -> None:
+        """Say what is left to say, and stop watching."""
+        self.note()
+        self.events.terminate()
+        self.events.wait()
+
+
 def answer(requests: int, name: str, ok: bool, output: str) -> None:
     """Answer request name in directory requests, and remove it.
 
@@ -252,15 +359,17 @@ def answer(requests: int, name: str, ok: bool, output: str) -> None:
         os.unlink(name, dir_fd=requests)
 
 
-def serve_requests(helper: Helper, parent: int, requests: int) -> None:
+def serve_requests(helper: Helper, exits: Exits, parent: int, requests: int) -> None:
     """Answer requests, oldest first, until stopped or the parent ends.
 
     Args:
         helper: What does the requests.
+        exits: What notes the containers that exit meanwhile.
         parent: The process ID of the process that started the helper.
         requests: The requests' directory, open.
     """
     while os.getppid() == parent and not helper.stopping:
+        exits.note()
         for name in sorted(os.listdir(requests)):
             if helper.stopping:
                 return
@@ -294,6 +403,10 @@ def serve() -> None:
     except BlockingIOError:
         say("another helper serves the tests already")
         return
+    # One that a helper that was killed left: none serves until this one
+    # says so, once it has put back what that one left.
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(control.SERVING)
     parent = os.getppid()
     helper = Helper()
     for signum in (signal.SIGTERM, signal.SIGHUP):
@@ -304,13 +417,15 @@ def serve() -> None:
         if not common.is_dir_entry(name, requests):
             os.unlink(name, dir_fd=requests)
     helper.put_back()
+    exits = Exits()
     with open(control.SERVING, "w", encoding="utf-8") as f:
         f.write(f"{os.getpid()}\n")
     try:
-        serve_requests(helper, parent, requests)
+        serve_requests(helper, exits, parent, requests)
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.remove(control.SERVING)
+        exits.close()
         helper.put_back()
         os.close(requests)
 

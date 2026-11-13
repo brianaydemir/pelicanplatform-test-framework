@@ -164,7 +164,8 @@ def plugin_get(test: Test, namespace: str, name: str = "", caches: str = "") -> 
 def get_plus(test: Test) -> Row:
     """Run client_get() with `--cache <site-local>,+`.
 
-    The client may fall back to the director's caches, but need not.
+    The `+` lets the client fall back to the director's caches, but the
+    site-local cache, which is up, must serve.
     """
     return client_get(test, "protected-a", "get-plus", f"{test.cache.url},+")
 
@@ -262,8 +263,10 @@ def upstream(test: Test) -> Row:
     """Check that the site-local cache fetches through a federated V2 cache.
 
     A cold read through it must leave the object in a federated V2
-    cache, which held none of it before. An XRootD cache cannot be asked
-    whether it holds an object without fetching it.
+    cache, which held none of it before, within suite.HELD_WAIT seconds:
+    a V2 cache says it holds an object a moment after serving it whole.
+    An XRootD cache cannot be asked whether it holds an object without
+    fetching it.
     """
     feds = [c for c in test.fed.federated_caches if c.kind == "v2"]
     if not feds:
@@ -278,11 +281,14 @@ def upstream(test: Test) -> Row:
     why = web.served(web.request("GET", f"{test.cache.url}{path}", token=test.token), data)
     if why:
         return FAIL, f"GET through {test.cache.svc}: {why}"
-    after = {c.svc: test.cached(c, rel) for c in feds}
-    holders = [svc for svc, held in after.items() if held]
-    if not holders:
-        return FAIL, f"after the read, only-if-cached got {after}: no federated cache holds it"
-    return PASS, f"{', '.join(holders)} holds it"
+
+    def holders() -> list[str]:
+        return [c.svc for c in feds if test.cached(c, rel)]
+
+    found = common.wait_last(holders, bool, suite.HELD_WAIT, interval=1)
+    if not found:
+        return FAIL, f"no federated V2 cache holds it {suite.HELD_WAIT}s after the read (only-if-cached)"
+    return PASS, f"{', '.join(found)} holds it"
 
 
 def listing(test: Test) -> Row:

@@ -8,7 +8,7 @@ turn away a caller who lies, and serve the real thing.
 See docs/tests/advertisements.md.
 
 A server signs its advertise token with its own key, which the registry
-holds for its prefix (/origins/<host> or /caches/<host>), and the
+holds for its prefix (/origins/<host>:<port> or /caches/<name>), and the
 director checks it against the registry's copy (verifyAdvertiseToken in
 Pelican's director/origin_api.go). The suite signs as each server with
 the key in framework/var/issuer-keys/<host>/ that the registry holds.
@@ -47,9 +47,9 @@ from testlib.ads import (
     sign,
     unknown_token,
 )
-from testlib.common import die, first, outcome
+from testlib.common import die, first, outcome, warn
 from testlib.director import expected_targets, listing_problems
-from testlib.report import FAIL, PASS, SKIP
+from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
 from testlib.suite import CaseRow
 
@@ -461,12 +461,11 @@ def spoofed_status(test: Test) -> list[CaseRow]:
         named = naming(test, first_cache)
         if len(named) != wanted:
             problems.append(f"afterward, only {named} named {first_cache.host}")
-        listed = web.request("GET", f"{test.director}{director.SERVERS}/{quote(first_cache.name, safe='')}")
-        found = listed.object()
-        if found.get("filtered"):
-            problems.append(
-                f"{director.host(test.director)} lists it filtered ({found.get('filteredType')})"
-            )
+        for url in test.fed.directors:
+            listed = web.request("GET", f"{url}{director.SERVERS}/{quote(first_cache.name, safe='')}")
+            found = listed.object()
+            if found.get("filtered"):
+                problems.append(f"{director.host(url)} lists it filtered ({found.get('filteredType')})")
         rows.append((name, *outcome(problems, f"{first_cache.host} still named")))
         problems = restored(test, first_cache, second)
         if problems:
@@ -558,6 +557,7 @@ def pending_registration(test: Test) -> CaseRow:
         "admin_metadata": {
             "description": "pelican-test-framework: the advertise suite's pending cache",
             "institution": "pelican-test-framework",
+            "site_name": host,
         },
     }
     created = admin.call("POST", registry.REGISTRATIONS, registration, headers)
@@ -567,21 +567,29 @@ def pending_registration(test: Test) -> CaseRow:
             FAIL,
             f"registering {prefix} as the registry's admin: {created.describe()}",
         )
-    listed = admin.call("GET", f"{registry.REGISTRATIONS}?status=Pending")
-    ids = [
-        str(entry.get("id", ""))
-        for entry in common.objects(listed.array())
-        if entry.get("prefix") == prefix
-    ]
+
+    def ids(query: str) -> list[str]:
+        listed = admin.call("GET", f"{registry.REGISTRATIONS}{query}")
+        return [
+            str(entry.get("id", ""))
+            for entry in common.objects(listed.array())
+            if entry.get("prefix") == prefix
+        ]
+
     try:
+        if not ids("?status=Pending"):
+            return ("pending", INCONCLUSIVE, f"the registry does not list {prefix} as pending")
         token = sign(key, kid, ADVERTISE, f"https://{host}:8444", test.director)
         answer = get_fed_token(test, {"host": host, "sType": "Cache"}, token)
         if answer.status != 403:
             return ("pending", FAIL, f"{answer.describe()}, not 403: {prefix} is pending")
         return ("pending", PASS, f"HTTP 403 for {prefix}")
     finally:
-        for reg_id in ids:
-            admin.call("DELETE", f"{registry.REGISTRATIONS}/{reg_id}", headers=headers)
+        # Whatever its status: the registry suite's sweep is of its own.
+        for reg_id in ids(""):
+            removed = admin.call("DELETE", f"{registry.REGISTRATIONS}/{reg_id}", headers=headers)
+            if not removed.ok:
+                warn(f"could not remove the registration of {prefix}: {removed.describe()}")
 
 
 def fed_token(test: Test) -> list[CaseRow]:

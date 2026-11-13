@@ -122,6 +122,8 @@ class Server:
     """An origin or a cache: its service, its data URL, and its kind.
 
     Attributes:
+        svc: Its compose service.
+        url: Its data URL.
         kind: "origin", or a cache's kind: "v2" or "xrootd".
     """
 
@@ -481,9 +483,9 @@ def stat_problems(
     """Return what is wrong with each director's answers for `missing`.
 
     Each director is sent a GET and a HEAD of it by its origin route. If
-    found, each answer must be a 307 to an origin; otherwise 404, and a
-    GET's body saying no origin had it, but where the director cannot ask
-    (unasked()), a 307 too.
+    found, or if the director cannot ask (unasked()), each answer must be
+    a 307 to an origin; otherwise 404, and a GET's body saying no origin
+    had it.
 
     Args:
         test: The Test.
@@ -503,7 +505,7 @@ def stat_problems(
                 redirected = (
                     answer.status == 307 and where(answer.header("Location"), test.origins) is not None
                 )
-                if found or (answer.status == 307 and unasked(test, ns)):
+                if found or unasked(test, ns):
                     if not redirected:
                         problems.append(f"{what}: {answer.describe()}, not 307 to an origin")
                 elif answer.status != 404:
@@ -535,8 +537,11 @@ def stat(test: Test) -> list[CaseRow]:
         rows.append(("several", SKIP, "one origin, which the director need not ask"))
     problems = stat_problems(test, namespaces, "skipstat", True, True)
     rows.append(("skipstat", *outcome(problems, "307")))
-    problems = stat_problems(test, protected, "", False, True)
-    rows.append(("no-token", *outcome(problems, f"{', '.join(protected)}: 307")))
+    if protected:
+        problems = stat_problems(test, protected, "", False, True)
+        rows.append(("no-token", *outcome(problems, f"{', '.join(protected)}: 307")))
+    else:
+        rows.append(("no-token", SKIP, "no namespace here takes a token to read"))
     if several:
         rows.append(("single", SKIP, f"{len(test.origins)} origins"))
     else:
@@ -564,6 +569,7 @@ class Redirects:
     """The checks of `redirect` at one director and route.
 
     Attributes:
+        test: The test.
         url: The director's URL.
         route: "object", or "bare".
         problems: What the checks found: each case's problems, by case.
@@ -847,6 +853,7 @@ class Statuses:
     """`status-codes`'s cases, and every answer they got.
 
     Attributes:
+        test: The test.
         answers: Every answer that the cases got, with what it was to;
             the last cases check their Server headers.
     """
@@ -1149,8 +1156,11 @@ def tokenless_weights(test: Test) -> tuple[str, str]:
     """Check equal_weights() with no token.
 
     With none, a director can't ask the caches of a protected namespace
-    (shouldStatCaches).
+    (shouldStatCaches). It can ask those of one that anyone may read, so
+    there is nothing to check there.
     """
+    if "PublicReads" in test.caps:
+        return SKIP, f"/{test.namespace} takes no token, so a director asks its caches without one"
     return equal_weights(test, None)
 
 
@@ -1333,6 +1343,7 @@ class Phase:
     """A restart of the directors.
 
     Attributes:
+        name: Its name, e.g. "combined".
         text: The directors' configuration for it.
         checks: Its checks.
     """
@@ -1531,6 +1542,8 @@ def permitted_direct(test: Test, permitted: str, restricted: Server) -> tuple[st
     answer = web.request("GET", f"{restricted.url}{test.path_of('probe')}", token=test.token)
     if answer.status == 200:
         return FAIL, f"/{test.namespace}: served, though not permitted"
+    if answer.status is None or not 400 <= answer.status < 500:
+        return FAIL, f"/{test.namespace}: {answer.describe()}, not a refusal (4xx)"
     return PASS, f"/{permitted} served; /{test.namespace} refused ({answer.describe()})"
 
 

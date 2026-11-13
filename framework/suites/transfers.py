@@ -21,7 +21,9 @@ in stash_plugin's format), output/ (the pelican client's transfer
 stats, or the plugin's result ads), log/ (client logs, or the plain
 HTTP client's requests and answers, ending with the exit status),
 files/ (what each batch downloaded or uploaded), and verify/problems
-(every unexpected result).
+(every unexpected result). A client's log, its stdout and stderr as one,
+and its transfer stats or ads are scanned for tokens whose signatures
+they give away, as a client command's are (testlib.leaks).
 
 Each credential's token is of the session's profile, and must fare as
 its twin of the other profile does. The SciTokens pass keeps its results
@@ -41,7 +43,7 @@ from collections import Counter
 from concurrent.futures import as_completed
 from urllib.parse import urlsplit
 
-from testlib import common, credentials, stores, transfers, web
+from testlib import common, credentials, leaks, stores, transfers, web
 from testlib.common import die, warn
 from testlib.report import FAIL, PASS, SKIP, Report
 from testlib.session import CLIENT_TIMEOUT, TIMED_OUT, Session, timed_out
@@ -49,6 +51,8 @@ from testlib.transfers import SCENARIOS as TABLE
 from testlib.transfers import Batch, Observation, Outcome, Scenario
 
 OUT = "dev/transfers"
+# Where the plugin's credentials directories go, likewise.
+CREDS = "dev/condor-creds"
 
 
 SCENARIOS = {s.name: s.description for s in TABLE}
@@ -73,7 +77,7 @@ def skip(_fed: common.Federation) -> str | None:
     return None
 
 
-def token_path(scenario: Scenario) -> str | None:
+def token_path(plan: "Plan", scenario: Scenario) -> str | None:
     """Return where the plugin finds the scenario's token, or None if none.
 
     The plugin chooses among every file in its credentials directory, so
@@ -81,7 +85,7 @@ def token_path(scenario: Scenario) -> str | None:
     """
     if scenario.credential is None or scenario.credential.key is None:
         return None
-    return f"dev/condor-creds/{scenario.name}/{scenario.credential.name}.use"
+    return f"{plan.creds}/{scenario.name}/{scenario.credential.name}.use"
 
 
 def hash_files(directory: str, prefix: str) -> dict[str, str]:
@@ -109,6 +113,9 @@ class Plan:
 
     Attributes:
         out: Where the results go, under framework/var.
+        creds: Where each scenario's credentials directory, for the
+            plugin, goes, under framework/var.
+        scenarios: The scenarios that run.
         batches: Each scenario's batches, by name.
         token_files: Each scenario's token file (None for none), by name.
         statuses: Each batch's exit status, by ID; a plain HTTP client's
@@ -120,8 +127,9 @@ class Plan:
             client's batch got, by ID.
     """
 
-    def __init__(self, out: str, scenarios: list[Scenario], batches: dict[str, list[Batch]]):
+    def __init__(self, out: str, creds: str, scenarios: list[Scenario], batches: dict[str, list[Batch]]):
         self.out = out
+        self.creds = creds
         self.scenarios = scenarios
         self.batches = batches
         self.token_files: dict[str, str | None] = {}
@@ -193,11 +201,11 @@ def make_directories(fed: common.Federation, plan: Plan) -> None:
     out = plan.out
     for sub in ("input", "output", "log", "files", "verify"):
         shutil.rmtree(f"{out}/{sub}", ignore_errors=True)
-    shutil.rmtree("dev/condor-creds", ignore_errors=True)
+    shutil.rmtree(plan.creds, ignore_errors=True)
     for s in plan.scenarios:
         for sub in ("input", "output", "log", "files"):
             os.makedirs(f"{out}/{sub}/{s.name}")
-        os.makedirs(f"dev/condor-creds/{s.name}")
+        os.makedirs(f"{plan.creds}/{s.name}")
     for batch in plan.all_batches():
         os.makedirs(f"{out}/files/{batch.id}")
         with open(f"{out}/input/{batch.id}", "w", encoding="utf-8") as f:
@@ -218,7 +226,7 @@ def find_tokens(session: Session, plan: Plan) -> None:
         if s.credential is not None:
             path = session.credential_file(s.credential, s.namespace, s.op)
         plan.token_files[s.name] = path
-        plugin_path = token_path(s)
+        plugin_path = token_path(plan, s)
         if path is not None and plugin_path is not None:
             shutil.copyfile(path, plugin_path)
 
@@ -303,7 +311,7 @@ def command(session: Session, plan: Plan, batch: Batch) -> tuple[list[str], dict
     if s.client == "plugin":
         # A direct get's URLs carry ?directread (see transfers.batch_url);
         # a named get's cache is in the environment.
-        env["_CONDOR_CREDS"] = os.path.abspath(f"dev/condor-creds/{s.name}")
+        env["_CONDOR_CREDS"] = os.path.abspath(f"{plan.creds}/{s.name}")
         if s.named:
             env["PELICAN_CLIENT_PREFERREDCACHES"] = named_cache(session.fed).url
         args = [session.plugin]
@@ -392,18 +400,21 @@ def transfer(session: Session, plan: Plan, batch: Batch) -> None:
     """Run batch in its directory, where its files are, with no terminal.
 
     With no token, `pelican object` would try to acquire one
-    interactively. A batch that outlasts CLIENT_TIMEOUT is killed. A
-    plain HTTP client's batch is http_transfer().
+    interactively. A batch that outlasts CLIENT_TIMEOUT is killed. Its
+    log, which holds its stdout and stderr as one, is then scanned as its
+    stderr, with its transfer stats or ads (leaks.command()). A plain
+    HTTP client's batch is http_transfer().
     """
     if batch.scenario.client == "http":
         http_transfer(session, plan, batch)
         return
     args, env = command(session, plan, batch)
+    cwd = f"{plan.out}/files/{batch.id}"
     with open(f"{plan.out}/log/{batch.id}", "wb") as log:
         try:
             status = subprocess.run(
                 args,
-                cwd=f"{plan.out}/files/{batch.id}",
+                cwd=cwd,
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
@@ -416,6 +427,8 @@ def transfer(session: Session, plan: Plan, batch: Batch) -> None:
             status = TIMED_OUT
             log.write(f"\n{timed_out(CLIENT_TIMEOUT)}\n".encode())
         log.write(f"\nexit status {status}\n".encode())
+    with open(f"{plan.out}/log/{batch.id}", encoding="utf-8", errors="replace") as f:
+        leaks.command(args, cwd, "", f.read())
     plan.statuses[batch.id] = status
 
 
@@ -460,7 +473,8 @@ def observe(plan: Plan, batch: Batch) -> Observation:
                 said = f.read()
         except FileNotFoundError:
             said = ""
-        passed = transfers.plugin_passed(said)
+        # As HTCondor judges it: by its exit status, and its ads.
+        passed = plan.statuses[batch.id] == 0 and transfers.plugin_passed(said)
     else:
         with open(f"{plan.out}/log/{batch.id}", encoding="utf-8", errors="replace") as f:
             said = f.read()
@@ -718,7 +732,12 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
     expected = {s.name: transfers.outcome(s, fed.exports) for s in scenarios}
     # The batches are built afresh for each run (see transfers.LOAD).
     made = transfers.make_batches(fed.url, fed.exports, transfers.LOAD, random.randrange)
-    plan = Plan(session.var_dir(OUT), scenarios, {s.name: made[s.name] for s in scenarios})
+    plan = Plan(
+        session.var_dir(OUT),
+        session.var_dir(CREDS),
+        scenarios,
+        {s.name: made[s.name] for s in scenarios},
+    )
 
     make_directories(fed, plan)
     find_tokens(session, plan)

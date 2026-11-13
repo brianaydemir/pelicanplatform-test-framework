@@ -51,6 +51,7 @@ class Server:
     Attributes:
         name: Its service, as rows name it, e.g. origin-0 (`fed` in
             `tiny`).
+        web_url: Its web URL.
         key_dir: The directory (under framework/var) of its keys.
         roles: Which of origin, cache, director, and registry it is.
     """
@@ -164,8 +165,11 @@ class Access:
         wait = self._last_login.get(server.web_url, 0) + accounts.LOGIN_SPACING - time.time()
         if spaced and wait > 0:
             time.sleep(wait)
-        # Again, should the clock have been set back meanwhile.
-        while early and time.time() % 1 > EARLY:
+        # Again, should the clock have been set back meanwhile, but not
+        # without end.
+        for _ in range(5):
+            if not early or time.time() % 1 <= EARLY:
+                break
             time.sleep(1.01 - time.time() % 1)
         answer = web.request("POST", server.web_url + accounts.LOGIN, headers=headers, form=fields)
         self._last_login[server.web_url] = time.time()

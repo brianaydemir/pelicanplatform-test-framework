@@ -3,12 +3,13 @@
 Part of [What the tests check](README.md).
 
 The [`listings`](../../framework/suites/listings.py) suite sends PROPFIND
-straight to every origin, director, and federated cache, at depths 0, 1, and
-infinity, in every [namespace](../glossary.md#namespace). Depth 0 is a stat,
-allowed wherever the namespace may be read; deeper is a listing, allowed
-only with `Listings`. An origin answers only direct clients (`DirectReads`).
-A PROPFIND that may not be answered must get 401, 403, or 405. Every object
-listed must have a `getcontentlength`.
+straight to every origin, at depths 0, 1, and infinity, and to every
+director, at depths 0 and 1, in every [namespace](../glossary.md#namespace);
+and to every federated cache, at each depth, in `/protected-a`. Depth 0 is a
+stat, allowed wherever the namespace may be read; deeper is a listing,
+allowed only with `Listings`. An origin answers only direct clients
+(`DirectReads`). A PROPFIND that may not be answered must get 401, 403, or
+405\. Every object listed must have a `getcontentlength`.
 
 The suite [skips](../glossary.md#skip) where the shape does not export
 `/protected-a`; its `cache-*` scenarios skip without a federated cache.
@@ -17,14 +18,15 @@ The suite [skips](../glossary.md#skip) where the shape does not export
 ([token profiles](README.md#token-profiles)).
 
 - `origin-depth-0`, `origin-depth-1`: Each origin must list the tree
-  exactly, with each object's `getlastmodified` within a minute of its
-  writing, in the right time zone (`TZ_STORAGE`;
+  exactly. At Depth 0, an object's `getlastmodified` must be within a minute
+  of its writing, in the right time zone (`TZ_STORAGE`;
   [Configuration](../configuration.md#knobs)).
 - `origin-infinity`: Each origin must list the whole tree, or refuse with
   403 ([RFC 4918](https://www.rfc-editor.org/rfc/rfc4918)), but not answer
   as Depth 1.
-- `director`: Each director must redirect to an origin, which must answer as
-  in `origin-depth-0` and `origin-depth-1`. Skips for a standalone origin
+- `director`: Each director must redirect (307) to an origin, which must
+  answer as in `origin-depth-0` and `origin-depth-1`. Skips for a standalone
+  origin
   ([`-p topo-standalone`](../../framework/presets/topo-standalone.sh)).
 - `cache-depth-0`: Each cache must answer Depth 0 of an object, before and
   after it holds it.
@@ -40,9 +42,9 @@ The suite [skips](../glossary.md#skip) where the shape does not export
   token. Skips without `/public`.
 - `new-object`: An object must be listed at once, by PROPFIND and
   `pelican object ls`, and be gone once removed. Needs `Listings`.
-- `collection-get`: A GET of a collection must bring no object's bytes. An
-  origin must answer `Accept: text/html` with an HTML listing. A cache must
-  not keep the answer as an object; a
+- `collection-get`: A GET of a collection must bring no object's bytes, and
+  no 5xx. An origin must answer `Accept: text/html` with an HTML listing. A
+  cache must not keep the answer as an object; a
   [V2 cache](../glossary.md#native-and-xrootd)'s 200 must be
   `application/octet-stream`, with `X-Content-Type-Options: nosniff` and no
   `Age`.

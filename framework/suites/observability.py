@@ -116,6 +116,9 @@ OBJECT_SIZE = 65536
 # deadline (manageLogLevels in logging/level_manager.go).
 LEVEL_DURATION = 20
 EXPIRY_SLACK = 40
+# How long before its deadline a change must still stand, in seconds, to
+# be asked about: one gone by then was dropped too soon.
+EXPIRY_MARGIN = 5
 # How long `log-level`'s deleted change, and `log-redaction`'s, last, in
 # seconds, were they not deleted.
 DELETED_DURATION = 600
@@ -951,8 +954,16 @@ def expiry_rows(test: Test, changes: Sequence[Raised]) -> list[CaseRow]:
     """Check that each of changes is dropped by itself, on time.
 
     Each must be dropped within EXPIRY_SLACK seconds of its deadline: the
-    level back to what it was, and the change not listed.
+    level back to what it was, and the change not listed. One whose
+    deadline is over EXPIRY_MARGIN seconds off must first still be
+    listed.
     """
+    early: dict[str, float] = {}
+    for c in changes:
+        left = c.deadline - time.monotonic()
+        status = level_status(test, c.server) if left > EXPIRY_MARGIN else {}
+        if status and c.change not in active(status):
+            early[c.server.name] = left
     reverted: dict[str, float] = {}
     last: dict[str, dict[str, Any]] = {}
     pending = list(changes)
@@ -971,6 +982,9 @@ def expiry_rows(test: Test, changes: Sequence[Raised]) -> list[CaseRow]:
     rows: list[CaseRow] = []
     for c in changes:
         case = f"{c.server.name} expiry"
+        if c.server.name in early:
+            rows.append((case, FAIL, f"dropped {early[c.server.name]:.0f}s before its deadline"))
+            continue
         if c.server.name in reverted:
             took = max(reverted[c.server.name], 0)
             rows.append((case, PASS, f"back to {c.before} within {took:.0f}s of its deadline"))
@@ -1181,7 +1195,8 @@ def redaction_row(test: Test, server: Server) -> CaseRow:
 
     With server's log level raised to debug, present a fresh token
     (present()); the log tail since must then hold neither the token nor
-    its signature, which Pelican replaces with REDACTED.
+    its signature, which Pelican replaces with REDACTED. A tail that
+    holds no line since shows nothing either way.
     """
     case = f"{server.name} redaction"
     since = str(tail(test, server, limit=1).get("lastCursor", ""))
@@ -1208,6 +1223,8 @@ def redaction_row(test: Test, server: Server) -> CaseRow:
     dropped = found.get("dropped")
     if isinstance(dropped, int) and dropped > 0:
         return case, INCONCLUSIVE, f"the tail dropped {dropped} line(s); {note}"
+    if not content.strip():
+        return case, INCONCLUSIVE, "the tail holds no line since the token was presented"
     return case, PASS, f"{len(content.splitlines())} line(s) read; {note}"
 
 

@@ -3,13 +3,14 @@
 Part of [What the tests check](README.md).
 
 The [`throttling`](../../framework/suites/throttling.py) suite makes the
-servers slow while it runs. For `range-ahead` and `slow-miss`, it restarts
-every origin with `Origin.TransferRateLimit: 256KB/s`. For the rest, it
-restarts every federated [V2 cache](../glossary.md#native-and-xrootd) with a
-small fair scheduler (`Cache.WorkerCount: 2`;
-`Cache.Throttle.PerOriginStarvingPercent` and `PerOriginActivePercent` 25,
-`PerOriginPendingSize` 1, `RetryAfter` 2s), which fetches one object at a
-time from an origin, queues one more, and sheds the rest. It restores the servers afterward
+servers slow while it runs. It restarts every origin with
+`Origin.TransferRateLimit: 256KB/s`; and, for every scenario but
+`range-ahead` and `slow-miss`, every federated
+[V2 cache](../glossary.md#native-and-xrootd) too, with a small fair
+scheduler (`Cache.WorkerCount: 2`; `Cache.Throttle.PerOriginStarvingPercent`
+and `PerOriginActivePercent` 25, `PerOriginPendingSize` 1, `RetryAfter` 2s),
+which fetches one object at a time from an origin, queues one more, and
+sheds the rest. It restores the servers afterward
 ([service control](../../README.md#service-control)).
 
 It needs `posixv2` origins, which alone the rate limit slows, a federated V2

@@ -9,9 +9,9 @@ Each pair is one of its exports and the origins' namespace it is like.
 pass until origin-2 serves; the suite stops if it can't pass.
 
 Objects go under data/owners/<run>/ in each namespace's storage, and are
-removed after the suite, from a pstore origin too. Responses go to
-framework/var/dev/owners-test/ (in the SciTokens pass,
-dev/owners-test-scitokens/). See docs/tests/another-owner.md.
+removed after the suite. Responses go to framework/var/dev/owners-test/
+(in the SciTokens pass, dev/owners-test-scitokens/). See
+docs/tests/another-owner.md.
 """
 
 import os
@@ -60,7 +60,7 @@ SCENARIOS.update(CLIENT)
 # The scenarios that present no token of the session's profile (see
 # suites/__init__.py): `ready` waits with WLCG tokens, since what it
 # waits for is the federation, and the others present none.
-ONE_PROFILE = ("ready", "keys", "routing")
+ONE_PROFILE = ("ready", "keys", "routing", "none")
 
 # How long `ready` waits: tries, and seconds between them.
 TRIES, INTERVAL = 20, 15
@@ -855,25 +855,15 @@ CHECKS = {"ready": ready, "keys": keys, "routing": routing}
 def remove_objects(test: Test) -> list[str]:
     """Empty data/owners in each of test.storages.
 
-    A pstore origin's encrypted store, which only it can change, is
-    emptied through it, and its plain copy, which the suite writes too,
-    directly.
-
     Returns:
         What went wrong.
     """
-    fed = test.fed
     errors: list[str] = []
     for storage in test.storages:
         try:
             common.empty_dir(f"{storage}/data/owners")
         except OSError as e:
             errors.append(f"emptying framework/var/{storage}/data/owners: {e.strerror}")
-    pstores = [o for o in test.origins if o.pstore]
-    if pstores:
-        errors += stores.empty_tree_everywhere(
-            pstores, fed.exports, "data/owners", test.session.setup_tokens()
-        )
     return errors
 
 

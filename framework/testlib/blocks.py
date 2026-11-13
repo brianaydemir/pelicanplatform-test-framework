@@ -662,6 +662,8 @@ class Cinfo:
     """What an XRootD cache's .cinfo records.
 
     Attributes:
+        block_size: The size of a block, in bytes.
+        file_size: The object's size, in bytes.
         bitmap: The blocks the cache holds: bit i of byte i/8 for block i.
     """
 

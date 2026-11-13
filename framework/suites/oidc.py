@@ -639,17 +639,13 @@ def group_rows(test: Test, made: Restarted) -> list[CaseRow]:
     try:
         cookie = test.login(test.web, OUTSIDER)
         granted = issuer.device_tokens(made.client, User(cookie=cookie), DATA_SCOPES)
-    except LoginError as e:
+    except (LoginError, IssuerError) as e:
         problems.append(str(e))
-        note = ""
-    except IssuerError as e:
-        note = f"refused: {e}"
     else:
         got = data_scopes(granted.access)
         if got:
             problems.append(f"granted {sorted(got)} to a user in no group")
-        note = "a token of no data scope"
-    rows.append((OUTSIDER, *outcome(problems, note)))
+    rows.append((OUTSIDER, *outcome(problems, "a token of no data scope")))
 
     problems = []
     tok = tokens.get(MEMBER)

@@ -7,7 +7,8 @@ origin-2 has a key and an issuer of its own. The
 [`owners`](../../framework/suites/owners.py) suite tests its exports
 `/other`, like `/protected-a`, and `/public/other`, like `/public` and
 nested in it. Its `/public/secret` is for the [`auth`](authorization.md)
-suite's `nested-protected` check. `ready`, `keys`, and `routing` run in the
+suite's `nested-protected` check. `ready`, `keys`, `routing`, and `none`,
+which present no token of the pass's, run in the
 [WLCG pass](../glossary.md#pass) alone
 ([token profiles](README.md#token-profiles)).
 

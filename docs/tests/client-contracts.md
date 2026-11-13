@@ -160,7 +160,8 @@ and `auth` suites. `stash_plugin stage` is not tested.
     `?recursive` must lay the tree out flat (P6), and `get` with
     `?recursive` bring it back;
   - `plugin-put-recursive-query`, `plugin-get-recursive-query`: the same
-    through `stash_plugin`.
+    through `stash_plugin`, whose download into a directory must land
+    under the collection's name there (G6).
 
   Rows from `put-collection` on need writes; without them, one `put` row
   skips. The `?recursive` gets need `Listings`.

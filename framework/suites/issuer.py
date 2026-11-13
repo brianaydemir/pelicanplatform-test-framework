@@ -52,7 +52,7 @@ from testlib.issuer import (
     scope,
 )
 from testlib.report import FAIL, SKIP
-from testlib.session import Session, last_line
+from testlib.session import Session, last_line, not_refused
 
 SCENARIOS = {
     "discovery": "each issuer's discovery document names itself, and its JWKS its signing key",
@@ -582,6 +582,9 @@ class Request:
     """A request for scopes, and what it should get.
 
     Attributes:
+        role: Who asks: one of ROLES.
+        asks: The scopes asked for.
+        gets: The scopes the issuer should grant.
         why: What kind of request it is, as a problem names it.
     """
 
@@ -962,6 +965,8 @@ def write_problems(test: Test, origin: common.Origin, tokens: dict[str, str]) ->
         answer = web.request("PUT", target, token=tokens[role], upload=payload)
         if answer.status not in REFUSED:
             problems.append(f"PUT {target} as {username(role)}: {answer.describe()}, not refused")
+        elif test.any_store_holds(rel):
+            problems.append(f"PUT {target} as {username(role)} was refused, but a store holds the object")
     for role, rel in (
         ("member", f"{home('member')}/put-{origin.svc}"),
         ("member", f"{project(GROUPS[0])}/put-{origin.svc}"),
@@ -988,13 +993,13 @@ def federation_problems(test: Test, tokens: dict[str, str]) -> list[str]:
     rel = f"{ARCHIVE}/obj"
     for role, allowed in (("member", True), ("stranger", False)):
         dest = os.path.join(test.tmp, f"get-{role}")
-        status, _, err = test.session.pelican_cmd(
+        status, out, err = test.session.pelican_cmd(
             "object", "get", test.pelican_url(rel), dest, "--token", test.data_token_file(role)
         )
         if allowed and (status != 0 or not common.file_holds(dest, test.data[rel])):
             problems.append(f"`object get` as test-member: exit {status}: {last_line(err)}")
-        if not allowed and status == 0:
-            problems.append("`object get` as test-stranger succeeded")
+        if not allowed and (why := not_refused(status, out, err)):
+            problems.append(f"`object get` as test-stranger {why}")
     for cache in test.fed.federated_caches:
         target = test.url(cache.url, rel)
         answer = web.request("GET", target, token=tokens["member"])
@@ -1041,7 +1046,7 @@ def export_problems(test: Test) -> list[str]:
         return problems
     for role, rel, allowed in reads:
         dest = os.path.join(test.tmp, f"get-{namespace}-{role}-{rel.rsplit('/', 2)[-2]}")
-        status, _, err = test.session.pelican_cmd(
+        status, out, err = test.session.pelican_cmd(
             "object",
             "get",
             test.pelican_url(rel, namespace=namespace),
@@ -1053,8 +1058,8 @@ def export_problems(test: Test) -> list[str]:
             problems.append(
                 f"`object get` of /{namespace}/{rel} as {username(role)}: exit {status}: {last_line(err)}"
             )
-        if not allowed and status == 0:
-            problems.append(f"`object get` of /{namespace}/{rel} as {username(role)} succeeded")
+        if not allowed and (why := not_refused(status, out, err)):
+            problems.append(f"`object get` of /{namespace}/{rel} as {username(role)} {why}")
     return problems
 
 

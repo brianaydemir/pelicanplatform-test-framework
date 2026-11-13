@@ -78,6 +78,7 @@ profile run in the WLCG pass only
 - `restart`: The API's host restarts during a copy, which a `posixv2`
   origin-0 slows, restarted meanwhile with `Origin.TransferRateLimit`. The
   job must then be `failed`, saying a restart interrupted it
-  (`interrupted`). A credential stored before must still work
-  (`credential`), and a job finished before, cancelled, keep its status
-  (`forgotten`). Needs a control helper, and skips under `-p topo-tiny`.
+  (`interrupted`; inconclusive if the copy finished first). A credential
+  stored before must still work (`credential`), and a job finished before,
+  cancelled, keep its status (`forgotten`). Needs a control helper, and
+  skips under `-p topo-tiny`.

@@ -137,6 +137,7 @@ class Client:
     Attributes:
         url: Where the issuer serves:
             <web URL>/api/v1.0/issuer/ns<namespace>.
+        client_id: Its ID.
         client_secret: Its secret; "" for a public client, which has none.
         device_url: The issuer's device authorization endpoint.
         token_url: The issuer's token endpoint.
@@ -730,6 +731,8 @@ class ClientRun:
 
     Attributes:
         status: Its exit status; negative if it was killed.
+        stdout: What it wrote to its stdout.
+        stderr: What it wrote to its stderr.
         approvals: How many device flows it started, which the tests
             approved.
         problems: What went wrong approving, or that the client was

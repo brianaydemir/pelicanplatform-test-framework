@@ -29,6 +29,8 @@ class Reply:
     """What the stub answers a GET of a path.
 
     Attributes:
+        status: The status to answer with.
+        body: The body to send.
         length: The Content-Length to claim, if not the body's: a larger
             one makes the body end early, as a source that fails partway
             does.

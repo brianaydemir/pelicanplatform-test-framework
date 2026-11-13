@@ -194,16 +194,22 @@ def open_dir(path: str, dir_fd: int | None = None) -> int:
     return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
 
 
-def make_dirs(rel: str, dir_fd: int, mode: int) -> int:
+def make_dirs(rel: str, dir_fd: int, mode: int, keep_modes: bool = False) -> int:
     """Make each directory of path rel, relative to dir_fd, that is missing.
 
-    Each is given mode, whether it was there or not.
+    Args:
+        rel: The path.
+        dir_fd: The directory that it is relative to.
+        mode: The mode of each directory made.
+        keep_modes: Whether a directory already there keeps its mode,
+            rather than being given mode too.
 
     Returns:
         The file descriptor of the last.
 
     Raises:
         OSError: One is a symlink or no directory.
+        ValueError: The path climbs out of dir_fd.
     """
     fd = os.dup(dir_fd)
     try:
@@ -212,13 +218,17 @@ def make_dirs(rel: str, dir_fd: int, mode: int) -> int:
                 continue
             if name == "..":
                 raise ValueError(f"{rel} climbs out")
-            with contextlib.suppress(FileExistsError):
+            made = True
+            try:
                 os.mkdir(name, mode, dir_fd=fd)
+            except FileExistsError:
+                made = False
             child = open_dir(name, fd)
             os.close(fd)
             fd = child
-            # mkdir's mode is subject to the umask.
-            os.fchmod(fd, mode)
+            if made or not keep_modes:
+                # mkdir's mode is subject to the umask.
+                os.fchmod(fd, mode)
         return fd
     except BaseException:
         os.close(fd)
@@ -606,8 +616,10 @@ class Owner:
     It has a key and an issuer of its own, and exports of its own.
 
     Attributes:
+        origin: The origin: its service, data URL, and store.
         key_dir: The directory (under framework/var) of its issuer keys.
         web_url: Where it serves its web API, e.g. its server-wide JWKS.
+        exports: Its exports.
     """
 
     origin: Origin

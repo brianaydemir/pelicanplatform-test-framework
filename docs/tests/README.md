@@ -15,8 +15,9 @@ These are [functional checks](../glossary.md#functional-check), not stress
 tests: each moves a few objects, the largest about 16 MiB. The exceptions
 are [`blocks`](block-boundaries.md)'s `cache-evicted`, which under
 [`-p cache-small`](../../framework/presets/cache-small.sh) moves about 200
-MiB through each cache, and [`pstore`](pstore.md)'s `chunks`, which puts one
-object of 64 MiB.
+MiB through each cache, its `cache-file-lost`, which reads one object of 32
+MiB through each V2 cache, and [`pstore`](pstore.md)'s `chunks`, which puts
+one object of 64 MiB.
 
 ## Suites
 
@@ -76,7 +77,64 @@ after 600 seconds is killed, and fails. The
 [watchdog](../glossary.md#watchdog) abandons a stalled pass. Each suite
 removes what it wrote from every origin's store afterward.
 
+Each pass of each suite also checks that it gave away no token
+([token leaks](#token-leaks)).
+
 [What is not tested](what-is-not-tested.md) lists the gaps.
+
+## Token leaks
+
+A token's signature is what makes it good: whoever holds a token whole may
+present it until it expires. Its header and claims alone grant nothing, and
+say what it was, which helps in debugging. So each
+[pass](../glossary.md#pass) of each suite records two rows of its own, which
+fail if a token came back whole, its signature in the clear, where it should
+not ([`framework/testlib/leaks.py`](../../framework/testlib/leaks.py)):
+
+- `token-leaks clients`: what reached the tests as a client.
+  - Of each HTTP answer from a Pelican server, its trailers, such as the
+    `X-Transfer-Status` in which a V2 cache reports a failure after its
+    headers. Its headers and body too, if its status is 4xx or 5xx; if it
+    answers a `COPY`, whose body reports a third-party copy as it goes, and
+    how it ended; or if it is of a cache's own APIs (prestage, evict, and
+    `/api/v1.0/cache/`), or of a route that reports what a server did in the
+    background (the transfer API's jobs, `/api/v1.0/metrics/health`, the
+    metadata publish queue, and a director's list of servers), whatever its
+    status.
+  - Of each client command, its stderr; the stdout of `pelican job`, and of
+    `pelican-server cache introspect` and `origin introspect`, which report
+    there what failed; the stash_plugin's ads; and the Pelican client's
+    `--transfer-stats` file. A [`transfers`](test-data.md) batch's client
+    writes its stdout and stderr as one, which counts as its stderr.
+- `token-leaks logs`: the Pelican servers' logs, XRootD's lines included,
+  from where the previous pass's read left off (when the run began, for the
+  first) until the pass ended, so that each line logged as the tests run is
+  read once. The
+  [service-control helper](../glossary.md#service-control-helper) reads
+  them on the host, and sends back only the lines with a token whole, each
+  signature cut out. Without a helper, the row skips.
+
+A token that the tests themselves presented counts too: what a server says
+of a failure, or a client prints of one, is kept, as in a job's log, long
+after the request. A token counts as whole if its signature is as long as
+its header's `alg` makes it, so neither a signature cut out, as Pelican's
+logs cut it (`.REDACTED`), nor one cut short, counts. The run's output lists
+each token found, without its signature, with where it was and its `iss`,
+`sub`, and `scope`, and the row's note gives the first three. A suite that
+doesn't apply to the shape skips both rows.
+
+What the rows don't see:
+
+- the answers of the framework's own services, such as the identity
+  provider, and their logs;
+- the body of a 2xx or 3xx answer but those above, so not a `Location` that
+  carries the client's token, as a director's redirect does, nor an
+  authorization server's error, which comes back as a redirect;
+- the stdout of the commands but those above, so not what
+  `pelican token create` prints, nor `pelican object share`;
+- the answers to the few requests that the suites send around
+  [`framework/testlib/web.py`](../../framework/testlib/web.py), such as the
+  uploads that [`posc`](posc-and-metadata.md) cuts short.
 
 ## Token profiles
 

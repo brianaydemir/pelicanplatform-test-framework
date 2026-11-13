@@ -4,7 +4,8 @@ A test may restart, stop, start, pause, unpause, or kill a service, or
 restart one with configuration of its own. It may stop and resume the
 XRootD daemons in a service, leaving the rest of it running. It may ask
 what state a service's container is in, which servers have exited on
-their own, and how many bytes a service's container has sent.
+their own, how many bytes a service's container has sent, and which
+lines of the Pelican servers' logs give away a token (token_leaks()).
 
 The dev container has no Docker, so a helper on the host,
 framework/control.py, acts for the tests: `./fed.sh test` runs one
@@ -40,6 +41,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Generator, Mapping, Sequence
+from typing import Any
 
 from . import common, web
 
@@ -56,12 +58,16 @@ SIGNALS = {"freeze-xrootd": "STOP", "thaw-xrootd": "CONT"}
 # `ping`, which only answers; `state` and `exited`, which only look
 # (`docker compose ps`); `net-bytes`, which reads the kernel's count of
 # what the service's container has moved on each network interface
-# (`docker compose exec` of `cat /proc/net/dev`); and those of SIGNALS.
+# (`docker compose exec` of `cat /proc/net/dev`); `token-leaks`, which
+# reads the Pelican servers' logs between two times (`docker compose
+# logs`), for tokens whose signatures they give away (testlib.leaks);
+# and those of SIGNALS.
 ACTIONS = (
     "ping",
     "state",
     "exited",
     "net-bytes",
+    "token-leaks",
     "restart",
     "stop",
     "start",
@@ -100,8 +106,15 @@ class ControlError(Exception):
     """An action failed, or the helper did not answer."""
 
 
-def _ask(action: str, service: str, seconds: float = ANSWER_WAIT) -> str:
+def _ask(action: str, service: str, seconds: float = ANSWER_WAIT, **params: str) -> str:
     """Ask the helper to do action to service, and return what it said.
+
+    Args:
+        action: One of ACTIONS.
+        service: The service; "" for an action on the shape as a whole.
+        seconds: How long to wait for the answer.
+        **params: What else the action takes, such as `token-leaks`'s
+            `since` and `until`.
 
     Raises:
         ControlError: It did not answer within seconds, or the action
@@ -111,7 +124,7 @@ def _ask(action: str, service: str, seconds: float = ANSWER_WAIT) -> str:
     request = os.path.join(REQUESTS, f"{ident}.req")
     answer = os.path.join(REQUESTS, f"{ident}.res")
     with open(f"{request}.tmp", "w", encoding="utf-8") as f:
-        json.dump({"action": action, "service": service}, f)
+        json.dump({**params, "action": action, "service": service}, f)
     os.rename(f"{request}.tmp", request)
     what = f"{action} {service}".rstrip()
     if not common.wait_for(lambda: os.path.exists(answer), seconds, interval=0.2):
@@ -213,6 +226,35 @@ def exited() -> dict[str, int]:
         if pelican_server(svc):
             found[svc] = int(code) if code.isdigit() else -1
     return found
+
+
+def _timestamp(moment: float) -> str:
+    """Return moment (time.time()) as `docker compose logs --since` takes it."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(moment)) + f".{int(moment % 1 * 1e6):06d}Z"
+
+
+def token_leaks(since: float, until: float) -> tuple[dict[str, int], list[dict[str, Any]]]:
+    """Return what of the Pelican servers' logs gives away a token.
+
+    The helper reads each server's log from since until until (each a
+    time.time()), and scans it on the host (leaks.scan_log()), so that
+    only the lines with a token whole come back, each signature cut out.
+
+    Returns:
+        How many lines of each server's log it read, by server; and each
+        line with a token whole, as leaks.scan_log() gives it.
+
+    Raises:
+        ControlError: The helper did not answer, or could not read a log.
+    """
+    output = _ask("token-leaks", "", since=_timestamp(since), until=_timestamp(until))
+    try:
+        found = common.as_object(json.loads(output)) or {}
+    except ValueError as e:
+        raise ControlError(f"token-leaks: the helper's answer is not JSON: {e}") from e
+    counts = common.as_object(found.get("lines")) or {}
+    lines = [common.as_object(entry) or {} for entry in common.as_array(found.get("found")) or []]
+    return {str(svc): int(n) for svc, n in counts.items() if isinstance(n, int)}, lines
 
 
 def crashed(services: Sequence[str] | None = None) -> str | None:

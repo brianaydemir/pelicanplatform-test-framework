@@ -32,8 +32,9 @@ them. `purge` and `usage` run in the WLCG [pass](../glossary.md#pass) only
     each object held; of a missing object, non-zero.
 
 - `evict`: `GET`, `POST`, or `DELETE /pelican/api/v1.0/evict?path=<path>`
-  with `storage.modify` evicts what the cache holds at or under the path: at
-  once with `immediate=true`, else by marking it to go first.
+  with a token that may modify the path (`storage.modify`, or a SciToken's
+  `write`) evicts what the cache holds at or under it: at once with
+  `immediate=true`, else by marking it to go first.
 
   - `refused`: With no token, a read-only one, or one scoped elsewhere: 403,
     the object kept. Likewise in `/public`, with no token or
@@ -75,7 +76,9 @@ them. `purge` and `usage` run in the WLCG [pass](../glossary.md#pass) only
     (least recently used go first). With one storage directory,
     `evicted_objects` must be 1.
   - `first`: `purge_first` of the object read last: 200. A purge to a byte
-    below what the cache holds must then evict that object alone.
+    below what the cache holds must then evict that object alone; if it
+    evicts another that an earlier run left marked, the purge is tried
+    again, three times at most.
   - `all`: `purge`: 200. Under
     [`-p cache-small`](../../framework/presets/cache-small.sh), the cache
     must then hold no more than its low water mark.

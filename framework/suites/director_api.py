@@ -25,7 +25,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from testlib import ads, common, credentials, director, metrics, stores, suite, web, webapi, webdav
-from testlib.common import outcome
+from testlib.common import first, outcome
 from testlib.director import SERVERS
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session
@@ -826,7 +826,11 @@ def health(test: Test) -> list[CaseRow]:
         ("status", *outcome(found["status"], note)),
         ("test-runs", *outcome(run_problems(test, before, after), note)),
         ("component", *outcome(found["component"], "ok")),
-        ("cache-file", *outcome(cache_file_problems(test), "the test body")),
+        (
+            ("cache-file", *outcome(cache_file_problems(test), "the test body"))
+            if test.fed.federated_caches
+            else ("cache-file", SKIP, "this shape has no federated cache")
+        ),
     ]
 
 
@@ -889,6 +893,7 @@ class Held:
     """The object that `origin-stat` puts at one origin alone.
 
     Attributes:
+        origin: The origin that holds it.
         rel: Its path below /public.
     """
 
@@ -958,6 +963,9 @@ def origin_stat(test: Test) -> list[CaseRow]:
     """
     held, why = put_held(test)
     cases: dict[str, list[str]] = {c: [] for c in ("no-auth", "admin", "bad-bounds", "unknown-namespace")}
+    # The directors that would not say when they started, which decides
+    # how they answer for an unknown namespace.
+    unsure: list[str] = []
     # An object in an exported namespace. With ?skipstat, the director
     # finds its origins without asking them, so that only the bounds
     # decide.
@@ -978,8 +986,10 @@ def origin_stat(test: Test) -> list[CaseRow]:
         before = metrics.started_ago(url)
         answer = web.request("GET", f"{url}{STAT}{path}", token=token)
         after = metrics.started_ago(url)
-        # Either, if it won't say when it started.
-        want = (404, 429) if before is None or after is None else director.unknown_statuses(before, after)
+        if before is None or after is None:
+            unsure.append(f"{what}: its /metrics has no process_start_time_seconds")
+            continue
+        want = director.unknown_statuses(before, after)
         if answer.status not in want:
             cases["unknown-namespace"].append(f"{what}: {answer.describe()}, not {want}")
         elif common.as_object(answer.json()) is None:
@@ -992,7 +1002,10 @@ def origin_stat(test: Test) -> list[CaseRow]:
         named = ", ".join(sorted(holders(test, held)))
         rows.append(("admin", *outcome(cases["admin"], f"only {named}")))
     rows.append(("bad-bounds", *outcome(cases["bad-bounds"], "400")))
-    rows.append(("unknown-namespace", *outcome(cases["unknown-namespace"], "404, one body")))
+    if unsure and not cases["unknown-namespace"]:
+        rows.append(("unknown-namespace", INCONCLUSIVE, first(unsure)))
+    else:
+        rows.append(("unknown-namespace", *outcome(cases["unknown-namespace"], "404, one body")))
     return rows
 
 
@@ -1191,6 +1204,9 @@ class Forwarding:
     """`forwarding`'s cache, its own key, and the two directors.
 
     Attributes:
+        cache: The cache, as the first director describes it.
+        token: A token like the cache's own advertise token, which the
+            suite posts the ads with.
         first: The director the suite posts the cache's ads to, by URL.
         second: The director that must learn of them from the first.
         status: The cache's status, as the second listed it at first.
@@ -1372,13 +1388,13 @@ def forwarding(test: Test) -> list[CaseRow]:
     if f.status == "shutting down":
         return [(c, INCONCLUSIVE, "the cache says it is shutting down") for c in cases]
     rows: list[CaseRow] = []
-    try:
-        for case, check in (("forwarded", forwarded), ("shutdown-lifted", shutdown_lifted)):
-            _, status, note = common.guarded(functools.partial(check, f), lambda note: ("", FAIL, note))
-            rows.append((case, status, note))
-    finally:
-        problems = restored(f)
-        rows.append(("restored", *outcome(problems, f"{cache.name}, at both")))
+    for case, check in (("forwarded", forwarded), ("shutdown-lifted", shutdown_lifted)):
+        _, status, note = common.guarded(functools.partial(check, f), lambda note: ("", FAIL, note))
+        rows.append((case, status, note))
+    # Not in a `finally`: this only waits for the cache's own ads, which
+    # restore it whatever happens here.
+    problems = restored(f)
+    rows.append(("restored", *outcome(problems, f"{cache.name}, at both")))
     return rows
 
 

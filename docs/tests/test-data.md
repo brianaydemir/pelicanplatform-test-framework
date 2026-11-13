@@ -56,9 +56,10 @@ any expired token it sees, so `http-get-public-expired` and
 `http-direct-get-public-expired` should be refused, and
 `http-cache-get-public-expired`, which asks the cache, should pass.
 
-`exist`, `dne`, and each scenario that should pass run two batches, of one
-object and then two (a put of two goes to a collection); the rest run one,
-of one object.
+`exist`, `dne`, and each scenario that its token should let through run two
+batches, of one object and then two (a put of two goes to a collection). The
+rest run one, of one object: the refusals, and those whose token cannot
+matter, such as a read of `/public`.
 
 ## Judging the batches
 
@@ -72,6 +73,8 @@ of one object.
 - No batch may leave anything else in its directory, nor a failed get a file
   of the object's name.
 - A batch killed after 600 seconds fails as `other`.
+- A `stash_plugin` batch passes only if the plugin exits 0 and every ad it
+  wrote says the transfer succeeded.
 
 The plain HTTP client's failures are its statuses: from the director, 401 is
 `director`, 405 `unsupported`, and 404 `not found`; from the server the
@@ -80,7 +83,8 @@ is `other`, and unexpected.
 
 The summary counts each scenario's batches that passed, failed, and went
 unexpectedly. Under `framework/var/dev/transfers/`
-([where things live](../../README.md#where-things-live)), `verify/problems`
+(`transfers-scitokens/` for the SciTokens [pass](../glossary.md#pass);
+[where things live](../../README.md#where-things-live)), `verify/problems`
 lists each unexpected result, and `log/<scenario>/<batch>` keeps the plain
 HTTP client's requests and answers. `read-back` fails where a pstore
 origin's uploads cannot be read back.

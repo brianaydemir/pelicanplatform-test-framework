@@ -17,10 +17,13 @@ suites, which run late, present them.
 
 Each client command, with all it printed, goes in the pass's
 commands_log, and each of the tests' own HTTP exchanges (testlib.web)
-in its http_log. last_line() and the json_* functions read what a
+in its http_log. What each command printed, or wrote of what came of
+it, is also scanned for tokens whose signatures it gave away
+(testlib.leaks). last_line() and the json_* functions read what a
 client printed.
 """
 
+import contextlib
 import json
 import os
 import shlex
@@ -33,7 +36,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 from urllib.parse import urlsplit
 
-from . import common, credentials, report, transfers
+from . import common, credentials, leaks, report, transfers
 from .credentials import RWM, WLCG, Credential
 
 # How long a client command may run before it is killed and fails, and
@@ -371,6 +374,9 @@ class Session:
             Its exit status, stdout, stderr, and ads ("" if it wrote none).
         """
         args = [*(["-upload"] if upload else []), "-infile", infile, "-outfile", outfile]
+        # An earlier run's ads are not this run's.
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(outfile)
         started = time.monotonic()
         status, out, err = self._run([self.plugin, *args], env, cwd, timeout)
         ads = _read(outfile)
@@ -475,7 +481,10 @@ class Session:
     ) -> None:
         """Append a command, its exit status, and output to commands_log.
 
-        Each token's signature is cut out (report.redact()).
+        Each token's signature is cut out (report.redact()). What it
+        printed, and the files it wrote of what came of it, are scanned
+        for tokens whole first (leaks.command()), as every client command
+        comes this way.
 
         Args:
             args: The command.
@@ -487,6 +496,7 @@ class Session:
             files: The texts of files it read or wrote, by name, to log
                 after its output.
         """
+        leaks.command(args, cwd, out, err)
         sections = [("stdout", out), ("stderr", err), *(files or {}).items()]
         said = "".join(f"--- {name}\n{text.rstrip()}\n" for name, text in sections if text.strip())
         entry = (

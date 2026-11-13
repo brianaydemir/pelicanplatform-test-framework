@@ -360,6 +360,18 @@ class Test:
                 return errors[0]
         return None
 
+    def any_store_holds(self, rel: str) -> bool:
+        """Return whether any origin's store holds an object at rel.
+
+        The stores are read with setup.
+
+        Raises:
+            stores.Unreadable: A store that only its origin can read did
+                not say.
+        """
+        held = stores.held_anywhere(self.fed.origins, self.namespace, rel, {self.namespace: self.setup})
+        return any(digest is not None for digest in held)
+
     def ask(
         self,
         method: str,

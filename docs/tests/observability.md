@@ -13,8 +13,9 @@ as the [web API](web-api.md) suite does. Rows are named
 
 The framework leaves `Monitoring.MetricAuthorization` and
 `Monitoring.PromQLAuthorization` on. The suite raises each server's log
-level for at most a minute. `log-level-xrootd` restarts XRootD twice at each
-server it checks.
+level for a while: a change either expires within a minute, or is deleted
+before it would. `log-level-xrootd` restarts XRootD twice at each server it
+checks.
 
 - `health-api`: Each server's health report (`/api/v1.0/metrics/health`).
 
@@ -68,8 +69,7 @@ server it checks.
   - `missing`: A GET of a missing object must get 404, and raise the
     requests counter with `code="404"` by one.
   - `refused`: A GET with a token signed by `unknown.pem` must get 401 or
-    403, and raise the requests counter with that code and no `username`.
-    Skips in `/public`.
+    403, and raise the requests counter with that code. Skips in `/public`.
 
   With `posixv2` or `pstore` storage, `put` must also raise
   `pelican_storage_writes_total`, and `get` `pelican_storage_reads_total`.
@@ -101,6 +101,8 @@ server it checks.
     the `Authorization` header and in `?authz=Bearer%20<token>` at each data
     URL, and as a `login` cookie at the web API, must not appear in the
     tail, nor its signature, which a server replaces with `REDACTED`.
+    Inconclusive if a request went unanswered, or the tail dropped lines or
+    holds none.
 
 - `log-level-xrootd`: At the first origin, where XRootD serves the origins,
   and at the first federated XRootD cache; skips where there is neither. A

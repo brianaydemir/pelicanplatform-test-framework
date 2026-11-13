@@ -7,7 +7,9 @@ X-Transfer-Status that a V2 cache sends, when asked (`X-Transfer-Status:
 true` and `TE: trailers`), to report a failure after its headers.
 
 Each exchange is logged, once log_to() says where, as `curl -v` shows
-one: the request and its headers (`>`), then the answer's (`<`).
+one: the request and its headers (`>`), then the answer's (`<`). Each
+answer is also scanned for tokens whose signatures came back in the
+clear (testlib.leaks).
 """
 
 import functools
@@ -20,6 +22,8 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 from urllib.parse import SplitResult, urlencode, urljoin, urlsplit
+
+from . import leaks
 
 # The federation's CA, in the dev container.
 CA_FILE = "/certs/ca.crt"
@@ -48,6 +52,8 @@ class Response:
 
     Attributes:
         status: Its status; None if no whole response came.
+        body: Its body.
+        headers: Its headers.
         trailers: Those after a chunked body.
         error: If none came, what went wrong, e.g. a status then a body
             that broke off.
@@ -273,6 +279,11 @@ def _log_exchange(
         write("\n".join(lines) + "\n\n")
 
 
+def _scan(method: str, url: str, sent: Mapping[str, str], answer: Response) -> None:
+    """Scan answer for tokens whole, as testlib.leaks has it."""
+    leaks.answer(method, url, sent, answer.status, answer.headers, answer.body, answer.trailers)
+
+
 def _received(answer: Response) -> str:
     """Return what came of an exchange, for its log entry."""
     return f"{answer.describe()}, with {len(answer.body)} bytes"
@@ -350,6 +361,7 @@ def request(
     if data is not None:
         outcome = f"sent {len(data)} bytes{' in chunks' if chunked else ''}; {outcome}"
     _log_exchange(method, url, sent, began, outcome, found)
+    _scan(method, url, sent, found)
     return found
 
 
@@ -389,11 +401,26 @@ def follow(
         location = answer.header("Location")
         if answer.status not in (301, 302, 307, 308) or not location:
             break
-        following = urljoin(current, location)
+        following = _resolve(current, location)
         if urlsplit(following).hostname != urlsplit(current).hostname:
             send_token = None
         current = following
     return hops
+
+
+def _resolve(base: str, location: str) -> str:
+    """Return the URL that a Location names, in an answer from base.
+
+    An absolute URL, or an absolute path, is taken as it is: urljoin()
+    would drop a `;` that ends a path, taking it for the start of
+    parameters with none.
+    """
+    if urlsplit(location).scheme:
+        return location
+    if location.startswith("/") and not location.startswith("//"):
+        parts = urlsplit(base)
+        return f"{parts.scheme}://{parts.netloc}{location}"
+    return urljoin(base, location)
 
 
 @dataclass
@@ -401,6 +428,7 @@ class Timed:
     """A GET, and when its body came, in seconds from when it was sent.
 
     Attributes:
+        response: The answer.
         first: When the first bytes asked for had come, if they did.
         whole: When the whole body had come, if it did.
     """
@@ -454,6 +482,7 @@ def timed_get(
     if head is not None:
         outcome += f", the first {first} after {head:.2f}s"
     _log_exchange("GET", url, sent, began, outcome, found)
+    _scan("GET", url, sent, found)
     return Timed(found, head, whole)
 
 
@@ -545,4 +574,5 @@ def read_part(
     finally:
         conn.close()
     _log_exchange("GET", url, sent, began, f"{_received(found)}, and no more read", found)
+    _scan("GET", url, sent, found)
     return found

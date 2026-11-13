@@ -28,8 +28,8 @@ provenance.txt has:
               write, run only there, as does its own pelican-server, if
               it has one; those in framework/var/bin/host/ on the host.
 
-Local/ is the user's, so it is no part of the framework's changes:
-Settings and the logs' config/ record what of it a run used.
+The user's local/ is no part of the framework's changes: Settings and
+the logs' config/ record what of it a run used.
 
 What it cannot learn, it says so, and goes on: no run is stopped for
 want of its provenance.

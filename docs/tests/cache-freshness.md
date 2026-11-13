@@ -53,7 +53,8 @@ need them [skip](../glossary.md#skip). A scenario with several
   - `max-age` (origins send `max-age=30`): `s-maxage=30, max-age=30`.
 
   Each `Age` must be at most the time since the fill, and the two hits' must
-  differ by the time between them, within 2 seconds.
+  differ by the time between them, within 2 seconds. Inconclusive where a
+  cache sends no `ETag` to ask for the 304 by.
 
 - `propfind-freshness`: A V2 cache's Depth 0 PROPFIND of its copy:
 
@@ -70,7 +71,7 @@ need them [skip](../glossary.md#skip). A scenario with several
   helper, and under `tiny`.
 
 - `must-revalidate` (`max-age=30, must-revalidate`): The same, but the cache
-  must answer 504 instead of the stale copy
+  must answer with a server error (504) instead of the stale copy
   ([RFC 9111, section 5.2.2.2](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2.2)).
 
 - `cc-immediate`, cases `max-age=0` and `no-cache`:

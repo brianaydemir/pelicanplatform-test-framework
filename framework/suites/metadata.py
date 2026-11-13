@@ -636,9 +636,7 @@ def issued(answer: web.Response, name: str, wanted: str) -> tuple[str, str]:
         raise suite.SetupError(f"uploading {name} got {answer.describe()}")
     got = answer.header(STATUS_HEADER)
     if got != wanted:
-        stale = got == "published" and name.startswith("fail-always-")
-        hint = "; the recorder predates fail-always-*: ./fed.sh restart metadata" if stale else ""
-        raise suite.SetupError(f"uploading {name}: {STATUS_HEADER} '{got}', not '{wanted}'{hint}")
+        raise suite.SetupError(f"uploading {name}: {STATUS_HEADER} '{got}', not '{wanted}'")
     urls = (answer.header(QUERY_URL), answer.header(MANAGE_URL))
     for header, url in zip((QUERY_URL, MANAGE_URL), urls):
         if not url:

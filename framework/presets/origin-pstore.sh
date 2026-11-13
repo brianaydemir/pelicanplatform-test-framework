@@ -9,6 +9,12 @@
 # suite uploads to /protected-a and /protected-b before its transfers.
 # Each has storage of its own in the store, and /public, which takes no
 # writes, reads /protected-a's.
+#
+# The memory limit leaves room for two backups of the catalog, as the
+# pstore suite schedules them: each takes about half a gigabyte, whatever
+# the catalog's size (BadgerDB's Backup streams it through eight
+# goroutines, each with buffers of 32 MiB), and the one before may not
+# yet have been given back.
 
 ORIGIN_VARIANT=pstore
-ORIGIN_MEM=768M
+ORIGIN_MEM=1536M

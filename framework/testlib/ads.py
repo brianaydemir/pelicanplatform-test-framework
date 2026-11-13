@@ -3,8 +3,8 @@
 An ad is a server_structs.OriginAdvertise (registerServerAd in
 Pelican's director/director.go). The token that comes with one has the
 advertise scope, and is signed with the server's own key, which the
-registry holds for the server's prefix (/origins/<host> or
-/caches/<host>). The director checks the token against the registry's
+registry holds for the server's prefix (/origins/<host>:<port> or
+/caches/<name>). The director checks the token against the registry's
 copy of the key (verifyAdvertiseToken in director/origin_api.go).
 
 Servers finds each server as the first director describes it, and the
@@ -62,7 +62,7 @@ class Server:
 
     @property
     def registered_host(self) -> str:
-        """The host its registry prefix names."""
+        """What its registry prefix names it: a cache, by its host."""
         return self.prefix.rsplit("/", 1)[-1]
 
 
@@ -72,6 +72,7 @@ class Servers:
     It also finds their keys, and makes tokens like their own.
 
     Attributes:
+        fed: The federation.
         director: The first director's URL.
     """
 

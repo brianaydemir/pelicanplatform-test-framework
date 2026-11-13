@@ -152,6 +152,8 @@ class Test:
     suite has no namespace or objects of its own.
 
     Attributes:
+        session: The pass.
+        fed: The federation.
         registry: The registry's URL.
         tag: registry-test-<run>, which every prefix, site name, and
             downtime description of the run's has in it.
@@ -1082,8 +1084,10 @@ def shape_completeness(test: Test) -> CaseRow:
             continue
         prefixes[prefix] = int(stored.get("id", 0))
         status = registry.admin_metadata(stored).get("status")
-        if not test.fed.registry_approval and status != "Incomplete":
-            problems.append(f"{prefix} is {status}, not Incomplete")
+        # Under `registry-approval`, the federation suite has approved it.
+        want = "Approved" if test.fed.registry_approval else "Incomplete"
+        if status != want:
+            problems.append(f"{prefix} is {status}, not {want}")
     problems += check_problems(test, prefixes, complete=False, page="")
     return ("check-status", *outcome(problems, f"{len(prefixes)} server registration(s): incomplete"))
 

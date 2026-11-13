@@ -942,10 +942,16 @@ class InUse:
     is done.
 
     Attributes:
+        test: The test.
         targets: Each server: its name in the rows, its data URL, and
             whether a token decides there.
+        minted: When the token was minted, in Unix time.
+        expiry: When the token expires, in Unix time.
+        token: The token that each server is asked with, which lasts
+            IN_USE_LIFETIME seconds.
         answers: What each server answered, by its name in the rows, and
             when, in seconds past the token's expiry.
+        thread: The thread that asks.
     """
 
     def __init__(self, test: Test):

@@ -91,7 +91,9 @@ DOWNTIME_WAIT = 150
 DOWNTIME_LENGTH = 4 * DOWNTIME_WAIT
 
 # A server's registration's prefix (`registry-approval`) is
-# /caches/<host> or /origins/<host>.
+# /caches/<name> or /origins/<host>:<port> (GetCacheNs and GetOriginNs
+# in Pelican's server_structs/xrootd_server.go); a cache's name here is
+# its host.
 SERVER_PREFIXES = ("/caches/", "/origins/")
 # The statuses of a registration awaiting approval.
 PENDING_STATUSES = ("Incomplete", "Pending")
@@ -244,8 +246,10 @@ def approve_pending(test: Test) -> None:
         pending = pending_registrations(api)
         if not pending:
             return
+        # Each pending server's host, which is how a director's answer
+        # names it.
         servers = sorted(
-            prefix[len(start) :]
+            prefix[len(start) :].partition(":")[0]
             for _, prefix in pending
             for start in SERVER_PREFIXES
             if prefix.startswith(start)

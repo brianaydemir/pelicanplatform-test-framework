@@ -22,7 +22,7 @@ import json
 import os
 import shutil
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from urllib.parse import urlsplit
 
 from testlib import (
@@ -68,7 +68,8 @@ SCENARIOS = {
     ),
 }
 
-# See suites/__init__.py.
+# Every scenario: a second pass would change the keys again, and
+# `hot-rotate` presents tokens of both profiles itself.
 ONE_PROFILE = tuple(SCENARIOS)
 
 # How long the registry and a server's JWKS may take to show a key added
@@ -434,16 +435,17 @@ def hot_add(test: Test) -> list[CaseRow]:
     # How far into a watch a director first dropped origin-0, if one did.
     dropped: list[float] = []
 
-    def watch(present: bool) -> dict[str, float]:
-        """Return how soon each source listed the key, or not (present).
+    def watch(present: bool, cases: Iterable[str]) -> dict[str, float]:
+        """Return how soon each source of cases listed the key, or not (present).
 
         Each is asked until it does, for KEY_WAIT seconds at most; one
         whose JWKS does not answer, or holds no key, does neither.
         """
+        watched = {case: sources[case] for case in cases}
         found: dict[str, float] = {}
         started = time.monotonic()
-        while time.monotonic() - started < KEY_WAIT and len(found) < len(sources):
-            for case, url in sources.items():
+        while time.monotonic() - started < KEY_WAIT and len(found) < len(watched):
+            for case, url in watched.items():
                 if case in found:
                     continue
                 kids = key_ids_at(url)
@@ -454,7 +456,7 @@ def hot_add(test: Test) -> list[CaseRow]:
             time.sleep(5)
         return found
 
-    seen = watch(present=True)
+    seen = watch(True, sources)
     for case in sources:
         if case in seen:
             rows.append((case, PASS, f"the key appeared after {seen[case]:.0f}s"))
@@ -462,12 +464,17 @@ def hot_add(test: Test) -> list[CaseRow]:
             rows.append((case, FAIL, f"the key never appeared in {KEY_WAIT}s"))
     remove_key(test.origin_dirs, name)
     test.added.remove((test.origin_dirs, name))
-    gone = watch(present=False)
-    if len(gone) < len(sources):
-        still = [case for case in sources if case not in gone]
+    # Only where the key appeared can it be seen to go.
+    gone = watch(False, seen)
+    if not seen:
+        rows.append(
+            ("removed", INCONCLUSIVE, "the key appeared nowhere, so nowhere could it be seen to go")
+        )
+    elif len(gone) < len(seen):
+        still = [case for case in seen if case not in gone]
         rows.append(("removed", FAIL, f"{KEY_WAIT}s after the key was removed, it is still in {still}"))
     else:
-        rows.append(("removed", PASS, f"gone within {max(gone.values()):.0f}s"))
+        rows.append(("removed", PASS, f"gone from {', '.join(seen)} within {max(gone.values()):.0f}s"))
     if dropped:
         rows.append(("routing", FAIL, f"a director dropped origin-0 {dropped[0]:.0f}s in"))
     elif fed.directors:

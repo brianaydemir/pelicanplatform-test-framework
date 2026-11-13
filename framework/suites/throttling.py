@@ -43,7 +43,7 @@ SCENARIOS = {
         " come back intact"
     ),
     "shed-429": "each V2 cache sheds a burst of cold reads with 429 and Retry-After, not a 404",
-    "client-throttled": "the clients, shed by a V2 cache, report a retryable error and retry",
+    "client-throttled": "the clients, shed by a V2 cache, report a retryable error; a retry gets the object",
     "timeout-header": "each V2 cache answers 504 by X-Pelican-Timeout, and goes on filling",
     "streaming": "each V2 cache sends a cold object's first bytes long before its last",
     "slow-miss": (
@@ -208,10 +208,6 @@ def shed_problem(answer: web.Response) -> str | None:
     if reason not in SHED_REASONS:
         return f"a 429 whose body's error is {reason!r}, not one of {', '.join(SHED_REASONS)}"
     return None
-
-
-# --------------------------------------------------------------------------
-# The federation, slowed.
 
 
 # --------------------------------------------------------------------------

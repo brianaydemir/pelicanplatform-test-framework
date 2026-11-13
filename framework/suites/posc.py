@@ -22,10 +22,10 @@ Uploads go straight to the first origin in
 framework/var/generated/origins, as /protected-a/data/posc/<run>-<name>,
 with a token of the session's profile; what the stores hold is read, and
 removed, with a WLCG token either way. Only `client` and `plugin` go
-through the director. An interruption is judged only once the upload is seen under
-way: by a new staging file, by growth in pstore/objects on pstore, or,
-on a plain origin, by the object appearing or growing. Afterward,
-/protected-a/data/posc is emptied on every store.
+through the director. An interruption is judged only once the upload is
+seen under way: by a new staging file, by growth in pstore/objects on
+pstore, or, on a plain origin, by the object appearing or growing.
+Afterward, /protected-a/data/posc is emptied on every store.
 
 `posc-expiry` checks the native POSC's reaping of abandoned staging
 files, and its guard on the staging directory. Its `idle` row restarts
@@ -35,6 +35,7 @@ federation serves again; without a control helper, or in the `tiny`
 topology, whose origin is the whole federation's process, it skips.
 """
 
+import contextlib
 import glob
 import os
 import shutil
@@ -50,7 +51,7 @@ from http.client import HTTPException, HTTPSConnection
 from typing import override
 from urllib.parse import unquote, urlsplit
 
-from testlib import blocks, common, control, metrics, stores, suite, transfers, web, webdav
+from testlib import blocks, common, control, leaks, metrics, stores, suite, transfers, web, webdav
 from testlib.common import die, first, outcome, shown, wait_for, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -68,10 +69,6 @@ SCENARIOS = {
     "hidden": "neither a PROPFIND nor an HTML listing of the export shows .pelican-posc",
     "posc-expiry": "stale staging files are reaped, an idle upload kept, and staging guarded",
 }
-
-
-# posc-expiry's cases, each a row named `posc-expiry <case>`.
-EXPIRY_CASES = ("mode", "stale", "staging-put", "staging-mkcol", "idle")
 
 # The scenarios that each kind of staging cannot have, and why. A pstore
 # origin has no staging file to watch, XRootD stages uploads outside the
@@ -353,8 +350,10 @@ class Test(suite.Test):
             patterns = [f"{store}/data/posc/**" for store in self.stores]
         for pattern in patterns:
             for path in glob.glob(pattern, recursive=True):
-                if os.path.isfile(path):
-                    found[path] = os.path.getsize(path)
+                # A file may go as an upload ends, between the two calls.
+                with contextlib.suppress(OSError):
+                    if os.path.isfile(path):
+                        found[path] = os.path.getsize(path)
         return found
 
     def mark(self) -> None:
@@ -475,6 +474,7 @@ class Upload:
         released: Set by finish(), to let the connection go.
         status: Afterward, what came back.
         error: Afterward, why it never got under way, if it didn't.
+        thread: The thread.
     """
 
     def __init__(self, test: Test, name: str, mode: str, total: int, send: int, hold: float = 60):
@@ -545,12 +545,25 @@ def blind(test: Test, upload: Upload, seen: bool) -> bool:
     An origin that stages nothing may keep an upload out of its store
     until it completes, as an object store does, so that nothing shows it
     under way: what it leaves can still be judged, once the bytes are
-    out. Elsewhere, an upload not seen under way cannot be judged.
+    out, unless the origin refused it (refused()). Elsewhere, an upload
+    not seen under way cannot be judged.
     """
     return not seen and test.plain and upload.sent.is_set()
 
 
 BLIND = "the store showed nothing of the upload while it was held open"
+
+# The answers by which an origin refuses an upload before it reads the
+# body: no token it takes, or no length.
+REFUSALS = ("401", "403", "411")
+
+
+def refused(upload: Upload) -> bool:
+    """Return whether the origin refused upload outright, once finished.
+
+    Such an upload never got under way, whatever the store shows.
+    """
+    return upload.status in REFUSALS
 
 
 # --------------------------------------------------------------------------
@@ -608,13 +621,15 @@ def stalled(test: Test) -> Row:
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
     verdict: Row | None = None
+    unseen_but_judged = False
     try:
         seen = watch(test, upload)
-        if seen or blind(test, upload, seen):
+        unseen_but_judged = blind(test, upload, seen)
+        if seen or unseen_but_judged:
             verdict = held_open(test, name)
     finally:
         upload.finish()
-    if verdict is None:
+    if verdict is None or (unseen_but_judged and refused(upload)):
         return FAIL, unseen(test, upload)
     return verdict
 
@@ -639,7 +654,7 @@ def interrupted(test: Test, scenario: str, mode: str, total: int, send: int) -> 
         seen = watch(test, upload)
     finally:
         upload.finish()
-    unseen_but_judged = blind(test, upload, seen)
+    unseen_but_judged = blind(test, upload, seen) and not refused(upload)
     if not seen and not unseen_but_judged:
         return FAIL, unseen(test, upload)
     status = upload.status
@@ -688,13 +703,15 @@ def overwrite(test: Test) -> Row:
     test.mark()
     upload = Upload(test, name, "sized", 2 * MIB, MIB)
     served: web.Response | None = None
+    unseen_but_judged = False
     try:
         seen = watch(test, upload)
-        if seen or blind(test, upload, seen):
+        unseen_but_judged = blind(test, upload, seen)
+        if seen or unseen_but_judged:
             served = web.request("GET", f"{test.base_url}/{name}", token=test.token)
     finally:
         upload.finish()
-    if served is None:
+    if served is None or (unseen_but_judged and refused(upload)):
         return FAIL, unseen(test, upload)
     status = upload.status
     if served.status != 200 or served.body != original:
@@ -812,17 +829,21 @@ def killed(test: Test, which: str) -> Row:
         # stages nothing, whose store may show nothing until an upload
         # completes, kill it then anyway, and judge what is left.
         seen = unseen_but_judged = False
-        for _ in range(300):
-            if upload.poll() is not None:
-                break
-            if test.under_way():
-                seen = True
-                break
-            time.sleep(0.1)
-        if not seen and test.plain and upload.poll() is None:
-            seen = unseen_but_judged = True
-        code = upload.poll()
-        upload.kill()
+        try:
+            for _ in range(300):
+                if upload.poll() is not None:
+                    break
+                if test.under_way():
+                    seen = True
+                    break
+                time.sleep(0.1)
+            if not seen and test.plain and upload.poll() is None:
+                seen = unseen_but_judged = True
+            code = upload.poll()
+        finally:
+            # Whatever happens: left alone, it would upload all of it.
+            upload.kill()
+            os.remove(source)
         status = upload.wait()
     with open(log_file, encoding="utf-8", errors="replace") as f:
         test.session.log_command(
@@ -833,7 +854,6 @@ def killed(test: Test, which: str) -> Row:
             "",
             f.read(),
         )
-    os.remove(source)
     time.sleep(3)
     path = test.found(name)
     try:
@@ -1100,8 +1120,11 @@ def expiry_idle(test: Test) -> Row:
         kept = os.path.exists(staged)
         conn.send(data[MIB:])
         answer = conn.getresponse()
-        answer.read()
+        body = answer.read()
         status = answer.status
+        # Not through testlib.web, whose scan for tokens whole it needs.
+        sent = {"Authorization": f"Bearer {test.token}"}
+        leaks.answer("PUT", url.geturl(), sent, status, tuple(answer.getheaders()), body, ())
     except (OSError, HTTPException) as e:
         return FAIL, f"the upload failed: {type(e).__name__}: {e}"
     finally:

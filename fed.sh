@@ -2645,6 +2645,21 @@ fed_control_start() {
   fed_control_pid=$!
 }
 
+# Wait, for five minutes at most, until the control helper serves, or has
+# exited, as it does where another serves already. It first puts back
+# what a helper that was killed left, which may take a restart of
+# services; the tests ask once whether a helper serves, and skip what
+# needs one if none answers.
+fed_control_wait() {
+  fed_waited=0
+  while [ ! -e framework/var/control/serving ] \
+      && kill -0 "${fed_control_pid}" 2>/dev/null \
+      && [ "${fed_waited}" -lt 300 ]; do
+    sleep 1
+    fed_waited=$(( fed_waited + 1 ))
+  done
+}
+
 # Stop the control helper, if it runs.
 fed_control_stop() {
   [ -n "${fed_control_pid:-}" ] || return 0
@@ -2747,6 +2762,9 @@ fed_test_timer_stop() {
 #   metadata/       every request that the metadata recorder has received
 #                   (framework/var/data/metadata/), where the shape runs
 #                   it, with tokens' signatures cut out
+#   webdav-gate/    what each request that an https or httpsv2 origin has
+#                   sent its backend through the gate carried
+#                   (framework/var/data/webdav-gate/), likewise
 #
 # test.log and control.log, what the tests and the control helper
 # print, are written there as the tests run (see the `test` command). The
@@ -2803,6 +2821,10 @@ fed_save_logs() {
             sh "${fed_python}" {} "${dir}" \;
     if fed_has_profile metadata && [ -d framework/var/data/metadata ]; then
       "${fed_python}" framework/put-file.py --tree framework/var/data/metadata "${dir}/metadata"
+    fi
+    if fed_has_profile webdav && [ -d framework/var/data/webdav-gate ]; then
+      "${fed_python}" framework/put-file.py --tree framework/var/data/webdav-gate \
+          "${dir}/webdav-gate"
     fi
     rm -f "${dir}/.started"
   fi
@@ -3099,6 +3121,8 @@ case "${cmd}" in
     fi
     fed_control_start "${log_dir:+${log_dir}/control.log}"
     trap 'fed_test_timer_stop; fed_control_stop' EXIT
+    # Not for a listing or the usage, which ask nothing of it.
+    [ -z "${logs}" ] || fed_control_wait
     trap 'fed_test_interrupt; fed_control_stop; fed_save_logs "${logs}"; exit 129' HUP
     trap 'fed_test_interrupt; fed_control_stop; fed_save_logs "${logs}"; exit 130' INT
     trap 'fed_test_interrupt; fed_control_stop; fed_save_logs "${logs}"; exit 143' TERM

@@ -25,7 +25,8 @@ that takes no direct clients must refuse each such request.
   version claim, `wlcg.ver` `2.0` (`wlcg.ver-2`) or `ver` `scitokens:3.0`
   (`ver-3`), may be taken or refused.
 - `web-token-strict`: A server's web API should check its own tokens with no
-  clock skew. Given an admin token, each server's `/api/v1.0/auth/whoami`
-  must name the admin (`web-fresh`); given one not valid for another 20
-  seconds (`web-nbf+20`), or expired 5 seconds ago (`web-exp-5`), it must
-  refuse it (401) or name no one. [WLCG only](README.md#token-profiles).
+  clock skew. Given an admin token, each origin's and cache's
+  `/api/v1.0/auth/whoami` must name the admin (`web-fresh`); given one not
+  valid for another 20 seconds (`web-nbf+20`), or expired 5 seconds ago
+  (`web-exp-5`), it must refuse it (401) or name no one.
+  [WLCG only](README.md#token-profiles).

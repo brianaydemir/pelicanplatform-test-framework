@@ -83,12 +83,12 @@ every other suite but [`keys`](keys.md). It needs a
 
 - `director-failover`: Under
   [`-p director-ha`](../../framework/presets/director-ha.sh), each director
-  in turn is killed, so its port refuses connections, which the load
-  balancer then sends to the other. Meanwhile (`<director> down`), the
-  Pelican client, `stash_plugin`, and a plain HTTP client, which asks the
-  load balancer for the bare path and follows the redirect with its token,
-  must each get an object through the load balancer, and, where
-  `/protected-a` takes writes, put one, which some origin must then hold.
+  in turn is killed, and the load balancer left 10 seconds to stop sending
+  connections its way. Then (`<director> down`), the Pelican client,
+  `stash_plugin`, and a plain HTTP client, which asks the load balancer for
+  the bare path and follows the redirect with its token, must each get an
+  object through the load balancer, and, where `/protected-a` takes
+  writes, put one, which some origin must then hold.
   Started again, the director must name origin-0 and the first federated
   cache within 150 seconds, and the clients must do the same again
   (`<director> back`). No director is paused: its port would still take

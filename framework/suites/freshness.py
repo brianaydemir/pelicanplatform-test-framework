@@ -388,16 +388,11 @@ def only_if_cached(test: Test, _value: str) -> suite.Row:
 def bare_get(test: Test, url: str, rel: str) -> tuple[web.Response, str]:
     """GET rel's bare path at the director at url, as curl -L would.
 
-    The answer is followed once to where it leads.
-
     Returns:
-        The answer, and the host that gave it.
+        The last answer (web.follow()), and the host that gave it.
     """
-    answer = web.request("GET", f"{url}{test.path(quote(rel))}", token=test.token, timeout=120)
-    if answer.status in (301, 302, 303, 307, 308) and answer.header("Location"):
-        target = answer.header("Location")
-        return web.request("GET", target, token=test.token, timeout=120), director.host(target)
-    return answer, director.host(url)
+    where, answer = web.follow("GET", f"{url}{test.path(quote(rel))}", token=test.token)[-1]
+    return answer, director.host(where)
 
 
 def not_back(test: Test, target: common.Cache | str, rel: str, data: bytes) -> str | None:
@@ -526,6 +521,8 @@ def downstream(test: Test, value: str) -> suite.Row:
         return FAIL, why
     problems: list[str] = []
     notes: list[str] = []
+    # The caches that sent no ETag to ask for a 304 by.
+    unasked: list[str] = []
     for cache in test.v2:
         rel, data = rels[cache.svc], objects[rels[cache.svc]]
         filled = time.time()
@@ -565,13 +562,15 @@ def downstream(test: Test, value: str) -> suite.Row:
                 problems.append(f"{cache.svc}: Age went from {ages[0]} to {ages[1]} in {between:.0f}s")
         etag = hits[-1][1].header("ETag")
         if not etag:
-            notes.append(f"{cache.svc} sent no ETag, so no 304 was asked for")
+            unasked.append(f"{cache.svc} sent no ETag, so no 304 was asked for")
             continue
         answer = test.ask("GET", cache.url, rel, {"If-None-Match": etag})
         if answer.status != 304:
             problems.append(f"{cache.svc}: If-None-Match its ETag got {answer.describe()}, not 304")
         else:
             problems += [f"{cache.svc} (304): {p}" for p in downstream_problems(answer, value, filled)]
+    if unasked and not problems:
+        return INCONCLUSIVE, first(unasked)
     return outcome(problems, "; ".join([f"{len(test.v2)} cache(s)"] + notes))
 
 
@@ -737,9 +736,10 @@ def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> suite
     At each V2 cache, an object read whole, which it holds, and another
     it never read. Once the first is stale (max-age), every origin is
     stopped. The first must still come back, as the cache holds it, if
-    stale_ok; else it must not. The other must fail, and never come
-    back with bytes that are not its own. Then the origins start again,
-    and the federation must serve as before.
+    stale_ok; else the cache must answer with a server error (RFC 9111,
+    section 5.2.2.2, which says 504). The other must fail, and never
+    come back with bytes that are not its own. Then the origins start
+    again, and the federation must serve as before.
 
     Args:
         test: The test.
@@ -762,10 +762,11 @@ def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> suite
     stale_at = 0.0
     for cache in test.v2:
         rel = held[cache.svc]
-        stale_at = time.time() + fresh + 2
         why = hold(test, cache, rel, objects[rel])
         if why:
             return FAIL, why
+        # From once it holds it: the last copy is the last to go stale.
+        stale_at = time.time() + fresh + 2
     sleep_until(stale_at)
     stopped: list[str] = []
     try:
@@ -783,6 +784,11 @@ def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> suite
                     f"{cache.svc}: its stale copy, with every origin down, came back"
                     + f" ({answer.describe()}), not 504"
                 )
+            elif not stale_ok and (answer.status is None or answer.status < 500):
+                problems.append(
+                    f"{cache.svc}: its stale copy, with every origin down, got"
+                    + f" {answer.describe()}, not a server error (504)"
+                )
             elif not stale_ok:
                 notes.append(f"{cache.svc}: {answer.describe()}")
             rel = cold[cache.svc]
@@ -793,6 +799,8 @@ def origins_down(test: Test, value: str, scenario: str, stale_ok: bool) -> suite
                     f"{cache.svc}: an object it never read, with every origin down, came back"
                     + f" ({answer.describe()}, {what})"
                 )
+    except control.ControlError as e:
+        problems.append(str(e))
     finally:
         for svc in stopped:
             try:

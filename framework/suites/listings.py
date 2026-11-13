@@ -116,6 +116,8 @@ class Test(suite.Test):
             session's profile.
         elsewhere: A token like `server`'s for /protected-a, but to read
             <base>/elsewhere alone.
+        data: The bytes that seed() gave each object, by its storage's
+            namespace and its rel: the same at every origin.
     """
 
     def __init__(self, session: Session):
@@ -133,6 +135,7 @@ class Test(suite.Test):
             scope_path=f"/{self.base}/elsewhere",
             profile=session.profile,
         )
+        self.data: dict[tuple[str, str], bytes] = {}
 
     def path_in(self, namespace: str, rel: str = "tree") -> str:
         """Return the path of rel, in the run's collection, in namespace."""
@@ -187,9 +190,8 @@ class Test(suite.Test):
                 objects[f"tree/{self.own(ns)}"] = OWN
                 objects.update({f"probe/{c.svc}": PROBE for c in self.caches})
                 for rel, size in objects.items():
-                    error = stores.seed(
-                        origin, ns, self.rel(rel), os.urandom(size), setup, self.fed.exports[ns]
-                    )
+                    data = self.data.setdefault((ns, self.rel(rel)), os.urandom(size))
+                    error = stores.seed(origin, ns, self.rel(rel), data, setup, self.fed.exports[ns])
                     if error:
                         return [error]
         return errors
@@ -364,7 +366,8 @@ def origin_infinity(test: Test) -> Row:
 def director(test: Test) -> Row:
     """Check that each director redirects a PROPFIND to an origin.
 
-    The origin's listing must then be right; or, where the director may
+    The redirect must be a 307, which keeps the method. The origin's
+    listing must then be right; or, where the director may
     not answer it (see may_list()), the PROPFIND must come back as a
     refusal. Where the origin takes no direct clients, it must refuse
     what the director sent there.
@@ -386,8 +389,8 @@ def director(test: Test) -> Row:
                     continue
                 answer = webdav.propfind(url, depth, test.tokens[ns])
                 location = answer.header("Location")
-                if answer.status not in (301, 302, 303, 307, 308) or not location:
-                    problems.append(f"{where}: {answer.describe()}, not a redirect")
+                if answer.status != 307 or not location:
+                    problems.append(f"{where}: {answer.describe()}, not a redirect (307)")
                     continue
                 parts = urlsplit(location)
                 if parts.netloc not in origins:
@@ -423,8 +426,9 @@ def cache_depth_0(test: Test) -> Row:
         for when in ("cold", "cached"):
             if when == "cached":
                 answer = web.request("GET", url, token=test.token)
-                if answer.status != 200 or len(answer.body) != PROBE:
-                    problems.append(f"{cache.svc}: GET {path}: {answer.describe()}")
+                why = web.served(answer, test.data["protected-a", test.rel(f"probe/{cache.svc}")])
+                if why:
+                    problems.append(f"{cache.svc}: GET {path}: {why}")
                     break
             _, got, why = webdav.listing(url, "0", path, test.token)
             if got is None:
@@ -638,9 +642,10 @@ def collection_get(test: Test) -> Row:
 
     An origin asked without Accept: text/html, as by a client that
     expects bytes, may refuse or answer a listing, but never an object's
-    bytes. Asked with it, it must answer an HTML listing. A federated
-    cache must not keep what an origin answers as the collection's
-    object: its answer must be no object's bytes, and a V2 cache's 200
+    bytes, nor fail (a 5xx, or no answer). Asked with it, it must answer
+    an HTML listing. A federated cache must not keep what an origin
+    answers as the collection's object: its answer must likewise be no
+    object's bytes, and no failure, and a V2 cache's 200
     must be typed application/octet-stream, with X-Content-Type-Options:
     nosniff, and carry no Age, on a second GET either. The object in the
     collection must then come back intact. The origins are asked only if
@@ -649,12 +654,13 @@ def collection_get(test: Test) -> Row:
     caps = test.caps
     token = test.token
     path = test.path_in("protected-a", "tree/sub")
-    want = stores.held(test.origins[0], "protected-a", test.rel("tree/sub/c"), test.setup)
-    if want is None:
-        return FAIL, f"{test.origins[0].svc}'s store lacks tree/sub/c"
+    want = test.data["protected-a", test.rel("tree/sub/c")]
 
     def is_object(body: bytes) -> bool:
-        return common.digest(body) == want
+        return body == want
+
+    def failed(answer: web.Response) -> bool:
+        return answer.status is None or answer.status >= 500
 
     problems: list[str] = []
     origins = test.origins if may_list(caps, "0", "origin") else []
@@ -666,6 +672,8 @@ def collection_get(test: Test) -> Row:
             what = f"{origin.svc}: GET {path}{' as a browser' if accept else ''}"
             if is_object(answer.body):
                 problems.append(f"{what}: served the object in it")
+            elif failed(answer):
+                problems.append(f"{what}: {answer.describe()}")
             elif accept and answer.status != 200:
                 problems.append(f"{what}: {answer.describe()}, not a listing")
             elif accept and not kind.startswith("text/html"):
@@ -678,6 +686,8 @@ def collection_get(test: Test) -> Row:
             kind = answer.header("Content-Type").lower()
             if is_object(answer.body):
                 problems.append(f"{what}{when}: served the object in it")
+            elif failed(answer):
+                problems.append(f"{what}{when}: {answer.describe()}")
             elif cache.kind == "v2" and answer.header("Age"):
                 problems.append(f"{what}{when}: Age, so it keeps the listing as the object")
             elif cache.kind == "v2" and answer.status == 200:

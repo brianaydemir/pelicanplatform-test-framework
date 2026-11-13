@@ -545,13 +545,13 @@ def evict_marked(test: Test) -> suite.Row:
 
 
 def unmark(test: Test, rel: str) -> None:
-    """Evict rel at once from every V2 cache.
+    """Evict rel at once from every V2 cache, with the setup token.
 
     That drops its mark for priority eviction too, so that `purge first`
     finds only its own.
     """
     for cache in test.v2:
-        cacheapi.evict(cache, test.path(rel), test.token)
+        cacheapi.evict(cache, test.path(rel), test.setup)
 
 
 def evict_prefix(test: Test) -> suite.Row:
@@ -639,18 +639,22 @@ def evict_client(test: Test) -> suite.Row:
     problems: list[str] = []
     for flag, rel in rels.items():
         immediate = flag == "now"
-        code, said = client_evict(test, rel, immediate)
-        want = evicted_message(test.path(rel), 1, immediate)
-        if code != 0 or said != want:
-            problems.append(f"{flag}: exited {code}, saying '{said}', not '{want}'")
-            continue
-        gone = [c.svc for c in test.v2 if test.cached(c, rel) is False]
-        if immediate and len(gone) != 1:
-            problems.append(f"{flag}: {len(gone)} cache(s) lack it afterward ({', '.join(gone)}), not 1")
-        elif not immediate and gone:
-            problems.append(f"{flag}: {', '.join(gone)} lack(s) it afterward")
-        if not immediate:
-            unmark(test, rel)
+        try:
+            code, said = client_evict(test, rel, immediate)
+            want = evicted_message(test.path(rel), 1, immediate)
+            if code != 0 or said != want:
+                problems.append(f"{flag}: exited {code}, saying '{said}', not '{want}'")
+                continue
+            gone = [c.svc for c in test.v2 if test.cached(c, rel) is False]
+            if immediate and len(gone) != 1:
+                problems.append(
+                    f"{flag}: {len(gone)} cache(s) lack it afterward ({', '.join(gone)}), not 1"
+                )
+            elif not immediate and gone:
+                problems.append(f"{flag}: {', '.join(gone)} lack(s) it afterward")
+        finally:
+            if not immediate:
+                unmark(test, rel)
     return outcome(problems, f"{len(test.v2)} V2 cache(s)")
 
 

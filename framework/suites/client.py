@@ -1591,7 +1591,7 @@ def share_url(test: Test) -> list[CaseRow]:
             problems.append(f"printed {printed!r}, not the collection's URL with ?authz=")
         else:
             scopes = jwt.scopes_of(token)
-            if not want <= scopes or not scopes <= want | {f"storage.read:/{test.rel('share')}"}:
+            if set(scopes) != want:
                 problems.append(f"the token's scopes are {sorted(scopes)}, not {sorted(want)}")
             tokens[case] = token
         rows.append((case, *outcome(problems, f"{collection}?authz=<token of {sorted(want)}>")))
@@ -1955,9 +1955,8 @@ def multi_source(test: Test) -> list[CaseRow]:
     rows.append(("get-recursive-query", *outcome(problems, "the tree came back (G5, ?recursive)")))
     # The plugin's download of the tree, to its directory (`.`): the
     # plugin lands a download whose destination is a directory under the
-    # object's name in it (parseDestination in cmd/plugin.go), so the
-    # tree may come back there, or in the directory itself; the note
-    # says which.
+    # object's name in it (parseDestination in cmd/plugin.go), a path that
+    # is new, under which the tree's entries land (G6).
     fetch = test.plugin(
         "plugin-get-recursive-query",
         [test.pelican_url(test.rel("multi-recursive"), "recursive")],
@@ -1965,19 +1964,12 @@ def multi_source(test: Test) -> list[CaseRow]:
         sources=["."],
     )
     problems = exit_problems(fetch)
-    where = next(
-        (
-            d
-            for d in (fetch.directory, os.path.join(fetch.directory, "multi-recursive"))
-            if all(common.file_holds(os.path.join(d, path), data) for path, data in tree.items())
-        ),
-        None,
-    )
-    if where is None:
-        problems.append(f"the tree is missing or wrong; the directory holds {fetch.files()}")
-    note = "the tree came back " + (
-        "under the collection's name" if where != fetch.directory else "in the directory itself"
-    )
+    landed = os.path.join(fetch.directory, "multi-recursive")
+    if not all(common.file_holds(os.path.join(landed, path), data) for path, data in tree.items()):
+        problems.append(
+            "the tree is missing or wrong under multi-recursive/; the directory holds" + f" {fetch.files()}"
+        )
+    note = "the tree came back under the collection's name (G6, ?recursive)"
     rows.append(("plugin-get-recursive-query", *outcome(problems, note)))
     return rows
 
@@ -2277,7 +2269,9 @@ def async_job(test: Test) -> list[CaseRow]:
                 rows.append(("list", FAIL, f"unreadable output ({e}): {last_line(out)}"))
             else:
                 ids = [str(j.get("job_id")) for j in common.objects(listed.get("jobs"))]
-                if job and job not in ids:
+                if not job:
+                    rows.append(("list", SKIP, "no job to look for"))
+                elif job not in ids:
                     rows.append(("list", FAIL, f"lists {ids}, not {job}"))
                 else:
                     rows.append(("list", PASS, f"{len(ids)} job(s)"))

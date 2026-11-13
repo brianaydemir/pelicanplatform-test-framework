@@ -125,9 +125,9 @@ clients, every request straight to one must be refused.
   (`wrong-aud`), for a GET and a PUT, as the WLCG token profile and
   [SciTokens 2.0](https://scitokens.org/technical_docs/Claims) require.
 - `audience-specific`: A token for the first origin's `Origin.TokenAudience`
-  alone must be taken there alone (`aud-<origin>`); one that also lists the
-  profile's "any" audience, everywhere (`aud-list`). Both audience checks
-  skip where the origins take no direct clients.
+  alone must be taken there alone (`aud-<origin>`); one that lists another
+  audience and the profile's "any", everywhere (`aud-list`). Both audience
+  checks skip where the origins take no direct clients.
 - `narrow-climb`: A token for one collection must reach nothing beside it by
   `traversal`'s spellings but `%252e%252e`: a GET at every server, and a PUT
   and a DELETE at each origin that takes writes, must be refused (4xx),

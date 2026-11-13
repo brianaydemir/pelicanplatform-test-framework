@@ -83,6 +83,10 @@ run has gone on for six hours (`RUN_SECONDS`); half an hour after that,
 `./fed.sh test` interrupts tests that still run. A run of every suite first
 removes earlier results with the same tag.
 
+Each pass also records two rows of its own, `token-leaks clients` and
+`token-leaks logs`, which fail if it gave away a token whole
+([token leaks](tests/README.md#token-leaks)).
+
 To read one:
 
 ```sh

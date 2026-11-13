@@ -21,7 +21,7 @@ takes writes, and skips where neither does. At other
 `absent` rows run; XRootD origins are skipped. A
 [case](../glossary.md#case)'s row is named `<scenario> <case>`, or
 `<scenario> <origin> <case>` where each origin is asked. `introspect-cli`,
-`scheduled-passes`, `corruption`, and `backups` run in the
+`scheduled-passes`, `corruption`, `chunks`, and `backups` run in the
 [WLCG pass](../glossary.md#pass) only
 ([token profiles](README.md#token-profiles)).
 
@@ -68,9 +68,12 @@ takes writes, and skips where neither does. At other
   ([section 11.2](https://github.com/PelicanPlatform/pelican/blob/main/docs/pstore-design.md#112-fsck)).
 
 - `corruption`: At each pstore origin, with a byte of an object's block
-  inverted on disk, the next data scan must count it within 150 seconds
+  inverted on disk, a GET must not bring other bytes whole (200), and the
+  next data scan must count it within 150 seconds
   (`pelican_pstore_data_scan_mismatches_total`;
   [section 11.3](https://github.com/PelicanPlatform/pelican/blob/main/docs/pstore-design.md#113-scheduled-integrity-checks)).
+  Inconclusive if the block's file is not found, or the object still comes
+  back whole.
 
 - `chunks`: At each pstore origin, an object of 16,776,961 bytes, put in
   chunks with no length, as the clients put one, is streamed in chunks of

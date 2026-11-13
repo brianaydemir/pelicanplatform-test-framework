@@ -34,7 +34,7 @@ origin-0 are in Madison; cache-1 and origin-1, in Lisbon
 
   - `several`: With several origins and the namespace's token, the director
     must ask them, and answer 404; where the namespace takes no direct
-    clients, it may redirect.
+    clients, the origins refuse its stat, and it must redirect.
   - `skipstat`: With `?skipstat`, it must redirect without asking.
   - `no-token`: With no token in a protected namespace, it must redirect.
   - `single`: With one origin, it must redirect

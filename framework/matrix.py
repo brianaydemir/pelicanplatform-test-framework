@@ -306,7 +306,7 @@ REFUSED: list[Rule] = [
         and (s["topology"] != "full" or "on" in (s["multi_origin"], s["multi_owner"])),
     ),
     (
-        "a firewalled origin is reached only through the broker, which only an XRootD cache" + " can use",
+        "a firewalled origin is reached only through the broker, which only an XRootD cache can use",
         lambda s: s["broker"] == "firewalled" and s["cache"] != "xrootd",
     ),
     (
@@ -608,7 +608,9 @@ class SmokeShape:
     """A shape that smoke.sh runs.
 
     Attributes:
+        name: Its name, as `smoke.sh --names` lists it.
         rotated: Whether it rotates every key.
+        presets: The presets that make it.
     """
 
     name: str

@@ -234,9 +234,9 @@ twin of its row in the WLCG pass.
 
 [`framework/control.py`](../framework/control.py), which runs on the host
 beside the tests, and restarts, stops, starts, pauses, and kills services
-for them, and reads what their containers have sent, since the dev
-container can't reach Docker. Without it, the scenarios that need it skip
-([README](../README.md#service-control)).
+for them, and reads what their containers have sent, and the Pelican
+servers' logs, since the dev container can't reach Docker. Without it, the
+scenarios that need it skip ([README](../README.md#service-control)).
 
 ### Origins' bytes
 

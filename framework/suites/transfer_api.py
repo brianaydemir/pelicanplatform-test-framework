@@ -211,8 +211,8 @@ class Test(suite.Test):
             that made it, to remove afterward.
         user_ids: The users they made, to remove afterward.
         group_ids: The groups they made, to remove afterward.
-        oauth_client_ids: The OAuth2 clients they registered, to remove
-            afterward.
+        oauth_client_ids: The OAuth2 clients that `oauth-clients`
+            registered, which it removes.
         secrets: The secrets that `ssrf-and-prefixes` must find nowhere
             in the database of the API's host in plain, beyond the
             storage tokens.
@@ -746,6 +746,8 @@ def confined(
         return PASS, f"accepted, then {job.get('status')}"
     if landed() is not None:
         return FAIL, f"refused (HTTP {status}), but something was written"
+    if status is None or not 400 <= status < 500:
+        return FAIL, f"HTTP {status}, neither a job nor a refusal (4xx)"
     return PASS, f"refused (HTTP {status}, {found.get('code')})"
 
 
@@ -1202,6 +1204,7 @@ def enabled_groups(test: Test) -> list[CaseRow]:
     problems = []
     for role, want in (("member", (200,)), ("other", (401, 403))):
         if role not in tokens:
+            problems.append(f"{users[role]} got no token to present")
             continue
         status, _, _ = test.call("GET", "/jobs", tokens[role])
         if status not in want:
@@ -1254,16 +1257,29 @@ def oauth_clients(test: Test) -> list[CaseRow]:
 
     A client of the namespace issuer's, which origin-0's admin creates for
     the token exchange and the refresh grant, is registered with the API
-    (POST /oauth-clients, 201), listed without its secret, refused a
-    second time (409), and deleted afterward (`crud`); through it, a
-    token the admin got from the issuer is exchanged for a credential
+    (POST /oauth-clients, 201), listed without its secret, and refused a
+    second time (409) (`crud`); through it, a token the admin got from
+    the issuer is exchanged for a credential
     (POST /credentials/bootstrap/token-exchange, 201), which a copy then
     uses (`bootstrap`; handleTokenExchangeBootstrap in
     transfer/bootstrap.go); and under short tokens, a copy once the
     credential's access token has expired must still complete, since the
     server refreshes it first (`refresh`; getDecryptedAccessToken in
-    transfer/credentials.go).
+    transfer/credentials.go). The client is removed afterward, while
+    the routes are still on.
     """
+    try:
+        return oauth_client_rows(test)
+    finally:
+        for client_id in test.oauth_client_ids:
+            status, _, _ = test.call("DELETE", f"{OAUTH_CLIENTS}/{client_id}", test.api_token)
+            if status is None or not 200 <= status < 300:
+                warn(f"could not remove the OAuth2 client {client_id}: HTTP {status}")
+        test.oauth_client_ids.clear()
+
+
+def oauth_client_rows(test: Test) -> list[CaseRow]:
+    """Return oauth_clients()'s rows."""
     issuer_url = test.fed.issuer_of(test.namespace)
     # Under the external issuer, or with the origins' issuer off, the
     # origin's admin can make no client of it: `crud` registers made-up
@@ -1494,13 +1510,11 @@ def run(session: Session, selected: list[str], results: common.Results) -> None:
 def finish(test: Test) -> None:
     """Remove what the scenarios made.
 
-    That is the credentials, the OAuth2 clients (if the API's host still
-    has them on), the issuer's clients, and the run's users and groups.
+    That is the credentials, the issuer's clients, and the run's users
+    and groups.
     """
     for credential, owner in test.credential_ids:
         test.call("DELETE", f"/credentials/{credential}", owner)
-    for client_id in test.oauth_client_ids:
-        test.call("DELETE", f"{OAUTH_CLIENTS}/{client_id}", test.api_token)
     for site, namespace, token, made in test.issuer_clients:
         failed = issuer.delete_client(site, namespace, token, made.client_id)
         if failed:

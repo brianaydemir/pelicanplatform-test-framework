@@ -65,3 +65,21 @@ a [shape](../glossary.md#shape) that does not export `/protected-a`.
   `framework/var/control/`, `framework/var/data/`,
   `framework/var/data/origin/`, or `framework/var/issuer-keys/`, must each
   fail as on a read-only file system. Nothing is written. WLCG pass only.
+- `token-leaks`:
+  [`framework/testlib/leaks.py`](../../framework/testlib/leaks.py) must find
+  the tokens that a pass gives away whole
+  ([token leaks](README.md#token-leaks)), and no others. Of tokens that grant
+  nothing, it must find one signed with the origins' key and one signed by
+  HS256, and none whose signature is cut out as Pelican's logs cut it, cut
+  short, of `alg` none, or of another algorithm's length than its header
+  names. It must find the first in each
+  part of an answer, and of a client command's output, that counts, and in
+  none that doesn't, such as a GET's 200, a director's redirect, an answer
+  of the identity provider, or what `pelican token create` prints; and must
+  say of one that the request presented that it was the request's own. A
+  GET of a missing object straight to origin-0 must reach it, as
+  `framework/testlib/web.py` reports every answer. With a
+  [control helper](../glossary.md#service-control-helper),
+  `testlib.control.token_leaks()` must read the last five minutes of every
+  Pelican server's log, origin-0's among them, and find lines there. WLCG
+  pass only.

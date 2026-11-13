@@ -47,7 +47,7 @@ from testlib import (
     webapi,
 )
 from testlib.accounts import Api
-from testlib.common import die, first, outcome, warn
+from testlib.common import first, outcome, warn
 from testlib.issuer import User
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, last_line
@@ -94,6 +94,10 @@ HELD_OBJECTS = 3
 # config.d/base/20-server.yaml), and a margin, past which every director
 # must have dropped a server that said nothing.
 NAMED_WAIT = 150
+# How long the load balancer may take to stop sending connections to a
+# director that was killed: until it next resolves the directors' names
+# (framework/etc/nginx-director.conf), and a margin.
+BALANCER_WAIT = 10
 AD_LIFETIME = 90
 EXPIRY_SLACK = 30
 # How long an origin may take to serve again once its backend is back.
@@ -153,10 +157,14 @@ class Test(suite.Test):
         super().__init__(session, "restart")
 
     def place(self, name: str, data: bytes) -> None:
-        """Put object name, holding data, at every origin (put())."""
+        """Put object name, holding data, at every origin (put()).
+
+        Raises:
+            suite.SetupError: The put failed.
+        """
         why = self.put({self.rel(name): data})
         if why:
-            die(f"could not put {self.rel(name)} in place: {why}")
+            raise suite.SetupError(f"could not put {self.rel(name)} in place: {why}")
 
     def admin(self, web_url: str) -> Api:
         """Return the web API of the server at web_url, as its admin.
@@ -233,8 +241,8 @@ def cache_restart(test: Test) -> list[CaseRow]:
         host = director.host(cache.url)
         federated = not cache.site_local
         path = test.path(test.rel(names[0]))
-        # A director restarted just before (by state_survives(), in the
-        # pass before) learns of the cache again only from its next ad.
+        # A director that the pass before restarted learns of the cache
+        # again only from its next ad.
         if federated and test.wait_named("object", path, host, NAMED_WAIT) is None:
             rows.append(
                 (
@@ -320,6 +328,13 @@ class Recorded:
     Attributes:
         metadata: What each server records of itself, by service.
         registered: Each server the registry lists: its ID and name.
+        user_id: The ID of the user made at the issuer origin, if one was.
+        group_id: The ID of the group made there, if one was.
+        api_token: The API token made there, if one was.
+        api_token_id: That token's ID.
+        downtime_id: The ID of the downtime declared there, if one was.
+        refresh: The refresh token issued there, if one was.
+        client: The issuer's client made there, if one was.
     """
 
     metadata: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
@@ -480,12 +495,26 @@ def state_survives(test: Test) -> list[CaseRow]:
     /metrics and be listed (`api-token`), the downtime must still be
     declared (`downtime`), and the refresh token must refresh, with the
     client's secret (`issuer`), whose HMAC key the issuer derives from a
-    master key in its database (oauth2/issuer/provider.go).
+    master key in its database (oauth2/issuer/provider.go). What was
+    recorded is removed afterward, whatever happens.
     """
-    fed = test.fed
     test.place("probe", os.urandom(4096))
     found = Recorded()
-    problems = record_state(test, found)
+    try:
+        return survived(test, found, record_state(test, found))
+    finally:
+        cleanup_state(test, found)
+
+
+def survived(test: Test, found: Recorded, problems: list[str]) -> list[CaseRow]:
+    """Return state_survives()'s rows, for what record_state() recorded.
+
+    Args:
+        test: The test.
+        found: What record_state() recorded.
+        problems: What went wrong as it did.
+    """
+    fed = test.fed
     rows: list[CaseRow] = []
     if problems:
         rows.append(("setup", FAIL, first(problems)))
@@ -571,9 +600,7 @@ def state_survives(test: Test) -> list[CaseRow]:
             else:
                 rows.append(("issuer", PASS, "the refresh token and the client's secret work"))
     except accounts.ApiError as e:
-        rows.append(("accounts", FAIL, str(e)))
-    finally:
-        cleanup_state(test, found)
+        rows.append(("", FAIL, str(e)))
     return rows
 
 
@@ -829,9 +856,9 @@ def backend_outage(test: Test) -> list[CaseRow]:
     # An origin that exited would stay down for the rest of the run: start
     # it again, and fail the row, which asks for a recovery without a
     # restart.
-    exited = revived(origin.svc)
+    exited = [found for o in fed.origins if (found := revived(o.svc))]
     if exited:
-        rows.append(("recovered", FAIL, f"with {backend} stopped, {exited}"))
+        rows.append(("recovered", FAIL, f"with {backend} stopped, {first(exited)}"))
         return rows
 
     reader = origin.url if test.direct else (cache.url if cache is not None else None)
@@ -972,6 +999,9 @@ class Fetched:
     """How a client run went.
 
     Attributes:
+        status: Its exit status.
+        said: Its output; the plugin's result ads, if it wrote any.
+        directory: The directory of its own that it ran in.
         hosts: The host of each attempt, the last the one that served.
     """
 
@@ -1031,6 +1061,9 @@ def get_pelican(test: Test, name: str, url: str, direct: bool = False) -> Fetche
         for result in transfers.stats_results(transfers.read_stats(stats))
         for attempt in transfers.attempts_of(result)
     ]
+    # Said as it goes: several runs in a row, each waiting on a server that
+    # is away, would otherwise pass for a stall.
+    print(f"  {name}: `pelican object get` exited {status}")
     return Fetched(status, out + err, directory, hosts)
 
 
@@ -1053,6 +1086,8 @@ def get_plugin(test: Test, name: str, url: str, direct: bool = False) -> Fetched
         if "TransferSuccess = true" in ad:
             endpoints = sorted((int(n), host) for n, host in re.findall(r'Endpoint(\d+) = "([^":]*)', ad))
             hosts = [host for _, host in endpoints]
+    # Said as it goes, as get_pelican() does.
+    print(f"  {name}: stash_plugin exited {status}")
     return Fetched(status, ads or output, directory, hosts)
 
 
@@ -1445,9 +1480,9 @@ def director_failover(test: Test) -> list[CaseRow]:
     """Check that the clients reach the federation with a director killed.
 
     Under `-p director-ha`, the clients ask the load balancer in front
-    of the directors. Each director in turn is killed, so that its port
-    refuses connections, which the load balancer then sends to another.
-    Meanwhile (`<director> down`), every client must get, and where
+    of the directors. Each director in turn is killed, and the load
+    balancer left BALANCER_WAIT seconds to stop sending connections its
+    way. Then (`<director> down`), every client must get, and where
     /protected-a takes writes put, an object through the load balancer
     (through_balancer()). The director is then started again; once it
     names the first origin, and the first federated cache, if any, the
@@ -1466,6 +1501,13 @@ def director_failover(test: Test) -> list[CaseRow]:
     origin = director.host(fed.origins[0].url)
     cache = director.host(fed.federated_caches[0].url) if fed.federated_caches else None
     rows: list[CaseRow] = []
+    # A director that an earlier scenario restarted may not yet have heard
+    # from the servers again.
+    why = director.wait_named(fed.directors, "origin", path, origin, NAMED_WAIT)
+    if not why and cache:
+        why = director.wait_named(fed.directors, "object", path, cache, NAMED_WAIT)
+    if why:
+        return [("", FAIL, f"with every director up, {why}")]
     problems, _ = through_balancer(test, "director-up")
     if problems:
         return [("", FAIL, f"with every director up, {first(problems)}")]
@@ -1477,6 +1519,7 @@ def director_failover(test: Test) -> list[CaseRow]:
             rows.append((f"{svc} down", FAIL, str(e)))
             continue
         try:
+            time.sleep(BALANCER_WAIT)
             problems, tried = through_balancer(test, f"{svc}-down")
             rows.append((f"{svc} down", *outcome(problems, f"{' and '.join(tried)} by every client")))
         finally:

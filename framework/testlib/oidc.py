@@ -56,6 +56,11 @@ class IdpUser:
     """A user of the provider, and what it says of them.
 
     Attributes:
+        username: The name they log in by.
+        password: Their password.
+        name: Their full name.
+        email: Their email address.
+        groups: Their groups.
         preferred_username: The claim a server takes the username from.
         sub: The subject the provider names them by.
         provider: The provider's issuer URL, the only place their

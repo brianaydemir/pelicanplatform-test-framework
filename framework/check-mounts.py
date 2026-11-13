@@ -17,8 +17,8 @@ profile, of both Compose files (`docker compose config`), and checks:
              a symlink, and Docker resolves a bind source on the host
              each time the container that mounts it starts: the symlink
              would give that container whatever it points to.
-  symlinks   No bind source in the checkout has a symlink in its path, as
-             one left from before these rules would.
+  symlinks   No bind source in the checkout has a symlink in its path:
+             Docker would bind whatever it leads to.
   sockets    No bind source is a socket, such as Docker's.
 
 See "Isolation" in docs/development.md.

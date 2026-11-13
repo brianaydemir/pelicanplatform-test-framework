@@ -29,9 +29,11 @@ class OwnerCredential:
     """A credential that the owners suite presents.
 
     Attributes:
+        name: Its name, which is its scenario's.
         key: Whose key signs it: a side, `jwks`, or `ns-jwks`; None for
             no token.
         issuer: Whose issuer it names: a side.
+        description: What it is, for its scenario's description.
     """
 
     name: str

@@ -72,7 +72,9 @@ tokens, then [SciTokens](https://scitokens.org/technical_docs/Claims)
 The run prints each suite's results as it goes, then a summary of the
 failures, and exits non-zero if any [case](docs/glossary.md#case) failed.
 Each suite writes a row per case to `framework/var/results/`
-([Results](docs/ci.md#results)). A [watchdog](docs/glossary.md#watchdog)
+([Results](docs/ci.md#results)), and two more that fail if it gave away a
+token whole ([token leaks](docs/tests/README.md#token-leaks)). A
+[watchdog](docs/glossary.md#watchdog)
 abandons a pass that prints nothing for 20 minutes, or runs for 90, and
 records it as `aborted`; the run stops there if the servers no longer
 answer, or once it has gone on for six hours. An interrupt (Ctrl-C) stops
@@ -96,11 +98,15 @@ After every run, pass or fail, `./fed.sh test` saves these in
 | `http.log`, `http-scitokens.log`         | each pass's HTTP exchanges of the tests' own, as `curl -v` shows one: the request, what came of it, both sides' headers, and the start of a body that is text                                                                    |
 | `dev/`                                   | what the suites keep in `framework/var/dev/` ([below](#where-things-live))                                                                                                                                                       |
 | `metadata/`                              | every request the [metadata recorder](framework/metadata-server/recorder.py) has received, where the shape runs it                                                                                                               |
+| `webdav-gate/`                           | the `Authorization` of each request that an `https` or `httpsv2` origin has sent its backend through the gate                                                                                                                    |
 | `test.log`                               | everything the tests printed                                                                                                                                                                                                     |
-| `control.log`                            | what the [control helper](#service-control) did, and when (UTC, as in the services' logs)                                                                                                                                        |
+| `control.log`                            | what the [control helper](#service-control) did, and when (UTC, as in the services' logs); and each container that exited meanwhile, or that the kernel killed for want of memory                                                |
 
-Tokens in these files lack their signatures; `http.log` gives each once,
-and `(token N)` after that, and cuts a long line short. The tests restart
+Tokens in these files lack their signatures, which the framework cuts out
+as `<signature>`, but for one that a Pelican server's log had cut out
+already, which keeps its `.REDACTED`; so a log shows which side cut it.
+`http.log` gives each token once, and `(token N)` after that, and cuts a
+long line short. The tests restart
 [services](docs/glossary.md#service) but never recreate them, so each log
 covers the whole run; `./fed.sh up` and `restart` start a recreated
 container's log afresh.
@@ -385,7 +391,9 @@ from environment variables, which files can't override.
 
 Some tests restart, stop, start, pause, or kill a service mid-run, restart
 one with configuration of their own, freeze the XRootD daemons in one, or
-read what its container has sent on its networks. The dev container can't
+read what its container has sent on its networks; and after each pass, the
+tests read the Pelican servers' logs for tokens given away
+([token leaks](docs/tests/README.md#token-leaks)). The dev container can't
 reach Docker, so `./fed.sh test` runs a
 [helper](docs/glossary.md#service-control-helper) on the host
 ([`framework/control.py`](framework/control.py)) that does this for them.

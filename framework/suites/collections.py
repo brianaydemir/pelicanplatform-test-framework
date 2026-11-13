@@ -15,7 +15,9 @@ from the namespace's issuer through its device flow, approved as the
 user (testlib/issuer.py). Each run makes groups that test-owner owns;
 two collections, alpha and beta, under data/collections/<run>/, with an
 object in each; and decoy/obj beside them, in none. A scenario that
-changes a collection makes one of its own.
+changes a collection makes one of its own, but `shares`, `expiry`, and
+`revoke`, which change alpha's grants for good, and so come after the
+scenarios that read by them.
 
 The run's collections, groups, and objects are removed after the suite;
 the users stay. See docs/tests/collections.md.
@@ -53,7 +55,7 @@ from testlib.common import die, objects, outcome, warn
 from testlib.credentials import PROTECTED
 from testlib.issuer import DATA_SCOPES, ClientRun, IssuerError, data_scopes
 from testlib.report import FAIL, PASS, SKIP
-from testlib.session import Session, last_line
+from testlib.session import Session, last_line, not_refused
 
 SCENARIOS = {
     "users": "the admin creates users, nobody else does, and a user makes groups of their own",
@@ -601,6 +603,8 @@ def write_problems(test: Test, origin: common.Origin, token: dict[str, str]) -> 
         answer = web.request("PUT", url, token=token[role], upload=payload)
         if answer.status not in REFUSED:
             problems.append(f"PUT {url} as {username(role)}: {answer.describe()}, not refused")
+        elif test.any_store_holds(test.rel(name)):
+            problems.append(f"PUT {url} as {username(role)} was refused, but a store holds the object")
     name = f"alpha/put-writer-{origin.svc}"
     url = test.url(origin.url, test.rel(name))
     answer = web.request("PUT", url, token=token["writer"], upload=payload)
@@ -626,7 +630,7 @@ def federation_problems(test: Test, writes: bool) -> list[str]:
     session = test.session
     for role, allowed in (("reader", True), ("outsider", False)):
         dest = os.path.join(test.tmp, f"get-{role}")
-        status, _, err = session.pelican_cmd(
+        status, out, err = session.pelican_cmd(
             "object",
             "get",
             test.pelican_url(test.rel("alpha/obj")),
@@ -636,13 +640,13 @@ def federation_problems(test: Test, writes: bool) -> list[str]:
         )
         if allowed and (status != 0 or not common.file_holds(dest, test.data["alpha/obj"])):
             problems.append(f"`object get` as test-reader: exit {status}: {last_line(err)}")
-        if not allowed and status == 0:
-            problems.append("`object get` as test-outsider succeeded")
+        if not allowed and (why := not_refused(status, out, err)):
+            problems.append(f"`object get` as test-outsider {why}")
     if not writes:
         return problems
     source = test.local("put-source", os.urandom(OBJECT_SIZE))
     for role, allowed in (("writer", True), ("reader", False)):
-        status, _, err = session.pelican_cmd(
+        status, out, err = session.pelican_cmd(
             "object",
             "put",
             source,
@@ -652,8 +656,10 @@ def federation_problems(test: Test, writes: bool) -> list[str]:
         )
         if allowed and status != 0:
             problems.append(f"`object put` as test-writer: exit {status}: {last_line(err)}")
-        if not allowed and status == 0:
-            problems.append("`object put` as test-reader succeeded")
+        if not allowed and (why := not_refused(status, out, err)):
+            problems.append(f"`object put` as test-reader {why}")
+        elif not allowed and test.any_store_holds(test.rel(f"alpha/put-{role}")):
+            problems.append("`object put` as test-reader was refused, but a store holds the object")
     return problems
 
 

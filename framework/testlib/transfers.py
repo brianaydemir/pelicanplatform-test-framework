@@ -74,6 +74,7 @@ class Scenario:
     """A set of transfers through one client, namespace, and credential.
 
     Attributes:
+        name: Its name, e.g. direct-get-protected-a-jwks.
         client: "pelican", "plugin", or "http" (a plain HTTP client).
         route: A get's: "cache" (the director's choice), "direct" (an
             origin), or "named" (a cache the client names); a put's:
@@ -85,6 +86,7 @@ class Scenario:
         missing: Whether the objects never exist.
         collection: Where its objects are, e.g. /public/data/.
         stem: What a get's objects are named after: <stem>.<n>.
+        description: What it does, in a sentence.
     """
 
     name: str
@@ -366,7 +368,9 @@ class Batch:
     """One client invocation of a scenario's.
 
     Attributes:
+        scenario: Its scenario.
         index: Its place among the scenario's batches, from 0.
+        urls: Its objects' URLs.
     """
 
     scenario: Scenario

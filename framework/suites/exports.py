@@ -519,17 +519,16 @@ def tpc_body(test: Test) -> dict[str, Row]:
             found.problems.append(
                 f"{origin.svc}: a marker counts more than the object's {SOURCE_SIZE} bytes"
             )
-        if said.markers and said.markers[-1] != SOURCE_SIZE:
+        if not said.markers:
+            found.problems.append(f"{origin.svc}: the answer has no Perf Marker")
+        elif said.markers[-1] != SOURCE_SIZE:
             found.problems.append(
-                f"{origin.svc}: the last marker counts {said.markers[-1]} bytes," + f" not {SOURCE_SIZE}"
+                f"{origin.svc}: the last marker counts {said.markers[-1]} bytes, not {SOURCE_SIZE}"
             )
         problem = test.stored(origin, NAMESPACE, rel, data, "the destination")
         if problem:
             found.problems.append(f"{origin.svc}: {problem}")
-        found.notes.append(
-            f"{origin.svc} from {source_name}: {len(said.markers)} marker(s)"
-            + ("" if said.markers else ", none")
-        )
+        found.notes.append(f"{origin.svc} from {source_name}: {len(said.markers)} marker(s)")
     return {row: found.row(f"{len(test.fed.origins)} origin(s)")}
 
 
@@ -1634,6 +1633,8 @@ def log_problems(
     if passthrough:
         asked = {test.path(p) for p in direct}
         own = [e for e in entries if any(e[1].rstrip("/").endswith(p) for p in asked)]
+        if not own:
+            problems.append("the gate logged none of the requests that the test made of an origin")
         for method, path, auth in own:
             if auth != f"Bearer {client}":
                 problems.append(

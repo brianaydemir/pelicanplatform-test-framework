@@ -764,9 +764,13 @@ services:
   # `-p origin-httpsv2`): rclone serving each origin's store,
   # ./var/data/origin/<N>, as /origin-<N>, over WebDAV
   # (golang.org/x/net/webdav, as in Pelican's own tests). The tests read
-  # and write the stores directly too, so it caches no directory
-  # listings. It asks for no credentials; `webdav-gate` records what the
-  # origins would send one.
+  # and write the stores directly too, so it keeps a directory's listing
+  # for a millisecond: less than a request takes to reach it, so none
+  # meets a listing older than a test's last write. Keeping none (0s)
+  # looks right but is not: rclone then retries its cleanup of a directory
+  # that it is writing to without pause, which starves its requests. It
+  # asks for no credentials; `webdav-gate` records what the origins would
+  # send one.
   webdav:
     hostname: webdav
     networks: [default, firewalled]
@@ -779,7 +783,7 @@ services:
       - --addr=:8444
       - --cert=/certs/tls.crt
       - --key=/certs/tls.key
-      - --dir-cache-time=0s
+      - --dir-cache-time=1ms
     healthcheck: &rclone-health
       test: ["CMD", "nc", "-z", "127.0.0.1", "8444"]
       start_period: 10s
@@ -843,7 +847,7 @@ services:
   # copies from framework/etc/ or local/etc/. It keeps the directories
   # that init-data.py made, writable by any uid, even when their last
   # object goes. Multipart uploads, such as the caches', take memory to
-  # buffer.
+  # buffer. Its --dir-cache-time is the webdav service's, for its reasons.
   #
   # The buckets are the upstreams of a `combine` remote, so that each
   # export's bucket is a path in the container rather than a bind mount of
@@ -864,7 +868,7 @@ services:
         ${S3_EXPORT_BUCKETS?run through ./fed.sh}"
         --cert=/certs/tls.crt --key=/certs/tls.key
         --auth-key="$$(cat /fed/s3-access-key),$$(cat /fed/s3-secret-key)"
-        --dir-cache-time=0s --no-cleanup
+        --dir-cache-time=1ms --no-cleanup
     healthcheck: *rclone-health
     deploy:
       resources:

@@ -106,6 +106,7 @@ class Credential:
     """A credential that the tests present, and what it should get.
 
     Attributes:
+        name: Its name, e.g. wrong-path.
         key: Which key signs it (see key_name()); None: no token.
         issuer: The issuer it claims: the namespace's ("own"), or the
             other's.
@@ -114,6 +115,7 @@ class Credential:
         put_scopes: Its scopes for a write.
         lifetime: Its token's lifetime, in seconds.
         verdict: What a server should do with it where the token decides.
+        description: What it is, as a scenario's description says it.
     """
 
     name: str

@@ -133,5 +133,5 @@ The scenarios:
 
 - `sentinel`: Under the sentinel restart, with every export's
   `SentinelLocation` file in place, the origin must start and serve
-  (`present`); with one missing, its container must exit within 120 seconds
+  (`present`); with them missing, its container must exit within 120 seconds
   (`missing`). Where `present` fails, `missing` is not run.

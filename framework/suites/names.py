@@ -261,8 +261,8 @@ def director_get(test: Test) -> Row:
     director takes the name decoded and encodes it anew (getRedirectURL
     in Pelican's director/director.go), so a name it mangled on the way
     would fetch a decoy, or nothing. The client follows the Location as
-    it is, as curl -L does, and must get the object's bytes. It is asked
-    by three routes:
+    it is, as curl -L does (web.follow()), and must get the object's
+    bytes. It is asked by three routes:
 
     object      its object route, which sends the client to a federated
                 cache, or, with none, to an origin
@@ -288,15 +288,14 @@ def director_get(test: Test) -> Row:
         svc = director.host(url)
         for route, (prefix, query, (targets, kind)) in routes.items():
             for name in NAMES:
-                answer = web.request(
+                hops = web.follow(
                     "GET", test.url(f"{url}{prefix}", test.rel(name)) + query, token=test.token
                 )
-                why = redirected(answer, targets, kind)
+                why = redirected(hops[0][1], targets, kind)
                 if why:
                     problems.append(f"{svc} {route}: {name!r}: {why}")
                     continue
-                where = answer.header("Location")
-                answer = web.request("GET", where, token=test.token)
+                where, answer = hops[-1]
                 if answer.status != 200:
                     problems.append(f"{svc} {route}: {name!r}: {answer.describe()} at {where}")
                     continue
@@ -312,8 +311,8 @@ def director_put(test: Test) -> Row:
     Each PUT goes to a director's bare path, which it redirects (307) to
     an origin (ShortcutMiddleware in director/director.go), with a
     Location that names the object again; it is sent there again, body
-    and all, as curl -L sends it. put_by() judges what lands, a
-    collection for each director.
+    and all, as curl -L sends it (web.follow()). put_by() judges what
+    lands, a collection for each director.
     """
     fed = test.fed
     if not fed.directors:
@@ -327,13 +326,11 @@ def director_put(test: Test) -> Row:
         def put(source: str, target: str, director_url: str = url) -> str | None:
             with open(source, "rb") as f:
                 data = f.read()
-            answer = web.request(
-                "PUT", director_url + target[len(fed.url) :], token=test.token, upload=data
-            )
-            why = redirected(answer, origins, "an origin")
+            hops = web.follow("PUT", director_url + target[len(fed.url) :], token=test.token, upload=data)
+            why = redirected(hops[0][1], origins, "an origin")
             if why:
                 return why
-            answer = web.request("PUT", answer.header("Location"), token=test.token, upload=data)
+            answer = hops[-1][1]
             return None if answer.ok else f"{answer.describe()} at the origin"
 
         found.append(put_by(test, f"director-put-{director.host(url)}", put))

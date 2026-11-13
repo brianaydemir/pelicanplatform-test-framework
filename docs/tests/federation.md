@@ -30,8 +30,8 @@ If the federation never serves, or no cache does, the run stops; in a later
 - `approval`: Under
   [`-p registry-approval`](../../framework/presets/registry-approval.sh), no
   director may name a server whose registration is pending. `ready` approves
-  every pending registration before each try; the row fails if that fails.
-  Skips elsewhere.
+  every pending registration before each try; the row fails if that fails,
+  and is inconclusive if none was pending. Skips elsewhere.
 
 - `directors`: Each director, asked with no token where it would send a GET
   of the probe, must name, by its redirect or `Link`, within 60 seconds:

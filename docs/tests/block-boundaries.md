@@ -49,7 +49,7 @@ skip where the storage reports none.
   succeed, with the objects intact, naming each algorithm in turn
   (`--checksum-algorithm`) that the storage reports and the client knows
   (`crc32c`, `crc32`, `md5`, and `sha`), and fail where the storage reports
-  no digest.
+  no digest: at all, or, at an `s3v2` origin, of an object over 5 MiB.
 - `put-checksum-config`: The same, with each algorithm named by
   `Client.DefaultChecksumAlgo` in place of both flags, which must require a
   checksum as `--require-checksum` does.
@@ -81,8 +81,8 @@ skip where the storage reports none.
   every range, then whole.
 - `cache-stored`: Each XRootD cache's store on disk must hold every block
   that an object's `.cinfo` records, at its place in the file.
-  [Inconclusive](../ci.md#results) where no `.cinfo` remains. Skips without
-  an XRootD cache.
+  [Inconclusive](../ci.md#results) where no `.cinfo` remains, or none
+  records a block. Skips without an XRootD cache.
 - `cache-overlap`: Each cache reads ranges that each cover blocks already
   fetched and blocks not yet fetched, at both block sizes, then overlapping
   ranges at once. Two more objects are first read by ranges that a V2 cache
@@ -96,15 +96,16 @@ skip where the storage reports none.
   count as much (`pelican_http_bytes_total`), and, for a V2 cache, at most
   two GETs under the tests' username, besides a one-byte GET per origin.
   Then 16 warm reads must fetch nothing, as for `cache-whole-first`. Skips
-  where XRootD serves the origins and there is no control helper, or under
+  where XRootD serves the origins and nothing counts their bytes: without a
+  control helper, or under
   [`-p topo-tiny`](../../framework/presets/topo-tiny.sh).
 - `cache-assemble`: Each cache reads unaligned, overlapping ranges that
   cover an object, out of order. After the first range, it must hold its
-  blocks and none before them but block 0; within 10 seconds of the last,
-  every block. A V2 cache is judged by its introspection
-  (`/api/v1.0/cache/introspect/metadata`), or else by `Age`; an XRootD
-  cache, by its `.cinfo`. Inconclusive where a cache cannot show the partial
-  state.
+  blocks and none before them but block 0; within 10 seconds of the last
+  (an XRootD cache: 60), every block. A V2 cache is judged by its
+  introspection (`/api/v1.0/cache/introspect/metadata`), or else by `Age`;
+  an XRootD cache, by its `.cinfo`. Inconclusive where a cache cannot show
+  the partial state.
 - `cache-abandoned`: Each cache starts a cold read whose client gives up
   after 50,000 bytes. Those bytes, the object's last block, and the whole
   object must then be the object's.
@@ -113,6 +114,16 @@ skip where the storage reports none.
   file. A read must bring the object's bytes or fail, never other bytes, and
   within 30 seconds bring the whole object intact. Skips without a V2 cache
   and its chaos API.
+- `cache-file-lost`: Each V2 cache holds an object of 33,562,080 bytes, two
+  blocks more than it repairs in one pass (`maxRepairBlocks` in Pelican's
+  `local_cache/range_reader.go`), whose file is then removed from its store
+  on disk. Once the cache has closed the file (135 seconds), a read of the
+  object's last 100 bytes, and of the whole object, must likewise bring the
+  object's bytes or fail, and within 30 seconds bring the whole object
+  intact. Inconclusive where the cache has by then dropped the object, or
+  made its file anew. Passes over a cache that tiers objects of that size
+  ([`-p cache-tiered`](../../framework/presets/cache-tiered.sh)); skips
+  without another V2 cache.
 - `transfer-status`: Each federated cache, asked for the transfer's status
   (`X-Transfer-Status: true`, `TE: trailers`;
   [`docs/pelican-http-headers.md`](https://github.com/PelicanPlatform/pelican/blob/main/docs/pelican-http-headers.md)
@@ -203,9 +214,11 @@ skip where the storage reports none.
   `pelican object stat`, and `pelican object ls -l` (with `Listings`) must
   give its size. It is evicted from each V2 cache afterward. Skips at pstore
   origins, and where a store keeps no sparse files.
-- `conditional`: Each server may answer a conditional GET (RFC 9110) 304
-  only where the condition holds (`If-None-Match` naming its `ETag`,
-  weakened, or `*`; `If-Modified-Since` at or after `Last-Modified`).
+- `conditional`: Each server may answer a conditional GET 304 only where the
+  condition holds (`If-None-Match` naming its `ETag`, weakened, or `*`;
+  `If-Modified-Since` at or after `Last-Modified`), and an origin must where
+  `If-None-Match` does
+  ([RFC 9110, section 13.1.2](https://www.rfc-editor.org/rfc/rfc9110#section-13.1.2)).
   Otherwise, it must send the whole object.
 - `conditional-put`: Each origin that takes direct writes must refuse a PUT
   whose condition fails with 412, changing nothing: a second
@@ -245,8 +258,9 @@ skip where the storage reports none.
   drop its copy. A PUT with a read-only token must be refused; once one with
   the `server` token reaches the origins, the cache must serve the new bytes
   at once. After a DELETE, where the storage can delete, it must answer 404.
-  Where `/protected-a` takes no writes, and at an XRootD cache, a PUT must
-  be refused, changing nothing.
+  A PUT of a new 0-byte object, and one sent in chunks with no length, must
+  each reach the origins and be served. Where `/protected-a` takes no
+  writes, and at an XRootD cache, a PUT must be refused, changing nothing.
 - `cache-evicted`: Needs
   [`-p cache-small`](../../framework/presets/cache-small.sh). Each cache
   reads 8 MiB objects to half again its high mark. Within 60 seconds (V2) or
