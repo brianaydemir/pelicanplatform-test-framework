@@ -6,8 +6,8 @@ The suite acts as each server's admin, and as an ordinary user
 (testlib.webapi.Access). It reads /metrics with tokens of each server's
 own making (credentials.web_token()), since every server guards it
 (Monitoring.MetricAuthorization, on by default). `log-level` and
-`log-redaction` raise each server's log level, each change for at most
-a minute but the one `log-level` deletes at once, and delete their
+`log-redaction` change each server's log level, each change for at most
+a minute but those `log-level` deletes at once, and delete their
 changes when they are done. `log-level-xrootd` restarts XRootD twice at
 the first XRootD origin and cache, and waits until it serves again.
 `http-metrics` writes under data/observability/<run>/, which the suite
@@ -42,7 +42,7 @@ SCENARIOS = {
     "health-metrics": "pelican_component_health_status agrees with each server's health report",
     "metric-authorization": "who may read /metrics and query Prometheus; the servers' scrapes",
     "http-metrics": "a native origin's request, byte, and storage counters count each request",
-    "log-level": "a log level raised through the admin API falls back, or is deleted; refusals",
+    "log-level": "a log level changed through the admin API takes, and falls back, or is deleted; refusals",
     "log-redaction": "a token presented to an origin or a cache never reaches its log tail",
     "log-level-xrootd": "an XRootD log level restarts XRootD, which serves again, unless too short",
 }
@@ -836,6 +836,18 @@ def raised(level: str) -> str | None:
     return "trace" if level == "debug" else "debug"
 
 
+def lowered(level: str) -> str | None:
+    """Return the next level less verbose than level (warning from info).
+
+    Returns:
+        That level; None from panic, or from a level Pelican does not
+        name.
+    """
+    if level not in LEVELS or level == LEVELS[0]:
+        return None
+    return LEVELS[LEVELS.index(level) - 1]
+
+
 def change_level(
     test: Test,
     server: Server,
@@ -918,36 +930,81 @@ class Raised:
     deadline: float
 
 
-def raise_row(test: Test, server: Server) -> tuple[CaseRow, Raised | None]:
-    """Raise server's log level for LEVEL_DURATION seconds.
+def set_level(test: Test, server: Server, level: str) -> tuple[str, list[str]]:
+    """Change server's log level to level for LEVEL_DURATION seconds.
 
-    The POST must get 200 and a change ID, and the level must then be the
-    one asked for, with the change listed.
+    The POST must get 200 and a change ID, and the level must then be
+    level, with the change listed.
 
     Returns:
-        The row, and the change, if it was made.
+        The change's ID, "" if none was made; and what is wrong.
     """
-    case = f"{server.name} change"
-    status = level_status(test, server)
-    before = str(status.get("currentLevel"))
-    if active(status):
-        return (case, INCONCLUSIVE, f"changes already stand: {active(status)}"), None
-    level = raised(before)
-    if level is None:
-        return (case, SKIP, f"its level is {before}, the most verbose"), None
-    started = time.monotonic()
     answer = change_level(test, server, level, LEVEL_DURATION)
     change = made(test, server, answer)
     if not change:
-        return (case, FAIL, f"the POST got {answer.describe()}, and no change ID"), None
+        return "", [f"the POST got {answer.describe()}, and no change ID"]
     now = level_status(test, server)
-    found = Raised(server, before, level, change, started + LEVEL_DURATION)
     problems: list[str] = []
     if now.get("currentLevel") != level:
         problems.append(f"the level is {now.get('currentLevel')}, not {level}")
     if active(now).get(change) != level:
         problems.append(f"it lists changes {active(now)}, not {change} to {level}")
+    return change, problems
+
+
+def unchanged(test: Test, server: Server) -> tuple[str, str | None]:
+    """Return server's log level, and why it is not its own, or None.
+
+    It is not if changes stand.
+    """
+    status = level_status(test, server)
+    standing = active(status)
+    return str(status.get("currentLevel")), f"changes already stand: {standing}" if standing else None
+
+
+def raise_row(test: Test, server: Server) -> tuple[CaseRow, Raised | None]:
+    """Raise server's log level for LEVEL_DURATION seconds (set_level()).
+
+    Returns:
+        The row, and the change, if it was made.
+    """
+    case = f"{server.name} change"
+    before, why = unchanged(test, server)
+    if why:
+        return (case, INCONCLUSIVE, why), None
+    level = raised(before)
+    if level is None:
+        return (case, SKIP, f"its level is {before}, the most verbose"), None
+    started = time.monotonic()
+    change, problems = set_level(test, server, level)
+    if not change:
+        return (case, FAIL, first(problems)), None
+    found = Raised(server, before, level, change, started + LEVEL_DURATION)
     return (case, *outcome(problems, f"{before} to {level} for {LEVEL_DURATION}s")), found
+
+
+def lower_row(test: Test, server: Server) -> CaseRow:
+    """Lower server's log level for LEVEL_DURATION seconds (set_level()).
+
+    The API takes a level less verbose than the server's, and the server
+    then logs at it (applyChanges in logging/level_manager.go), so the
+    level it reports must be that one too. Where it is not, the row says
+    what the server's configuration holds, which is the level applied.
+    The change is deleted at once.
+    """
+    case = f"{server.name} lower"
+    before, why = unchanged(test, server)
+    if why:
+        return case, INCONCLUSIVE, why
+    level = lowered(before)
+    if level is None:
+        return case, SKIP, f"its level is {before}, the least verbose"
+    change, problems = set_level(test, server, level)
+    if change:
+        if problems:
+            problems[0] += f" (Logging.Level is {setting(test.config(server), 'Logging.Level')})"
+        delete_change(test, server, change)
+    return case, *outcome(problems, f"{before} to {level}")
 
 
 def expiry_rows(test: Test, changes: Sequence[Raised]) -> list[CaseRow]:
@@ -1098,8 +1155,9 @@ def log_level(test: Test) -> list[CaseRow]:
 
     At every server, as its admin: a change of its log level must take
     (raise_row()), and drop by itself at its deadline (expiry_rows());
-    one deleted must go (delete_row()); and the API must refuse what it
-    should (refusal_row()). The changes run at every server at once. Then
+    one deleted must go (delete_row()); one to a less verbose level must
+    take too (lower_row()); and the API must refuse what it should
+    (refusal_row()). The changes run at every server at once. Then
     pelican-server's command at the first server (cli_row()).
     """
     raised_at: list[Raised] = []
@@ -1113,6 +1171,7 @@ def log_level(test: Test) -> list[CaseRow]:
     rows = each_server(test.servers, raise_check)
     rows += suite.attempt_cases(functools.partial(expiry_rows, test, raised_at), (accounts.ApiError,))
     rows += each_server(test.servers, lambda server: [delete_row(test, server)])
+    rows += each_server(test.servers, lambda server: [lower_row(test, server)])
     rows += each_server(test.servers, lambda server: [refusal_row(test, server)])
     rows += each_server(test.servers[:1], lambda server: [cli_row(test, server)])
     return rows

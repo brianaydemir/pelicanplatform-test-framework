@@ -836,7 +836,7 @@ def registry_ui(test: Test) -> list[CaseRow]:
 
     That is, listing registrations (listNamespaces), seeing one
     (getNamespace), approving and denying them (updateNamespaceStatus), and
-    its servers (listServersHandler, getServerHandler).
+    its servers (listServersHandler, getServerHandler, deleteServerHandler).
     """
     key = test.key("k1")
     listed, unlisted = test.prefix("listed"), test.prefix("unlisted")
@@ -949,7 +949,8 @@ def server_list(test: Test) -> list[CaseRow]:
     """Check that /servers lists each of the shape's servers once.
 
     Each is listed with its registry prefix among its registrations;
-    /servers/<id> is each; an ID no server has gets 404.
+    /servers/<id> is each; an ID no server has gets 404, to a GET and to
+    the admin's DELETE (deleteServerHandler).
     """
     answer = test.get(SERVERS)
     if answer.status != 200:
@@ -976,10 +977,16 @@ def server_list(test: Test) -> list[CaseRow]:
             found = one.object()
             if one.status != 200 or found.get("id") != server_id:
                 problems.append(f"{SERVERS}/{server_id}: {one.describe()}")
-    unknown = test.get(f"{SERVERS}/{MARKER}none")
-    if unknown.status != 404:
-        problems.append(f"{SERVERS}/{MARKER}none: {unknown.describe()}, not 404")
-    rows.append(("server-one", *outcome(problems, "each server by its ID; an unknown ID 404")))
+    unknown = f"{SERVERS}/{MARKER}none"
+    for method, answer in (
+        ("GET", test.get(unknown)),
+        ("DELETE", test.admin().call("DELETE", unknown, headers=test.csrf())),
+    ):
+        if answer.status != 404:
+            problems.append(f"{method} {unknown}: {answer.describe()}, not 404")
+    rows.append(
+        ("server-one", *outcome(problems, "each server by its ID; an unknown ID 404, to GET and DELETE"))
+    )
     return rows
 
 

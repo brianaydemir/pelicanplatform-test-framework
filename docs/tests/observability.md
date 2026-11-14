@@ -12,7 +12,7 @@ as the [web API](web-api.md) suite does. Rows are named
 ([token profiles](README.md#token-profiles)).
 
 The framework leaves `Monitoring.MetricAuthorization` and
-`Monitoring.PromQLAuthorization` on. The suite raises each server's log
+`Monitoring.PromQLAuthorization` on. The suite changes each server's log
 level for a while: a change either expires within a minute, or is deleted
 before it would. `log-level-xrootd` restarts XRootD twice at each server it
 checks.
@@ -82,6 +82,9 @@ checks.
     and the level restored.
   - `delete`: A change deleted by its ID must get 200, and deleted again,
     404; the level must be restored.
+  - `lower`: A change to the next less verbose level (`warning` from
+    `info`) must likewise set the level, with the change listed. The suite
+    deletes it at once.
   - `refusals`: As the admin, 400 for no level; a duration over 24 hours, or
     none; a parameter that is no setting (`Logging.NoSuchLevel`); one that
     is no level (`Logging.Buffer.MaxSize`); and one outside `Logging`. A

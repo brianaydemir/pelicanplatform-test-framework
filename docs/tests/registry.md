@@ -70,8 +70,8 @@ acts as the registry's admin, and as the users `test-registry` and
     must get 403. Skips elsewhere.
   - `servers`: `/servers` must list each server prefix of the
     [shape](../glossary.md#shape) once, as one server, and no name twice.
-  - `server-one`: `/servers/<id>` must give each, and an unknown ID must
-    get 404.
+  - `server-one`: `/servers/<id>` must give each. An unknown ID must get
+    404, to a GET and to the admin's DELETE.
 - `completeness`: A server's registration starts Incomplete. Its key's
   holder completes it with a `registry.edit_registration` token, and becomes
   its owner for good, so the suite completes `/origins/<t>.invalid`, not the
