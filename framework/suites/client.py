@@ -481,9 +481,14 @@ def checksum_problems(fed: common.Federation, ad: Ad, data: bytes, cache: str | 
     for kind, value in reported.items():
         if kind in want and value.lower() != want[kind]:
             problems.append(f"{name}: ServerChecksums.{kind} {value}, not {want[kind]}")
+    if sums is not None and not isinstance(sums, Ad):
+        problems.append(f"{name}: ServerChecksums {sums!r}, not a nested ad")
     v2 = any(c.kind == "v2" and c.svc == cache for c in fed.caches)
     if v2 and "crc32c" not in reported:
-        problems.append(f"{name}: no crc32c in ServerChecksums {sorted(reported)}")
+        if sums is None:
+            problems.append(f"{name}: no ServerChecksums, so no crc32c")
+        elif isinstance(sums, Ad):
+            problems.append(f"{name}: no crc32c in ServerChecksums, only {sorted(reported)}")
     return problems
 
 

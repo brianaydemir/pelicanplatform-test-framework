@@ -28,6 +28,10 @@ need them [skip](../glossary.md#skip). A scenario with several
 [cases](../glossary.md#case) has a row per case, as in
 `cc-immediate max-age=0`.
 
+Each whole read of an overwritten object is judged as in the `blocks`
+suite
+([whole reads of an overwritten object](block-boundaries.md#whole-reads-of-an-overwritten-object)).
+
 - `only-if-cached`: Asked by `Cache-Control: only-if-cached`
   ([RFC 9111, section 5.2.1.7](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.1.7))
   or `X-Pelican-NoDownload: true`, a V2 cache must serve what it holds, and

@@ -15,6 +15,7 @@ clear (testlib.leaks).
 import functools
 import http.client
 import json
+import re
 import socket
 import ssl
 import time
@@ -30,6 +31,12 @@ CA_FILE = "/certs/ca.crt"
 
 # What asks a cache to answer only from what it holds, and otherwise 504.
 ONLY_IF_CACHED = {"Cache-Control": "only-if-cached"}
+# What a client sends to learn how a transfer ended once its headers have
+# gone out (docs/pelican-http-headers.md in Pelican's repository). The
+# server then announces `Trailer: X-Transfer-Status`, and ends the body
+# with that trailer, `<status>: <text>`.
+ASK_STATUS = {"X-Transfer-Status": "true", "TE": "trailers"}
+STATUS_OK = "200: OK"
 
 # How much of an answer's body its log entry shows, in bytes.
 LOGGED_BODY = 512
@@ -102,6 +109,15 @@ class Response:
         """Return the body, as a JSON object; {} if it is not one."""
         found = self.json()
         return cast(dict[str, Any], found) if isinstance(found, dict) else {}
+
+
+def status_failed(said: str) -> bool:
+    """Return whether X-Transfer-Status trailer said reports a failure.
+
+    A failure is a status other than 2xx.
+    """
+    found = re.match(r"\s*(\d{3})\b", said)
+    return found is not None and not found.group(1).startswith("2")
 
 
 def _last(fields: tuple[tuple[str, str], ...], name: str) -> str:

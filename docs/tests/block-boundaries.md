@@ -244,13 +244,15 @@ skip where the storage reports none.
     ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-13.1.2)), 409
     or 423.
 - `mixed-version`: An object is overwritten at the origins once each cache
-  holds its first block. Later reads, of a range in its third XRootD block
-  and of the whole, must succeed, and be entirely one version, the same for
-  both.
+  holds its first block. A later read of a range in its third XRootD block
+  must succeed, and be entirely one version, and a whole read must be
+  [judged right](#whole-reads-of-an-overwritten-object), as the same
+  version.
 - `overwrite-cached`, `overwrite-range-first`: Once each cache holds objects
   (read whole, or a range first), the origins overwrite them, keeping,
   growing, and shrinking their sizes. Every response must be entirely one
-  version, with that version's size and digest, if any. Under
+  version, with that version's size, and each whole read
+  [judged right](#whole-reads-of-an-overwritten-object). Under
   [`-p origin-max-age`](../../framework/presets/origin-max-age.sh), native
   origins must send `Cache-Control: max-age=30`, and every cache serve the
   new version within about 75 seconds.
@@ -268,3 +270,22 @@ skip where the storage reports none.
   low one by more than an object. A V2 cache must still hold the three
   objects read last, and have dropped at least two of the oldest; an XRootD
   cache need only have dropped two. Every object must still come back.
+
+## Whole reads of an overwritten object
+
+A whole read of an object that the origins have overwritten asks, as
+Pelican's client does, for the transfer's status (`X-Transfer-Status`) and
+for the digests that the client knows. It must come back entirely one
+version, its trailer must report no failure, and any `Digest` must be that
+version's: a stale one would fail the client's check of bytes that are
+right.
+
+A cache with an `ETag` to hold its fetches to (one that the origins send,
+or that the cache does) can tell the versions apart before it sends
+anything. One without (as at an XRootD origin, which sends none) can tell
+them apart only by the origins' digests, once it holds the whole object,
+after the body has gone out. So a whole read through it may instead report
+its own failure, by its status or in its trailer, provided one within 10
+seconds then comes back right. A wrong read that reports no failure fails
+the row. Where its body is the size of a version, the row's message gives
+the version of each block, the trailer, and whose `Digest` came, if any.

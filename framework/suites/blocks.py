@@ -53,6 +53,7 @@ from testlib.common import first, outcome, warn
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
 from testlib.session import Session, json_object, json_objects, last_line
 from testlib.suite import Row
+from testlib.web import ASK_STATUS, STATUS_OK, status_failed
 
 SCENARIOS = {
     "put-declared": "upload every size with a Content-Length to every origin",
@@ -97,7 +98,7 @@ SCENARIOS = {
     "conditional-put": "a PUT with If-Match or If-None-Match: refused (412) unless its condition holds",
     "etag-agreement": "each origin gives a version one ETag, by every method, and honors it in conditions",
     "conditional-edges": "each origin: conditions on a missing object, invalid, or combined; racing PUTs",
-    "mixed-version": "each cache: an object overwritten mid-way comes back as one version",
+    "mixed-version": "each cache: an object overwritten mid-way comes back as one version, or fails visibly",
     "overwrite-cached": "each cache: an object it holds, overwritten, comes back as one version",
     "overwrite-range-first": "the same, for an object it first read through a range",
     "write-through": "each V2 cache relays a PUT and a DELETE; an XRootD cache refuses them",
@@ -1837,12 +1838,6 @@ def cache_file_lost(test: Test) -> Row:
     return found.row(f"{len(caches)} V2 cache(s): {LOST_SIZE} bytes, the file removed")
 
 
-# What a client sends to learn how a transfer ended once its headers have
-# gone out (docs/pelican-http-headers.md in Pelican's repository). The
-# server then announces `Trailer: X-Transfer-Status`, and ends the body
-# with that trailer, `<status>: <text>`.
-ASK_STATUS = {"X-Transfer-Status": "true", "TE": "trailers"}
-STATUS_OK = "200: OK"
 # transfer-status's objects: one of several V2 blocks, one under 4,096
 # bytes, which a V2 cache keeps inline in its database, and one of 0 bytes.
 # Each read is of an object of its own, so that it is cold the first time:
@@ -1862,15 +1857,6 @@ STATUS_READS: dict[str, tuple[int, blocks.Request | None]] = {
 # http.ServeContent reads to sniff a type before it sends the headers, so
 # that the failure comes after them.
 FAILED_BLOCK = 3
-
-
-def status_failed(said: str) -> bool:
-    """Return whether X-Transfer-Status trailer said reports a failure.
-
-    A failure is a status other than 2xx.
-    """
-    found = re.match(r"\s*(\d{3})\b", said)
-    return found is not None and not found.group(1).startswith("2")
 
 
 def read_status(
@@ -4067,22 +4053,23 @@ def mixed_version(test: Test) -> Row:
     """Check that an object overwritten mid-way comes back as one version.
 
     Each cache reads the first block of an object, and the origins then
-    take another version of it. Every later response, to a range the cache
-    has yet to fetch and to the whole object, must be entirely one
-    version, and the same one.
+    take another version of it. A read of a range the cache has yet to
+    fetch must then succeed, and be entirely one version, and a whole
+    read come back as the same one, as Test.which_version() judges it. A
+    cache with no ETag to hold its fetches to (as at an XRootD origin,
+    which sends none) may instead fail a whole read visibly, then serve
+    one right. A wrong whole read that reports no failure fails the row,
+    whose message gives the version of each BLOCK, the trailer, and whose
+    Digest came, if any.
     """
     size = MIXED_SIZE
     rel = test.rel("mixed")
     v1, v2 = os.urandom(size), os.urandom(size)
     if why := test.put({rel: v1}):
         return FAIL, why
-
-    def get(cache: common.Cache, request: str | None) -> web.Response:
-        return test.ask("GET", cache.url, rel, {"Range": request} if request else {})
-
     block = blocks.BLOCK
     for cache in test.caches:
-        answer = get(cache, f"bytes=0-{block - 1}")
+        answer = test.ask("GET", cache.url, rel, {"Range": f"bytes=0-{block - 1}"})
         if answer.status != 206 or answer.body != v1[:block]:
             return FAIL, f"{cache.svc}: the first block of v1 came back wrong ({answer.describe()})"
     if why := test.put({rel: v2}):
@@ -4092,27 +4079,16 @@ def mixed_version(test: Test) -> Row:
     versions = {"v1": v1, "v2": v2}
     notes: list[str] = []
     for cache in test.caches:
-        answer = get(cache, f"bytes={start}-{end - 1}")
-        range_version, why = blocks.which_version(versions, ((start, end - 1),), answer)
+        range_version, why = test.which_version(cache, rel, versions, ((start, end - 1),))
         if range_version is None:
             return FAIL, f"{cache.svc}: {later}: {why}"
-        answer = get(cache, None)
-        version, why = blocks.which_version(versions, None, answer)
+        version, why = test.which_version(cache, rel, versions, None)
         if version is None:
-            if answer.status == 200 and len(answer.body) == size:
-                why = "it mixes versions, block by block: " + "".join(
-                    (
-                        "1"
-                        if answer.body[i : i + block] == v1[i : i + block]
-                        else "2" if answer.body[i : i + block] == v2[i : i + block] else "?"
-                    )
-                    for i in range(0, size, block)
-                )
             return FAIL, f"{cache.svc}: the whole object: {why}"
         if range_version != version:
             return FAIL, f"{cache.svc}: {later} came back as {range_version}, the whole object as {version}"
-        notes.append(f"{cache.svc} served {version}")
-    return PASS, ", ".join(notes)
+        notes.append(f"{cache.svc} served {version}" + (f" ({why})" if why else ""))
+    return PASS, "; ".join(notes)
 
 
 class Versions:
@@ -4159,11 +4135,13 @@ class Versions:
         """Return the version of a whole read of each of cache's objects."""
         return [self.which(cache, f"{cache.svc}-{n}", None)[0] for n in self.NAMES]
 
-    def battery(self, cache: common.Cache) -> tuple[Counter[str], list[str]]:
+    def battery(self, cache: common.Cache) -> tuple[Counter[str], list[str], int]:
         """Read cache's objects whole, and in every range of either version.
 
         Returns:
-            How many reads came back as each version, and what was wrong.
+            How many reads came back as each version, what was wrong, and
+            how many whole reads came back only once one had reported its
+            failure (Test.which_version()).
         """
         jobs: list[tuple[str, blocks.Request | None]] = []
         for n in self.NAMES:
@@ -4178,13 +4156,15 @@ class Versions:
             found = list(pool.map(read, jobs))
         counts: Counter[str] = Counter()
         wrong: list[str] = []
+        recovered = 0
         for (key, request), (version, why) in zip(jobs, found):
             if version is None:
                 what = blocks.range_header(request) if request else "whole"
                 wrong.append(f"{key} {what}: {why}")
             else:
                 counts[version] += 1
-        return counts, wrong
+                recovered += bool(why)
+        return counts, wrong, recovered
 
 
 def cache_control_problem(test: Test, rel: str, wanted: str) -> str | None:
@@ -4211,11 +4191,15 @@ def overwrite(test: Test, range_first: bool) -> Row:
     Each cache reads v1 of three objects of its own, whole twice or a
     range then whole, and the origins then take v2: of the same size,
     larger, or smaller. Every response must then be all v1 or all v2, with
-    that version's size. With ORIGIN_CACHE_CONTROL (`-p origin-max-age`)
-    at native origins, every origin must send it, and each cache, once its
-    copy is stale, must serve v2, and only v2. Without it, and at XRootD
-    origins, which send none, a cache decides for itself how long its copy
-    stays fresh. The origins are asked only if they take direct clients.
+    that version's size, and each whole read as Test.which_version()
+    judges it: its trailer reporting no failure, and any Digest that
+    version's; or, through a cache with no ETag to hold its fetches to,
+    failing visibly, then coming back right. With ORIGIN_CACHE_CONTROL
+    (`-p origin-max-age`) at native origins, every origin must send it,
+    and each cache, once its copy is stale, must serve v2, and only v2.
+    Without it, and at XRootD origins, which send none, a cache decides
+    for itself how long its copy stays fresh. The origins are asked only
+    if they take direct clients.
 
     Args:
         test: The test.
@@ -4248,9 +4232,11 @@ def overwrite(test: Test, range_first: bool) -> Row:
     problems: list[str] = []
     notes: list[str] = []
     for cache in test.caches:
-        counts, wrong = versions.battery(cache)
+        counts, wrong, recovered = versions.battery(cache)
         problems += wrong
         served = ", ".join(f"{v} {counts[v]}" for v in sorted(counts)) or "nothing"
+        if recovered:
+            served += f" ({recovered} once a whole read had failed)"
         if fresh is None:
             notes.append(f"{cache.svc} served {served}")
             continue
@@ -4267,7 +4253,7 @@ def overwrite(test: Test, range_first: bool) -> Row:
                 + f" after caching v1, past its freshness of {fresh:g}s{seen}"
             )
             continue
-        counts, wrong = versions.battery(cache)
+        counts, wrong, _ = versions.battery(cache)
         problems += wrong
         if counts["v1"]:
             problems.append(f"{cache.svc} served v1 {counts['v1']} times after serving v2")

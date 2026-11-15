@@ -36,6 +36,7 @@ from testlib.common import Findings, die, outcome, warn
 from testlib.report import FAIL, SKIP
 from testlib.session import Session, last_line
 from testlib.suite import NAMESPACE
+from testlib.web import ASK_STATUS, STATUS_OK
 
 SCENARIOS = {
     "range-ahead": (
@@ -153,8 +154,6 @@ MISS_SLOWEST = 12.0
 MISS_ABANDONED_SIZE = 8 << 20
 MISS_ABANDON_AFTER = 64 << 10
 FILL_IDLE = 10 + 5
-ASK_STATUS = {"X-Transfer-Status": "true", "TE": "trailers"}
-STATUS_OK = "200: OK"
 
 
 class Test(suite.Test):

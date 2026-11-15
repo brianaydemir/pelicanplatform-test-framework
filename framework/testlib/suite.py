@@ -7,7 +7,7 @@ its own collection there, data/<area>/<run> (Test.base).
 
 import os
 from collections.abc import Callable, Iterable, Mapping
-from functools import cached_property
+from functools import cached_property, partial
 from urllib.parse import quote
 
 from . import blocks, common, control, digests, director, report, stores, web
@@ -19,6 +19,10 @@ SETTLE_WAIT = 150
 # How long a V2 cache may take to say, with Age, that it holds an object
 # it has served whole.
 HELD_WAIT = 30
+# How long Test.which_version() waits, after a whole read through a cache
+# with no validator reports its own failure, for one that comes back
+# right.
+RECOVERY_WAIT = 10
 
 # The namespace of a suite's objects, unless its Test names another.
 NAMESPACE = "protected-a"
@@ -28,6 +32,70 @@ Row = tuple[str, str]
 # A row's case (appended to its scenario's name, if any), status, and
 # note.
 CaseRow = tuple[str, str, str]
+
+
+def blockwise(versions: Mapping[str, bytes], body: bytes) -> str:
+    """Return which of versions each block (blocks.BLOCK) of body came from.
+
+    Each block is shown as the number of the version, counting from 1,
+    whose bytes it is, or as ? if it is none of theirs.
+    """
+    step = blocks.BLOCK
+    return "".join(
+        next(
+            (
+                str(n)
+                for n, data in enumerate(versions.values(), 1)
+                if body[i : i + step] == data[i : i + step]
+            ),
+            "?",
+        )
+        for i in range(0, len(body), step)
+    )
+
+
+def judge_whole(versions: Mapping[str, bytes], answer: web.Response) -> tuple[str | None, str, bool]:
+    """Judge answer, to a whole read of an object with versions.
+
+    The read asked for the transfer's status and for digests.
+
+    Returns:
+        The version it came back as, "", and False, if it is entirely
+        that one, its trailer reports no failure, and any Digest is that
+        version's. Otherwise None, what was wrong, and whether the
+        response itself reported a failure: a status of 400 or more, or
+        a failure in its trailer. Where a body of a version's size is
+        wrong, what was wrong gives the version of each block, the
+        trailer, and whose Digest came, if any.
+    """
+    if answer.status is not None and answer.status >= 400:
+        return None, answer.describe(), True
+    said = answer.trailer("X-Transfer-Status")
+    trailer = f"trailer '{said[:60] or 'none'}'"
+    version, why = blocks.which_version(dict(versions), None, answer)
+    if version is not None:
+        if web.status_failed(said):
+            return None, f"served {version}, but {trailer}", True
+        wrong, _ = digests.check(answer.header("Digest"), versions[version])
+        if wrong:
+            return (
+                None,
+                f"served {version}, but with a Digest that is not its ({common.first(wrong)})",
+                False,
+            )
+        return version, "", False
+    if not answer.ok:
+        return None, why, False
+    if answer.status == 200 and any(len(answer.body) == len(data) for data in versions.values()):
+        why = f"it mixes versions, block by block: {blockwise(versions, answer.body)}"
+    whose = "no Digest"
+    if digest := answer.header("Digest"):
+        whose = "a Digest of neither version"
+        for name, data in versions.items():
+            wrong, right = digests.check(digest, data)
+            if right and not wrong:
+                whose = f"{name}'s Digest"
+    return None, f"{why}; {trailer}; {whose}", web.status_failed(said)
 
 
 class SetupError(Exception):
@@ -395,10 +463,20 @@ class Test:
         """Return which of versions a read of rel through cache came back as.
 
         The read is of rel whole, or of request's ranges (see
-        blocks.which_version()). A whole read asks for the digests that
-        the client knows too (Want-Digest), crc32c, its default, first;
-        each that comes must be that version's: a stale one would fail
-        the client's check of bytes that are right.
+        blocks.which_version()). A whole read asks, as Pelican's client
+        does, for the transfer's status and for the digests that the
+        client knows (Want-Digest), crc32c, its default, first. It must
+        be entirely one version, its trailer must report no failure, and
+        each digest that comes must be that version's: a stale one would
+        fail the client's check of bytes that are right (judge_whole()).
+
+        A cache with a validator for rel (validated()) can hold each fetch
+        to it, and so tell versions apart before it sends anything. One
+        without can tell only by the origins' digests, once it holds the
+        whole object, after the body has gone out. So a whole read
+        through it may instead report its own failure, by its status or
+        in its trailer, provided one within RECOVERY_WAIT seconds then
+        comes back right.
 
         Args:
             cache: The cache to read through.
@@ -407,17 +485,52 @@ class Test:
             request: The ranges to read, or None for the whole object.
 
         Returns:
-            The version's name and ""; or None, and why it is none.
+            The version's name, and "", or what went wrong first, if it
+            came back only once a whole read had reported its failure; or
+            None, and why it is none.
+        """
+        if request:
+            answer = self.ask("GET", cache.url, rel, {"Range": blocks.range_header(request)})
+            return blocks.which_version(dict(versions), request, answer)
+        version, why, flagged = self.judged_read(cache, rel, versions)
+        if version is not None or not flagged:
+            return version, why
+        if self.validated(cache, rel):
+            return None, f"{why}, though it had an ETag to hold its fetches to"
+        later, said, _ = common.wait_last(
+            partial(self.judged_read, cache, rel, versions),
+            lambda judged: judged[0] is not None,
+            RECOVERY_WAIT,
+            1,
+        )
+        if later is None:
+            return None, f"{why}; {RECOVERY_WAIT}s on, {said}"
+        return later, f"with no ETag, a whole read failed ({why}), then came back {later}"
+
+    def judged_read(
+        self, cache: common.Cache, rel: str, versions: Mapping[str, bytes]
+    ) -> tuple[str | None, str, bool]:
+        """Read rel whole through cache, as which_version() does.
+
+        Returns:
+            What judge_whole() makes of it.
         """
         want = ", ".join(sorted(digests.CLIENT_ALGORITHMS, key=lambda a: a != "crc32c"))
-        headers = {"Range": blocks.range_header(request)} if request else {"Want-Digest": want}
-        answer = self.ask("GET", cache.url, rel, headers)
-        version, why = blocks.which_version(dict(versions), request, answer)
-        if version and request is None:
-            wrong, _ = digests.check(answer.header("Digest"), versions[version])
-            if wrong:
-                return None, f"served {version}, but with a Digest that is not its ({common.first(wrong)})"
-        return version, why
+        answer = self.ask("GET", cache.url, rel, {**web.ASK_STATUS, "Want-Digest": want})
+        return judge_whole(versions, answer)
+
+    def validated(self, cache: common.Cache, rel: str) -> bool:
+        """Return whether cache has a validator to hold its fetches of rel to.
+
+        That is an ETag that every origin sends for rel, asked directly if
+        they take direct clients, or that cache sends, asked with a HEAD.
+        """
+        origins = stores.unique(self.fed.origins)
+        if self.direct and all(
+            web.request("HEAD", self.url(o.url, rel), token=self.setup).header("ETag") for o in origins
+        ):
+            return True
+        return bool(self.ask("HEAD", cache.url, rel).header("ETag"))
 
     def age(self, cache: common.Cache, rel: str) -> int | None:
         """Return the Age with which a cache says it holds rel.
