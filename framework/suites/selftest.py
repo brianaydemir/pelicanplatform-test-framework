@@ -564,6 +564,7 @@ def leak_answers(whole: str) -> tuple[dict[str, tuple[Any, ...]], dict[str, tupl
         "a 500's body": ("GET", f"{cache}/x", {}, 500, (), detail, ()),
         "a 403's header": ("GET", f"{origin}/x", {}, 403, (("WWW-Authenticate", whole),), b"", ()),
         "a 206's trailer": ("GET", f"{cache}/x", {}, 206, (), b"", status),
+        "a 200's X-Transfer-Status header": ("GET", f"{cache}/x", {}, 200, status, b"", ()),
         "a third-party COPY's 201": ("COPY", f"{origin}/x", {}, 201, (), b"failure: " + detail, ()),
         "a prestage's 200": ("GET", f"{cache}/pelican/api/v1.0/prestage", {}, 200, (), detail, ()),
         "a health 200": ("GET", f"{origin}/api/v1.0/metrics/health", {}, 200, (), detail, ()),

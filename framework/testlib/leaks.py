@@ -13,7 +13,8 @@ Token leaks):
 - `token-leaks clients`: what reached the tests as a client. Of each
   HTTP answer from a Pelican server (PELICAN_HOST), its trailers, such
   as the X-Transfer-Status in which a V2 cache reports a failure after
-  its headers; and its headers and body if its status is 4xx or 5xx,
+  its headers, and that header too, if it comes as one
+  (TRANSFER_STATUS); and its headers and body if its status is 4xx or 5xx,
   if it answers a COPY (whose body reports a third-party copy as it
   goes, and how it ended), or if it is of a cache's own APIs
   (CACHE_API_ROUTES) or of a route that reports what a server did in
@@ -94,6 +95,13 @@ STATUS_ROUTES = (
     "/api/v1.0/origin_ui/metadata_queue",
     "/api/v1.0/director_ui/servers",
 )
+
+# What a V2 cache reports a transfer's end in, as a trailer
+# (local_cache/persistent_cache_api.go, in Pelican). If the transfer
+# fails before the body's first byte, it also comes as a header of a 200
+# with an empty body: gin sends the status only with the first byte, or
+# once the handler returns.
+TRANSFER_STATUS = "x-transfer-status"
 
 # The most of a body, or of a file, that is scanned, in bytes.
 SCANNED = 16 << 20
@@ -349,6 +357,10 @@ class Watch:
         ):
             scanned.append(("headers", "\n".join(f"{k}: {v}" for k, v in headers)))
             scanned.append(("body", body[:SCANNED].decode("utf-8", errors="replace")))
+        else:
+            reported = [(k, v) for k, v in headers if k.lower() == TRANSFER_STATUS]
+            if reported:
+                scanned.append(("headers", "\n".join(f"{k}: {v}" for k, v in reported)))
         if trailers:
             scanned.append(("trailers", "\n".join(f"{k}: {v}" for k, v in trailers)))
         if not scanned:

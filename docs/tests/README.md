@@ -94,13 +94,14 @@ not ([`framework/testlib/leaks.py`](../../framework/testlib/leaks.py)):
 - `token-leaks clients`: what reached the tests as a client.
   - Of each HTTP answer from a Pelican server, its trailers, such as the
     `X-Transfer-Status` in which a V2 cache reports a failure after its
-    headers. Its headers and body too, if its status is 4xx or 5xx; if it
-    answers a `COPY`, whose body reports a third-party copy as it goes, and
-    how it ended; or if it is of a cache's own APIs (prestage, evict, and
-    `/api/v1.0/cache/`), or of a route that reports what a server did in the
-    background (the transfer API's jobs, `/api/v1.0/metrics/health`, the
-    metadata publish queue, and a director's list of servers), whatever its
-    status.
+    headers, and that header too, if it comes as one, as when the failure
+    comes before the body's first byte. Its headers and body too, if its
+    status is 4xx or 5xx; if it answers a `COPY`, whose body reports a
+    third-party copy as it goes, and how it ended; or if it is of a cache's
+    own APIs (prestage, evict, and `/api/v1.0/cache/`), or of a route that
+    reports what a server did in the background (the transfer API's jobs,
+    `/api/v1.0/metrics/health`, the metadata publish queue, and a director's
+    list of servers), whatever its status.
   - Of each client command, its stderr; the stdout of `pelican job`, and of
     `pelican-server cache introspect` and `origin introspect`, which report
     there what failed; the stash_plugin's ads; and the Pelican client's
