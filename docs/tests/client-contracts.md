@@ -5,7 +5,8 @@ Part of [What the tests check](README.md).
 The [`client`](../../framework/suites/client.py) suite checks contracts that
 show only through the [clients](../glossary.md#client):
 [`stash_plugin`](../glossary.md#stash_plugin)'s result ads, failover between
-caches, which token the client presents, how
+caches, which token the client presents, what each set of storage scopes
+lets each client do, how
 [`pelican token create`](../glossary.md#pelican-client) finds an issuer, and
 the URL `pelican object share` hands out. It needs `/protected-a`. Its
 [credentials](authorization.md) are those of the [`transfers`](test-data.md)
@@ -130,6 +131,44 @@ and `auth` suites. `stash_plugin stage` is not tested.
   origins' embedded issuer, and at a standalone origin. Runs in the WLCG
   [pass](../glossary.md#pass) only
   ([token profiles](README.md#token-profiles)).
+
+- `storage-scopes`: Each distinct set of storage scopes in the
+  [pass](../glossary.md#pass)'s profile, seven in WLCG's (of `storage.read`,
+  `storage.create`, and `storage.modify`) and three in SciTokens' (of `read`
+  and `write`), presented by each client: `pelican` (with `--token`),
+  `stash_plugin` (in its credentials directory), and a plain HTTP client,
+  which asks a director for the bare path and follows its redirect, as curl
+  does (`http`). Each case is `<client> <operation> <scopes>`, e.g.
+  `plugin put-new read+create`, on objects of its own in `/protected-a`:
+
+  - `get`, `direct-get`: an object, by the director's choice of server, and
+    from an origin, must come back with `storage.read`, and otherwise be
+    refused;
+  - `put-new`, `put-tree-new`: a new object, as a file or in a directory put
+    recursively, must land with `storage.create` (or `storage.modify`, which
+    implies it), and otherwise be refused, landing nothing;
+  - `put-over`, `put-tree-over`: over an existing object, with
+    `Client.EnableOverwrites` off, as by default, `pelican` and
+    `stash_plugin` must leave the object as it was, whatever the token (P2);
+    a tree's put may skip it. The plain HTTP client's PUT must replace the
+    object with `storage.modify`, and otherwise be refused;
+  - `put-new-overwrites`, `put-over-overwrites`, `put-tree-new-overwrites`,
+    `put-tree-over-overwrites`: the same puts by `pelican` and
+    `stash_plugin` with `Client.EnableOverwrites` on, which over an object
+    must replace it with `storage.modify`, and otherwise be refused, leaving
+    it as it was;
+  - `delete`: by `pelican object delete` and the plain HTTP client, the
+    object must go with `storage.modify`, and otherwise be refused, staying.
+
+  SciTokens' `write` counts as `storage.modify`, as Pelican and XRootD read
+  it. Cases that write skip where `/protected-a` takes no writes, `delete`
+  where the storage cannot delete, `direct-get` without direct reads, and
+  the plain HTTP client's without a director. The objects are 1,000 bytes:
+  an XRootD origin refuses a larger upload by closing the connection as the
+  client sends it, which the clients report as a broken connection, not a
+  refusal. The `auth` suite's `create-only` and `modify-only`
+  ([authorization](authorization.md)) send their requests to each origin
+  directly.
 
 - `director-decision`: With `Plugin.DirectorDecisionPercentage` at 100,
   `stash_plugin` must record the director's decision in

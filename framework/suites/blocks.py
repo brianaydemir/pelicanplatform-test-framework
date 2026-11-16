@@ -90,6 +90,7 @@ SCENARIOS = {
     "digest-relay": "each federated V2 cache relays the origins' digests to HEAD, GET, and the client",
     "digest-range-first": "each federated V2 cache relays digests of an object it first read in a range",
     "stale-origin-digest": "each federated V2 cache keeps and passes on nothing that fails its digests",
+    "stale-digest-range-first": "the same, for an object it first reads in ranges",
     "stale-digest-direct": "neither client keeps a download, straight from an origin, that fails its digests",
     "past-end": "a range that starts at or past an object's end: 416, not bytes",
     "empty": "a 0-byte object: 200 with no body; a range of it gets no bytes",
@@ -123,6 +124,7 @@ CACHE_SCENARIOS = (
     "digest-relay",
     "digest-range-first",
     "stale-origin-digest",
+    "stale-digest-range-first",
     "mixed-version",
     "overwrite-cached",
     "overwrite-range-first",
@@ -2760,39 +2762,86 @@ def stale_trap(
     return None, None
 
 
-def stale_digest(test: Test, cache: common.Cache, rel: str, a: bytes, found: Findings) -> None:
-    """Run stale_origin_digest at one V2 cache, of rel, which holds a."""
+# How long a V2 cache may take to drop an object that fails the origins'
+# digests, once it can tell.
+STALE_DROP_WAIT = 10
+
+
+def set_trap(test: Test, rel: str, a: bytes, found: Findings) -> bytes | None:
+    """Make every origin serve other bytes at rel, which holds a (stale_trap()).
+
+    Returns:
+        The bytes they then serve; or None, with what went wrong, or why
+        the trap could not be set, recorded in found.
+    """
     b = bytes(x ^ 0xFF for x in a)
     for origin in test.origins:
         why, doubt = stale_trap(test, origin, rel, a, b)
         if why:
-            found.fail(f"{cache.svc}: {why}")
-            return
+            found.fail(why)
+            return None
         if doubt:
-            found.doubt(doubt)
-            return
+            if doubt not in found.doubts:
+                found.doubt(doubt)
+            return None
+    return b
+
+
+def refused_whole(test: Test, cache: common.Cache, rel: str, b: bytes) -> tuple[str | None, str]:
+    """Read rel whole through a V2 cache, which must not pass it off as good.
+
+    The origins serve b at rel, with the digests of another version
+    (stale_trap()). A GET asking for the transfer's status must fail
+    before the body, or end with a failure in its trailer.
+
+    Returns:
+        What is wrong, or None; and how the read failed.
+    """
     answer = test.ask("GET", cache.url, rel, ASK_STATUS)
     said = answer.trailer("X-Transfer-Status")
     if not answer.ok:
-        how = f"{answer.describe()} before the body"
-    elif status_failed(said):
-        how = f"200, then '{said[:60]}'"
-    else:
-        body = "the bytes the origins hold" if answer.body == b else f"{len(answer.body)} bytes"
-        found.fail(
-            f"{cache.svc}: {answer.describe()} with {body} and trailer '{said or 'none'}',"
-            + " though they fail the digests the origins report"
-        )
-        return
+        return None, f"{answer.describe()} before the body"
+    if status_failed(said):
+        return None, f"200, then '{said[:60]}'"
+    body = "the bytes the origins hold" if answer.body == b else f"{len(answer.body)} bytes"
+    return (
+        f"{answer.describe()} with {body} and trailer '{said or 'none'}',"
+        + " though they fail the digests the origins report"
+    ), ""
+
+
+def still_held(test: Test, cache: common.Cache, rel: str) -> str | None:
+    """Return what says that a V2 cache keeps rel, or None.
+
+    A GET with only-if-cached must get 504 within STALE_DROP_WAIT
+    seconds.
+    """
     url = test.url(cache.url, rel)
     status = common.wait_last(
         lambda: web.request("GET", url, token=test.token, headers=web.ONLY_IF_CACHED).status,
         lambda got: got == 504,
-        10,
+        STALE_DROP_WAIT,
         1,
     )
-    if status != 504:
-        got = "no response" if status is None else f"HTTP {status}"
+    if status == 504:
+        return None
+    return "no response" if status is None else f"HTTP {status}"
+
+
+def stale_digest(test: Test, cache: common.Cache, rel: str, a: bytes, found: Findings) -> None:
+    """Run stale_origin_digest at one V2 cache, of rel, which holds a."""
+    trapped = Findings()
+    b = set_trap(test, rel, a, trapped)
+    if b is None:
+        found.problems += [f"{cache.svc}: {p}" for p in trapped.problems]
+        found.doubts += [d for d in trapped.doubts if d not in found.doubts]
+        return
+    why, how = refused_whole(test, cache, rel, b)
+    if why:
+        found.fail(f"{cache.svc}: {why}")
+        return
+    got = still_held(test, cache, rel)
+    if got:
         found.fail(f"{cache.svc}: then, only-if-cached got {got}, not 504: it kept the object")
         return
     why, client = client_failed(test, cache, rel, f"stale-get-{cache.svc}")
@@ -2834,6 +2883,96 @@ def stale_origin_digest(test: Test) -> Row:
         return SKIP, "no federated V2 cache, which alone checks the origins' digests"
     check = functools.partial(stale_digest, test)
     return each_cache(test, "stale-digest", STATUS_SIZE, test.federated_v2, check)
+
+
+# How stale-digest-range-first first reads an object, by name, before it
+# reads it whole: a range of its first byte, as the clients probe a cache
+# before they read (sortAttempts in client/handle_http.go); a range inside
+# it, its second block; and each of its blocks in turn, so that the cache
+# comes to hold it all with no whole read.
+STALE_FIRST_READS: dict[str, list[blocks.Request]] = {
+    "probe": [((0, 0),)],
+    "inner": [((blocks.BLOCK, 2 * blocks.BLOCK - 1),)],
+    "pieces": [
+        ((start, min(start + blocks.BLOCK, STATUS_SIZE) - 1),)
+        for start in range(0, STATUS_SIZE, blocks.BLOCK)
+    ],
+}
+
+
+def stale_ranges(test: Test, cache: common.Cache, how: str, rel: str, a: bytes, found: Findings) -> None:
+    """Run stale_digest_range_first at one V2 cache, of rel, which holds a.
+
+    The cache first reads it as STALE_FIRST_READS[how] says.
+    """
+    where = f"{cache.svc} ({how})"
+    trapped = Findings()
+    b = set_trap(test, rel, a, trapped)
+    if b is None:
+        found.problems += [f"{where}: {p}" for p in trapped.problems]
+        found.doubts += [d for d in trapped.doubts if d not in found.doubts]
+        return
+    for request in STALE_FIRST_READS[how]:
+        asked = blocks.range_header(request)
+        answer = test.ask("GET", cache.url, rel, {"Range": asked})
+        if answer.ok:
+            why = blocks.check(b, request, answer)
+            if why:
+                found.fail(f"{where}: {asked}: {why}, not the bytes the origins hold")
+                return
+        elif answer.status is None or answer.status < 500:
+            found.fail(f"{where}: {asked} got {answer.describe()}, neither the bytes nor a server error")
+            return
+    if how == "pieces":
+        got = still_held(test, cache, rel)
+        if got:
+            found.fail(
+                f"{where}: once it had read every block, only-if-cached got {got}, not 504:"
+                + " it kept the object, which fails the digests the origins report"
+            )
+            return
+    why, refused = refused_whole(test, cache, rel, b)
+    if why:
+        found.fail(f"{where}: then, a whole read: {why}")
+        return
+    got = still_held(test, cache, rel)
+    if got:
+        found.fail(f"{where}: then, only-if-cached got {got}, not 504: it kept the object")
+        return
+    found.note(f"{where}: {refused}; kept nothing")
+
+
+def stale_digest_range_first(test: Test) -> Row:
+    """Check that a V2 cache keeps nothing that fails its digests, read in ranges.
+
+    As stale_origin_digest, but each federated V2 cache first reads each
+    of its objects in ranges (STALE_FIRST_READS), each of which may come
+    back as the bytes the origins hold, since no digest covers a range,
+    or as a server error. A cache that has read every block must then,
+    within STALE_DROP_WAIT seconds, keep nothing (only-if-cached gets
+    504), as it has all it needs to check the object. Then a whole read
+    through the cache, asking for the transfer's status, must fail, or
+    report a failure in its trailer (refused_whole()); and within
+    STALE_DROP_WAIT seconds, the cache must keep nothing. No client is
+    run: this is the cache's own check, which a client's probe and
+    whole read rely on. Inconclusive, and skipped, as there.
+    """
+    if why := untrappable(test):
+        return SKIP, why
+    if not test.federated_v2:
+        return SKIP, "no federated V2 cache, which alone checks the origins' digests"
+    base = test.rel("stale-digest-range-first")
+    objects = {
+        f"{c.svc}-{how}": os.urandom(STATUS_SIZE) for c in test.federated_v2 for how in STALE_FIRST_READS
+    }
+    if why := put_under(test, base, objects):
+        return FAIL, why
+    found = Findings()
+    for cache in test.federated_v2:
+        for how in STALE_FIRST_READS:
+            name = f"{cache.svc}-{how}"
+            stale_ranges(test, cache, how, f"{base}/{name}", objects[name], found)
+    return found.verdict()
 
 
 # What the client calls a download whose digest is not the server's
@@ -4656,6 +4795,7 @@ RUN = {
     "digest-relay": digest_relay,
     "digest-range-first": digest_range_first,
     "stale-origin-digest": stale_origin_digest,
+    "stale-digest-range-first": stale_digest_range_first,
     "stale-digest-direct": stale_digest_direct,
     "past-end": past_end,
     "empty": empty,

@@ -48,17 +48,30 @@ suite
   [`-p director-default-origin`](../../framework/presets/director-default-origin.sh)
   and [`-p origin-no-direct`](../../framework/presets/origin-no-direct.sh).
 
-- `cc-downstream`: Every answer of a V2 cache, to a fill, two hits 3 seconds
-  apart, and a conditional GET (304), must carry `Cache-Control`:
+- `cc-downstream`: Each V2 cache reads two objects, one first whole, the
+  other first in a range of its first byte (as the clients probe a cache
+  before they read), then whole. Every answer, to those reads, two hits 3
+  seconds apart, and a conditional GET (304), must carry `Cache-Control`:
 
   - `none` (origins send nothing): `max-age` of the cache's remaining
     freshness, at most a day, and at least 21.6 hours less the time since
     the fill;
   - `max-age` (origins send `max-age=30`): `s-maxage=30, max-age=30`.
 
-  Each `Age` must be at most the time since the fill, and the two hits' must
-  differ by the time between them, within 2 seconds. Inconclusive where a
-  cache sends no `ETag` to ask for the 304 by.
+  Each `Age` must be at most the time since the first read, and the two
+  hits' must differ by the time between them, within 2 seconds. Inconclusive
+  where a cache sends no `ETag` to ask for the 304 by.
+
+- `cc-head`, a case for each `Cache-Control` that the other scenarios have
+  the origins send (`none`, `max-age`, `must-revalidate`, `max-age=0`,
+  `no-cache`, `no-store`, `private`, and `s-maxage`): A HEAD must carry the
+  `Cache-Control` and `Age` that a GET carries
+  ([RFC 9110, section 9.3.2](https://www.rfc-editor.org/rfc/rfc9110#section-9.3.2)),
+  their seconds within the time between them and 2 seconds. Each origin, if
+  asked directly, gets a HEAD, then a GET; each V2 cache, the same of an
+  object it does not hold, and again once it holds it (unless it may not
+  store it). Where the origins send none, a cache's first HEAD may carry
+  none, or a `max-age` within its jitter of the GET's.
 
 - `propfind-freshness`: A V2 cache's Depth 0 PROPFIND of its copy:
 
@@ -80,8 +93,9 @@ suite
 
 - `cc-immediate`, cases `max-age=0` and `no-cache`:
   [`blocks`](block-boundaries.md)'s `overwrite-cached` and
-  `overwrite-range-first`. Each V2 cache must serve an overwrite at the
-  first whole read; under `no-cache`, within its 5-second grace between
+  `overwrite-range-first`, and objects first read by
+  `pelican object get`. Each V2 cache must serve an overwrite at the first
+  whole read; under `no-cache`, within its 5-second grace between
   revalidations, and 3 seconds more. Then every read must be the new version
   alone.
 
@@ -90,11 +104,13 @@ suite
   [5.2.2.5](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2.5) and
   [5.2.2.7](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2.7)). Each
   V2 cache must serve it and its ranges (or the whole, with
-  `Accept-Ranges: none`), with the directive and no `Age`. Then
+  `Accept-Ranges: none`), with the directive and no `Age`, and serve another
+  such object to `pelican object get`. Then, for each object,
   `only-if-cached` must get 504, and neither the cache's introspection nor
-  its store may show the object.
+  its store may show it.
 
 - `s-maxage` (`max-age=120, s-maxage=20`): Each V2 cache, being shared, must
   take `s-maxage` over `max-age`
   ([RFC 9111, section 5.2.2.10](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2.10)),
-  and serve an overwrite within 35 seconds of reading the old version.
+  and serve an overwrite within 35 seconds of reading the old version, of an
+  object first read whole, and of one first read in a range.

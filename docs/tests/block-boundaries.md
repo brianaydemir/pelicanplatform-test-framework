@@ -192,6 +192,15 @@ skip where the storage reports none.
   that cache alone, must each fail, but not by a refusal, and leave nothing.
   Inconclusive where the origins notice. Needs a federated V2 cache, and
   `posixv2` origins that take direct clients.
+- `stale-digest-range-first`: The same trap, but each federated V2 cache
+  first reads each of three objects in ranges: its first byte, as the
+  clients probe a cache before they read; its second block; and each of its
+  blocks in turn. A range may come back as the bytes the origins hold, since
+  no digest covers it, or as a server error. Once the cache has read every
+  block, it must keep nothing within 10 seconds. Then, of each object, a
+  whole GET must fail or end with a failure trailer, and within 10 seconds a
+  GET with `only-if-cached` must get 504. No client runs: this is the
+  cache's own check. Inconclusive and skipped as `stale-origin-digest` is.
 - `stale-digest-direct`: The same trap, read straight from an origin, where
   only the client's own check of what it downloaded can tell.
   `pelican object get --direct` must fail as a checksum mismatch (error

@@ -105,7 +105,9 @@ clients, every request straight to one must be refused.
   delete one (`delete`); `storage.modify` may do all three
   ([WLCG token profile](https://github.com/WLCG-AuthZ-WG/common-jwt-profile/blob/master/profile.md)).
   In the SciTokens pass, `modify-only` presents `write`; `create-only` does
-  not run.
+  not run. The `client` suite's `storage-scopes`
+  ([client contracts](client-contracts.md)) presents every set of storage
+  scopes through each client.
 - `traversal`: Paths that climb out of a namespace with `..`, `%2e%2e`,
   `%2E%2E`, `.%2e`, `%252e%252e`, or `..%2f`, at every server, must not
   reach another namespace's test object (`namespace`), a file beside the

@@ -3,7 +3,8 @@
 These are the result ads that stash_plugin writes for HTCondor, which
 decide whether a job retries; failing over from one cache to another
 partway through a download, which needs the servers' ETags to agree;
-which token the client presents, of those its environment offers; how
+which token the client presents, of those its environment offers; what
+each set of storage scopes lets each client do; how
 `pelican token create` finds an issuer; and the URL that
 `pelican object share` hands out. The suite reads what the clients
 report. See docs/tests/client-contracts.md.
@@ -16,6 +17,7 @@ place, the caches filled, and the stores read, with WLCG tokens either
 way.
 """
 
+import itertools
 import json
 import os
 import re
@@ -71,6 +73,10 @@ SCENARIOS = {
     "share-url": (
         "`pelican object share` hands out a URL whose token reads the collection: through a"
         " director as curl, and by both clients; with --write, each client puts with it"
+    ),
+    "storage-scopes": (
+        "each set of storage scopes, by the client, the plugin, and curl: get, direct get,"
+        " delete, and put of a new object or over one, alone or in a tree, overwrites off and on"
     ),
     "director-decision": "the plugin records the director's decision when asked",
     "skipstat-failover": (
@@ -1703,6 +1709,360 @@ def share_put(test: Test, token: str | None) -> list[CaseRow]:
 
 
 # --------------------------------------------------------------------------
+# storage-scopes
+
+# The clients that storage-scopes runs, as the transfers suite names
+# them: `pelican`, stash_plugin, and a plain HTTP client, such as curl.
+# The first two are Pelican's, which honor Client.EnableOverwrites.
+SCOPE_CLIENTS = ("pelican", "plugin", "http")
+PELICAN_CLIENTS = ("pelican", "plugin")
+# The flags of `pelican token create` whose sets storage-scopes presents.
+SCOPE_FLAGS = ("read", "write", "modify")
+# The WLCG scope that each SciTokens scope stands for, as Pelican and
+# XRootD read it (token_scopes.GrantedScopes in Pelican): write is
+# storage.modify.
+WLCG_EQUIVALENT = {"read": "storage.read", "write": "storage.modify"}
+# What a storage-scopes case must do: succeed; be refused, changing
+# nothing; or keep the object as it was, since it exists and overwrites
+# are off.
+SCOPE_PASS, SCOPE_REFUSED, SCOPE_KEPT = "pass", "refused", "kept"
+# How many cases run at once.
+SCOPE_CONCURRENCY = 8
+# The size of storage-scopes' objects. An upload this small is sent whole
+# before a refusal comes back. An XRootD origin refuses a larger one by
+# closing the connection as the client sends it, which the clients report
+# as a broken connection (Contact.ConnectionReset), not a refusal.
+SCOPE_SIZE = 1000
+
+
+@dataclass(frozen=True)
+class ScopeOp:
+    """An operation of storage-scopes.
+
+    Attributes:
+        name: Its rows' name, e.g. put-tree-over-overwrites.
+        kind: "get", "direct-get", "put", or "delete".
+        clients: The clients that run it.
+        existing: Whether its object is there first.
+        tree: Whether it puts a directory, recursively, rather than a file.
+        overwrites: Whether the Pelican clients run with
+            Client.EnableOverwrites.
+    """
+
+    name: str
+    kind: str
+    clients: tuple[str, ...]
+    existing: bool = False
+    tree: bool = False
+    overwrites: bool = False
+
+    @property
+    def writes(self) -> bool:
+        """Whether it writes."""
+        return self.kind in ("put", "delete")
+
+
+def _scope_puts() -> list[ScopeOp]:
+    """Return storage-scopes' puts.
+
+    Each puts a new object or one over an existing object, as a file or
+    in a tree (recursively), with Client.EnableOverwrites off, as by
+    default, or on. A plain HTTP client has no trees and no such setting:
+    it runs put-new and put-over alone.
+    """
+    ops: list[ScopeOp] = []
+    for tree, existing, overwrites in itertools.product((False, True), repeat=3):
+        name = "put-" + ("tree-" if tree else "") + ("over" if existing else "new")
+        name += "-overwrites" if overwrites else ""
+        clients = PELICAN_CLIENTS if tree or overwrites else SCOPE_CLIENTS
+        ops.append(ScopeOp(name, "put", clients, existing, tree, overwrites))
+    return ops
+
+
+SCOPE_OPS = (
+    ScopeOp("get", "get", SCOPE_CLIENTS, existing=True),
+    ScopeOp("direct-get", "direct-get", SCOPE_CLIENTS, existing=True),
+    *_scope_puts(),
+    ScopeOp("delete", "delete", ("pelican", "http"), existing=True),
+)
+
+
+def scope_sets(profile: str) -> list[tuple[str, tuple[str, ...]]]:
+    """Return each distinct set of storage scopes in profile.
+
+    There are seven in WLCG's profile, of storage.read, storage.create,
+    and storage.modify, and three in SciTokens', of read and write, which
+    stands for the other two.
+
+    Returns:
+        Each set's name, its scopes without `storage.` joined by `+`
+        (e.g. read+create), and flags of `pelican token create` that
+        grant it.
+    """
+    found: dict[str, tuple[str, ...]] = {}
+    names = credentials.SCOPES[profile]
+    for n in range(1, len(SCOPE_FLAGS) + 1):
+        for flags in itertools.combinations(SCOPE_FLAGS, n):
+            scopes = dict.fromkeys(names[flag] for flag in flags)
+            found.setdefault("+".join(s.removeprefix("storage.") for s in scopes), flags)
+    return list(found.items())
+
+
+def scope_grants(profile: str, flags: Sequence[str]) -> tuple[bool, bool, bool]:
+    """Return whether a token of flags may read, create, and modify.
+
+    Per the WLCG token profile, storage.modify implies storage.create.
+    """
+    held = {WLCG_EQUIVALENT.get(s, s) for s in (credentials.SCOPES[profile][f] for f in flags)}
+    modify = "storage.modify" in held
+    return "storage.read" in held, modify or "storage.create" in held, modify
+
+
+def scope_expected(op: ScopeOp, client: str, grants: tuple[bool, bool, bool]) -> str:
+    """Return what op by client must do with a token of grants.
+
+    A get takes storage.read; a put of a new object, storage.create; a
+    delete, or a put over an object, storage.modify. With overwrites off,
+    a Pelican client must leave an existing object as it was, whatever
+    the token (Client.EnableOverwrites; row P2 of Pelican's
+    docs/object-transfer-semantics.md).
+    """
+    read, create, modify = grants
+    if op.kind in ("get", "direct-get"):
+        allowed = read
+    elif op.kind == "delete":
+        allowed = modify
+    elif not op.existing:
+        allowed = create
+    elif client in PELICAN_CLIENTS and not op.overwrites:
+        return SCOPE_KEPT
+    else:
+        allowed = modify
+    return SCOPE_PASS if allowed else SCOPE_REFUSED
+
+
+@dataclass(frozen=True)
+class ScopeRun:
+    """How a storage-scopes case's command went.
+
+    Attributes:
+        ok: Whether it succeeded.
+        said: What it said: the client's output, the plugin's ads, or a
+            plain HTTP client's last answer.
+        refusal: How it reads as a refusal (transfers.refused()), or
+            None if it doesn't.
+        got: What a get brought, or None.
+    """
+
+    ok: bool
+    said: str
+    refusal: str | None
+    got: bytes | None = None
+
+
+def read_file(path: str) -> bytes | None:
+    """Return what file path holds, or None if there is none."""
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def scope_run(
+    test: Test, client: str, op: ScopeOp, slug: str, flags: tuple[str, ...], target: str, source: str | None
+) -> ScopeRun:
+    """Run op by client, with a token of flags, and return how it went.
+
+    Args:
+        test: The Test.
+        client: One of SCOPE_CLIENTS.
+        op: The operation.
+        slug: The case's name, for its files.
+        flags: The token's flags.
+        target: The path of what op reads, writes, or deletes, in
+            /protected-a: the object, or for a tree, its collection.
+        source: What a put uploads: a file, or a directory for a tree.
+    """
+    url = test.pelican_url(target)
+    data = read_file(source) if source and not op.tree else None
+    if client == "http":
+        method = {"get": "GET", "direct-get": "GET", "put": "PUT", "delete": "DELETE"}[op.kind]
+        query = transfers.DIRECT_QUERY if op.kind == "direct-get" else ""
+        hops = web.follow(
+            method,
+            f"{test.fed.director_url}{test.path(target)}{query}",
+            test.session.token(NAMESPACE, flags),
+            data,
+        )
+        last = hops[-1][1]
+        ok = last.ok and (method != "GET" or last.status == 200)
+        refusal = "server" if last.status in (401, 403) else None
+        return ScopeRun(ok, last.describe(), refusal, last.body if ok and method == "GET" else None)
+    env = dict(test.session.env if op.overwrites else test.session.sync_env)
+    if client == "plugin":
+        env["_CONDOR_CREDS"] = test.creds(slug, {"scitokens.use": test.session.token(NAMESPACE, flags)})
+        query = {"direct-get": "directread", "put": "recursive" if op.tree else ""}.get(op.kind, "")
+        plugin_url = f"{url}?{query}" if query else url
+        if op.kind == "put":
+            fetch = test.plugin(slug, [plugin_url], env, upload=True, sources=[source or ""])
+        else:
+            fetch = test.plugin(slug, [plugin_url], env)
+        ok = fetch.status == 0 and transfers.plugin_passed(fetch.said)
+        brought = (
+            read_file(os.path.join(fetch.directory, transfers.local_name(url)))
+            if op.kind != "put"
+            else None
+        )
+        return ScopeRun(ok, fetch.said, transfers.refused(fetch.said), brought)
+    args = ["object", "delete" if op.kind == "delete" else op.kind.removeprefix("direct-")]
+    args += ["--token", test.session.token_file(NAMESPACE, flags)]
+    if op.kind == "direct-get":
+        args.append("--direct")
+    if op.kind == "put":
+        args += [*(["--recursive"] if op.tree else []), source or "", url]
+    elif op.kind == "delete":
+        args.append(url)
+    else:
+        args += [url, "."]
+    fetch = test.pelican(slug, args, env)
+    brought = (
+        read_file(os.path.join(fetch.directory, target.rsplit("/", 1)[-1])) if op.kind != "put" else None
+    )
+    return ScopeRun(fetch.status == 0, fetch.said, transfers.refused(fetch.said), brought)
+
+
+def scope_holdings(test: Test, rel: str) -> list[str | None]:
+    """Return what each store holds at rel in /protected-a.
+
+    Raises:
+        stores.Unreadable: A pstore origin could not say.
+    """
+    return stores.held_anywhere(test.fed.origins, NAMESPACE, rel, {NAMESPACE: test.setup})
+
+
+def scope_case_skip(test: Test, op: ScopeOp, client: str) -> str | None:
+    """Return why op by client can test nothing in this shape, or None."""
+    if op.writes and not test.writes:
+        return f"/{NAMESPACE} takes no writes"
+    if op.kind == "delete" and (why := stores.cannot(test.fed, "delete")):
+        return why
+    if op.kind == "direct-get" and not test.direct:
+        return f"/{NAMESPACE} takes no direct reads"
+    if client == "http" and not test.fed.director_url:
+        return "this shape has no director for a plain HTTP client to ask"
+    return None
+
+
+def scope_case(
+    test: Test, client: str, op: ScopeOp, label: str, flags: tuple[str, ...], read: tuple[str, bytes]
+) -> CaseRow:
+    """Run storage-scopes' case of op by client with scope set label.
+
+    Args:
+        test: The Test.
+        client: One of SCOPE_CLIENTS.
+        op: The operation.
+        label: The set's name (scope_sets()).
+        flags: Flags that grant it.
+        read: The object that the gets read, under the run's collection,
+            and its bytes.
+    """
+    case = f"{client} {op.name} {label}"
+    why = scope_case_skip(test, op, client)
+    if why:
+        return case, SKIP, why
+    expected = scope_expected(op, client, scope_grants(test.session.profile, flags))
+    slug = f"scopes-{client}-{op.name}-{label.replace('+', '-')}"
+    old = os.urandom(SCOPE_SIZE)
+    new = os.urandom(SCOPE_SIZE + 1)
+    source: str | None = None
+    if op.kind in ("get", "direct-get"):
+        name, old = read
+        target = test.rel(name)
+    else:
+        target = test.rel("scopes", slug)
+        name = f"scopes/{slug}/obj" if op.tree else f"scopes/{slug}"
+        if op.existing:
+            test.place(name, old)
+        if op.kind == "put":
+            source = test.local(f"scopes-src/{slug}/obj", new)
+            if op.tree:
+                source = os.path.dirname(source)
+    rel = test.rel(name)
+    ran = scope_run(test, client, op, slug, flags, target, source)
+
+    problems: list[str] = []
+    try:
+        held = scope_holdings(test, rel) if op.writes else []
+    except stores.Unreadable as e:
+        return case, FAIL, f"could not check the stores: {e}"
+    if expected == SCOPE_PASS:
+        if not ran.ok:
+            return case, FAIL, f"failed, but should have succeeded: {last_line(ran.said)}"
+        if op.kind == "put" and common.digest(new) not in held:
+            problems.append("succeeded, but no origin holds the new bytes")
+        elif op.kind == "delete" and None not in held:
+            problems.append("succeeded, but every origin still holds the object")
+        elif not op.writes and ran.got != old:
+            problems.append("succeeded, but did not bring the object")
+        return case, *outcome(problems, "succeeded")
+    kept = expected == SCOPE_KEPT
+    exists = kept and "already exists" in ran.said
+    if ran.ok and not (kept and op.tree):
+        problems.append(
+            "succeeded, though the object exists and overwrites are off"
+            if kept
+            else "succeeded, but should have been refused"
+        )
+    elif not ran.ok and ran.refusal is None and not exists:
+        why = "by refusal or because the object exists" if kept else "by refusal"
+        problems.append(f"failed, but not {why}: {last_line(ran.said)}")
+    if not op.writes and ran.got == old:
+        problems.append("brought the object, though refused")
+    elif op.existing and op.writes and any(h != common.digest(old) for h in held):
+        problems.append("an origin no longer holds the object as it was")
+    elif not op.existing and any(h is not None for h in held):
+        problems.append("an origin holds the object")
+    if ran.ok:
+        note = "succeeded, leaving the object as it was"
+    elif exists:
+        note = "refused: it already exists"
+    else:
+        note = f"refused ({ran.refusal})"
+    return case, *outcome(problems, note)
+
+
+def storage_scopes(test: Test) -> list[CaseRow]:
+    """Check what each set of storage scopes lets each client do.
+
+    Every distinct set of the pass's profile (scope_sets()) is presented
+    by `pelican` (with --token), stash_plugin (in its credentials
+    directory), and a plain HTTP client (which asks the director for the
+    bare path and follows its redirect, as curl does), to each of
+    SCOPE_OPS in /protected-a: a get, by the director's choice of server
+    and from an origin; a put of a new object, or over one, as a file or
+    in a tree; and a delete. Each case must do what scope_expected()
+    says, and change nothing it may not. Each runs on objects of its own,
+    SCOPE_CONCURRENCY at a time.
+    """
+    read = ("scopes/obj", os.urandom(SCOPE_SIZE))
+    test.place(*read)
+    jobs = [
+        (client, op, label, flags)
+        for label, flags in scope_sets(test.session.profile)
+        for op in SCOPE_OPS
+        for client in op.clients
+    ]
+
+    def run_case(job: tuple[str, ScopeOp, str, tuple[str, ...]]) -> CaseRow:
+        return scope_case(test, *job, read)
+
+    with common.pool(SCOPE_CONCURRENCY) as pool:
+        return list(pool.map(run_case, jobs))
+
+
+# --------------------------------------------------------------------------
 # director-decision
 
 
@@ -2341,6 +2701,7 @@ RUN: dict[str, Callable[[Test], Rows]] = {
     "url-forms": url_forms,
     "token-create-discovery": token_create_discovery,
     "share-url": share_url,
+    "storage-scopes": storage_scopes,
     "director-decision": director_decision,
     "skipstat-failover": skipstat_failover,
     "multi-source": multi_source,

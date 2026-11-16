@@ -45,13 +45,14 @@ from testlib import (
 from testlib.blocks import OVERWRITE_CHANGE, OVERWRITE_SIZE, store_bytes
 from testlib.common import die, first, outcome
 from testlib.report import FAIL, INCONCLUSIVE, PASS, SKIP
-from testlib.session import Session
+from testlib.session import Session, last_line
 from testlib.suite import NAMESPACE
 
 SCENARIOS = {
     "only-if-cached": "each V2 cache: only-if-cached gets 504 for what it lacks, and fetches nothing",
     "no-negative-cache": "each cache and director: an object that was not found comes back once it is",
     "cc-downstream": "each V2 cache's Cache-Control and Age on a fill, a hit, and a 304",
+    "cc-head": "each origin and V2 cache gives a HEAD the Cache-Control and Age that it gives a GET",
     "propfind-freshness": "each V2 cache's Depth 0: 0 bytes for an empty object, the new size once stale",
     "stale-if-error": "each V2 cache serves its stale copy while the origins are down",
     "must-revalidate": "max-age=30, must-revalidate: each V2 cache serves no stale copy then",
@@ -170,6 +171,31 @@ def hold(test: Test, cache: common.Cache, rel: str, data: bytes) -> str | None:
     if not test.wait_held(cache, rel):
         return f"{cache.svc}: no Age within {suite.HELD_WAIT}s of a whole read"
     return None
+
+
+def client_get(test: Test, cache: common.Cache, rel: str, name: str) -> tuple[bytes | None, str]:
+    """Read rel with `pelican object get`, through a V2 cache alone (--cache).
+
+    The client first probes the cache with a range of the object's first
+    byte (sortAttempts in client/handle_http.go), then reads it whole.
+
+    Args:
+        test: The test.
+        cache: The cache.
+        rel: The object.
+        name: A name for the client's directory (Test.directory()).
+
+    Returns:
+        The bytes that it wrote, and ""; or None, and why it failed.
+    """
+    target = os.path.join(test.directory(name), "object")
+    code, out, err = test.session.pelican_cmd(
+        "object", "get", "--cache", cache.url, "--token", test.token_file, test.pelican_url(rel), target
+    )
+    if code != 0:
+        return None, f"`pelican object get` exited {code}: {last_line(err or out)}"
+    with open(target, "rb") as f:
+        return f.read(), ""
 
 
 # An origin writes an object's ETag from its file's modification time, to
@@ -502,76 +528,121 @@ def downstream_problems(answer: web.Response, value: str, filled: float) -> list
     return []
 
 
+# What names, among the ways a case first reads an object, a read by
+# `pelican object get` (client_get()).
+CLIENT = "client"
+# The range in which a case first reads an object through a V2 cache,
+# before it reads it whole: its first byte, as the clients probe a cache
+# before they read (sortAttempts in client/handle_http.go).
+RANGE_FIRST: blocks.Request = ((0, 0),)
+
+
+def downstream_at(
+    test: Test, cache: common.Cache, rel: str, data: bytes, value: str, first_read: blocks.Request | None
+) -> tuple[list[str], str | None]:
+    """Run downstream at one V2 cache, of rel, which holds data.
+
+    Args:
+        test: The test.
+        cache: The cache.
+        rel: The object, which the cache has not read.
+        data: Its bytes.
+        value: The Cache-Control that the origins send.
+        first_read: A range to read before the whole object, or None.
+
+    Returns:
+        The problems; and why no 304 was asked for, or None.
+    """
+    problems: list[str] = []
+    filled = time.time()
+    if first_read:
+        answer = test.ask("GET", cache.url, rel, {"Range": blocks.range_header(first_read)})
+        why = blocks.check(data, first_read, answer)
+        if why:
+            return [f"the cold range got {why}"], None
+        problems += [f"the range: {p}" for p in downstream_problems(answer, value, filled)]
+        found = web.age(answer)
+        if found is not None and found > AGE_SLACK:
+            problems.append(f"the range: Age {found}, for what it just fetched")
+    fill = test.ask("GET", cache.url, rel)
+    why = web.served(fill, data)
+    if why:
+        return problems + [f"the {'whole' if first_read else 'cold'} GET got {why}"], None
+    problems += [f"the fill: {p}" for p in downstream_problems(fill, value, filled)]
+    found = web.age(fill)
+    if found is not None and found > AGE_SLACK:
+        problems.append(f"the fill: Age {found}, for what it just fetched")
+    if not test.wait_held(cache, rel):
+        return problems + [f"no Age within {suite.HELD_WAIT}s of a whole read"], None
+    hits: list[tuple[float, web.Response]] = []
+    for pause in (0, 3):
+        time.sleep(pause)
+        hits.append((time.time(), test.ask("GET", cache.url, rel)))
+    ages: list[int] = []
+    for n, (when, hit) in enumerate(hits, 1):
+        why = web.served(hit, data)
+        found = web.age(hit)
+        if why or found is None:
+            problems.append(f"hit {n}: {why or 'no Age'}")
+            continue
+        ages.append(found)
+        problems += [f"hit {n}: {p}" for p in downstream_problems(hit, value, filled)]
+        if found > when - filled + AGE_SLACK:
+            problems.append(f"hit {n}: Age {found}, but it fetched the object {when - filled:.0f}s before")
+    if len(ages) == 2:
+        between = hits[1][0] - hits[0][0]
+        if abs((ages[1] - ages[0]) - between) > AGE_SLACK:
+            problems.append(f"Age went from {ages[0]} to {ages[1]} in {between:.0f}s")
+    etag = hits[-1][1].header("ETag")
+    if not etag:
+        return problems, "sent no ETag, so no 304 was asked for"
+    answer = test.ask("GET", cache.url, rel, {"If-None-Match": etag})
+    if answer.status != 304:
+        problems.append(f"If-None-Match its ETag got {answer.describe()}, not 304")
+    else:
+        problems += [f"the 304: {p}" for p in downstream_problems(answer, value, filled)]
+    return problems, None
+
+
 def downstream(test: Test, value: str) -> suite.Row:
     """Check each V2 cache's Cache-Control and Age on fills, hits, and 304s.
 
-    At each V2 cache, an object of its own: a cold GET, which fills it;
-    once the cache says it holds it, two GETs 3 seconds apart; and a GET
-    with If-None-Match naming its ETag. Each must carry Cache-Control
-    (see downstream_problems()), the 304 too. The fill may carry no Age,
-    or one of at most AGE_SLACK; each hit's Age must be no more than the
-    time since the fill, and the second's must exceed the first's by the
-    time between them, within AGE_SLACK.
+    At each V2 cache, two objects of its own, one first read whole, the
+    other first read in a range of its first byte, then whole
+    (RANGE_FIRST): each read before the cache holds the object, which
+    fills it; once the cache says it holds it, two GETs 3 seconds apart;
+    and a GET with If-None-Match naming its ETag. Each must carry
+    Cache-Control (see downstream_problems()), the range and the 304
+    too. A read that fills may carry no Age, or one of at most
+    AGE_SLACK; each hit's Age must be no more than the time since the
+    first read, and the second's must exceed the first's by the time
+    between them, within AGE_SLACK.
     """
     slug = "max-age" if value else "none"
-    rels = {c.svc: test.rel(f"cc-downstream-{slug}", c.svc) for c in test.v2}
+    hows = ("whole", "range")
+    rels = {
+        (c.svc, how): test.rel(f"cc-downstream-{slug}", f"{c.svc}-{how}") for c in test.v2 for how in hows
+    }
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
     why = test.put(objects)
     if why:
         return FAIL, why
     problems: list[str] = []
-    notes: list[str] = []
     # The caches that sent no ETag to ask for a 304 by.
     unasked: list[str] = []
     for cache in test.v2:
-        rel, data = rels[cache.svc], objects[rels[cache.svc]]
-        filled = time.time()
-        fill = test.ask("GET", cache.url, rel)
-        why = web.served(fill, data)
-        if why:
-            problems.append(f"{cache.svc}: the cold GET got {why}")
-            continue
-        problems += [f"{cache.svc} (fill): {p}" for p in downstream_problems(fill, value, filled)]
-        found = web.age(fill)
-        if found is not None and found > AGE_SLACK:
-            problems.append(f"{cache.svc} (fill): Age {found}, for what it just fetched")
-        if not test.wait_held(cache, rel):
-            problems.append(f"{cache.svc}: no Age within {suite.HELD_WAIT}s of a whole read")
-            continue
-        hits: list[tuple[float, web.Response]] = []
-        for pause in (0, 3):
-            time.sleep(pause)
-            hits.append((time.time(), test.ask("GET", cache.url, rel)))
-        ages: list[int] = []
-        for n, (when, hit) in enumerate(hits, 1):
-            why = web.served(hit, data)
-            found = web.age(hit)
-            if why or found is None:
-                problems.append(f"{cache.svc} (hit {n}): {why or 'no Age'}")
-                continue
-            ages.append(found)
-            problems += [f"{cache.svc} (hit {n}): {p}" for p in downstream_problems(hit, value, filled)]
-            if found > when - filled + AGE_SLACK:
-                problems.append(
-                    f"{cache.svc} (hit {n}): Age {found}, but it fetched the object"
-                    + f" {when - filled:.0f}s before"
-                )
-        if len(ages) == 2:
-            between = hits[1][0] - hits[0][0]
-            if abs((ages[1] - ages[0]) - between) > AGE_SLACK:
-                problems.append(f"{cache.svc}: Age went from {ages[0]} to {ages[1]} in {between:.0f}s")
-        etag = hits[-1][1].header("ETag")
-        if not etag:
-            unasked.append(f"{cache.svc} sent no ETag, so no 304 was asked for")
-            continue
-        answer = test.ask("GET", cache.url, rel, {"If-None-Match": etag})
-        if answer.status != 304:
-            problems.append(f"{cache.svc}: If-None-Match its ETag got {answer.describe()}, not 304")
-        else:
-            problems += [f"{cache.svc} (304): {p}" for p in downstream_problems(answer, value, filled)]
+        for how in hows:
+            rel = rels[(cache.svc, how)]
+            first_read = None if how == "whole" else RANGE_FIRST
+            found, why = downstream_at(test, cache, rel, objects[rel], value, first_read)
+            problems += [f"{cache.svc}, {how} first, {p}" for p in found]
+            if why:
+                unasked.append(f"{cache.svc}, {how} first, {why}")
     if unasked and not problems:
         return INCONCLUSIVE, first(unasked)
-    return outcome(problems, "; ".join([f"{len(test.v2)} cache(s)"] + notes))
+    return outcome(
+        problems, f"{len(test.v2)} cache(s), each of an object read whole first, and one in a range"
+    )
 
 
 def depth_0(test: Test, cache: common.Cache, rel: str) -> tuple[webdav.Entry | None, str]:
@@ -818,8 +889,9 @@ def immediate(test: Test, value: str) -> suite.Row:
 
     Under Cache-Control value, a copy is fresh for blocks.freshness()
     seconds: 0, or no-cache's grace of 5. Of three objects read whole
-    twice, and three read through a range and then whole, the origins
-    then take another version: as long, longer, or shorter. Each cache
+    twice, three read through a range and then whole, and three read by
+    `pelican object get` (client_get()) and then whole, the origins then
+    take another version: as long, longer, or shorter. Each cache
     must serve the new version of each, whole, at the first read after
     (where it is fresh for 0), or within its grace and IMMEDIATE_SLACK of
     when it last read the old one; then every read, whole and in every
@@ -828,13 +900,13 @@ def immediate(test: Test, value: str) -> suite.Row:
     fresh = blocks.freshness(value) or 0.0
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     changes = {"same": 0, "grown": OVERWRITE_CHANGE, "shrunk": -OVERWRITE_CHANGE}
-    # Each object's first read, by its rel: whole, or a range.
-    reads: dict[str, blocks.Request | None] = {}
+    # Each object's first read, by its rel: whole, a range, or the client.
+    reads: dict[str, blocks.Request | str | None] = {}
     rels: dict[str, list[str]] = {}
     sizes: dict[str, tuple[int, int]] = {}
     for cache in test.v2:
         rels[cache.svc] = []
-        for how, read in (("whole", None), ("range", ((0, 2 * blocks.BLOCK + 99),))):
+        for how, read in (("whole", None), ("range", ((0, 2 * blocks.BLOCK + 99),)), (CLIENT, CLIENT)):
             for name, change in changes.items():
                 rel = test.rel(f"cc-immediate-{slug}", f"{cache.svc}-{how}-{name}")
                 rels[cache.svc].append(rel)
@@ -847,7 +919,16 @@ def immediate(test: Test, value: str) -> suite.Row:
     last_read: dict[str, float] = {}
     for cache in test.v2:
         for rel in rels[cache.svc]:
-            for request in (reads[rel], None):
+            read = reads[rel]
+            if isinstance(read, str):
+                got, why = client_get(test, cache, rel, f"cc-immediate-{slug}-{suite.leaf(rel)}")
+                if got != versions.v1[rel]:
+                    return (
+                        FAIL,
+                        f"{cache.svc}: {rel} before the overwrite: {why or '`pelican object get` did not bring v1'}",
+                    )
+                read = None
+            for request in (read, None):
                 version, why = versions.which(test, cache, rel, request)
                 if version != "v1":
                     return FAIL, f"{cache.svc}: {rel} before the overwrite: {version or why}"
@@ -906,6 +987,20 @@ def ranged(data: bytes, request: blocks.Request, answer: web.Response) -> tuple[
     return why, False
 
 
+def unmarked(answer: web.Response, value: str) -> str | None:
+    """Return why answer does not pass on an object it may not store, or None.
+
+    It must carry value (no-store or private) in its Cache-Control, and no
+    Age, which would say that the cache holds the object.
+    """
+    sent = answer.header("Cache-Control")
+    if value not in directives(sent):
+        return f"Cache-Control '{sent}', without {value}"
+    if web.age(answer) is not None:
+        return f"Age {web.age(answer)}, as if it held it"
+    return None
+
+
 def introspected(test: Test, cache: common.Cache, rel: str) -> tuple[int | None, str]:
     """Return how many instances of rel a V2 cache's introspection lists.
 
@@ -925,18 +1020,47 @@ def introspected(test: Test, cache: common.Cache, rel: str) -> tuple[int | None,
     return len(found), ""
 
 
+def keeps(test: Test, cache: common.Cache, rel: str) -> tuple[list[str], list[str]]:
+    """Return what says that a V2 cache keeps rel, which it may not store.
+
+    A GET and a HEAD with only-if-cached must get 504, and the cache's
+    introspection must list no instance of it.
+
+    Returns:
+        The problems, and notes.
+    """
+    problems: list[str] = []
+    notes: list[str] = []
+    for method in ("GET", "HEAD"):
+        answer = test.ask(method, cache.url, rel, web.ONLY_IF_CACHED)
+        if answer.status != 504:
+            problems.append(f"{method} with only-if-cached got {answer.describe()}, not 504")
+    count, why = introspected(test, cache, rel)
+    if count:
+        problems.append(f"its introspection lists {count} instance(s) of it")
+    elif why:
+        notes.append(why)
+    return problems, notes
+
+
 def not_stored(test: Test, value: str) -> suite.Row:
     """Check that each V2 cache passes the object through, and keeps none.
 
-    At each V2 cache, an object the origins mark value (no-store or
-    private): two GETs must each pass it through, whole, with value in
-    its Cache-Control and no Age; every range of it must come back as
-    blocks.check() says, or whole, with `Accept-Ranges: none`. Then a
-    GET and a HEAD with only-if-cached must get 504, the cache's
-    introspection must list none of it, and its store's object files
-    must not have grown by as much as the object.
+    At each V2 cache, two objects the origins mark value (no-store or
+    private). Of the first, two GETs must each pass it through, whole;
+    every range of it must come back as blocks.check() says, or whole,
+    with `Accept-Ranges: none`; and each answer must carry value in its
+    Cache-Control, and no Age (unmarked()). The second is read by
+    `pelican object get` (client_get()), which must bring it. Then, of
+    each, a GET and a HEAD with only-if-cached must get 504, and the
+    cache's introspection must list none of it (keeps()); and its
+    store's object files must not have grown by as much as one of them.
     """
-    rels = {c.svc: test.rel(f"cc-not-stored-{value}", c.svc) for c in test.v2}
+    rels = {
+        (c.svc, how): test.rel(f"cc-not-stored-{value}", f"{c.svc}-{how}")
+        for c in test.v2
+        for how in ("http", CLIENT)
+    }
     objects = {rel: os.urandom(OBJECT_SIZE) for rel in rels.values()}
     why = test.put(objects)
     if why:
@@ -944,27 +1068,20 @@ def not_stored(test: Test, value: str) -> suite.Row:
     problems: list[str] = []
     notes: list[str] = []
     for cache in test.v2:
-        rel, data = rels[cache.svc], objects[rels[cache.svc]]
+        rel, data = rels[(cache.svc, "http")], objects[rels[(cache.svc, "http")]]
         before = store_bytes(cache)
         for n in (1, 2):
             answer = test.ask("GET", cache.url, rel)
-            why = web.served(answer, data)
-            sent = answer.header("Cache-Control")
+            why = web.served(answer, data) or unmarked(answer, value)
             if why:
                 problems.append(f"{cache.svc} (GET {n}): {why}")
-            elif value not in directives(sent):
-                problems.append(f"{cache.svc} (GET {n}): Cache-Control '{sent}', without {value}")
-            elif web.age(answer) is not None:
-                problems.append(f"{cache.svc} (GET {n}): Age {web.age(answer)}, as if it held it")
         requests = blocks.requests(len(data))
         whole = 0
         for request in requests:
-            why, was_whole = ranged(
-                data,
-                request,
-                test.ask("GET", cache.url, rel, {"Range": blocks.range_header(request)}),
-            )
+            answer = test.ask("GET", cache.url, rel, {"Range": blocks.range_header(request)})
+            why, was_whole = ranged(data, request, answer)
             whole += was_whole
+            why = why or unmarked(answer, value)
             if why:
                 problems.append(f"{cache.svc} {blocks.range_header(request)}: {why}")
         if whole:
@@ -972,24 +1089,24 @@ def not_stored(test: Test, value: str) -> suite.Row:
                 f"{cache.svc} answered {whole} of {len(requests)} ranges whole,"
                 + " with Accept-Ranges: none"
             )
-        for method in ("GET", "HEAD"):
-            answer = test.ask(method, cache.url, rel, web.ONLY_IF_CACHED)
-            if answer.status != 504:
-                problems.append(
-                    f"{cache.svc}: {method} with only-if-cached got {answer.describe()}, not 504"
-                )
-        count, why = introspected(test, cache, rel)
-        if count:
-            problems.append(f"{cache.svc}'s introspection lists {count} instance(s) of it")
-        elif why:
-            notes.append(f"{cache.svc}: {why}")
+        found, said = keeps(test, cache, rel)
+        problems += [f"{cache.svc}: {p}" for p in found]
+        notes += [f"{cache.svc}: {n}" for n in said]
+        rel, data = rels[(cache.svc, CLIENT)], objects[rels[(cache.svc, CLIENT)]]
+        got, why = client_get(test, cache, rel, f"cc-not-stored-{value}-{cache.svc}")
+        if got != data:
+            problems.append(f"{cache.svc}: {why or '`pelican object get` did not bring the object'}")
+        else:
+            found, said = keeps(test, cache, rel)
+            problems += [f"{cache.svc}, after `pelican object get`: {p}" for p in found]
+            notes += [f"{cache.svc}: {n}" for n in said]
         after = store_bytes(cache)
         if before is None or after is None:
             notes.append(f"{cache.svc}: no store of object files to measure")
-        elif after - before >= len(data):
+        elif after - before >= OBJECT_SIZE:
             problems.append(
-                f"{cache.svc}'s object files grew by {after - before} bytes, for an object of"
-                + f" {len(data)} it may not store"
+                f"{cache.svc}'s object files grew by {after - before} bytes, for objects of"
+                + f" {OBJECT_SIZE} it may not store"
             )
     return outcome(problems, "; ".join([f"{len(test.v2)} cache(s)"] + notes))
 
@@ -997,46 +1114,185 @@ def not_stored(test: Test, value: str) -> suite.Row:
 def s_maxage(test: Test, value: str) -> suite.Row:
     """Check that each V2 cache takes s-maxage over max-age.
 
-    At each V2 cache, an object read whole, which the origins then
-    replace with a longer one. RFC 9111 (section 5.2.2.10) says a shared
-    cache must take s-maxage over max-age, so each cache must serve the
-    new version within STALE_SLACK seconds of s-maxage's freshness.
+    At each V2 cache, two objects, one first read whole, the other first
+    read in a range of its first byte, then whole (RANGE_FIRST), which
+    the origins then replace with longer ones. RFC 9111 (section
+    5.2.2.10) says a shared cache must take s-maxage over max-age, so
+    each cache must serve the new version of each within STALE_SLACK
+    seconds of s-maxage's freshness, from when it first read it.
     """
     shared, private = seconds_of(value, "s-maxage"), seconds_of(value, "max-age")
-    rels = {c.svc: test.rel("s-maxage", c.svc) for c in test.v2}
+    hows = ("whole", "range")
+    rels = {(c.svc, how): test.rel("s-maxage", f"{c.svc}-{how}") for c in test.v2 for how in hows}
     versions = Versions({rel: (OVERWRITE_SIZE, OVERWRITE_SIZE + OVERWRITE_CHANGE) for rel in rels.values()})
     why = versions.put_v1(test)
     if why:
         return FAIL, why
-    filled: dict[str, float] = {}
-    for cache in test.v2:
-        filled[cache.svc] = time.time()
-        version, why = versions.which(test, cache, rels[cache.svc], None)
-        if version != "v1":
-            return FAIL, f"{cache.svc}: before the overwrite: {version or why}"
+    caches = {c.svc: c for c in test.v2}
+    filled: dict[tuple[str, str], float] = {}
+    for (svc, how), rel in rels.items():
+        filled[(svc, how)] = time.time()
+        for request in (RANGE_FIRST, None) if how == "range" else (None,):
+            version, why = versions.which(test, caches[svc], rel, request)
+            if version != "v1":
+                return FAIL, f"{svc} ({how} first): before the overwrite: {version or why}"
     why = versions.put_v2(test)
     if why:
         return FAIL, why
-    pending = {c.svc: c for c in test.v2}
-    took: dict[str, float] = {}
-    seen: dict[str, str] = {}
+    pending = dict(rels)
+    took: dict[tuple[str, str], float] = {}
+    seen: dict[tuple[str, str], str] = {}
     deadline = max(filled.values()) + shared + STALE_SLACK
     while pending and time.time() < deadline:
-        for svc, cache in list(pending.items()):
-            version, why = versions.which(test, cache, rels[svc], None)
-            seen[svc] = version or why
+        for key, rel in list(pending.items()):
+            version, why = versions.which(test, caches[key[0]], rel, None)
+            seen[key] = version or why
             if version == "v2":
-                took[svc] = time.time() - filled[svc]
-                del pending[svc]
+                took[key] = time.time() - filled[key]
+                del pending[key]
         time.sleep(2)
-    if pending:
-        svc = next(iter(pending))
-        return FAIL, (
-            f"{svc} still served {seen.get(svc)} {time.time() - filled[svc]:.0f}s after it"
-            + f" cached the object, past s-maxage={shared}: a shared cache takes s-maxage over"
-            + f" max-age={private}"
-        )
-    return PASS, ", ".join(f"{svc}: the new version by {t:.0f}s" for svc, t in took.items())
+    problems = [
+        f"{svc} ({how} first) still served {seen.get((svc, how))} {time.time() - filled[(svc, how)]:.0f}s"
+        + f" after it first read the object, past s-maxage={shared}: a shared cache takes s-maxage over"
+        + f" max-age={private}"
+        for svc, how in pending
+    ]
+    return outcome(
+        problems,
+        ", ".join(f"{svc} ({how} first): the new version by {t:.0f}s" for (svc, how), t in took.items()),
+    )
+
+
+def differs(head: str, get: str, slack: float) -> bool:
+    """Return whether two Cache-Control values differ, but in seconds.
+
+    They must have the same directives; a directive's seconds may differ
+    by up to slack.
+    """
+    found, wanted = directives(head), directives(get)
+    if set(found) != set(wanted):
+        return True
+    for name, given in found.items():
+        other = wanted[name]
+        if given.isdigit() and other.isdigit():
+            if abs(int(given) - int(other)) > slack:
+                return True
+        elif given != other:
+            return True
+    return False
+
+
+def head_problems(
+    head: web.Response, get: web.Response, slack: float, ages: bool = True, optional: bool = False
+) -> list[str]:
+    """Return how a HEAD's Cache-Control and Age differ from a GET's.
+
+    RFC 9110 (section 9.3.2) says that a server should send a HEAD the
+    header fields it would send a GET, but for those that it learns only
+    by making the content, which Cache-Control and Age are not.
+
+    Args:
+        head: The answer to the HEAD.
+        get: The answer to the GET.
+        slack: How many seconds the two's directives and Ages may differ
+            by: the time between them, and AGE_SLACK.
+        ages: Whether to compare their Ages, which a cold HEAD, of what
+            a cache does not yet hold, has none of.
+        optional: Whether the HEAD may carry no Cache-Control, as a cold
+            HEAD where the origins send none, before the cache has chosen
+            its own freshness.
+    """
+    if head.status != 200:
+        return [f"the HEAD got {head.describe()}"]
+    sent, wanted = head.header("Cache-Control"), get.header("Cache-Control")
+    problems: list[str] = []
+    if not (optional and not sent) and differs(sent, wanted, slack):
+        problems.append(f"Cache-Control '{sent}' on the HEAD, '{wanted}' on the GET")
+    if ages:
+        found, other = web.age(head), web.age(get)
+        if (found is None) != (other is None) or (
+            found is not None and other is not None and abs(found - other) > slack
+        ):
+            problems.append(f"Age {found} on the HEAD, {other} on the GET")
+    return problems
+
+
+def head_then_get(test: Test, server_url: str, rel: str) -> tuple[web.Response, web.Response, float]:
+    """Send a HEAD of rel, then a GET, to the server at server_url.
+
+    Returns:
+        The two answers, and the seconds from the HEAD to the GET's end.
+    """
+    started = time.time()
+    head = test.ask("HEAD", server_url, rel)
+    get = test.ask("GET", server_url, rel)
+    return head, get, time.time() - started
+
+
+def heads(test: Test, value: str) -> suite.Row:
+    """Check that a HEAD gets the Cache-Control and Age that a GET gets.
+
+    Each origin, asked directly where /protected-a takes direct clients,
+    gets a HEAD, then a GET, of one object. Each V2 cache gets a HEAD,
+    then a GET, of an object of its own that it does not hold; then,
+    once it says it holds it, unless value says not to store it, a HEAD
+    and a GET again. Each HEAD must carry the Cache-Control and Age of
+    the GET after it (head_problems()). Where the origins send no
+    Cache-Control, a cache's first HEAD may carry none, and its max-age
+    may differ from the GET's by the cache's jitter, as it has yet to
+    choose its own freshness.
+    """
+    if not test.direct and not test.v2:
+        return SKIP, "the origins take no direct clients, and there is no federated V2 cache"
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "none"
+    shared = test.rel(f"cc-head-{slug}", "origins")
+    rels = {c.svc: test.rel(f"cc-head-{slug}", c.svc) for c in test.v2}
+    objects = {rel: os.urandom(OBJECT_SIZE) for rel in [shared, *rels.values()]}
+    why = test.put(objects)
+    if why:
+        return FAIL, why
+    problems: list[str] = []
+    doubts: list[str] = []
+    notes: list[str] = []
+    if test.direct:
+        for origin in test.origins:
+            head, get, between = head_then_get(test, origin.url, shared)
+            why = web.served(get, objects[shared])
+            if why:
+                problems.append(f"{origin.svc}: the GET got {why}")
+                continue
+            problems += [f"{origin.svc}: {p}" for p in head_problems(head, get, between + AGE_SLACK)]
+        notes.append(f"{len(test.origins)} origin(s)")
+    else:
+        notes.append("the origins take no direct clients, and were not asked")
+    stored = not {"no-store", "private"} & set(directives(value))
+    for cache in test.v2:
+        rel, data = rels[cache.svc], objects[rels[cache.svc]]
+        head, get, between = head_then_get(test, cache.url, rel)
+        why = web.served(get, data)
+        if why:
+            problems.append(f"{cache.svc}: the GET after the first HEAD got {why}")
+            continue
+        jitter = 0 if value else DEFAULT_MAX_AGE - DEFAULT_MIN_AGE
+        found = head_problems(head, get, between + AGE_SLACK + jitter, ages=False, optional=not value)
+        problems += [f"{cache.svc}, not holding it: {p}" for p in found]
+        if stored and not test.wait_held(cache, rel):
+            doubts.append(f"{cache.svc} never said it held the object (no Age), so it was not asked again")
+            continue
+        head, get, between = head_then_get(test, cache.url, rel)
+        why = web.served(get, data)
+        if why:
+            problems.append(f"{cache.svc}: the second GET got {why}")
+            continue
+        state = "holding it" if stored else "again"
+        problems += [f"{cache.svc}, {state}: {p}" for p in head_problems(head, get, between + AGE_SLACK)]
+    if test.v2:
+        notes.append(f"{len(test.v2)} V2 cache(s)")
+    if problems:
+        return FAIL, first(problems)
+    if doubts:
+        return INCONCLUSIVE, "; ".join(doubts)
+    return PASS, ", ".join(notes)
 
 
 @dataclass(frozen=True)
@@ -1069,16 +1325,24 @@ CASES = (
     Case("only-if-cached", "", None, only_if_cached),
     Case("no-negative-cache", "", None, no_negative_cache, v2=False),
     Case("cc-downstream", "none", "", downstream),
+    Case("cc-head", "none", "", heads, v2=False),
     Case("cc-downstream", "max-age", MAX_AGE, downstream),
+    Case("cc-head", "max-age", MAX_AGE, heads, v2=False),
     Case("propfind-freshness", "empty", None, propfind_empty),
     Case("propfind-freshness", "overwrite", MAX_AGE, propfind_overwrite),
     Case("stale-if-error", "", MAX_AGE, stale_if_error),
     Case("must-revalidate", "", f"{MAX_AGE}, must-revalidate", must_revalidate),
+    Case("cc-head", "must-revalidate", f"{MAX_AGE}, must-revalidate", heads, v2=False),
     Case("cc-immediate", "max-age=0", "max-age=0", immediate),
+    Case("cc-head", "max-age=0", "max-age=0", heads, v2=False),
     Case("cc-immediate", "no-cache", "no-cache", immediate),
+    Case("cc-head", "no-cache", "no-cache", heads, v2=False),
     Case("cc-not-stored", "no-store", "no-store", not_stored),
+    Case("cc-head", "no-store", "no-store", heads, v2=False),
     Case("cc-not-stored", "private", "private", not_stored),
+    Case("cc-head", "private", "private", heads, v2=False),
     Case("s-maxage", "", "max-age=120, s-maxage=20", s_maxage),
+    Case("cc-head", "s-maxage", "max-age=120, s-maxage=20", heads, v2=False),
 )
 
 
