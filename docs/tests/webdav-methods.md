@@ -12,8 +12,10 @@ as controls; the other scenarios skip XRootD origins. Each
 problem it finds.
 
 - `post-create-only`: A POST of an object, with a token of `storage.create`
-  alone or of `storage.read` alone, must be refused (401 or 403), with none
-  of its bytes.
+  alone, must be refused (401, 403, or 405, as a V2 cache answers a POST),
+  with none of its bytes. With a token of `storage.read` alone, it may be
+  refused so or served as a GET; the note says which. Either way, the object
+  must be unchanged.
 
 - `copy-move-destination`: With the `server`
   [credential](../glossary.md#credential), a COPY or MOVE within
@@ -30,8 +32,9 @@ problem it finds.
   nothing.
 
 - `copy-move-scopes`: With a `storage.create` token, a MOVE, and a COPY over
-  an object, must be refused (401 or 403), changing nothing; a COPY to a new
-  path must succeed (201). With `server`'s, a COPY or MOVE onto an object
+  an object or over a collection, must be refused (401 or 403), changing
+  nothing; a COPY to a new path must succeed (201). With `server`'s, a COPY
+  or MOVE onto an object
   with `Overwrite: F` must get 412
   ([RFC 4918, section 10.6](https://www.rfc-editor.org/rfc/rfc4918#section-10.6)).
   The SciTokens [pass](../glossary.md#pass) checks only `Overwrite: F`.
@@ -43,7 +46,10 @@ problem it finds.
 
 - `lock`: A LOCK with a `storage.create` token and no `Timeout`, of a new
   path or of an object, must be refused or grant a lock with a timeout
-  (`Second-<n>`, `n` > 0), creating nothing. The note says what a PUT and a
+  (`Second-<n>`, `n` > 0). A refused LOCK must create nothing; a granted
+  one of a new path may create an empty object there, as
+  [RFC 4918, section 7.3](https://www.rfc-editor.org/rfc/rfc4918#section-7.3)
+  requires. The note says what a PUT and a
   DELETE without the lock token then got. UNLOCK must release each lock;
   otherwise, its path stays locked until the origin restarts.
 

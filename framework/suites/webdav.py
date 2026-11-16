@@ -39,14 +39,15 @@ from testlib.webdav import copy_or_move, root_url
 
 SCENARIOS = {
     "post-create-only": (
-        "POST, served as GET, with a storage.create or storage.read token: refused, no bytes"
+        "POST, served as GET, with a storage.create token: refused, no bytes;"
+        " with a storage.read token, refused or served"
     ),
     "copy-move-destination": (
         "COPY and MOVE to another export, outside the token's scope, or another server:"
         " refused, nothing changed"
     ),
     "copy-move-scopes": (
-        "storage.create may COPY to a new path, not MOVE or COPY over an object;"
+        "storage.create may COPY to a new path, not MOVE or COPY over an object or collection;"
         " `Overwrite: F` replaces nothing"
     ),
     "mkcol": "MKCOL makes a collection, but not with a read token, where one is, or with a body",
@@ -68,6 +69,8 @@ SCENARIOS = {
 
 # What every refusal of a token, or of what it may do, must be.
 REFUSED = (401, 403)
+# What a refusal of a POST may be: also 405, as a V2 cache answers it.
+POST_REFUSED = (*REFUSED, 405)
 
 # A server that is none of the federation's, for a Destination.
 FOREIGN_HOST = "elsewhere.invalid"
@@ -306,14 +309,15 @@ class Findings(common.Findings):
 
 
 def post_create_only(test: Test) -> Row:
-    """Check that POST with storage.create or storage.read alone is refused.
+    """Check that POST gives an object to no token that may not read it.
 
     POST an object straight to each native origin, with a token of
-    storage.create alone, then of storage.read alone: each must be
-    refused, with none of the object's bytes. x/net's handler serves a
-    POST as a GET, which storage.create may not do; and a POST is not a
-    write anyone asked for. In SciTokens, the tokens are of write and
-    read alone.
+    storage.create alone, then of storage.read alone. x/net's handler
+    serves a POST as a GET, which storage.create may not do. With
+    storage.create, the POST must be refused (POST_REFUSED), with none
+    of the object's bytes. With storage.read, it may be refused so, or
+    served as a GET; the note says which. Either way, the object must be
+    as it was. In SciTokens, the tokens are of write and read alone.
     """
     why = stores.not_native(test.fed)
     if why:
@@ -324,17 +328,27 @@ def post_create_only(test: Test) -> Row:
         rel = f"{test.origin_base(origin)}/post"
         data = test.seed(origin, rel)
         url = at(origin, rel)
-        for name, token in (
-            (scopes["write"], test.create_token),
-            (scopes["read"], test.read_token),
-        ):
-            answer = web.request("POST", url, token=token)
-            if answer.status not in REFUSED:
-                found.add(origin, f"POST with {name} alone got {answer.describe()}, not 401 or 403")
-            if data in answer.body:
-                found.add(origin, f"POST with {name} alone got the object's bytes")
-            found.add(origin, test.stored(origin, NAMESPACE, rel, data, "the object"))
-    return found.row(f"{len(test.fed.origins)} origin(s) refused both")
+
+        name = scopes["write"]
+        answer = web.request("POST", url, token=test.create_token)
+        if answer.status not in POST_REFUSED:
+            found.add(origin, f"POST with {name} alone got {answer.describe()}, not 401, 403, or 405")
+        if data in answer.body:
+            found.add(origin, f"POST with {name} alone got the object's bytes")
+        found.add(origin, test.stored(origin, NAMESPACE, rel, data, "the object"))
+
+        name = scopes["read"]
+        answer = web.request("POST", url, token=test.read_token)
+        if answer.status in POST_REFUSED and data not in answer.body:
+            found.note(origin, f"POST with {name} alone refused ({answer.status})")
+        elif answer.status == 200 and answer.body == data:
+            found.note(origin, f"POST with {name} alone served as a GET")
+        else:
+            found.add(
+                origin, f"POST with {name} alone got {answer.describe()}, neither a refusal nor the object"
+            )
+        found.add(origin, test.stored(origin, NAMESPACE, rel, data, "the object"))
+    return found.row(f"{len(test.fed.origins)} origin(s) gave the object to no token that may not read")
 
 
 # --------------------------------------------------------------------------
@@ -449,9 +463,10 @@ def copy_move_scopes(test: Test) -> Row:
 
     At each native origin, in /protected-a: with a storage.create
     token, a MOVE must be refused, since it removes its source; a COPY
-    to a new path must succeed (201); and a COPY over an object must be
-    refused, since replacing an object takes storage.modify (the WLCG
-    token profile). Then, with the `server` token, COPY and MOVE onto an
+    to a new path must succeed (201); and a COPY over an object, or over
+    a collection, must be refused, changing nothing, since replacing or
+    removing what is stored takes storage.modify (the WLCG token
+    profile). Then, with the `server` token, COPY and MOVE onto an
     object with `Overwrite: F` must get 412 and change nothing (RFC
     4918, section 10.6). SciTokens has no storage.create alone, so its
     pass checks only `Overwrite: F`.
@@ -518,6 +533,21 @@ def create_alone(test: Test, origin: common.Origin, base: str, found: Findings) 
     if answer.status not in REFUSED:
         found.add(origin, f"{what} got {answer.describe()}, not 401 or 403")
     found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
+
+    # COPY with storage.create over a collection, which x/net's handler
+    # would remove whole, as RFC 4918 (section 9.8.4) has Overwrite: T do.
+    src, dst = f"{base}/scope-over-dir-src", f"{base}/scope-over-dir"
+    test.seed(origin, src)
+    test.make_dirs(origin, dst)
+    inner = test.seed(origin, f"{dst}/inner")
+    what = "COPY with storage.create alone over a collection"
+    answer = copy_or_move("COPY", at(origin, src), test.create_token, at(origin, dst))
+    if answer.status not in REFUSED:
+        found.add(origin, f"{what} got {answer.describe()}, not 401 or 403")
+    problem = test.made_problem(origin, dst, True, what)
+    if problem is None:
+        problem = test.stored(origin, NAMESPACE, f"{dst}/inner", inner, f"{what}: the object in it")
+    found.add(origin, problem)
 
 
 # --------------------------------------------------------------------------
@@ -599,15 +629,34 @@ def bounded(timeout: str | None) -> bool:
     return match is not None and int(match.group(1)) > 0
 
 
+def lock_landing(test: Test, origin: common.Origin, rel: str, granted: bool) -> str | None:
+    """Return what is wrong with what a LOCK of rel, a new path, left there.
+
+    A refused LOCK must leave nothing. A granted one may leave an empty
+    object, which RFC 4918 (section 7.3) requires of a lock of an
+    unmapped URL, and storage.create allows.
+    """
+    try:
+        have = stores.held(origin, NAMESPACE, rel, test.storage_token(origin, NAMESPACE))
+    except stores.Unreadable as e:
+        return f"could not check the LOCK's new path: {e}"
+    if have is None or (granted and have == common.digest(b"")):
+        return None
+    if granted:
+        return "the LOCK's new path holds an object that is not empty"
+    return "the refused LOCK's new path holds an object"
+
+
 def lock(test: Test) -> Row:
     """Check that a LOCK with no Timeout is refused or bounded.
 
     At each native origin, with a storage.create token (in SciTokens, a
     write token) and no Timeout, LOCK a new path and an existing object.
     Pelican uses no locks, and what they should do is not settled. Each
-    LOCK must be refused, or the lock granted must have a timeout, and
-    the new path must hold nothing. Then, with the `server` token and no
-    lock token, PUT the new path and DELETE the object (the note says
+    LOCK must be refused, or the lock granted must have a timeout. The
+    new path must then hold nothing, or, if its LOCK was granted, an
+    empty object (see lock_landing()). Then, with the `server` token and
+    no lock token, PUT the new path and DELETE the object (the note says
     what each got), and UNLOCK each lock granted, which must succeed:
     otherwise the path stays locked until the origin restarts.
     """
@@ -622,6 +671,7 @@ def lock(test: Test) -> Row:
         test.seed(origin, old)
         granted: list[tuple[str, str]] = []  # each lock granted: its URL, and its token
         statuses: list[str] = []
+        new_granted = False
         for rel, what in ((new, "a new path"), (old, "an object")):
             url = at(origin, rel)
             answer = web.request("LOCK", url, token=test.create_token, upload=LOCK_INFO, headers=headers)
@@ -631,6 +681,7 @@ def lock(test: Test) -> Row:
             if not answer.ok:
                 statuses.append(f"LOCK of {what} refused ({answer.status})")
                 continue
+            new_granted = new_granted or rel == new
             lock_token = answer.header("Lock-Token")
             if lock_token:
                 granted.append((url, lock_token))
@@ -644,7 +695,7 @@ def lock(test: Test) -> Row:
                     f"LOCK of {what} with no Timeout got a lock that never ends"
                     + f" (timeout '{timeout}')",
                 )
-        found.add(origin, test.stored(origin, NAMESPACE, new, None, "the LOCK's new path"))
+        found.add(origin, lock_landing(test, origin, new, new_granted))
         if granted:
             put = web.request("PUT", at(origin, new), token=test.token, upload=b"x")
             delete = web.request("DELETE", at(origin, old), token=test.token)
