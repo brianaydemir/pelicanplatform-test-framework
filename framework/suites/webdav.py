@@ -14,7 +14,7 @@ it afterward, with whatever a Destination could have reached in
 /protected-b and /public. Every token is the origins' own, for
 /protected-a, of the scopes each scenario names, and of the session's
 profile. In SciTokens, the storage.create token is one of `write`, which
-may replace and remove too, so `copy-move-scopes` checks what
+may replace and remove too, so `copy-move-scopes` and `lock` check what
 storage.create alone may not do in the WLCG pass alone. The objects are
 put in place, and the stores read, with WLCG tokens either way.
 
@@ -47,11 +47,15 @@ SCENARIOS = {
         " refused, nothing changed"
     ),
     "copy-move-scopes": (
-        "storage.create may COPY to a new path, not MOVE or COPY over an object or collection;"
+        "storage.create may MOVE or COPY to a new path, not over an object, COPY over a collection,"
+        " or pull (third-party COPY) over an object; COPY reads only with storage.read;"
         " `Overwrite: F` replaces nothing"
     ),
     "mkcol": "MKCOL makes a collection, but not with a read token, where one is, or with a body",
-    "lock": "a LOCK with no Timeout, with a storage.create token, is refused or bounded",
+    "lock": (
+        "a LOCK with no Timeout, with a storage.create token, is refused or bounded,"
+        " and refused for an object"
+    ),
     "symlink-writes": (
         "PUT, DELETE, and MKCOL through a symbolic link out of a store change nothing outside"
     ),
@@ -462,14 +466,16 @@ def copy_move_scopes(test: Test) -> Row:
     """Check COPY and MOVE with storage.create, and with `Overwrite: F`.
 
     At each native origin, in /protected-a: with a storage.create
-    token, a MOVE must be refused, since it removes its source; a COPY
-    to a new path must succeed (201); and a COPY over an object, or over
-    a collection, must be refused, changing nothing, since replacing or
-    removing what is stored takes storage.modify (the WLCG token
-    profile). Then, with the `server` token, COPY and MOVE onto an
-    object with `Overwrite: F` must get 412 and change nothing (RFC
-    4918, section 10.6). SciTokens has no storage.create alone, so its
-    pass checks only `Overwrite: F`.
+    token, a MOVE or COPY to a new path must succeed (201), since the
+    WLCG token profile lets storage.create rename; and a MOVE or COPY
+    over an object, a COPY over a collection, and a third-party COPY
+    that pulls an object over one, must be refused, changing nothing,
+    since replacing or removing what is stored takes storage.modify (the
+    same profile). A COPY must read its source only with storage.read
+    there (see copy_source_read()). Then, with the `server` token, COPY
+    and MOVE onto an object with `Overwrite: F` must get 412 and change
+    nothing (RFC 4918, section 10.6). SciTokens has no storage.create
+    alone, so its pass checks only the source and `Overwrite: F`.
     """
     why = stores.not_native(test.fed)
     if why:
@@ -478,6 +484,7 @@ def copy_move_scopes(test: Test) -> Row:
     create_only = test.session.profile == credentials.WLCG
     for origin in test.fed.origins:
         base = test.origin_base(origin)
+        copy_source_read(test, origin, base, found)
         if create_only:
             create_alone(test, origin, base, found)
 
@@ -495,8 +502,43 @@ def copy_move_scopes(test: Test) -> Row:
             found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
     passed = f"{len(test.fed.origins)} origin(s)"
     if not create_only:
-        passed += "; Overwrite: F alone, since SciTokens has no storage.create"
+        passed += "; not storage.create alone, which SciTokens lacks"
     return found.row(passed)
+
+
+def copy_source_read(test: Test, origin: common.Origin, base: str, found: Findings) -> None:
+    """Check that a COPY at origin reads its source only with storage.read.
+
+    The token may read base/readable alone, and write anywhere in
+    /protected-a (storage.create; in SciTokens, write). It must be
+    refused a GET of an object beside base/readable, and a COPY of it
+    into base/readable, which must leave nothing there: a COPY reads its
+    source (RFC 3744, Appendix B).
+    """
+    names = credentials.SCOPES[test.session.profile]
+    readable = f"{base}/readable"
+    token = credentials.mint_server(
+        test.fed,
+        test.session.path(f"tokens/webdav-copy-reader.{test.session.profile}.{origin.svc}"),
+        NAMESPACE,
+        scopes=(),
+        raw_scopes=(f"{names['read']}:/{readable}", f"{names['write']}:/"),
+        profile=test.session.profile,
+    )
+    src, dst = f"{base}/scope-unreadable", f"{readable}/copied"
+    test.seed(origin, src)
+    test.make_dirs(origin, readable)
+    who = "with a token that may read only there"
+    answer = web.request("GET", at(origin, src), token=token)
+    if answer.status not in REFUSED:
+        found.add(
+            origin, f"GET of an object outside readable/, {who}, got {answer.describe()}, not 401 or 403"
+        )
+    what = f"COPY of an object from outside readable/ into it, {who}"
+    answer = copy_or_move("COPY", at(origin, src), token, at(origin, dst))
+    if answer.status not in REFUSED:
+        found.add(origin, f"{what}, got {answer.describe()}, not 401 or 403")
+    found.add(origin, test.stored(origin, NAMESPACE, dst, None, f"{what}: the copy"))
 
 
 def create_alone(test: Test, origin: common.Origin, base: str, found: Findings) -> None:
@@ -505,15 +547,27 @@ def create_alone(test: Test, origin: common.Origin, base: str, found: Findings) 
     The collection of the checks' objects is base. See
     copy_move_scopes().
     """
-    # MOVE with storage.create.
+    # MOVE with storage.create to a new path: a rename, which the WLCG
+    # token profile lets storage.create do, as long as it replaces nothing.
     src, dst = f"{base}/scope-move-src", f"{base}/scope-move-dst"
     data = test.seed(origin, src)
-    what = "MOVE with storage.create alone"
+    what = "MOVE with storage.create alone to a new path"
+    answer = copy_or_move("MOVE", at(origin, src), test.create_token, at(origin, dst))
+    if answer.status != 201:
+        found.add(origin, f"{what} got {answer.describe()}, not 201")
+    found.add(origin, test.stored(origin, NAMESPACE, src, None, f"{what}: the source"))
+    found.add(origin, test.stored(origin, NAMESPACE, dst, data, f"{what}: the destination"))
+
+    # MOVE with storage.create over an object, which it would replace.
+    src, dst = f"{base}/scope-move-over-src", f"{base}/scope-move-over-dst"
+    data = test.seed(origin, src)
+    old = test.seed(origin, dst)
+    what = "MOVE with storage.create alone over an object"
     answer = copy_or_move("MOVE", at(origin, src), test.create_token, at(origin, dst))
     if answer.status not in REFUSED:
         found.add(origin, f"{what} got {answer.describe()}, not 401 or 403")
     found.add(origin, test.stored(origin, NAMESPACE, src, data, f"{what}: the source"))
-    found.add(origin, test.stored(origin, NAMESPACE, dst, None, f"{what}: the destination"))
+    found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
 
     # COPY with storage.create to a new path.
     src, dst = f"{base}/scope-copy-src", f"{base}/scope-copy-new"
@@ -548,6 +602,20 @@ def create_alone(test: Test, origin: common.Origin, base: str, found: Findings) 
     if problem is None:
         problem = test.stored(origin, NAMESPACE, f"{dst}/inner", inner, f"{what}: the object in it")
     found.add(origin, problem)
+
+    # A third-party COPY with storage.create over an object: the origin
+    # pulls the Source, here an object of its own, which it reads with
+    # the storage.read token that TransferHeaderAuthorization carries
+    # (handleCopyTPC in origin_serve/tpc_handler.go).
+    src, dst = f"{base}/scope-pull-src", f"{base}/scope-pull-dst"
+    test.seed(origin, src)
+    old = test.seed(origin, dst)
+    what = "third-party COPY with storage.create alone over an object"
+    headers = {"Source": at(origin, src), "TransferHeaderAuthorization": f"Bearer {test.read_token}"}
+    answer = web.request("COPY", at(origin, dst), token=test.create_token, headers=headers)
+    if answer.status not in REFUSED:
+        found.add(origin, f"{what} got {answer.describe()}, not 401 or 403")
+    found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
 
 
 # --------------------------------------------------------------------------
@@ -652,19 +720,24 @@ def lock(test: Test) -> Row:
 
     At each native origin, with a storage.create token (in SciTokens, a
     write token) and no Timeout, LOCK a new path and an existing object.
-    Pelican uses no locks, and what they should do is not settled. Each
-    LOCK must be refused, or the lock granted must have a timeout. The
-    new path must then hold nothing, or, if its LOCK was granted, an
-    empty object (see lock_landing()). Then, with the `server` token and
-    no lock token, PUT the new path and DELETE the object (the note says
-    what each got), and UNLOCK each lock granted, which must succeed:
-    otherwise the path stays locked until the origin restarts.
+    Pelican uses no locks, and how long one should last is not settled.
+    Each LOCK must be refused, or the lock granted must have a timeout.
+    In the WLCG pass, the LOCK of the object must be refused (401 or
+    403): locking an existing resource takes the privilege to write its
+    content, as a PUT over it does (RFC 3744, Appendix B), which
+    storage.create lacks. The new path must then hold nothing, or, if
+    its LOCK was granted, an empty object (see lock_landing()). Then,
+    with the `server` token and no lock token, PUT the new path and
+    DELETE the object (the note says what each got), and UNLOCK each
+    lock granted, which must succeed: otherwise the path stays locked
+    until the origin restarts.
     """
     why = stores.not_native(test.fed)
     if why:
         return SKIP, why
     found = Findings()
     headers = {"Content-Type": "application/xml; charset=utf-8"}
+    create_only = test.session.profile == credentials.WLCG
     for origin in test.fed.origins:
         base = test.origin_base(origin)
         new, old = f"{base}/lock-new", f"{base}/lock-old"
@@ -678,6 +751,11 @@ def lock(test: Test) -> Row:
             if answer.status is None:
                 found.add(origin, f"LOCK of {what} got no response")
                 continue
+            if create_only and rel == old and answer.status not in REFUSED:
+                found.add(
+                    origin,
+                    f"LOCK of {what} with storage.create alone got {answer.describe()}, not 401 or 403",
+                )
             if not answer.ok:
                 statuses.append(f"LOCK of {what} refused ({answer.status})")
                 continue

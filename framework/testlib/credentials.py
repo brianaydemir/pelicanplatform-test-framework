@@ -517,6 +517,7 @@ def mint_server(
     scope_path: str = "/",
     subject: str = SUBJECT,
     audience: str = "",
+    raw_scopes: tuple[str, ...] = (),
     *,
     profile: str,
 ) -> str:
@@ -524,8 +525,8 @@ def mint_server(
 
     It is what the tests use for their own setup (of the WLCG profile)
     and checks (of their session's). A token for less of the namespace
-    (scope_path), or for another subject or audience, is the origins'
-    too.
+    (scope_path), of scopes as such (raw_scopes, each with its own path),
+    or for another subject or audience, is the origins' too.
     """
     return mint(
         fed,
@@ -536,6 +537,7 @@ def mint_server(
         scopes,
         scope_path=scope_path,
         subject=subject,
+        raw_scopes=raw_scopes,
         audience=audience,
         profile=profile,
     )

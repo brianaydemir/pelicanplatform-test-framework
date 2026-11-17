@@ -31,13 +31,21 @@ problem it finds.
   and [9.9](https://www.rfc-editor.org/rfc/rfc4918#section-9.9)), changing
   nothing.
 
-- `copy-move-scopes`: With a `storage.create` token, a MOVE, and a COPY over
-  an object or over a collection, must be refused (401 or 403), changing
-  nothing; a COPY to a new path must succeed (201). With `server`'s, a COPY
-  or MOVE onto an object
-  with `Overwrite: F` must get 412
+- `copy-move-scopes`: With a `storage.create` token, a MOVE or COPY over an
+  object, a COPY over a collection, and a third-party COPY that pulls an
+  object of the origin's own over one, must be refused (401 or 403),
+  changing nothing; a MOVE or COPY to a new path must succeed (201): the
+  [WLCG token profile](https://github.com/WLCG-AuthZ-WG/common-jwt-profile/blob/master/profile.md)
+  lets `storage.create` rename, but not replace. With a token that may
+  read one collection alone, and write anywhere, a GET of an object outside
+  it, and a COPY of that object into it, must be refused, copying nothing,
+  since a COPY reads its source
+  ([RFC 3744, Appendix B](https://www.rfc-editor.org/rfc/rfc3744#appendix-B)).
+  With `server`'s, a COPY or MOVE onto an object with `Overwrite: F` must
+  get 412
   ([RFC 4918, section 10.6](https://www.rfc-editor.org/rfc/rfc4918#section-10.6)).
-  The SciTokens [pass](../glossary.md#pass) checks only `Overwrite: F`.
+  The SciTokens [pass](../glossary.md#pass) checks only the source and
+  `Overwrite: F`.
 
 - `mkcol`: MKCOL with a `storage.read` token must be refused, making
   nothing. With `server`'s, it must make a new collection (201), get 405
@@ -46,7 +54,11 @@ problem it finds.
 
 - `lock`: A LOCK with a `storage.create` token and no `Timeout`, of a new
   path or of an object, must be refused or grant a lock with a timeout
-  (`Second-<n>`, `n` > 0). A refused LOCK must create nothing; a granted
+  (`Second-<n>`, `n` > 0). In the WLCG pass, the LOCK of the object must be
+  refused (401 or 403): locking an existing resource takes the privilege to
+  write its content
+  ([RFC 3744, Appendix B](https://www.rfc-editor.org/rfc/rfc3744#appendix-B)),
+  which `storage.create` lacks. A refused LOCK must create nothing; a granted
   one of a new path may create an empty object there, as
   [RFC 4918, section 7.3](https://www.rfc-editor.org/rfc/rfc4918#section-7.3)
   requires. The note says what a PUT and a
