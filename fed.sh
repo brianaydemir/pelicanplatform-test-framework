@@ -3119,9 +3119,11 @@ case "${cmd}" in
           | "${fed_python}" framework/provenance.py write "${log_dir}" "$@" \
           || warn "cannot record the run's provenance in ${log_dir}/provenance.txt"
     fi
-    fed_control_start "${log_dir:+${log_dir}/control.log}"
+    # Not for a listing or the usage, which ask nothing of the helper: as
+    # it starts, it puts back what was left in framework/var/control/,
+    # restarting each service configured there.
+    [ -z "${logs}" ] || fed_control_start "${log_dir}/control.log"
     trap 'fed_test_timer_stop; fed_control_stop' EXIT
-    # Not for a listing or the usage, which ask nothing of it.
     [ -z "${logs}" ] || fed_control_wait
     trap 'fed_test_interrupt; fed_control_stop; fed_save_logs "${logs}"; exit 129' HUP
     trap 'fed_test_interrupt; fed_control_stop; fed_save_logs "${logs}"; exit 130' INT
