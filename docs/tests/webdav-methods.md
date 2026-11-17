@@ -41,8 +41,8 @@ problem it finds.
   it, and a COPY of that object into it, must be refused, copying nothing,
   since a COPY reads its source
   ([RFC 3744, Appendix B](https://www.rfc-editor.org/rfc/rfc3744#appendix-B)).
-  With `server`'s, a COPY or MOVE onto an object with `Overwrite: F` must
-  get 412
+  With `server`'s, a COPY, a MOVE, or a third-party COPY onto an object
+  with `Overwrite: F` must get 412, changing nothing
   ([RFC 4918, section 10.6](https://www.rfc-editor.org/rfc/rfc4918#section-10.6)).
   The SciTokens [pass](../glossary.md#pass) checks only the source and
   `Overwrite: F`.

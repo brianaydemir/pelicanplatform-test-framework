@@ -472,10 +472,11 @@ def copy_move_scopes(test: Test) -> Row:
     that pulls an object over one, must be refused, changing nothing,
     since replacing or removing what is stored takes storage.modify (the
     same profile). A COPY must read its source only with storage.read
-    there (see copy_source_read()). Then, with the `server` token, COPY
-    and MOVE onto an object with `Overwrite: F` must get 412 and change
-    nothing (RFC 4918, section 10.6). SciTokens has no storage.create
-    alone, so its pass checks only the source and `Overwrite: F`.
+    there (see copy_source_read()). Then, with the `server` token, a
+    COPY, a MOVE, and a third-party COPY onto an object with
+    `Overwrite: F` must get 412 and change nothing (RFC 4918, section
+    10.6). SciTokens has no storage.create alone, so its pass checks
+    only the source and `Overwrite: F`.
     """
     why = stores.not_native(test.fed)
     if why:
@@ -500,6 +501,14 @@ def copy_move_scopes(test: Test) -> Row:
                 found.add(origin, f"{what} got {answer.describe()}, not 412")
             found.add(origin, test.stored(origin, NAMESPACE, src, data, f"{what}: the source"))
             found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
+        src, dst = f"{base}/pull-no-overwrite-src", f"{base}/pull-no-overwrite-dst"
+        test.seed(origin, src)
+        old = test.seed(origin, dst)
+        what = "third-party COPY onto an object with Overwrite: F"
+        answer = pull(test, origin, src, dst, test.token, overwrite="F")
+        if answer.status != 412:
+            found.add(origin, f"{what} got {answer.describe()}, not 412")
+        found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
     passed = f"{len(test.fed.origins)} origin(s)"
     if not create_only:
         passed += "; not storage.create alone, which SciTokens lacks"
@@ -603,19 +612,38 @@ def create_alone(test: Test, origin: common.Origin, base: str, found: Findings) 
         problem = test.stored(origin, NAMESPACE, f"{dst}/inner", inner, f"{what}: the object in it")
     found.add(origin, problem)
 
-    # A third-party COPY with storage.create over an object: the origin
-    # pulls the Source, here an object of its own, which it reads with
-    # the storage.read token that TransferHeaderAuthorization carries
-    # (handleCopyTPC in origin_serve/tpc_handler.go).
+    # A third-party COPY with storage.create over an object.
     src, dst = f"{base}/scope-pull-src", f"{base}/scope-pull-dst"
     test.seed(origin, src)
     old = test.seed(origin, dst)
     what = "third-party COPY with storage.create alone over an object"
-    headers = {"Source": at(origin, src), "TransferHeaderAuthorization": f"Bearer {test.read_token}"}
-    answer = web.request("COPY", at(origin, dst), token=test.create_token, headers=headers)
+    answer = pull(test, origin, src, dst, test.create_token)
     if answer.status not in REFUSED:
         found.add(origin, f"{what} got {answer.describe()}, not 401 or 403")
     found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
+
+
+def pull(
+    test: Test, origin: common.Origin, src: str, dst: str, token: str, overwrite: str | None = None
+) -> web.Response:
+    """Send a third-party COPY that pulls src to dst, at origin.
+
+    Both are in /protected-a. The origin reads src with the storage.read
+    token that TransferHeaderAuthorization carries (handleCopyTPC in
+    origin_serve/tpc_handler.go).
+
+    Args:
+        test: The test.
+        origin: The origin.
+        src: The Source.
+        dst: The request's path.
+        token: A bearer token to present.
+        overwrite: The Overwrite header, if any.
+    """
+    headers = {"Source": at(origin, src), "TransferHeaderAuthorization": f"Bearer {test.read_token}"}
+    if overwrite is not None:
+        headers["Overwrite"] = overwrite
+    return web.request("COPY", at(origin, dst), token=token, headers=headers)
 
 
 # --------------------------------------------------------------------------
