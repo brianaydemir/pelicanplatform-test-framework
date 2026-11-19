@@ -298,10 +298,9 @@ class Findings(common.Findings):
     """
 
     def add(self, server: common.Origin | common.Cache, problem: str | None) -> None:
-        """Record problem, if any, at server, and print it."""
+        """Record problem, if any, at server."""
         if problem:
             self.problems.append(f"{server.svc}: {problem}")
-            print(f"    {server.svc}: {problem}")
 
     def note(self, server: common.Origin | common.Cache, note: str) -> None:
         """Note what server did."""
