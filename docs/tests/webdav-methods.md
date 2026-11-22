@@ -31,15 +31,18 @@ problem it finds.
   and [9.9](https://www.rfc-editor.org/rfc/rfc4918#section-9.9)), changing
   nothing.
 
-- `copy-move-scopes`: With a `storage.create` token, a MOVE or COPY over an
-  object, a COPY over a collection, and a third-party COPY that pulls an
-  object of the origin's own over one, must be refused (401 or 403),
-  changing nothing; a MOVE or COPY to a new path must succeed (201): the
+- `copy-move-scopes`: With a token that may create but not modify, a MOVE
+  or COPY over an object, a COPY over a collection, and a third-party COPY
+  that pulls an object of the origin's own over one, must be refused (401
+  or 403), changing nothing; a MOVE or COPY to a new path must succeed
+  (201): the
   [WLCG token profile](https://github.com/WLCG-AuthZ-WG/common-jwt-profile/blob/master/profile.md)
-  lets `storage.create` rename, but not replace. With a token that may
-  read one collection alone, and write anywhere, a GET of an object outside
-  it, and a COPY of that object into it, must be refused, copying nothing,
-  since a COPY reads its source
+  lets `storage.create` rename, but not replace. The token is of
+  `storage.create` alone, but for a COPY within the origin, also of
+  `storage.read`, which a COPY needs to read its source. With a token
+  that may read one collection alone, and write anywhere, a GET of an
+  object outside it, and a COPY of that object into it, must be refused,
+  copying nothing, since a COPY reads its source
   ([RFC 3744, Appendix B](https://www.rfc-editor.org/rfc/rfc3744#appendix-B)).
   With `server`'s, a COPY, a MOVE, or a third-party COPY onto an object
   with `Overwrite: F` must get 412, changing nothing

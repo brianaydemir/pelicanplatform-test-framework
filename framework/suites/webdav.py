@@ -464,14 +464,15 @@ def copy_move_destination(test: Test) -> Row:
 def copy_move_scopes(test: Test) -> Row:
     """Check COPY and MOVE with storage.create, and with `Overwrite: F`.
 
-    At each native origin, in /protected-a: with a storage.create
-    token, a MOVE or COPY to a new path must succeed (201), since the
-    WLCG token profile lets storage.create rename; and a MOVE or COPY
-    over an object, a COPY over a collection, and a third-party COPY
-    that pulls an object over one, must be refused, changing nothing,
-    since replacing or removing what is stored takes storage.modify (the
-    same profile). A COPY must read its source only with storage.read
-    there (see copy_source_read()). Then, with the `server` token, a
+    At each native origin, in /protected-a: with a token that may create
+    but not modify, a MOVE or COPY to a new path must succeed (201),
+    since the WLCG token profile lets storage.create rename; and a MOVE
+    or COPY over an object, a COPY over a collection, and a third-party
+    COPY that pulls an object over one, must be refused, changing
+    nothing, since replacing or removing what is stored takes
+    storage.modify (the same profile). A COPY must read its source only
+    with storage.read there (see copy_source_read()). Then, with the
+    `server` token, a
     COPY, a MOVE, and a third-party COPY onto an object with
     `Overwrite: F` must get 412 and change nothing (RFC 4918, section
     10.6). SciTokens has no storage.create alone, so its pass checks
@@ -550,11 +551,15 @@ def copy_source_read(test: Test, origin: common.Origin, base: str, found: Findin
 
 
 def create_alone(test: Test, origin: common.Origin, base: str, found: Findings) -> None:
-    """Check MOVE and COPY with storage.create alone at origin.
+    """Check MOVE and COPY with storage.create, not storage.modify, at origin.
 
-    The collection of the checks' objects is base. See
-    copy_move_scopes().
+    A MOVE or a third-party COPY presents storage.create alone. A COPY
+    within the origin also presents storage.read, which it needs to read
+    its source (see copy_source_read()), so that only what it would do
+    at its destination decides it. The collection of the checks' objects
+    is base. See copy_move_scopes().
     """
+    copier = test.session.token(NAMESPACE, ("read", "write"))
     # MOVE with storage.create to a new path: a rename, which the WLCG
     # token profile lets storage.create do, as long as it replaces nothing.
     src, dst = f"{base}/scope-move-src", f"{base}/scope-move-dst"
@@ -577,33 +582,34 @@ def create_alone(test: Test, origin: common.Origin, base: str, found: Findings) 
     found.add(origin, test.stored(origin, NAMESPACE, src, data, f"{what}: the source"))
     found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
 
-    # COPY with storage.create to a new path.
+    # COPY with storage.read and storage.create to a new path.
     src, dst = f"{base}/scope-copy-src", f"{base}/scope-copy-new"
     data = test.seed(origin, src)
-    what = "COPY with storage.create alone to a new path"
-    answer = copy_or_move("COPY", at(origin, src), test.create_token, at(origin, dst))
+    what = "COPY with storage.read and storage.create to a new path"
+    answer = copy_or_move("COPY", at(origin, src), copier, at(origin, dst))
     if answer.status != 201:
         found.add(origin, f"{what} got {answer.describe()}, not 201")
     found.add(origin, test.stored(origin, NAMESPACE, dst, data, f"{what}: the destination"))
 
-    # COPY with storage.create over an object.
+    # COPY with storage.read and storage.create over an object.
     src, dst = f"{base}/scope-over-src", f"{base}/scope-over-dst"
     data = test.seed(origin, src)
     old = test.seed(origin, dst)
-    what = "COPY with storage.create alone over an object"
-    answer = copy_or_move("COPY", at(origin, src), test.create_token, at(origin, dst))
+    what = "COPY with storage.read and storage.create over an object"
+    answer = copy_or_move("COPY", at(origin, src), copier, at(origin, dst))
     if answer.status not in REFUSED:
         found.add(origin, f"{what} got {answer.describe()}, not 401 or 403")
     found.add(origin, test.stored(origin, NAMESPACE, dst, old, f"{what}: the object"))
 
-    # COPY with storage.create over a collection, which x/net's handler
-    # would remove whole, as RFC 4918 (section 9.8.4) has Overwrite: T do.
+    # COPY with storage.read and storage.create over a collection, which
+    # x/net's handler would remove whole, as RFC 4918 (section 9.8.4) has
+    # Overwrite: T do.
     src, dst = f"{base}/scope-over-dir-src", f"{base}/scope-over-dir"
     test.seed(origin, src)
     test.make_dirs(origin, dst)
     inner = test.seed(origin, f"{dst}/inner")
-    what = "COPY with storage.create alone over a collection"
-    answer = copy_or_move("COPY", at(origin, src), test.create_token, at(origin, dst))
+    what = "COPY with storage.read and storage.create over a collection"
+    answer = copy_or_move("COPY", at(origin, src), copier, at(origin, dst))
     if answer.status not in REFUSED:
         found.add(origin, f"{what} got {answer.describe()}, not 401 or 403")
     problem = test.made_problem(origin, dst, True, what)
