@@ -69,6 +69,27 @@ problem it finds.
   DELETE without the lock token then got. UNLOCK must release each lock;
   otherwise, its path stays locked until the origin restarts.
 
+- `lock-holds`: With the `server` token, LOCK an object for 10 minutes.
+  Without the lock token, a third-party COPY that pulls another object over
+  it must get 423, changing nothing, since a write lock covers a COPY's
+  destination
+  ([RFC 4918, section 7](https://www.rfc-editor.org/rfc/rfc4918#section-7)).
+  An UNLOCK with the lock token must fail, leaving the lock in place, when it
+  is sent:
+
+  - with the `server` token, at the other object, outside the lock's scope
+    ([RFC 4918, section 9.11](https://www.rfc-editor.org/rfc/rfc4918#section-9.11));
+    or
+  - in the WLCG pass, at the object, with a token of another subject and of
+    `storage.create` alone, which may not remove another's lock
+    ([RFC 3744, section 3.5](https://www.rfc-editor.org/rfc/rfc3744#section-3.5)).
+    That token must first be able to PUT a new object; otherwise, the note
+    says that this UNLOCK went unchecked.
+
+  An UNLOCK at the object with the `server` token must then release the lock.
+  If the origin refuses the LOCK, the note says so, and there is nothing to
+  check.
+
 - `symlink-writes`: Through symbolic links in `/protected-a`'s storage to a
   file and a directory outside it, a HEAD with `Want-Digest: crc32c` must
   report no digest; a PUT, MKCOL, or DELETE under the directory must be

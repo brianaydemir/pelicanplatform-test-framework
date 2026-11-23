@@ -14,9 +14,10 @@ it afterward, with whatever a Destination could have reached in
 /protected-b and /public. Every token is the origins' own, for
 /protected-a, of the scopes each scenario names, and of the session's
 profile. In SciTokens, the storage.create token is one of `write`, which
-may replace and remove too, so `copy-move-scopes` and `lock` check what
-storage.create alone may not do in the WLCG pass alone. The objects are
-put in place, and the stores read, with WLCG tokens either way.
+may replace and remove too, so `copy-move-scopes`, `lock`, and
+`lock-holds` check what storage.create alone may not do in the WLCG pass
+alone. The objects are put in place, and the stores read, with WLCG
+tokens either way.
 
 See docs/tests/webdav-methods.md.
 """
@@ -55,6 +56,10 @@ SCENARIOS = {
     "lock": (
         "a LOCK with a storage.create token and no Timeout, or an infinite one,"
         " is refused or bounded, and refused for an object"
+    ),
+    "lock-holds": (
+        "a lock keeps out a third-party COPY without its token, and an UNLOCK outside it"
+        " or by another subject"
     ),
     "symlink-writes": (
         "PUT, DELETE, and MKCOL through a symbolic link out of a store change nothing outside"
@@ -833,6 +838,113 @@ def lock(test: Test) -> Row:
 
 
 # --------------------------------------------------------------------------
+# lock-holds
+
+# How long each lock of `lock-holds` asks to last, in seconds: long enough
+# for the scenario, and short enough that a lock it fails to release ends.
+HOLD_SECONDS = 600
+
+
+def take_lock(origin: common.Origin, rel: str, token: str) -> tuple[web.Response, str]:
+    """LOCK rel in /protected-a at origin for HOLD_SECONDS, with token.
+
+    Returns:
+        The answer, and the lock token it gave, without its angle
+        brackets; "" if none.
+    """
+    headers = {"Content-Type": "application/xml; charset=utf-8", "Timeout": f"Second-{HOLD_SECONDS}"}
+    answer = web.request("LOCK", at(origin, rel), token=token, upload=LOCK_INFO, headers=headers)
+    return answer, answer.header("Lock-Token").strip().strip("<>")
+
+
+def unlock(origin: common.Origin, rel: str, token: str, lock_token: str) -> web.Response:
+    """Send an UNLOCK of lock_token at rel in /protected-a at origin, with token."""
+    return web.request("UNLOCK", at(origin, rel), token=token, headers={"Lock-Token": f"<{lock_token}>"})
+
+
+def lock_holds(test: Test) -> Row:
+    """Check that a lock keeps out others' writes and UNLOCKs.
+
+    At each native origin, LOCK an object with the `server` token for
+    HOLD_SECONDS. Without the lock token, a third-party COPY that pulls
+    another object over it must get 423, leaving it unchanged: a write
+    lock covers a COPY's destination (RFC 4918, section 7). An UNLOCK
+    with the lock token must fail, and leave the lock in place, when it
+    is sent:
+
+    - with the `server` token, at the other object, outside the lock's
+      scope (RFC 4918, section 9.11); or
+    - in the WLCG pass, at the object, with a token of another subject
+      and of storage.create alone, which may not remove another's lock
+      (RFC 3744, section 3.5). That token must first be able to PUT a
+      new object, or the check proves nothing.
+
+    After an UNLOCK that wrongly succeeds, LOCK the object again for the
+    next check. Last, an UNLOCK at the object with the `server` token
+    must release the lock. If the origin refuses the first LOCK, there
+    is no lock to hold, and the note says so.
+    """
+    why = stores.not_native(test.fed)
+    if why:
+        return SKIP, why
+    found = Findings()
+    other: str | None = None
+    if test.session.profile == credentials.WLCG:
+        path = test.session.path("tokens/webdav-lock-other")
+        other = credentials.mint_server(
+            test.fed, path, NAMESPACE, ("write",), subject="someone-else", profile=test.session.profile
+        )
+    for origin in test.fed.origins:
+        base = test.origin_base(origin)
+        held, source = f"{base}/hold-object", f"{base}/hold-source"
+        data = test.seed(origin, held)
+        test.seed(origin, source)
+        answer, lock_token = take_lock(origin, held, test.token)
+        if not answer.ok:
+            found.note(origin, f"LOCK of an object refused ({answer.describe()}), so nothing to hold")
+            continue
+        if not lock_token:
+            found.add(origin, f"LOCK of an object got {answer.status} with no Lock-Token")
+            continue
+
+        what = "third-party COPY into a locked object without the lock token"
+        answer = pull(test, origin, source, held, test.token)
+        if answer.status != 423:
+            found.add(origin, f"{what} got {answer.describe()}, not 423")
+        found.add(origin, test.stored(origin, NAMESPACE, held, data, f"{what}: the object"))
+
+        unlocks = [("UNLOCK at another object outside the lock", source, test.token)]
+        if other:
+            # Check that the other subject's token is honored at all.
+            landing = f"{base}/hold-other-put"
+            put = web.request("PUT", at(origin, landing), token=other, upload=b"x")
+            if put.ok:
+                unlocks.append(("UNLOCK by another subject with storage.create alone", held, other))
+            else:
+                found.note(
+                    origin, f"another subject's PUT got {put.describe()}, so its UNLOCK is unchecked"
+                )
+        for what, rel, token in unlocks:
+            answer = unlock(origin, rel, token, lock_token)
+            if not answer.ok:
+                continue
+            found.add(origin, f"{what} got {answer.describe()}, and released the lock")
+            answer, lock_token = take_lock(origin, held, test.token)
+            if not lock_token:
+                found.add(origin, f"LOCK of the object again got {answer.describe()} with no Lock-Token")
+                break
+        if lock_token:
+            answer = unlock(origin, held, test.token, lock_token)
+            if not answer.ok:
+                found.add(
+                    origin,
+                    f"UNLOCK of the object got {answer.describe()}; it stays locked for up to"
+                    + f" {HOLD_SECONDS}s, or until {origin.svc} restarts",
+                )
+    return found.row(f"{len(test.fed.origins)} origin(s)")
+
+
+# --------------------------------------------------------------------------
 # symlink-writes
 
 
@@ -1225,6 +1337,7 @@ RUN = {
     "copy-move-scopes": copy_move_scopes,
     "mkcol": mkcol,
     "lock": lock,
+    "lock-holds": lock_holds,
     "symlink-writes": symlink_writes,
     "stored-html": stored_html,
     "webdav-semantics": webdav_semantics,
