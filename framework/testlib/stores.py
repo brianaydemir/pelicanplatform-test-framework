@@ -10,6 +10,7 @@ takes no writes, reads /protected-a's storage.
 """
 
 import os
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from typing import Any
@@ -67,6 +68,14 @@ S3_PART = blocks.S3_PART
 # alone (RegisterStorageAPI in Pelican's origin_serve/storage_api.go): ls,
 # stat, and digest of a path in the store's catalog, and usage.
 STORAGE_API = "/api/v1.0/origin/storage/pstore"
+
+# How many times make_dirs() sends a MKCOL that gets 423, and how long it
+# waits before each retry. A native origin locks a path for as long as it
+# serves a write there (confirmLocks in x/net's webdav/webdav.go), so a
+# MKCOL of a collection that a concurrent MKCOL is making, or finding
+# already made, gets 423 until that one ends.
+MKCOL_TRIES = 5
+MKCOL_PAUSE = 0.2
 
 
 def url(origin: common.Origin, namespace: str, rel: str) -> str:
@@ -483,7 +492,8 @@ def make_dirs(origins: Iterable[common.Origin], namespace: str, rel: str, token:
     """Make collection rel, and its parents, in namespace at every origin.
 
     This is so that it exists before a test's uploads. A disk store's are
-    made directly (_make_tree()); a pstore origin is sent MKCOL for each.
+    made directly (_make_tree()); a pstore origin is sent MKCOL for each,
+    again while it gets 423 (see MKCOL_TRIES).
 
     Returns:
         What went wrong; empty if nothing did.
@@ -500,6 +510,11 @@ def make_dirs(origins: Iterable[common.Origin], namespace: str, rel: str, token:
         for n in range(1, len(parts) + 1):
             target = url(origin, namespace, "/".join(parts[:n]))
             answer = web.request("MKCOL", target, token=token)
+            for _ in range(MKCOL_TRIES - 1):
+                if answer.status != 423:
+                    break
+                time.sleep(MKCOL_PAUSE)
+                answer = web.request("MKCOL", target, token=token)
             # 405: it already exists.
             if answer.status not in (201, 405):
                 errors.append(f"MKCOL {target}: {answer.describe()}")

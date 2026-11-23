@@ -218,7 +218,7 @@ class Test(suite.Test):
         if want is None:
             return f"{what} is there" if have is not None else None
         if have is None:
-            return f"{what} is gone"
+            return f"{what} is not there"
         if have != common.digest(want):
             return f"{what} holds other bytes"
         return None
