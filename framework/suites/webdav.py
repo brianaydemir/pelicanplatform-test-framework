@@ -53,8 +53,8 @@ SCENARIOS = {
     ),
     "mkcol": "MKCOL makes a collection, but not with a read token, where one is, or with a body",
     "lock": (
-        "a LOCK with no Timeout, with a storage.create token, is refused or bounded,"
-        " and refused for an object"
+        "a LOCK with a storage.create token and no Timeout, or an infinite one,"
+        " is refused or bounded, and refused for an object"
     ),
     "symlink-writes": (
         "PUT, DELETE, and MKCOL through a symbolic link out of a store change nothing outside"
@@ -737,33 +737,35 @@ def lock_landing(test: Test, origin: common.Origin, rel: str, granted: bool) -> 
     object, which RFC 4918 (section 7.3) requires of a lock of an
     unmapped URL, and storage.create allows.
     """
+    name = os.path.basename(rel)
     try:
         have = stores.held(origin, NAMESPACE, rel, test.storage_token(origin, NAMESPACE))
     except stores.Unreadable as e:
-        return f"could not check the LOCK's new path: {e}"
+        return f"could not check what the LOCK of {name}, a new path, left there: {e}"
     if have is None or (granted and have == common.digest(b"")):
         return None
     if granted:
-        return "the LOCK's new path holds an object that is not empty"
-    return "the refused LOCK's new path holds an object"
+        return f"the LOCK of {name}, a new path, left an object that is not empty"
+    return f"the refused LOCK of {name}, a new path, left an object"
 
 
 def lock(test: Test) -> Row:
-    """Check that a LOCK with no Timeout is refused or bounded.
+    """Check that a LOCK with no or infinite Timeout is refused or bounded.
 
     At each native origin, with a storage.create token (in SciTokens, a
-    write token) and no Timeout, LOCK a new path and an existing object.
-    Pelican uses no locks, and how long one should last is not settled.
-    Each LOCK must be refused, or the lock granted must have a timeout.
-    In the WLCG pass, the LOCK of the object must be refused (401 or
-    403): locking an existing resource takes the privilege to write its
+    write token), LOCK a new path and an existing object with no
+    Timeout, and another new path with `Timeout: Infinite`. Pelican uses
+    no locks, and how long one should last is not settled. Each LOCK
+    must be refused, or the lock granted must have a timeout. In the
+    WLCG pass, the LOCK of the object must be refused (401 or 403):
+    locking an existing resource takes the privilege to write its
     content, as a PUT over it does (RFC 3744, Appendix B), which
-    storage.create lacks. The new path must then hold nothing, or, if
+    storage.create lacks. Each new path must then hold nothing, or, if
     its LOCK was granted, an empty object (see lock_landing()). Then,
-    with the `server` token and no lock token, PUT the new path and
-    DELETE the object (the note says what each got), and UNLOCK each
-    lock granted, which must succeed: otherwise the path stays locked
-    until the origin restarts.
+    with the `server` token and no lock token, PUT the first new path
+    and DELETE the object (the note says what each got), and UNLOCK
+    each lock granted, which must succeed: otherwise the path stays
+    locked until the origin restarts.
     """
     why = stores.not_native(test.fed)
     if why:
@@ -773,16 +775,22 @@ def lock(test: Test) -> Row:
     create_only = test.session.profile == credentials.WLCG
     for origin in test.fed.origins:
         base = test.origin_base(origin)
-        new, old = f"{base}/lock-new", f"{base}/lock-old"
+        new, old, infinite = f"{base}/lock-new", f"{base}/lock-old", f"{base}/lock-infinite"
         test.seed(origin, old)
         granted: list[tuple[str, str]] = []  # each lock granted: its URL, and its token
         statuses: list[str] = []
-        new_granted = False
-        for rel, what in ((new, "a new path"), (old, "an object")):
+        new_granted: set[str] = set()  # each new path whose LOCK was granted
+        # Each LOCK: its path, what that is, and the Timeout it asks for, if any.
+        locks = ((new, "a new path", None), (old, "an object", None), (infinite, "a new path", "Infinite"))
+        for rel, what, asked in locks:
             url = at(origin, rel)
-            answer = web.request("LOCK", url, token=test.create_token, upload=LOCK_INFO, headers=headers)
+            how = f"`Timeout: {asked}`" if asked else "no Timeout"
+            timeout_header = {"Timeout": asked} if asked else {}
+            answer = web.request(
+                "LOCK", url, token=test.create_token, upload=LOCK_INFO, headers=headers | timeout_header
+            )
             if answer.status is None:
-                found.add(origin, f"LOCK of {what} got no response")
+                found.add(origin, f"LOCK of {what} with {how} got no response")
                 continue
             if create_only and rel == old and answer.status not in REFUSED:
                 found.add(
@@ -790,23 +798,24 @@ def lock(test: Test) -> Row:
                     f"LOCK of {what} with storage.create alone got {answer.describe()}, not 401 or 403",
                 )
             if not answer.ok:
-                statuses.append(f"LOCK of {what} refused ({answer.status})")
+                statuses.append(f"LOCK of {what} with {how} refused ({answer.status})")
                 continue
-            new_granted = new_granted or rel == new
+            if rel != old:
+                new_granted.add(rel)
             lock_token = answer.header("Lock-Token")
             if lock_token:
                 granted.append((url, lock_token))
             else:
-                found.add(origin, f"LOCK of {what} got {answer.status} with no Lock-Token")
+                found.add(origin, f"LOCK of {what} with {how} got {answer.status} with no Lock-Token")
             timeout = lock_timeout(answer.body)
-            statuses.append(f"LOCK of {what} granted ({answer.status}, timeout {timeout})")
+            statuses.append(f"LOCK of {what} with {how} granted ({answer.status}, timeout {timeout})")
             if not bounded(timeout):
                 found.add(
                     origin,
-                    f"LOCK of {what} with no Timeout got a lock that never ends"
-                    + f" (timeout '{timeout}')",
+                    f"LOCK of {what} with {how} got a lock that never ends (timeout '{timeout}')",
                 )
-        found.add(origin, lock_landing(test, origin, new, new_granted))
+        for rel in (new, infinite):
+            found.add(origin, lock_landing(test, origin, rel, rel in new_granted))
         if granted:
             put = web.request("PUT", at(origin, new), token=test.token, upload=b"x")
             delete = web.request("DELETE", at(origin, old), token=test.token)

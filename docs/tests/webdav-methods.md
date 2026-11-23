@@ -57,7 +57,8 @@ problem it finds.
 
 - `lock`: A LOCK with a `storage.create` token and no `Timeout`, of a new
   path or of an object, must be refused or grant a lock with a timeout
-  (`Second-<n>`, `n` > 0). In the WLCG pass, the LOCK of the object must be
+  (`Second-<n>`, `n` > 0), and so must one of another new path with
+  `Timeout: Infinite`. In the WLCG pass, the LOCK of the object must be
   refused (401 or 403): locking an existing resource takes the privilege to
   write its content
   ([RFC 3744, Appendix B](https://www.rfc-editor.org/rfc/rfc3744#appendix-B)),
